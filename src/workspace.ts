@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Attachment } from './content.js';
+import type { Attachment, AttachmentDraft } from './content.js';
 import type { Project } from './kernel.js';
 import { assertProjectDirectory } from './project-directory.js';
 import type {
@@ -194,7 +194,11 @@ export class Workspace {
     return snapshotConversation(conversation);
   }
 
-  async submit(conversationId: string, text: string): Promise<Execution> {
+  async submit(
+    conversationId: string,
+    text: string,
+    attachments: readonly AttachmentDraft[] = [],
+  ): Promise<Execution> {
     this.assertRunning();
     const conversation = this.conversations.get(conversationId);
     if (conversation === undefined) {
@@ -224,7 +228,12 @@ export class Workspace {
     this.activeExecutionByConversation.set(conversationId, execution.id);
 
     try {
-      await this.adapter.submit(conversation.nativeId, execution.id, text);
+      await this.adapter.submit(
+        conversation.nativeId,
+        execution.id,
+        text,
+        attachments.length === 0 ? undefined : attachments,
+      );
     } catch (error) {
       if (error instanceof SubmitOutcomeUnknownError) {
         // The native side may have accepted the turn. Keep the association so a

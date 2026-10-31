@@ -14,6 +14,8 @@ export interface FlowSubmitNode {
   readonly participant: string;
   readonly prompt: string;
   readonly next?: FlowNext;
+  /** Upstream submit node ids whose attachments become inputs to this node. */
+  readonly attachments?: readonly string[];
 }
 
 export interface FlowParallelNode {
@@ -226,6 +228,28 @@ export function validateFlowDefinition(definition: FlowDefinition): void {
     }
   }
 
+  for (const [nodeId, node] of Object.entries(definition.nodes)) {
+    if (node.type !== 'submit' || node.attachments === undefined) {
+      continue;
+    }
+    for (const sourceId of node.attachments) {
+      if (sourceId === nodeId) {
+        throw new FlowDefinitionError(`Node ${nodeId} cannot attach its own output`);
+      }
+      const source = definition.nodes[sourceId];
+      if (source === undefined) {
+        throw new FlowDefinitionError(
+          `Node ${nodeId} references attachments from unknown node ${sourceId}`,
+        );
+      }
+      if (source.type !== 'submit') {
+        throw new FlowDefinitionError(
+          `Node ${nodeId} references attachments from ${sourceId}, but only submit nodes produce attachments`,
+        );
+      }
+    }
+  }
+
   for (const branchId of branchOwner.keys()) {
     if (referencedByNext.has(branchId)) {
       throw new FlowDefinitionError(
@@ -345,7 +369,17 @@ function parseNode(nodeId: string, value: unknown): FlowNode {
     participant: requiredString(record.participant, `node ${nodeId}.participant`),
     prompt: requiredString(record.prompt, `node ${nodeId}.prompt`),
     ...(record.next === undefined ? {} : { next: parseNext(nodeId, record.next) }),
+    ...(record.attachments === undefined
+      ? {}
+      : { attachments: parseStringArray(record.attachments, `node ${nodeId}.attachments`) }),
   };
+}
+
+function parseStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new FlowDefinitionError(`${label} must be an array`);
+  }
+  return value.map((item, index) => requiredString(item, `${label}[${index}]`));
 }
 
 function parseNext(nodeId: string, value: unknown): FlowNext {

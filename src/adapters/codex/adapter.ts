@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { statSync } from 'node:fs';
+import type { AttachmentDraft } from '../../content.js';
 import type { Project } from '../../kernel.js';
 import { assertProjectDirectory } from '../../project-directory.js';
 import { attachmentForItem } from './attachments.js';
+import { buildCodexInput } from './input.js';
 import type {
   ApprovalDecision,
   ApprovalOption,
@@ -226,7 +228,12 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     return threadId;
   }
 
-  async submit(nativeId: string, executionId: string, text: string): Promise<void> {
+  async submit(
+    nativeId: string,
+    executionId: string,
+    text: string,
+    attachments?: readonly AttachmentDraft[],
+  ): Promise<void> {
     const client = this.requireClient();
     if (this.closing.has(nativeId)) {
       throw new Error(`Codex thread is closing and cannot accept new work: ${nativeId}`);
@@ -246,7 +253,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
       const result = asRecord(
         await client.request(
           'turn/start',
-          { threadId: nativeId, input: [{ type: 'text', text }] },
+          { threadId: nativeId, input: buildCodexInput(text, attachments) },
           this.requestTimeoutMs,
         ),
       );

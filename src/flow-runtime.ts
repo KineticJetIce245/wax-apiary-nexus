@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { SubmitOutcomeUnknownError } from './adapters/harness.js';
 import {
+  FlowTemplateError,
   renderTemplate,
   type FlowCondition,
   type FlowDefinition,
@@ -8,6 +9,12 @@ import {
   type FlowParallelNode,
   type FlowSubmitNode,
 } from './flow-definition.js';
+import {
+  cloneAttachment,
+  toAttachmentDraft,
+  type Attachment,
+  type AttachmentDraft,
+} from './content.js';
 import type { Execution } from './workspace.js';
 import type { Workbench } from './workbench.js';
 
@@ -26,6 +33,7 @@ export interface FlowNodeState {
   readonly executionId?: string;
   readonly connection?: string;
   readonly output?: string;
+  readonly attachments?: readonly Attachment[];
   readonly error?: string;
 }
 
@@ -90,6 +98,7 @@ interface MutableNodeState {
   executionId: string | undefined;
   connection: string | undefined;
   output: string | undefined;
+  attachments: Attachment[] | undefined;
   error: string | undefined;
 }
 
@@ -97,6 +106,7 @@ interface SubmitOutcome {
   readonly nodeId: string;
   readonly status: 'completed' | 'failed' | 'cancelled' | 'unknown';
   readonly output?: string;
+  readonly attachments?: readonly Attachment[];
   readonly error?: string;
 }
 
@@ -117,6 +127,7 @@ export class FlowRuntime {
   private readonly definition: FlowDefinition;
   private readonly pollIntervalMs: number;
   private readonly outputs = new Map<string, string>();
+  private readonly nodeAttachments = new Map<string, readonly Attachment[]>();
   private readonly states = new Map<string, MutableNodeState>();
   private readonly active = new Map<string, ActiveExecution>();
   private readonly listeners = new Set<(event: FlowEvent) => void>();
@@ -139,6 +150,7 @@ export class FlowRuntime {
         executionId: undefined,
         connection: undefined,
         output: undefined,
+        attachments: undefined,
         error: undefined,
       });
     }
@@ -201,6 +213,7 @@ export class FlowRuntime {
           return this.finish(mapFlowStatus(outcome.status), outcome.error);
         }
         this.outputs.set(current, outcome.output ?? '');
+        this.nodeAttachments.set(current, outcome.attachments ?? []);
         current = selectNext(node, outcome.output ?? '');
       }
       return this.finish('failed', 'Flow ended without an end node');
@@ -236,6 +249,7 @@ export class FlowRuntime {
     for (const outcome of outcomes) {
       if (outcome.status === 'completed') {
         this.outputs.set(outcome.nodeId, outcome.output ?? '');
+        this.nodeAttachments.set(outcome.nodeId, outcome.attachments ?? []);
       }
     }
 
@@ -280,6 +294,7 @@ export class FlowRuntime {
     }
     const state = this.state(nodeId);
     let prompt: string;
+    let inputAttachments: AttachmentDraft[];
     try {
       prompt = renderTemplate(node.prompt, (name) => {
         if (name === 'input') {
@@ -287,6 +302,7 @@ export class FlowRuntime {
         }
         return this.outputs.get(name);
       });
+      inputAttachments = this.collectAttachments(nodeId, node);
     } catch (error) {
       const message = messageOf(error);
       state.status = 'failed';
@@ -308,7 +324,7 @@ export class FlowRuntime {
 
     let executionId: string;
     try {
-      const submitted = await this.workbench.submit(prompt, connection);
+      const submitted = await this.workbench.submit(prompt, connection, inputAttachments);
       executionId = submitted.execution.id;
     } catch (error) {
       const status = error instanceof SubmitOutcomeUnknownError ? 'unknown' : 'failed';
@@ -352,6 +368,7 @@ export class FlowRuntime {
 
     if (execution.state === 'completed') {
       state.status = 'completed';
+      state.attachments = execution.attachments.map(cloneAttachment);
       this.emit({
         type: 'node/completed',
         flowId: this.flowId,
@@ -359,7 +376,12 @@ export class FlowRuntime {
         executionId,
         output: execution.output,
       });
-      return { nodeId, status: 'completed', output: execution.output };
+      return {
+        nodeId,
+        status: 'completed',
+        output: execution.output,
+        attachments: state.attachments,
+      };
     }
 
     const status: 'failed' | 'cancelled' | 'unknown' =
@@ -387,6 +409,27 @@ export class FlowRuntime {
       status,
       ...(execution.error === undefined ? {} : { error: execution.error }),
     };
+  }
+
+  private collectAttachments(nodeId: string, node: FlowSubmitNode): AttachmentDraft[] {
+    const drafts: AttachmentDraft[] = [];
+    const seen = new Set<string>();
+    for (const sourceId of node.attachments ?? []) {
+      const source = this.nodeAttachments.get(sourceId);
+      if (source === undefined) {
+        throw new FlowTemplateError(
+          `Attachments from node ${sourceId} are not available on the path to ${nodeId}`,
+        );
+      }
+      for (const attachment of source) {
+        if (seen.has(attachment.id)) {
+          continue;
+        }
+        seen.add(attachment.id);
+        drafts.push(toAttachmentDraft(attachment));
+      }
+    }
+    return drafts;
   }
 
   private recordAbort(outcome: SubmitOutcome): void {
@@ -535,6 +578,9 @@ function snapshotNode(state: MutableNodeState): FlowNodeState {
     ...(state.executionId === undefined ? {} : { executionId: state.executionId }),
     ...(state.connection === undefined ? {} : { connection: state.connection }),
     ...(state.output === undefined ? {} : { output: state.output }),
+    ...(state.attachments === undefined
+      ? {}
+      : { attachments: state.attachments.map(cloneAttachment) }),
     ...(state.error === undefined ? {} : { error: state.error }),
   };
 }

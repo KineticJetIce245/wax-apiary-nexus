@@ -66,3 +66,14 @@ export function buildResultEnvelope(input: BuildResultEnvelopeInput): ResultEnve
 export function cloneAttachment(attachment: Attachment): Attachment {
   return { ...attachment };
 }
+
+/** Strip the runtime id before handing an attachment to an Adapter. */
+export function toAttachmentDraft(attachment: Attachment): AttachmentDraft {
+  return {
+    kind: attachment.kind,
+    path: attachment.path,
+    mimeType: attachment.mimeType,
+    ...(attachment.name === undefined ? {} : { name: attachment.name }),
+    ...(attachment.byteLength === undefined ? {} : { byteLength: attachment.byteLength }),
+  };
+}

@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type { AttachmentDraft } from '../../content.js';
 import type { Project } from '../../kernel.js';
 import { assertProjectDirectory } from '../../project-directory.js';
+import { buildDshPrompt } from './content.js';
 import type {
   ApprovalDecision,
   ApprovalOption,
@@ -67,6 +69,7 @@ export class DshAcpAdapter implements HarnessAdapter {
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly active = new Map<string, ActiveExecution>();
   private readonly closing = new Set<string>();
+  private imagePrompts = false;
   private readonly cwdBySession = new Map<string, string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly stderrLines: string[] = [];
@@ -144,7 +147,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     this.client.onExit((code, signal) => this.handleExit(code, signal));
 
     try {
-      await Promise.race([
+      const initialized = await Promise.race([
         this.client.request(
           'initialize',
           {
@@ -159,6 +162,10 @@ export class DshAcpAdapter implements HarnessAdapter {
         ),
         spawnFailure,
       ]);
+      const promptCapabilities = asRecord(
+        asRecord(asRecord(initialized)?.agentCapabilities)?.promptCapabilities,
+      );
+      this.imagePrompts = promptCapabilities?.image === true;
       this.started = true;
     } catch (error) {
       this.started = false;
@@ -217,7 +224,12 @@ export class DshAcpAdapter implements HarnessAdapter {
     return sessionId;
   }
 
-  async submit(nativeId: string, executionId: string, text: string): Promise<void> {
+  async submit(
+    nativeId: string,
+    executionId: string,
+    text: string,
+    attachments?: readonly AttachmentDraft[],
+  ): Promise<void> {
     const client = this.requireClient();
     if (this.closing.has(nativeId)) {
       throw new Error(`ACP session is closing and cannot accept new work: ${nativeId}`);
@@ -236,7 +248,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     void client
       .request('session/prompt', {
         sessionId: nativeId,
-        prompt: [{ type: 'text', text }],
+        prompt: buildDshPrompt(text, attachments, this.imagePrompts),
       })
       .then((result) => {
         if (this.active.get(nativeId)?.executionId !== executionId) {

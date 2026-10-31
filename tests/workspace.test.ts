@@ -13,6 +13,7 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import { SubmitOutcomeUnknownError } from '../src/adapters/harness.js';
+import type { AttachmentDraft } from '../src/content.js';
 import type { Project } from '../src/kernel.js';
 import { ProjectDirectoryError } from '../src/project-directory.js';
 import {
@@ -35,7 +36,12 @@ class FakeAdapter implements HarnessAdapter {
   };
   readonly nativeId = 'native-1';
   readonly projects: Project[] = [];
-  readonly submissions: Array<{ nativeId: string; executionId: string; text: string }> = [];
+  readonly submissions: Array<{
+    nativeId: string;
+    executionId: string;
+    text: string;
+    attachments?: readonly AttachmentDraft[];
+  }> = [];
   readonly cancellations: string[] = [];
   readonly approvals: ApprovalDecision[] = [];
   readonly closed: string[] = [];
@@ -59,8 +65,18 @@ class FakeAdapter implements HarnessAdapter {
     return this.nativeId;
   }
 
-  async submit(nativeId: string, executionId: string, text: string): Promise<void> {
-    this.submissions.push({ nativeId, executionId, text });
+  async submit(
+    nativeId: string,
+    executionId: string,
+    text: string,
+    attachments?: readonly AttachmentDraft[],
+  ): Promise<void> {
+    this.submissions.push({
+      nativeId,
+      executionId,
+      text,
+      ...(attachments === undefined ? {} : { attachments }),
+    });
     if (this.submitError !== undefined) {
       throw this.submitError;
     }
@@ -269,6 +285,20 @@ test('records attachment events, snapshots them, and ignores late attachments', 
   const mutable = settled.attachments[0] as unknown as { path: string };
   mutable.path = 'tampered';
   assert.equal(workspace.getExecution(execution.id)?.attachments[0]?.path, 'C:\\tmp\\generated.png');
+});
+
+test('passes optional attachments through to the adapter', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const attachment: AttachmentDraft = {
+    kind: 'image',
+    path: 'C:\\tmp\\input.png',
+    mimeType: 'image/png',
+    name: 'input.png',
+  };
+  const execution = await workspace.submit(conversation.id, 'look at this', [attachment]);
+  assert.equal(execution.state, 'running');
+  assert.deepEqual(adapter.submissions.at(-1)?.attachments, [attachment]);
 });
 
 test('settles failed and unknown executions without marking success', async (t) => {

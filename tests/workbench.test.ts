@@ -12,6 +12,7 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import { SubmitOutcomeUnknownError } from '../src/adapters/harness.js';
+import type { AttachmentDraft } from '../src/content.js';
 import type { Project } from '../src/kernel.js';
 import { ConversationBusyError } from '../src/workspace.js';
 import {
@@ -31,7 +32,12 @@ class FakeAdapter implements HarnessAdapter {
     streaming: true,
     resume: false,
   };
-  readonly submissions: Array<{ nativeId: string; executionId: string; text: string }> = [];
+  readonly submissions: Array<{
+    nativeId: string;
+    executionId: string;
+    text: string;
+    attachments?: readonly AttachmentDraft[];
+  }> = [];
   readonly approvals: ApprovalDecision[] = [];
   readonly cancellations: string[] = [];
   readonly closed: string[] = [];
@@ -59,8 +65,18 @@ class FakeAdapter implements HarnessAdapter {
     return this.nativeId;
   }
 
-  async submit(nativeId: string, executionId: string, text: string): Promise<void> {
-    this.submissions.push({ nativeId, executionId, text });
+  async submit(
+    nativeId: string,
+    executionId: string,
+    text: string,
+    attachments?: readonly AttachmentDraft[],
+  ): Promise<void> {
+    this.submissions.push({
+      nativeId,
+      executionId,
+      text,
+      ...(attachments === undefined ? {} : { attachments }),
+    });
     if (this.submitError !== undefined) {
       throw this.submitError;
     }
@@ -185,6 +201,42 @@ test('builds a result envelope with text and attachments', async () => {
       assert.equal(image.attachment.path, 'C:\\tmp\\generated.png');
       assert.equal(image.attachment.mimeType, 'image/png');
     }
+  } finally {
+    await workbench.stop();
+  }
+});
+
+test('transfers completed attachments to the target adapter', async () => {
+  const { workbench, dsh, codex } = await fixture();
+  try {
+    const source = await workbench.submit('make an image');
+    dsh.emit({
+      type: 'execution/output',
+      executionId: source.execution.id,
+      channel: 'assistant',
+      text: 'image ready',
+    });
+    dsh.emit({
+      type: 'execution/attachment',
+      executionId: source.execution.id,
+      attachment: {
+        kind: 'image',
+        path: 'C:\\tmp\\generated.png',
+        mimeType: 'image/png',
+        name: 'generated.png',
+      },
+    });
+    dsh.emit({ type: 'execution/completed', executionId: source.execution.id, stopReason: 'end_turn' });
+    await delay(10);
+
+    const record = await workbench.transfer('dsh', source.execution.id, 'codex', 'look at this');
+    assert.equal(record.outcome, 'submitted');
+    const target = codex.submissions.at(-1);
+    assert.ok(target !== undefined);
+    assert.equal(target.attachments?.length, 1);
+    assert.equal(target.attachments?.[0]?.path, 'C:\\tmp\\generated.png');
+    assert.match(target.text, /Attachments from that execution are available locally/);
+    assert.match(target.text, /C:\\tmp\\generated\.png/);
   } finally {
     await workbench.stop();
   }

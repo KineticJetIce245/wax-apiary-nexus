@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -11,6 +11,7 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import { SubmitOutcomeUnknownError } from '../src/adapters/harness.js';
+import type { AttachmentDraft } from '../src/content.js';
 import type { FlowDefinition } from '../src/flow-definition.js';
 import { parseFlowDefinition } from '../src/flow-definition.js';
 import { FlowRuntime, type FlowEvent } from '../src/flow-runtime.js';
@@ -23,6 +24,7 @@ interface Behavior {
   readonly unknown?: boolean;
   readonly hang?: boolean;
   readonly delayMs?: number;
+  readonly attachmentPath?: string;
 }
 
 class FakeAdapter implements HarnessAdapter {
@@ -32,7 +34,11 @@ class FakeAdapter implements HarnessAdapter {
     streaming: true,
     resume: false,
   };
-  readonly submissions: Array<{ text: string; executionId: string }> = [];
+  readonly submissions: Array<{
+    text: string;
+    executionId: string;
+    attachments?: readonly AttachmentDraft[];
+  }> = [];
   readonly cancels: string[] = [];
   readonly closed: string[] = [];
   private readonly active = new Map<string, string>();
@@ -49,8 +55,17 @@ class FakeAdapter implements HarnessAdapter {
     return this.nativeId;
   }
 
-  async submit(nativeId: string, executionId: string, text: string): Promise<void> {
-    this.submissions.push({ text, executionId });
+  async submit(
+    nativeId: string,
+    executionId: string,
+    text: string,
+    attachments?: readonly AttachmentDraft[],
+  ): Promise<void> {
+    this.submissions.push({
+      text,
+      executionId,
+      ...(attachments === undefined ? {} : { attachments }),
+    });
     const behavior = this.behavior(text);
     if (behavior.unknown === true) {
       throw new SubmitOutcomeUnknownError('native acceptance unknown', executionId);
@@ -63,6 +78,18 @@ class FakeAdapter implements HarnessAdapter {
       return;
     }
     setTimeout(() => {
+      if (behavior.attachmentPath !== undefined) {
+        this.emit({
+          type: 'execution/attachment',
+          executionId,
+          attachment: {
+            kind: 'image',
+            path: behavior.attachmentPath as string,
+            mimeType: 'image/png',
+            name: 'plan.png',
+          },
+        });
+      }
       this.emit({
         type: 'execution/output',
         executionId,
@@ -408,6 +435,39 @@ test('ignores connection checks for participants that no node uses', async () =>
     assert.equal(dsh.submissions.length, 1);
   } finally {
     await workbench.stop().catch(() => undefined);
+  }
+});
+
+test('passes upstream attachments to a downstream node', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uw-flow-attach-'));
+  const imagePath = join(dir, 'plan.png');
+  writeFileSync(imagePath, Buffer.from('plan-image'));
+  const f = await fixture(
+    flow({
+      plan: { participant: 'planner', prompt: 'Plan', next: 'review' },
+      review: {
+        participant: 'reviewer',
+        prompt: 'Review {{plan}}',
+        attachments: ['plan'],
+        next: 'end',
+      },
+      end: { type: 'end' },
+    }),
+    {
+      dsh: () => ({ output: 'PLAN', attachmentPath: imagePath }),
+      codex: () => ({ output: 'REVIEW' }),
+    },
+  );
+  try {
+    const result = await f.runtime.run();
+    assert.equal(result.status, 'completed');
+    assert.equal(result.nodes.plan?.attachments?.length, 1);
+    const review = f.codex.submissions.at(-1);
+    assert.equal(review?.attachments?.length, 1);
+    assert.equal(review?.attachments?.[0]?.path, imagePath);
+    assert.equal(review?.attachments?.[0]?.mimeType, 'image/png');
+  } finally {
+    await f.workbench.stop().catch(() => undefined);
   }
 });
 

@@ -115,8 +115,76 @@ test('rejects bad next targets and conditions', () => {
   );
 });
 
-test('rejects malformed names and empty ids', () => {
+test('parses and validates upstream attachment references', () => {
+  const flow = parseFlowDefinition(
+    definition({
+      nodes: {
+        plan: { participant: 'planner', prompt: 'Plan', next: 'review' },
+        review: {
+          participant: 'reviewer',
+          prompt: 'Review',
+          attachments: ['plan'],
+          next: 'end',
+        },
+        end: { type: 'end' },
+      },
+    }),
+  );
+  const review = flow.nodes.review;
+  assert.equal(review?.type, 'submit');
+  if (review?.type === 'submit') {
+    assert.deepEqual(review.attachments, ['plan']);
+  }
+
   assert.throws(
+    () =>
+      parseFlowDefinition(
+        definition({
+          nodes: {
+            plan: { participant: 'planner', prompt: 'Plan', attachments: ['plan'], next: 'end' },
+            end: { type: 'end' },
+          },
+        }),
+      ),
+    /own output/,
+  );
+  assert.throws(
+    () =>
+      parseFlowDefinition(
+        definition({
+          nodes: {
+            plan: {
+              participant: 'planner',
+              prompt: 'Plan',
+              attachments: ['missing'],
+              next: 'end',
+            },
+            end: { type: 'end' },
+          },
+        }),
+      ),
+    /unknown node/,
+  );
+  assert.throws(
+    () =>
+      parseFlowDefinition(
+        definition({
+          nodes: {
+            plan: {
+              participant: 'planner',
+              prompt: 'Plan',
+              attachments: ['end'],
+              next: 'end',
+            },
+            end: { type: 'end' },
+          },
+        }),
+      ),
+    /only submit nodes/,
+  );
+});
+
+test('rejects malformed names and empty ids', () => {  assert.throws(
     () =>
       parseFlowDefinition(
         definition({

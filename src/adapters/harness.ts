@@ -100,8 +100,16 @@ export interface HarnessAdapter {
   /**
    * Start one prompt turn. The adapter must emit exactly one terminal event for
    * this execution; the Workspace enforces one active execution per conversation.
+   * Optional attachments are local files already associated with a completed
+   * execution (or staged by the user); an adapter may ignore types it cannot
+   * carry natively.
    */
-  submit(nativeId: string, executionId: string, text: string): Promise<void>;
+  submit(
+    nativeId: string,
+    executionId: string,
+    text: string,
+    attachments?: readonly AttachmentDraft[],
+  ): Promise<void>;
 
   cancel(nativeId: string): Promise<void>;
 

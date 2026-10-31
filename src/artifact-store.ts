@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmdirSync,
@@ -70,6 +71,7 @@ export class ArtifactStore {
 
   constructor(options: ArtifactStoreOptions = {}) {
     this.root = options.root ?? mkdtempSync(join(tmpdir(), 'uw-artifacts-'));
+    mkdirSync(this.root, { recursive: true, mode: 0o700 });
     this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     if (!Number.isFinite(this.maxBytes) || this.maxBytes <= 0) {
       throw new Error(`maxBytes must be a positive number: ${String(options.maxBytes)}`);

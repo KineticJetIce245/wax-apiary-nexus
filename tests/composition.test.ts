@@ -249,6 +249,23 @@ test('rejects concurrent sends and cancels an in-flight turn', async () => {
   }
 });
 
+test('fails instead of hanging when the execution disappears', async () => {
+  const { workbench } = await fixture({
+    dsh: () => ({ hang: true }),
+  });
+  const runtime = new CompositionRuntime(workbench, makeComposition(), { pollIntervalMs: 5 });
+  try {
+    await runtime.start();
+    const first = runtime.send('hang');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await workbench.stop();
+    await assert.rejects(first);
+    assert.notEqual(runtime.status, 'running');
+  } finally {
+    await runtime.stop().catch(() => undefined);
+  }
+});
+
 test('marks a failed turn and does not run the second debate participant', async () => {
   const { workbench, codex } = await fixture({
     dsh: () => ({ error: 'native refused' }),

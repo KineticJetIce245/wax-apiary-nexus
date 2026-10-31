@@ -226,6 +226,11 @@ test('runs a sequential flow with exact rendered prompts', async () => {
     assert.ok(f.runtime.result !== undefined);
     (result.outputs as Record<string, string>).plan = 'MUTATED';
     assert.equal(f.runtime.result?.outputs.plan, 'PLAN');
+    const completedEvent = f.events.find((event) => event.type === 'flow/completed');
+    if (completedEvent?.type === 'flow/completed') {
+      (completedEvent.outputs as Record<string, string>).plan = 'EVENT-MUTATED';
+    }
+    assert.equal(f.runtime.result?.outputs.plan, 'PLAN');
   } finally {
     await f.workbench.stop().catch(() => undefined);
   }
@@ -469,6 +474,26 @@ test('passes upstream attachments to a downstream node', async () => {
     assert.equal(review?.attachments?.length, 1);
     assert.equal(review?.attachments?.[0]?.path, imagePath);
     assert.equal(review?.attachments?.[0]?.mimeType, 'image/png');
+  } finally {
+    await f.workbench.stop().catch(() => undefined);
+  }
+});
+
+test('fails instead of hanging when the execution disappears', async () => {
+  const f = await fixture(
+    flow({
+      plan: { participant: 'planner', prompt: 'Plan', next: 'end' },
+      end: { type: 'end' },
+    }),
+    { dsh: () => ({ hang: true }) },
+  );
+  try {
+    const running = f.runtime.run();
+    await waitUntil(() => f.dsh.submissions.length === 1);
+    await f.workbench.stop();
+    const result = await running;
+    assert.notEqual(result.status, 'completed');
+    assert.notEqual(result.nodes.plan?.status, 'running');
   } finally {
     await f.workbench.stop().catch(() => undefined);
   }

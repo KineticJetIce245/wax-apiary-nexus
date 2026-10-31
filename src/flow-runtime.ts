@@ -361,7 +361,31 @@ export class FlowRuntime {
       }
     }
 
-    const execution = await this.waitForTerminal(connection, executionId);
+    const execution = await this.waitForTerminal(connection, executionId).catch(async (error: unknown) => {
+      this.active.delete(nodeId);
+      const message = messageOf(error);
+      state.status = 'failed';
+      state.error = message;
+      this.emit({
+        type: 'node/failed',
+        flowId: this.flowId,
+        nodeId,
+        status: 'failed',
+        connection,
+        executionId,
+        error: message,
+      });
+      this.recordAbort({ nodeId, status: 'failed', error: message });
+      await this.cancelActiveExecutions();
+      return undefined;
+    });
+    if (execution === undefined) {
+      return {
+        nodeId,
+        status: 'failed',
+        error: state.error ?? 'Execution is no longer available',
+      };
+    }
     this.active.delete(nodeId);
     state.output = execution.output;
     state.error = execution.error;
@@ -487,16 +511,17 @@ export class FlowRuntime {
       ...(error === undefined ? {} : { error }),
     };
     this.resultValue = result;
-    if (status === 'completed') {      this.emit({ type: 'flow/completed', flowId: this.flowId, outputs });
+    if (status === 'completed') {
+      this.emit({ type: 'flow/completed', flowId: this.flowId, outputs: { ...outputs } });
     } else if (status === 'cancelled') {
-      this.emit({ type: 'flow/cancelled', flowId: this.flowId, outputs });
+      this.emit({ type: 'flow/cancelled', flowId: this.flowId, outputs: { ...outputs } });
     } else {
       this.emit({
         type: 'flow/failed',
         flowId: this.flowId,
         status,
         error: error ?? 'Flow failed',
-        outputs,
+        outputs: { ...outputs },
       });
     }
     return cloneFlowResult(result);

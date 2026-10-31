@@ -92,7 +92,7 @@ interface MutableExecution {
  */
 export class WebServer {
   private readonly workbench: Workbench;
-  private artifactStore: ArtifactStore;
+  private artifactStore: ArtifactStore | undefined;
   private readonly artifactOptions: ArtifactStoreOptions;
   private readonly port: number;
   private readonly host = '127.0.0.1' as const;
@@ -115,7 +115,6 @@ export class WebServer {
       ...(options.maxArtifactBytes === undefined ? {} : { maxBytes: options.maxArtifactBytes }),
     };
     this.artifactOptions = artifactOptions;
-    this.artifactStore = new ArtifactStore(artifactOptions);
   }
 
   get running(): boolean {
@@ -152,7 +151,8 @@ export class WebServer {
       this.server = undefined;
       this.unsubscribe();
       this.unsubscribe = undefined;
-      this.artifactStore.close();
+      this.artifactStore?.close();
+      this.artifactStore = undefined;
       throw error;
     }
     const address = server.address() as AddressInfo;
@@ -175,7 +175,8 @@ export class WebServer {
         server.close(() => resolve());
       });
     }
-    this.artifactStore.close();
+    this.artifactStore?.close();
+    this.artifactStore = undefined;
   }
 
   getState(): WebState {
@@ -267,7 +268,16 @@ export class WebServer {
   }
 
   private registerAttachment(attachment: Attachment): WebAttachment | UnavailableWebAttachment {
-    const attempt = this.artifactStore.tryRegister(attachment);
+    const store = this.artifactStore;
+    if (store === undefined) {
+      return {
+        kind: attachment.kind,
+        mimeType: attachment.mimeType,
+        name: attachment.name ?? 'attachment',
+        unavailable: 'ArtifactStore is not running',
+      };
+    }
+    const attempt = store.tryRegister(attachment);
     if (attempt.artifact !== undefined) {
       return toWebAttachment(attempt.artifact);
     }
@@ -381,8 +391,13 @@ export class WebServer {
   }
 
   private sendArtifact(response: ServerResponse, id: string): void {
-    const artifact = this.artifactStore.get(id);
-    const bytes = artifact === undefined ? undefined : this.artifactStore.read(id);
+    const store = this.artifactStore;
+    if (store === undefined) {
+      this.sendJson(response, 404, { error: 'Artifact not found' });
+      return;
+    }
+    const artifact = store.get(id);
+    const bytes = artifact === undefined ? undefined : store.read(id);
     if (artifact === undefined || bytes === undefined) {
       this.sendJson(response, 404, { error: 'Artifact not found' });
       return;

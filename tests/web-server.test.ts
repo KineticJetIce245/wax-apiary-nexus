@@ -161,12 +161,35 @@ test('keeps approvals from two connections with the same request id separate', a
 });
 
 test('restarts with a fresh artifact store after stop', async () => {
-  const { workbench, web } = await setup();
+  const { workbench, web, codex, imagePath, imageBytes } = await setup();
   try {
     await web.stop();
     const info = await web.start();
     assert.equal(web.running, true);
-    assert.match(info.url, /^http:\/\/127\.0\.0\.1:/);
+
+    const submitted = await workbench.submit('after restart', 'codex');
+    codex.emit({
+      type: 'execution/attachment',
+      executionId: submitted.execution.id,
+      attachment: {
+        kind: 'image',
+        path: imagePath,
+        mimeType: 'image/png',
+        name: 'generated.png',
+        byteLength: imageBytes.byteLength,
+      },
+    });
+    codex.emit({ type: 'execution/completed', executionId: submitted.execution.id, stopReason: 'end_turn' });
+    await delay(20);
+
+    const execution = web
+      .getState()
+      .executions.find((candidate) => candidate.id === submitted.execution.id);
+    const attachment = execution?.attachments[0];
+    assert.ok(attachment !== undefined && 'url' in attachment);
+    const response = await fetch(new URL(attachment.url, info.url));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/png');
   } finally {
     await web.stop();
     await workbench.stop();

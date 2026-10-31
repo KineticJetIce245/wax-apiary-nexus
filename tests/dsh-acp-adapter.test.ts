@@ -6,10 +6,12 @@ import test from 'node:test';
 
 import { DshAcpAdapter } from '../src/adapters/dsh-acp/adapter.js';
 import type { HarnessEvent } from '../src/adapters/harness.js';
+import { assertHarnessAdapterContract } from './support/harness-adapter-contract.js';
 
 const FAKE_ACP_SERVER = String.raw`
 const readline = require('node:readline');
 const rl = readline.createInterface({ input: process.stdin });
+let sessionSeq = 0;
 function send(id, result) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
 }
@@ -20,7 +22,8 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/new') {
-    send(message.id, { sessionId: 'fake-session' });
+    sessionSeq += 1;
+    send(message.id, { sessionId: 'fake-session-' + sessionSeq });
   }
   // Deliberately never answer session/prompt or session/close.
 });
@@ -95,5 +98,22 @@ test('turns a missing executable spawn error into a controlled rejection', async
     await assert.rejects(adapter.start(), /ENOENT|spawn/i);
   } finally {
     await adapter.stop();
+  }
+});
+
+test('satisfies the harness adapter contract', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_SERVER);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-contract-project-'));
+  const secondProjectDir = mkdtempSync(join(tmpdir(), 'uw-contract-project-'));
+  const adapter = new DshAcpAdapter({ dshRoot: root, sessionTimeoutMs: 1_000 });
+
+  try {
+    await assertHarnessAdapterContract({
+      adapter,
+      project: { id: 'contract-project', directory: projectDir },
+      secondProject: { id: 'contract-project-2', directory: secondProjectDir },
+    });
+  } finally {
+    await adapter.stop().catch(() => undefined);
   }
 });

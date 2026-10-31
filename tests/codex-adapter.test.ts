@@ -7,12 +7,15 @@ import test from 'node:test';
 import { CodexAppServerAdapter } from '../src/adapters/codex/adapter.js';
 import type { HarnessEvent } from '../src/adapters/harness.js';
 import type { CodexLaunch } from '../src/connection.js';
+import { assertHarnessAdapterContract } from './support/harness-adapter-contract.js';
 
 const FAKE_SERVER = String.raw`
 const readline = require('node:readline');
 const mode = process.argv[2];
 const rl = readline.createInterface({ input: process.stdin });
 let turnSeq = 0;
+let threadSeq = 0;
+let currentThread = null;
 let activeTurn = null;
 let approvalId = 900;
 const pendingApprovals = new Map();
@@ -28,7 +31,7 @@ function notify(method, params) {
 }
 function finish(status, error) {
   notify('turn/completed', {
-    threadId: 'thr-1',
+    threadId: currentThread,
     turn: { id: activeTurn, status, ...(error === undefined ? {} : { error }) },
   });
   activeTurn = null;
@@ -48,8 +51,10 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'thread/start') {
+    threadSeq += 1;
+    currentThread = 'thr-' + threadSeq;
     respond(message.id, {
-      thread: { id: 'thr-1' },
+      thread: { id: currentThread },
       model: 'fake-model',
       approvalPolicy: 'on-request',
       sandbox: { type: 'readOnly' },
@@ -60,16 +65,16 @@ rl.on('line', (line) => {
     turnSeq += 1;
     activeTurn = 'turn-' + turnSeq;
     respond(message.id, { turn: { id: activeTurn } });
-    notify('turn/started', { threadId: 'thr-1', turn: { id: activeTurn } });
+    notify('turn/started', { threadId: currentThread, turn: { id: activeTurn } });
     if (mode === 'exit') {
       setTimeout(() => process.exit(0), 20);
       return;
     }
     if (mode === 'happy') {
-      notify('item/started', { threadId: 'thr-1', turnId: activeTurn, item: { type: 'agentMessage', id: 'msg-1', text: '' } });
-      notify('item/agentMessage/delta', { threadId: 'thr-1', turnId: activeTurn, itemId: 'msg-1', delta: 'hel' });
-      notify('item/agentMessage/delta', { threadId: 'thr-1', turnId: activeTurn, itemId: 'msg-1', delta: 'lo' });
-      notify('item/completed', { threadId: 'thr-1', turnId: activeTurn, item: { type: 'agentMessage', id: 'msg-1', text: 'hello' } });
+      notify('item/started', { threadId: currentThread, turnId: activeTurn, item: { type: 'agentMessage', id: 'msg-1', text: '' } });
+      notify('item/agentMessage/delta', { threadId: currentThread, turnId: activeTurn, itemId: 'msg-1', delta: 'hel' });
+      notify('item/agentMessage/delta', { threadId: currentThread, turnId: activeTurn, itemId: 'msg-1', delta: 'lo' });
+      notify('item/completed', { threadId: currentThread, turnId: activeTurn, item: { type: 'agentMessage', id: 'msg-1', text: 'hello' } });
       finish('completed');
     }
     if (mode === 'approval' || mode === 'deny') {
@@ -78,7 +83,7 @@ rl.on('line', (line) => {
       send({
         id,
         method: 'item/commandExecution/requestApproval',
-        params: { threadId: 'thr-1', turnId: activeTurn, itemId: 'exec-1', command: 'echo hi' },
+        params: { threadId: currentThread, turnId: activeTurn, itemId: 'exec-1', command: 'echo hi' },
       });
     }
     if (mode === 'fail') {
@@ -109,7 +114,7 @@ rl.on('line', (line) => {
   if (message.id !== undefined && message.result !== undefined) {
     const decision = message.result.decision;
     notify('item/completed', {
-      threadId: 'thr-1',
+      threadId: currentThread,
       turnId: activeTurn,
       item: { type: 'agentMessage', id: 'msg-approval', text: 'decision=' + decision },
     });
@@ -322,4 +327,23 @@ test('rejects start when the executable does not exist', async () => {
 test('does not advertise an unimplemented resume capability', () => {
   const adapter = new CodexAppServerAdapter({ launch: { file: 'unused', args: [] } });
   assert.equal(adapter.capabilities.resume, false);
+});
+
+test('satisfies the harness adapter contract', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-contract-project-'));
+  const secondProjectDir = mkdtempSync(join(tmpdir(), 'uw-contract-project-'));
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('hang-turn'),
+    requestTimeoutMs: 1_000,
+  });
+
+  try {
+    await assertHarnessAdapterContract({
+      adapter,
+      project: { id: 'contract-project', directory: projectDir },
+      secondProject: { id: 'contract-project-2', directory: secondProjectDir },
+    });
+  } finally {
+    await adapter.stop().catch(() => undefined);
+  }
 });

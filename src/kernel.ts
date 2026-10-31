@@ -26,11 +26,12 @@ export function createKernel(): Kernel {
 
       const project: Project = { id: projectId, directory: resolvedDirectory };
       projects.set(projectId, project);
-      return project;
+      return { ...project };
     },
 
     getProject(id) {
-      return projects.get(id) ?? null;
+      const project = projects.get(id);
+      return project ? { ...project } : null;
     },
   };
 }

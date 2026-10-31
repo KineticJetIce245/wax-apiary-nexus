@@ -88,3 +88,36 @@ test('keeps the state of separate kernels independent', () => {
   assert.equal(firstKernel.getProject('shared-id')?.directory, firstDirectory);
   assert.equal(secondKernel.getProject('shared-id')?.directory, secondDirectory);
 });
+
+test('does not expose mutable registry state through registration results', () => {
+  const kernel = createKernel();
+  const directory = createProjectDirectory();
+  const registered = kernel.registerProject(directory, 'original-id');
+
+  Reflect.set(registered, 'id', 'changed-id');
+  Reflect.set(registered, 'directory', 'Z:/definitely-not-a-validated-project');
+
+  const found = kernel.getProject('original-id');
+  assert.equal(found?.id, 'original-id');
+  assert.equal(found?.directory, directory);
+  assert.equal(kernel.getProject('changed-id'), null);
+  assert.throws(
+    () => kernel.registerProject(createProjectDirectory(), 'original-id'),
+    /already registered/,
+  );
+});
+
+test('does not expose mutable registry state through query results', () => {
+  const kernel = createKernel();
+  const directory = createProjectDirectory();
+  kernel.registerProject(directory, 'lookup-id');
+
+  const found = kernel.getProject('lookup-id');
+  assert.ok(found !== null);
+  Reflect.set(found, 'id', 'modified-through-query');
+  Reflect.set(found, 'directory', 'Z:/definitely-not-a-validated-project');
+
+  const foundAgain = kernel.getProject('lookup-id');
+  assert.equal(foundAgain?.id, 'lookup-id');
+  assert.equal(foundAgain?.directory, directory);
+});

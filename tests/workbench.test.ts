@@ -489,6 +489,13 @@ test('keeps a transferred target result queryable after closing that connection'
     const historical = workbench.getExecution('codex', record.target.executionId);
     assert.equal(historical?.execution.state, 'completed');
     assert.equal(historical?.execution.output, 'TARGET-OUTPUT');
+
+    assert.ok(historical !== undefined);
+    Reflect.set(historical.execution, 'state', 'failed');
+    Reflect.set(historical.execution, 'output', 'overwritten');
+    const again = workbench.getExecution('codex', record.target.executionId);
+    assert.equal(again?.execution.state, 'completed');
+    assert.equal(again?.execution.output, 'TARGET-OUTPUT');
   } finally {
     await workbench.stop().catch(() => undefined);
   }

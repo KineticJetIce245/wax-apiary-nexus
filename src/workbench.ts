@@ -179,7 +179,10 @@ export class Workbench {
     }
     const historical = this.terminalHistory.get(historyKey(connectionName, executionId));
     if (historical !== undefined) {
-      return { connection: connectionName, execution: historical };
+      // Historical entries are the only executions that outlive their
+      // Workspace; callers must not be able to mutate the cache through a
+      // query result (Workspace already returns snapshots for live entries).
+      return { connection: connectionName, execution: cloneExecution(historical) };
     }
     return undefined;
   }
@@ -458,6 +461,17 @@ function cloneTransfer(record: TransferRecord): TransferRecord {
 
 function historyKey(connection: string, executionId: string): string {
   return `${connection}:${executionId}`;
+}
+
+function cloneExecution(execution: Execution): Execution {
+  return {
+    id: execution.id,
+    conversationId: execution.conversationId,
+    state: execution.state,
+    output: execution.output,
+    ...(execution.stopReason === undefined ? {} : { stopReason: execution.stopReason }),
+    ...(execution.error === undefined ? {} : { error: execution.error }),
+  };
 }
 
 function messageOf(error: unknown): string {

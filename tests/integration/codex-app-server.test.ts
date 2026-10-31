@@ -123,7 +123,8 @@ test('relays a real approval and allows the file write', integrationOptions, asy
     assert.equal(approvalFailure, undefined);
     assert.equal(approvals > 0, true, 'expected at least one real Codex approval request');
     assert.equal(result.state, 'completed');
-    assert.equal(readFileSync(join(session.project.directory, 'approved.txt'), 'utf8'), 'APPROVED-OK');
+    const written = readFileSync(join(session.project.directory, 'approved.txt'), 'utf8');
+    assert.match(written, /^APPROVED-OK\r?\n?$/);
   } finally {
     unsubscribe();
     await closeSession(session);

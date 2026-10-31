@@ -412,42 +412,301 @@ const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Unified Workspace — read only</title>
 <style>
-  :root { color-scheme: dark; --bg:#0e1420; --card:#172033; --line:#2b3850; --text:#dce7f7; --muted:#8fa3c0; --accent:#78b7ff; }
+  /* Visual language follows DSH ui-theme (MIT): dark semantic tokens,
+     hairlines, 8/12/16px radii, system + code stacks. No DSH runtime is loaded. */
+  :root {
+    color-scheme: dark;
+    --bg-base: #151517;
+    --bg-layer-1: #232324;
+    --bg-layer-2: #2c2c2e;
+    --bg-layer-3: #353638;
+    --label-primary: #f9fafb;
+    --label-secondary: #cfd3d6;
+    --label-tertiary: #adb2b8;
+    --border-l1: rgba(255, 255, 255, 0.06);
+    --border-l2: rgba(255, 255, 255, 0.12);
+    --border-l3: rgba(255, 255, 255, 0.16);
+    --link: #7aaaff;
+    --accent: #5686fe;
+    --success: #4ed17e;
+    --warning: #f7ad31;
+    --danger: #f25a5a;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    --mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Microsoft YaHei', monospace;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --shadow-panel: 0 0 0 0.5px var(--border-l1), 0 12px 32px rgba(0, 0, 0, 0.24);
+  }
   * { box-sizing: border-box; }
-  body { margin:0; padding:20px; background:var(--bg); color:var(--text); font:14px/1.55 system-ui, sans-serif; }
-  h1 { font-size:20px; margin:0 0 4px; }
-  .sub { color:var(--muted); margin-bottom:18px; }
-  .connections { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
-  .pill { border:1px solid var(--line); border-radius:999px; padding:3px 10px; color:var(--muted); }
-  .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
-  .head { display:flex; justify-content:space-between; gap:10px; align-items:baseline; }
-  .state { font-size:12px; color:var(--muted); }
-  .output { white-space:pre-wrap; overflow-wrap:anywhere; margin:10px 0; }
-  .muted { color:var(--muted); }
-  .tools { margin:8px 0; padding-left:18px; color:var(--muted); }
-  .attachments { display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; }
-  .attachment { border:1px solid var(--line); border-radius:8px; padding:8px; max-width:100%; }
-  .attachment img { max-width:100%; height:auto; display:block; border-radius:4px; }
-  .attachment a { color:var(--accent); }
-  .error { color:#ff9a9a; }
-  .approval { border:1px solid #6b5a2a; background:#2a2415; border-radius:8px; padding:10px; margin-bottom:12px; }
-  .empty { color:var(--muted); padding:20px 0; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg-base);
+    color: var(--label-primary);
+    font: 14px/1.55 var(--font);
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100%; }
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 18px 14px;
+    background: var(--bg-layer-1);
+    border-right: 0.5px solid var(--border-l1);
+    min-width: 0;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 2px 6px 10px; }
+  .brand-mark {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(145deg, var(--accent), #8cb8ff);
+    color: #fff;
+    font-weight: 600;
+    font-size: 15px;
+    box-shadow: 0 4px 14px rgba(86, 134, 254, 0.28);
+  }
+  .brand-name { font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
+  .brand-sub { font-size: 11px; color: var(--label-tertiary); margin-top: 1px; }
+  .nav-caption {
+    padding: 0 8px;
+    margin-bottom: 6px;
+    color: var(--label-tertiary);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .connections { display: flex; flex-direction: column; gap: 2px; }
+  .connection {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px;
+    border-radius: var(--radius-sm);
+    color: var(--label-secondary);
+  }
+  .connection:hover { background: rgba(255, 255, 255, 0.04); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--label-tertiary); flex: none; }
+  .dot.ready { background: var(--success); box-shadow: 0 0 0 3px rgba(78, 209, 126, 0.12); }
+  .dot.busy { background: var(--warning); }
+  .conn-name { font-size: 13px; }
+  .conn-state { margin-left: auto; font: 11px var(--mono); color: var(--label-tertiary); }
+  .sidebar-footer {
+    margin-top: auto;
+    padding: 12px 8px 2px;
+    border-top: 0.5px solid var(--border-l1);
+    color: var(--label-tertiary);
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    height: 64px;
+    padding: 0 28px;
+    border-bottom: 0.5px solid var(--border-l1);
+    flex: none;
+  }
+  .topbar h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.01em; }
+  .topbar-sub { margin-top: 2px; color: var(--label-tertiary); font-size: 11px; }
+  .live {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--label-tertiary);
+    font: 11px var(--mono);
+    border: 0.5px solid var(--border-l2);
+    border-radius: 999px;
+    padding: 4px 10px;
+  }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .scroll { overflow: auto; padding: 24px 28px 44px; }
+  .content { width: 100%; max-width: 840px; margin: 0 auto; }
+  .approval {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    border: 1px solid rgba(247, 173, 49, 0.32);
+    background: rgba(247, 173, 49, 0.08);
+    border-radius: var(--radius-md);
+    color: #f3d9a3;
+  }
+  .approval strong { display: block; margin-bottom: 2px; font-size: 12px; font-weight: 600; }
+  .approval span { color: #d9c39a; font-size: 12px; }
+  .error { margin-bottom: 10px; color: var(--danger); font-size: 12px; }
+  .turn {
+    margin-bottom: 14px;
+    padding: 16px 18px;
+    background: var(--bg-layer-1);
+    border: 0.5px solid var(--border-l2);
+    border-radius: var(--radius-md);
+  }
+  .turn-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .who { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .avatar {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--bg-layer-3);
+    color: var(--label-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    flex: none;
+  }
+  .who-name { font-size: 13px; font-weight: 600; color: var(--label-primary); }
+  .state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--label-tertiary);
+    font: 11px var(--mono);
+    border: 0.5px solid var(--border-l2);
+    border-radius: 999px;
+    padding: 3px 8px;
+  }
+  .state::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--label-tertiary); }
+  .state-completed { color: #9ee6b5; border-color: rgba(78, 209, 126, 0.28); }
+  .state-completed::before { background: var(--success); }
+  .state-running { color: #a9c9ff; border-color: rgba(122, 170, 255, 0.3); }
+  .state-running::before { background: var(--link); }
+  .state-failed { color: #ffb0b0; border-color: rgba(242, 90, 90, 0.3); }
+  .state-failed::before { background: var(--danger); }
+  .state-cancelled, .state-unknown { color: #f3d9a3; border-color: rgba(247, 173, 49, 0.28); }
+  .state-cancelled::before, .state-unknown::before { background: var(--warning); }
+  .output {
+    margin: 12px 0 0;
+    color: var(--label-secondary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+    line-height: 1.72;
+  }
+  .output.empty { color: var(--label-tertiary); font-style: italic; }
+  .tools { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+  .tool {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 9px;
+    border-radius: 6px;
+    background: var(--bg-layer-2);
+    color: var(--label-tertiary);
+    font: 11px/1.5 var(--mono);
+  }
+  .tool-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-status { margin-left: auto; color: var(--label-tertiary); flex: none; }
+  .attachments { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+  .attachment { max-width: 100%; }
+  .attachment-image {
+    display: block;
+    max-width: 100%;
+    max-height: 420px;
+    object-fit: contain;
+    border-radius: var(--radius-sm);
+    border: 0.5px solid var(--border-l2);
+    background: #0f0f11;
+  }
+  .attachment-caption { margin-top: 5px; color: var(--label-tertiary); font: 11px var(--mono); overflow-wrap: anywhere; }
+  .file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 10px;
+    border: 0.5px solid var(--border-l2);
+    border-radius: var(--radius-sm);
+    color: var(--link);
+    text-decoration: none;
+    font: 12px var(--mono);
+  }
+  .file-chip:hover { background: rgba(122, 170, 255, 0.08); text-decoration: underline; text-underline-offset: 3px; }
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 96px 20px;
+    color: var(--label-tertiary);
+    text-align: center;
+  }
+  .empty-mark {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    border: 0.5px solid var(--border-l2);
+    background: var(--bg-layer-1);
+    display: grid;
+    place-items: center;
+    color: var(--label-tertiary);
+    font: 16px var(--mono);
+  }
+  .empty strong { color: var(--label-secondary); font-weight: 500; font-size: 14px; }
+  .empty span { font-size: 12px; }
+  .footer-note { margin-top: 24px; color: var(--label-tertiary); font-size: 11px; text-align: center; }
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: auto; min-height: 100%; }
+    .sidebar { border-right: 0; border-bottom: 0.5px solid var(--border-l1); gap: 10px; }
+    .connections { flex-direction: row; flex-wrap: wrap; }
+    .connection { padding: 5px 7px; }
+    .sidebar-footer { display: none; }
+    .main { min-height: 70vh; }
+    .scroll { padding: 16px 14px 32px; }
+    .topbar { padding: 0 16px; height: 58px; }
+  }
 </style>
 </head>
 <body>
-<h1>Unified Workspace</h1>
-<div class="sub">只读本地视图 · 每秒刷新 · 不能提交或审批</div>
-<div id="connections" class="connections"></div>
-<div id="approvals"></div>
-<div id="errors"></div>
-<div id="executions" class="grid"></div>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">U</div>
+      <div>
+        <div class="brand-name">Unified Workspace</div>
+        <div class="brand-sub">read-only view</div>
+      </div>
+    </div>
+    <div>
+      <div class="nav-caption">连接</div>
+      <div id="connections" class="connections"></div>
+    </div>
+    <div class="sidebar-footer">
+      只读本地视图<br>每秒刷新；不能提交或审批。
+    </div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1>协作记录</h1>
+        <div class="topbar-sub">文本 · 工具 · 图片 · 文件</div>
+      </div>
+      <div class="live"><span class="live-dot"></span><span id="count">0</span> 条</div>
+    </header>
+    <div class="scroll">
+      <div class="content">
+        <div id="approvals"></div>
+        <div id="errors"></div>
+        <div id="executions"></div>
+        <div class="footer-note">提交、审批和取消仍通过 CLI。</div>
+      </div>
+    </div>
+  </main>
+</div>
 <script>
 'use strict';
 const executions = document.getElementById('executions');
 const connections = document.getElementById('connections');
 const approvals = document.getElementById('approvals');
 const errors = document.getElementById('errors');
+const count = document.getElementById('count');
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -456,56 +715,88 @@ function el(tag, className, text) {
   return node;
 }
 
+function stateClass(value) {
+  return value === 'completed' ? 'state-completed'
+    : value === 'running' ? 'state-running'
+    : value === 'failed' ? 'state-failed'
+    : 'state-cancelled';
+}
+
+function renderConnection(connection) {
+  const row = el('div', 'connection');
+  const dot = el('span', 'dot ' + (connection.status === 'ready' ? 'ready' : ''));
+  row.append(dot, el('span', 'conn-name', connection.name), el('span', 'conn-state', connection.status));
+  return row;
+}
+
+function renderExecution(execution) {
+  const turn = el('article', 'turn');
+  const head = el('div', 'turn-head');
+  const who = el('div', 'who');
+  const avatar = el('span', 'avatar', execution.connection.slice(0, 1));
+  who.append(avatar, el('span', 'who-name', execution.connection));
+  head.append(who, el('span', 'state ' + stateClass(execution.state), execution.state));
+  turn.append(head);
+
+  const output = el('div', 'output' + (execution.output ? '' : ' empty'), execution.output || '暂无文本输出');
+  turn.append(output);
+
+  if (execution.tools.length > 0) {
+    const tools = el('div', 'tools');
+    for (const tool of execution.tools) {
+      const row = el('div', 'tool');
+      row.append(el('span', 'tool-title', tool.title), el('span', 'tool-status', tool.status));
+      tools.append(row);
+    }
+    turn.append(tools);
+  }
+
+  if (execution.attachments.length > 0) {
+    const box = el('div', 'attachments');
+    for (const attachment of execution.attachments) {
+      const item = el('div', 'attachment');
+      if ('unavailable' in attachment) {
+        item.append(el('div', 'attachment-caption', attachment.name + ' 不可用：' + attachment.unavailable));
+      } else if (attachment.kind === 'image') {
+        const img = document.createElement('img');
+        img.className = 'attachment-image';
+        img.src = attachment.url;
+        img.alt = attachment.name;
+        img.loading = 'lazy';
+        item.append(img, el('div', 'attachment-caption', attachment.name));
+      } else {
+        const link = document.createElement('a');
+        link.className = 'file-chip';
+        link.href = attachment.url;
+        link.download = attachment.name;
+        link.textContent = attachment.name;
+        item.append(link);
+      }
+      box.append(item);
+    }
+    turn.append(box);
+  }
+
+  if (execution.error) turn.append(el('div', 'error', execution.error));
+  return turn;
+}
+
 function render(state) {
-  connections.replaceChildren(...state.connections.map((c) => el('span', 'pill', c.name + ' · ' + c.status)));
-  approvals.replaceChildren(...state.approvals.map((a) => {
+  count.textContent = String(state.executions.length);
+  connections.replaceChildren(...state.connections.map(renderConnection));
+  approvals.replaceChildren(...state.approvals.map((approval) => {
     const box = el('div', 'approval');
-    box.append(el('strong', '', '审批等待（只读） '), el('span', '', a.connection + ' · ' + a.summary));
+    box.append(el('strong', '', '审批等待（只读）'), el('span', '', approval.connection + ' · ' + approval.summary));
     return box;
   }));
   errors.replaceChildren(...state.errors.map((message) => el('div', 'error', message)));
   if (state.executions.length === 0) {
-    executions.replaceChildren(el('div', 'empty', '还没有执行记录。'));
+    const empty = el('div', 'empty');
+    empty.append(el('div', 'empty-mark', '∅'), el('strong', '', '还没有执行记录'), el('span', '', '从 CLI 发送一轮对话后，记录会出现在这里。'));
+    executions.replaceChildren(empty);
     return;
   }
-  executions.replaceChildren(...state.executions.map((execution) => {
-    const card = el('div', 'card');
-    const head = el('div', 'head');
-    head.append(el('strong', '', execution.connection), el('span', 'state', execution.state));
-    card.append(head);
-    const output = el('div', 'output', execution.output || '（暂无文本输出）');
-    card.append(output);
-    if (execution.tools.length > 0) {
-      const list = el('ul', 'tools');
-      for (const tool of execution.tools) list.append(el('li', '', tool.title + ' · ' + tool.status));
-      card.append(list);
-    }
-    if (execution.attachments.length > 0) {
-      const box = el('div', 'attachments');
-      for (const attachment of execution.attachments) {
-        const item = el('div', 'attachment');
-        if ('unavailable' in attachment) {
-          item.append(el('div', 'muted', attachment.name + ' 不可用：' + attachment.unavailable));
-        } else if (attachment.kind === 'image') {
-          const img = document.createElement('img');
-          img.src = attachment.url;
-          img.alt = attachment.name;
-          img.loading = 'lazy';
-          item.append(img, el('div', 'muted', attachment.name));
-        } else {
-          const link = document.createElement('a');
-          link.href = attachment.url;
-          link.download = attachment.name;
-          link.textContent = attachment.name;
-          item.append(link);
-        }
-        box.append(item);
-      }
-      card.append(box);
-    }
-    if (execution.error) card.append(el('div', 'error', execution.error));
-    return card;
-  }));
+  executions.replaceChildren(...state.executions.map(renderExecution));
 }
 
 async function refresh() {
@@ -516,9 +807,9 @@ async function refresh() {
   } catch (error) {
     errors.replaceChildren(el('div', 'error', '无法读取状态：' + error.message));
   }
-  setTimeout(refresh, 1000);
 }
 refresh();
+setInterval(refresh, 1000);
 </script>
 </body>
 </html>`;

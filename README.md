@@ -14,7 +14,7 @@
 
 愿景草稿、设计提案、研究笔记、实验报告保存在本地 `docs/`，工作记录保存在本地 `LOG.md`；这些文件可能包含私人上下文，不纳入后续 Git 跟踪。`doc/` 同样被忽略。仓库的新检出不包含这些本地文件。
 
-G001 最小内存内核的登记与查询已通过独立复核。G002 单 Harness 内核在 Windows 范围通过验收；G003 的 Codex app-server 驱动实现与自测已完成，等待独立复核。Git 保存代码、测试、必要配置及经过检查的公开说明；本地记录补充详细过程。
+G001 最小内存内核的登记与查询已通过独立复核。G002 单 Harness 内核、G003 的 Codex app-server 驱动、G004 双 Harness 工作台均已通过独立复核并在 Windows 范围验收。Git 保存代码、测试、必要配置及经过检查的公开说明；本地记录补充详细过程。
 
 核心研究命题：能否在保留不同 AI Harness 原生 Agent Loop 和 Conversation 的前提下，通过插件化 Adapter 与可组合的协作运行时，实现跨 Harness 的统一管理、动态协作及运行时重组？
 
@@ -22,9 +22,9 @@ G001 最小内存内核的登记与查询已通过独立复核。G002 单 Harnes
 
 已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。当前内核采用 TypeScript + Node.js 26 LTS + npm。Cordis 选用、已有项目的复用路线、数据库及前端框架仍待验证和决定。
 
-目前已有内存内核、DSH ACP 适配器和 Codex app-server 适配器的实现与自测；真实原生集成只在 Windows 上运行过。先读官方源码，再用最小实验验证；不把项目宣传、接口声明或上游测试文件当成本地运行结果。
+目前已有内存内核、DSH ACP 适配器、Codex app-server 适配器和双 Harness CLI 工作台，均在 Windows 范围完成实现与验收；真实原生集成只在 Windows 上运行过。先读官方源码，再用最小实验验证；不把项目宣传、接口声明或上游测试文件当成本地运行结果。
 
-## CLI 工作台（G004 实验）
+## CLI 工作台（G004）
 
 一个进程内同时保留 DSH 与 Codex 两个命名连接，各自维持自己的原生 Conversation：
 

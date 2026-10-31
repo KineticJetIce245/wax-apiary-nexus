@@ -9,6 +9,9 @@
 ## 文档入口
 
 - [完整愿景与研究章程 v2.0](docs/vision.md)：原样保存用户提供的讨论结果。
+- [整体设计大纲](docs/architecture.md)：模块边界与需要回答的设计问题。
+- [当前小目标 G001](docs/current-goal.md)：先明确核心对象关系与生命周期；完成后再定义下一项。
+- [Git 追踪约定](docs/git-trace.md)：目标、提交与验收证据的关联。
 - [Cordis 初步研究](docs/research/cordis.md)：独立插件运行时、DSH vendoring、生命周期和能力边界。
 - [AionUi / AionCore 初步研究](docs/research/aionui.md)：原生会话接入、恢复、团队通信与复用边界。
 - [研究索引与下一步](docs/research/README.md)：证据状态、研究顺序、实验验收条件。

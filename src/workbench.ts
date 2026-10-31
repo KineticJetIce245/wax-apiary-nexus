@@ -265,6 +265,7 @@ export class Workbench {
     executionId: string,
     targetName: string,
     instruction?: string,
+    extraAttachments: readonly AttachmentDraft[] = [],
   ): Promise<TransferRecord> {
     const source = this.requireReady(sourceName);
     const target = this.requireReady(targetName);
@@ -282,7 +283,10 @@ export class Workbench {
     }
 
     const instructionText = instruction?.trim() === '' ? undefined : instruction?.trim();
-    const attachments = execution.attachments.map(toAttachmentDraft);
+    const attachments = dedupeAttachments([
+      ...execution.attachments.map(toAttachmentDraft),
+      ...extraAttachments,
+    ]);
     const input = buildTransferInput({
       source: { connection: sourceName, conversationId: source.conversationId, executionId },
       targetConnection: targetName,
@@ -495,8 +499,23 @@ export function buildTransferInput(options: {
   return lines.join('\n');
 }
 
-function cloneTransfer(record: TransferRecord): TransferRecord {
-  return {
+function dedupeAttachments(
+  attachments: readonly AttachmentDraft[],
+): AttachmentDraft[] {
+  const seen = new Set<string>();
+  const result: AttachmentDraft[] = [];
+  for (const attachment of attachments) {
+    const key = `${attachment.kind}|${attachment.mimeType}|${attachment.path}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(attachment);
+  }
+  return result;
+}
+
+function cloneTransfer(record: TransferRecord): TransferRecord {  return {
     id: record.id,
     source: { ...record.source },
     target: { ...record.target },

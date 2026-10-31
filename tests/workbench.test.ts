@@ -242,6 +242,27 @@ test('transfers completed attachments to the target adapter', async () => {
   }
 });
 
+test('transfers explicit attachments even when the source execution has none', async () => {
+  const { workbench, dsh, codex } = await fixture();
+  try {
+    const source = await workbench.submit('text only');
+    dsh.emit({ type: 'execution/output', executionId: source.execution.id, channel: 'assistant', text: 'done' });
+    dsh.emit({ type: 'execution/completed', executionId: source.execution.id, stopReason: 'end_turn' });
+    await delay(10);
+
+    const record = await workbench.transfer('dsh', source.execution.id, 'codex', 'look', [
+      { kind: 'image', path: 'C:\\tmp\\blue.png', mimeType: 'image/png', name: 'blue.png' },
+    ]);
+    assert.equal(record.outcome, 'submitted');
+    const target = codex.submissions.at(-1);
+    assert.equal(target?.attachments?.length, 1);
+    assert.equal(target?.attachments?.[0]?.path, 'C:\\tmp\\blue.png');
+    assert.match(target?.text ?? '', /blue\.png/);
+  } finally {
+    await workbench.stop();
+  }
+});
+
 test('starts two named connections with their own conversations and tags events', async () => {
   const { workbench, dsh, codex } = await fixture();
   const events: TaggedWorkspaceEvent[] = [];

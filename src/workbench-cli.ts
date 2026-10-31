@@ -1,9 +1,12 @@
 import { createInterface } from 'node:readline';
+import { statSync } from 'node:fs';
+import { basename, extname } from 'node:path';
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
 import type { ApprovalDecisionKind } from './adapters/harness.js';
 import { ApprovalInbox } from './approval-inbox.js';
 import { createCodexConnection } from './connection.js';
+import type { AttachmentDraft } from './content.js';
 import { loadFlowDefinition } from './flow-definition.js';
 import { FlowRuntime, type FlowEvent } from './flow-runtime.js';
 import { createKernel } from './kernel.js';
@@ -36,7 +39,7 @@ function usage(): string {
     '  /approvals                           List pending approvals',
     '  /approve <id> <1|2|3>                Answer the stable approval id (1 allow, 2 reject, 3 cancel)',
     '  /cancel <connection> <execution-id>  Cancel that connection execution',
-    '  /transfer <source> <execution-id> <target> [instruction...]',
+    '  /transfer <source> <execution-id> <target> [instruction...] [--attach <path>]...',
     '  /records                             Show in-memory transfer records',
     '  /flow run <file>                     Start a declarative graph flow',
     '  /flow status                         Show the current or last flow',
@@ -558,23 +561,72 @@ async function main(): Promise<void> {
     const parts = line.slice('/transfer '.length).trim().split(/\s+/);
     const [source, executionId, target] = parts;
     if (source === undefined || executionId === undefined || target === undefined) {
-      throw new Error('Usage: /transfer <source> <execution-id> <target> [instruction...]');
+      throw new Error(
+        'Usage: /transfer <source> <execution-id> <target> [instruction...] [--attach <path>]...',
+      );
     }
-    const instruction = parts.slice(3).join(' ');
+    const instructionParts: string[] = [];
+    const attachPaths: string[] = [];
+    for (let index = 3; index < parts.length; index += 1) {
+      const part = parts[index];
+      if (part === '--attach') {
+        const path = parts[index + 1];
+        if (path === undefined || path === '') {
+          throw new Error('--attach requires a file path');
+        }
+        attachPaths.push(path);
+        index += 1;
+      } else if (part !== undefined) {
+        instructionParts.push(part);
+      }
+    }
+    const instruction = instructionParts.join(' ');
+    const attachments = attachPaths.map(attachmentFromPath);
     const record = await workbench.transfer(
       source,
       executionId,
       target,
       instruction === '' ? undefined : instruction,
+      attachments,
     );
     process.stdout.write(
-      `transferred ${source}:${executionId.slice(0, 8)} -> ${target}:${record.target.executionId?.slice(0, 8)}\n`,
+      `transferred ${source}:${executionId.slice(0, 8)} -> ${target}:${record.target.executionId?.slice(0, 8)}` +
+        `${attachments.length === 0 ? '' : ` (${String(attachments.length)} attachment(s))`}\n`,
     );
   }
 }
 
-function parseDecision(value: string | undefined): ApprovalDecisionKind {
-  if (value === '1' || value === 'allow') {
+function attachmentFromPath(path: string): AttachmentDraft {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    throw new Error(`Attachment not found: ${path}`);
+  }
+  if (!stat.isFile()) {
+    throw new Error(`Attachment must be a regular file: ${path}`);
+  }
+  const extension = extname(path).toLowerCase();
+  const mimeType =
+    extension === '.png'
+      ? 'image/png'
+      : extension === '.jpg' || extension === '.jpeg'
+        ? 'image/jpeg'
+        : extension === '.webp'
+          ? 'image/webp'
+          : extension === '.gif'
+            ? 'image/gif'
+            : 'application/octet-stream';
+  return {
+    kind: mimeType.startsWith('image/') ? 'image' : 'file',
+    path,
+    mimeType,
+    name: basename(path),
+    byteLength: stat.size,
+  };
+}
+
+function parseDecision(value: string | undefined): ApprovalDecisionKind {  if (value === '1' || value === 'allow') {
     return 'allow_once';
   }
   if (value === '2' || value === 'reject') {

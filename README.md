@@ -11,7 +11,8 @@
 - [AI 工程契约与反过度工程规则](AGENTS.md)：项目内 AI 工作规范，保留项目所有者的重大决策权。
 - [完整愿景与研究章程 v2.0](docs/vision.md)：原样保存用户提供的讨论结果。
 - [整体设计大纲](docs/architecture.md)：模块边界与需要回答的设计问题。
-- [当前小目标 G001](docs/current-goal.md)：先明确核心对象关系与生命周期；完成后再定义下一项。
+- [当前小目标 G001](docs/current-goal.md)：最小内核登记并读取 Project；语言与具体范围待确认，完成后再定义下一项。
+- [内核语言提案](docs/adr/0001-kernel-language.md)：建议 TypeScript + Node.js，尚未采纳。
 - [Git 追踪约定](docs/git-trace.md)：目标、提交与验收证据的关联。
 - [Cordis 初步研究](docs/research/cordis.md)：独立插件运行时、DSH vendoring、生命周期和能力边界。
 - [AionUi / AionCore 初步研究](docs/research/aionui.md)：原生会话接入、恢复、团队通信与复用边界。

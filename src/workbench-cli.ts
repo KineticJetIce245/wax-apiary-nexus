@@ -31,7 +31,7 @@ function usage(): string {
     '  /use <dsh|codex>                     Select the target for plain text input',
     '  /status                              Show connections and conversations',
     '  /approvals                           List pending approvals',
-    '  /approve <n> <1|2|3>                 Answer approval n (1 allow, 2 reject, 3 cancel)',
+    '  /approve <id> <1|2|3>                Answer the stable approval id (1 allow, 2 reject, 3 cancel)',
     '  /cancel <connection> <execution-id>  Cancel that connection execution',
     '  /transfer <source> <execution-id> <target> [instruction...]',
     '  /records                             Show in-memory transfer records',
@@ -141,6 +141,9 @@ async function main(): Promise<void> {
   let shuttingDown = false;
 
   const printPrompt = (): void => {
+    if (shuttingDown) {
+      return;
+    }
     readline.setPrompt(`${workbench.activeConnection ?? 'none'}> `);
     readline.prompt();
   };
@@ -176,8 +179,15 @@ async function main(): Promise<void> {
         renderTaggedEvent(tagged, renderState, (text) => {
           process.stdout.write(text);
         });
-        if (event.type === 'execution/state' && event.error !== undefined) {
-          process.stderr.write(`[${connection}] ${event.error}\n`);
+        if (event.type === 'execution/state') {
+          if (event.error !== undefined) {
+            process.stderr.write(`[${connection}] ${event.error}\n`);
+          }
+          if (event.state !== 'running') {
+            // Workspace drops pending approvals when an execution terminates
+            // without emitting approval-decided; remove their display ids too.
+            inbox.removeByExecution(connection, event.executionId);
+          }
         }
         return;
       }
@@ -266,8 +276,12 @@ async function main(): Promise<void> {
         await transfer(line);
       } else if (line.startsWith('/close ')) {
         const name = line.slice(7).trim();
-        await workbench.closeConnection(name);
-        process.stdout.write(`closed: ${name}\n`);
+        try {
+          await workbench.closeConnection(name);
+          process.stdout.write(`closed: ${name}\n`);
+        } finally {
+          inbox.removeByConnection(name);
+        }
       } else if (line.startsWith('/')) {
         process.stdout.write('Unknown command. Use /help.\n');
       } else {

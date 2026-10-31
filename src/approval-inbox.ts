@@ -43,6 +43,30 @@ export class ApprovalInbox {
     return undefined;
   }
 
+  /** Drop approvals whose execution has reached a terminal state. */
+  removeByExecution(connection: string, executionId: string): number {
+    let removed = 0;
+    for (const [id, entry] of this.entries) {
+      if (entry.connection === connection && entry.request.executionId === executionId) {
+        this.entries.delete(id);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  /** Drop approvals that can no longer be answered because the connection is gone. */
+  removeByConnection(connection: string): number {
+    let removed = 0;
+    for (const [id, entry] of this.entries) {
+      if (entry.connection === connection) {
+        this.entries.delete(id);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
   clear(): void {
     this.entries.clear();
   }

@@ -272,6 +272,25 @@ test('rejects transfers from non-completed or empty executions', async () => {
       workbench.transfer('dsh', running.execution.id, 'codex'),
       /no assistant output/,
     );
+
+    const failed = await workbench.submit('failed');
+    dsh.emit({ type: 'execution/failed', executionId: failed.execution.id, error: 'boom' });
+    await delay(10);
+    await assert.rejects(workbench.transfer('dsh', failed.execution.id, 'codex'), /Only a completed/);
+
+    const cancelled = await workbench.submit('cancelled');
+    dsh.emit({ type: 'execution/cancelled', executionId: cancelled.execution.id });
+    await delay(10);
+    await assert.rejects(
+      workbench.transfer('dsh', cancelled.execution.id, 'codex'),
+      /Only a completed/,
+    );
+
+    const unknown = await workbench.submit('unknown');
+    dsh.emit({ type: 'execution/unknown', executionId: unknown.execution.id, reason: 'lost' });
+    await delay(10);
+    await assert.rejects(workbench.transfer('dsh', unknown.execution.id, 'codex'), /Only a completed/);
+
     await assert.rejects(workbench.transfer('dsh', 'missing-execution', 'codex'), /Unknown execution/);
   } finally {
     await workbench.stop();

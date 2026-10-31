@@ -47,3 +47,18 @@ test('unknown ids stay unknown', () => {
   assert.equal(inbox.get(99), undefined);
   assert.equal(inbox.remove('dsh', 'missing'), undefined);
 });
+
+test('removes approvals when their execution or connection goes away', () => {
+  const inbox = new ApprovalInbox();
+  const first = inbox.add('dsh', request('one'));
+  const second = inbox.add('dsh', request('two'));
+  const third = inbox.add('codex', request('three'));
+
+  assert.equal(inbox.removeByExecution('dsh', first.request.executionId), 1);
+  assert.equal(inbox.get(first.id), undefined);
+  assert.equal(inbox.get(second.id)?.connection, 'dsh');
+
+  assert.equal(inbox.removeByConnection('dsh'), 1);
+  assert.deepEqual(inbox.list().map((entry) => entry.id), [third.id]);
+  assert.equal(inbox.removeByConnection('missing'), 0);
+});

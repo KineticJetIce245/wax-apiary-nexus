@@ -24,6 +24,17 @@ G001 最小内存内核的登记与查询已通过独立复核。G002 单 Harnes
 
 目前已有内存内核、DSH ACP 适配器和 Codex app-server 适配器的实现与自测；真实原生集成只在 Windows 上运行过。先读官方源码，再用最小实验验证；不把项目宣传、接口声明或上游测试文件当成本地运行结果。
 
+## CLI 工作台（G004 实验）
+
+一个进程内同时保留 DSH 与 Codex 两个命名连接，各自维持自己的原生 Conversation：
+
+```bash
+npm run build
+node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-exe <codex-exe>
+```
+
+命令：`/use` 切换输入目标，`/status` 查看连接，`/approvals` 与 `/approve` 处理审批，`/cancel` 取消执行，`/transfer <source> <execution-id> <target> [instruction]` 显式转交一次已完成的 assistant 结果，`/records` 查看内存转交记录，`/close` 关闭单个连接，`/quit` 全部退出。缺少一侧时另一侧仍可单独使用。本实验只在 Windows 实测，没有持久化、自动多轮协作或共享文件并发写保证。
+
 ## 本地研究材料
 
 `.research-sources/` 保存官方源码参考材料，默认排除出未来的主项目版本控制；版本与路径见研究索引。研究材料不属于产品依赖，未安装这些项目的依赖，未启动其服务。

@@ -116,7 +116,10 @@ export interface HarnessAdapter {
  * native side must use a regular Error instead.
  */
 export class SubmitOutcomeUnknownError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly executionId?: string,
+  ) {
     super(message);
     this.name = 'SubmitOutcomeUnknownError';
   }

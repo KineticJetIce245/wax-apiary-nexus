@@ -276,6 +276,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
       // terminal event arrives.
       throw new SubmitOutcomeUnknownError(
         `Codex turn/start outcome is unknown: ${messageOf(error)}`,
+        executionId,
       );
     }
   }

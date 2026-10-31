@@ -4,3 +4,17 @@
 # Installed dependencies and compiled output.
 node_modules/
 dist/
+
+# Local planning, research and execution records may contain private context.
+/doc/
+/docs/
+/LOG.md
+
+# Credentials and private runtime material.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.log

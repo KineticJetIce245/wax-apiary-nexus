@@ -119,3 +119,12 @@ Keep reports concise:
 ## Guiding Principle
 
 **A boring, understandable implementation that works is better than an elegant framework nobody needs.**
+
+# Sensitive Information and Git Tracking
+
+- Before writing any artifact, decide whether it is public project material or private local material. Do not place credentials, tokens, private keys, personal information, private conversations, machine-specific paths, or private environment details in files that Git tracks.
+- Keep local plans, proposals, research notes, execution reports, and work logs under the ignored `docs/` or `doc/` directories, or in the ignored root `LOG.md`. Maintain these records locally; do not stage them. This takes precedence over earlier instructions to commit those documents or logs.
+- Ignore files that may contain private data before writing them. Never use `git add -f` to bypass these rules. An ignored path is not sufficient protection if the file is already tracked; check `git ls-files` and remove it from the index with `git rm --cached` while preserving the local file when needed.
+- Stage explicit paths rather than using broad staging commands. Inspect the entire staged diff and new files for sensitive content before every commit. Sanitize any public examples and reports; do not echo detected secrets into tool output, commit messages, or review comments.
+- A pattern scan is supporting evidence, not a guarantee that a file contains no sensitive information. Report the scope and limitations of the check honestly.
+- Ignoring or untracking a file does not remove it from previous commits, other branches, tags, reflogs, or remote copies. If sensitive information is found in history, identify the affected references without repeating the secret, stop publication, and present a concrete history-cleanup plan for owner approval. Do not rewrite history, purge backups, or force-push silently.

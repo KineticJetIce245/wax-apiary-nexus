@@ -6,19 +6,13 @@
 
 当前阶段：Phase 0 — Research & Architecture Validation。v2.0 是产品愿景与研究章程，技术选型仍待源码研究和 PoC 验证。
 
-## 文档入口
+## 项目规范与本地文档
 
-- [AI 工程契约与反过度工程规则](AGENTS.md)：项目内 AI 工作规范，保留项目所有者的重大决策权。
-- [完整愿景与研究章程 v2.0](docs/vision.md)：原样保存用户提供的讨论结果。
-- [整体设计大纲](docs/architecture.md)：模块边界与需要回答的设计问题。
-- [当前小目标 G001](docs/current-goal.md)：最小内核登记与查询已完成，Codex 独立复核通过。
-- [G002 候选：项目目录定位与可用性](docs/proposals/g002-project-location.md)：Windows 开发、Linux 部署并保留 macOS 可移植性，优先 Node.js 内置能力；尚未批准实施。
-- [内核技术决定](docs/adr/0001-kernel-language.md)：TypeScript + Node.js 26 LTS + npm，已采纳。
-- [Git 追踪约定](docs/git-trace.md)：目标、提交与验收证据的关联。
-- [Cordis 初步研究](docs/research/cordis.md)：独立插件运行时、DSH vendoring、生命周期和能力边界。
-- [AionUi / AionCore 初步研究](docs/research/aionui.md)：原生会话接入、恢复、团队通信与复用边界。
-- [研究索引与下一步](docs/research/README.md)：证据状态、研究顺序、实验验收条件。
-- [工作记录](LOG.md)：已完成事项及未验证事项。
+[AI 工程契约与反过度工程规则](AGENTS.md)规定项目内 AI 工作方式及敏感信息检查要求。
+
+愿景草稿、设计提案、研究笔记、实验报告保存在本地 `docs/`，工作记录保存在本地 `LOG.md`；这些文件可能包含私人上下文，不纳入后续 Git 跟踪。`doc/` 同样被忽略。仓库的新检出不包含这些本地文件。
+
+G001 最小内存内核的登记与查询已通过独立复核。Git 保存代码、测试、必要配置及经过检查的公开说明；本地记录补充详细过程。
 
 核心研究命题：能否在保留不同 AI Harness 原生 Agent Loop 和 Conversation 的前提下，通过插件化 Adapter 与可组合的协作运行时，实现跨 Harness 的统一管理、动态协作及运行时重组？
 

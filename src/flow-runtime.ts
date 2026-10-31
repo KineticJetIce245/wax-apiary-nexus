@@ -167,42 +167,47 @@ export class FlowRuntime {
     this.statusValue = 'running';
     this.emit({ type: 'flow/started', flowId: this.flowId, version: 1 });
 
-    const missing = Object.values(this.definition.participants)
-      .map((participant) => participant.connection)
-      .filter((connection) => this.workbench.getConnection(connection)?.status !== 'ready');
+    const missing = this.usedConnections().filter(
+      (connection) => this.workbench.getConnection(connection)?.status !== 'ready',
+    );
     if (missing.length > 0) {
       return this.finish('failed', `Connection not available: ${[...new Set(missing)].join(', ')}`);
     }
 
-    let current: string | undefined = this.definition.start;
-    while (current !== undefined) {
-      if (this.cancelRequested) {
-        return this.finish('cancelled');
-      }
-      const node: FlowNode | undefined = this.definition.nodes[current];
-      if (node === undefined) {
-        return this.finish('failed', `Unknown node reached: ${current}`);
-      }
-      if (node.type === 'end') {
-        this.state(current).status = 'completed';
-        return this.finish('completed');
-      }
-      if (node.type === 'parallel') {
-        const outcome = await this.runParallel(current, node);
-        if (outcome !== undefined) {
+    try {
+      let current: string | undefined = this.definition.start;
+      while (current !== undefined) {
+        if (this.cancelRequested) {
+          return this.finish('cancelled');
+        }
+        const node: FlowNode | undefined = this.definition.nodes[current];
+        if (node === undefined) {
+          return this.finish('failed', `Unknown node reached: ${current}`);
+        }
+        if (node.type === 'end') {
+          this.state(current).status = 'completed';
+          return this.finish('completed');
+        }
+        if (node.type === 'parallel') {
+          const outcome = await this.runParallel(current, node);
+          if (outcome !== undefined) {
+            return this.finish(mapFlowStatus(outcome.status), outcome.error);
+          }
+          current = node.next;
+          continue;
+        }
+        const outcome = await this.runSubmit(current, node);
+        if (outcome.status !== 'completed') {
           return this.finish(mapFlowStatus(outcome.status), outcome.error);
         }
-        current = node.next;
-        continue;
+        this.outputs.set(current, outcome.output ?? '');
+        current = selectNext(node, outcome.output ?? '');
       }
-      const outcome = await this.runSubmit(current, node);
-      if (outcome.status !== 'completed') {
-        return this.finish(mapFlowStatus(outcome.status), outcome.error);
-      }
-      this.outputs.set(current, outcome.output ?? '');
-      current = selectNext(node, outcome.output ?? '');
+      return this.finish('failed', 'Flow ended without an end node');
+    } catch (error) {
+      await this.cancelActiveExecutions().catch(() => undefined);
+      return this.finish('failed', messageOf(error));
     }
-    return this.finish('failed', 'Flow ended without an end node');
   }
 
   async cancel(): Promise<void> {
@@ -253,7 +258,13 @@ export class FlowRuntime {
   }
 
   private async runSubmit(nodeId: string, node: FlowSubmitNode): Promise<SubmitOutcome> {
-    if (this.aborted && !this.cancelRequested) {
+    if (this.cancelRequested) {
+      const state = this.state(nodeId);
+      state.status = 'cancelled';
+      state.error = 'Flow cancelled before this node started';
+      return { nodeId, status: 'cancelled', error: state.error };
+    }
+    if (this.aborted) {
       const message = `Node ${nodeId} was not started because another node aborted the flow`;
       const state = this.state(nodeId);
       state.status = 'cancelled';
@@ -442,6 +453,29 @@ export class FlowRuntime {
       });
     }
     return result;
+  }
+
+  private usedConnections(): string[] {
+    const connections = new Set<string>();
+    for (const node of Object.values(this.definition.nodes)) {
+      if (node.type === 'submit') {
+        const connection = this.definition.participants[node.participant]?.connection;
+        if (connection !== undefined) {
+          connections.add(connection);
+        }
+      } else if (node.type === 'parallel') {
+        for (const branchId of node.branches) {
+          const branch = this.definition.nodes[branchId];
+          if (branch?.type === 'submit') {
+            const connection = this.definition.participants[branch.participant]?.connection;
+            if (connection !== undefined) {
+              connections.add(connection);
+            }
+          }
+        }
+      }
+    }
+    return [...connections];
   }
 
   private state(nodeId: string): MutableNodeState {

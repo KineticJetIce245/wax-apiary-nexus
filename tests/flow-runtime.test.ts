@@ -384,6 +384,33 @@ test('cancels the running node and stops the flow', async () => {
   }
 });
 
+test('ignores connection checks for participants that no node uses', async () => {
+  const project: Project = {
+    id: 'g005-unused-participant',
+    directory: mkdtempSync(join(tmpdir(), 'uw-g005-flow-')),
+  };
+  const dsh = new FakeAdapter('dsh-native', () => ({ output: 'DONE' }));
+  const workbench = new Workbench({
+    project,
+    connections: [{ name: 'dsh', adapter: dsh }],
+  });
+  await workbench.start();
+  const definition = parseFlowDefinition(
+    flow({
+      plan: { participant: 'planner', prompt: 'Plan', next: 'end' },
+      end: { type: 'end' },
+    }),
+  );
+  const runtime = new FlowRuntime(workbench, definition, { pollIntervalMs: 5 });
+  try {
+    const result = await runtime.run();
+    assert.equal(result.status, 'completed');
+    assert.equal(dsh.submissions.length, 1);
+  } finally {
+    await workbench.stop().catch(() => undefined);
+  }
+});
+
 test('fails before submitting when a template value is unavailable', async () => {
   const f = await fixture(
     flow({

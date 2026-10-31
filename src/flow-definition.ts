@@ -93,14 +93,19 @@ export function parseFlowDefinition(value: unknown): FlowDefinition {
     throw new FlowDefinitionError(`Unsupported flow strategy: ${String(root.strategy)} (expected "graph")`);
   }
   const id = optionalString(root.id, 'flow.id');
+  if (id !== undefined && id.trim() === '') {
+    throw new FlowDefinitionError('flow.id must not be empty when present');
+  }
   const input = optionalString(root.input, 'flow.input');
   const participants = parseParticipants(root.participants);
   const start = requiredString(root.start, 'flow.start');
   const rawNodes = asRecord(root.nodes, 'flow.nodes');
   const nodes: Record<string, FlowNode> = {};
   for (const [nodeId, rawNode] of Object.entries(rawNodes)) {
-    if (nodeId.trim() === '') {
-      throw new FlowDefinitionError('Node id must not be empty');
+    if (!isReferenceName(nodeId)) {
+      throw new FlowDefinitionError(
+        `Node id ${JSON.stringify(nodeId)} must match [A-Za-z0-9_-]+ so templates can reference it`,
+      );
     }
     nodes[nodeId] = parseNode(nodeId, rawNode);
   }
@@ -302,8 +307,10 @@ function parseParticipants(value: unknown): Record<string, { readonly connection
   const record = asRecord(value, 'flow.participants');
   const participants: Record<string, { readonly connection: string }> = {};
   for (const [name, raw] of Object.entries(record)) {
-    if (name.trim() === '') {
-      throw new FlowDefinitionError('Participant name must not be empty');
+    if (!isReferenceName(name)) {
+      throw new FlowDefinitionError(
+        `Participant name ${JSON.stringify(name)} must match [A-Za-z0-9_-]+`,
+      );
     }
     const participant = asRecord(raw, `participant ${name}`);
     participants[name] = {
@@ -436,4 +443,8 @@ function optionalString(value: unknown, label: string): string | undefined {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isReferenceName(value: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(value);
 }

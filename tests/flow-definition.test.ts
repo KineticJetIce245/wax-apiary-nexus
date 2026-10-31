@@ -115,6 +115,32 @@ test('rejects bad next targets and conditions', () => {
   );
 });
 
+test('rejects malformed names and empty ids', () => {
+  assert.throws(
+    () =>
+      parseFlowDefinition(
+        definition({
+          nodes: {
+            'plan.v2': { participant: 'planner', prompt: 'Plan', next: 'end' },
+            end: { type: 'end' },
+          },
+          start: 'plan.v2',
+        }),
+      ),
+    /Node id/,
+  );
+  assert.throws(
+    () =>
+      parseFlowDefinition(
+        definition({
+          participants: { 'bad name': { connection: 'dsh' } },
+        }),
+      ),
+    /Participant name/,
+  );
+  assert.throws(() => parseFlowDefinition(definition({ id: '  ' })), /flow.id/);
+});
+
 test('rejects unknown participants, placeholders and malformed braces', () => {
   assert.throws(
     () =>

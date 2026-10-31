@@ -1,2 +1,6 @@
 # Official upstream checkouts and selected source snapshots used for research.
 .research-sources/
+
+# Installed dependencies and compiled output.
+node_modules/
+dist/

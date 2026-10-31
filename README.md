@@ -12,6 +12,7 @@
 - [完整愿景与研究章程 v2.0](docs/vision.md)：原样保存用户提供的讨论结果。
 - [整体设计大纲](docs/architecture.md)：模块边界与需要回答的设计问题。
 - [当前小目标 G001](docs/current-goal.md)：最小内核登记与查询已完成，Codex 独立复核通过。
+- [G002 候选：项目目录定位与可用性](docs/proposals/g002-project-location.md)：Windows 开发、Linux 部署并保留 macOS 可移植性，优先 Node.js 内置能力；尚未批准实施。
 - [内核技术决定](docs/adr/0001-kernel-language.md)：TypeScript + Node.js 26 LTS + npm，已采纳。
 - [Git 追踪约定](docs/git-trace.md)：目标、提交与验收证据的关联。
 - [Cordis 初步研究](docs/research/cordis.md)：独立插件运行时、DSH vendoring、生命周期和能力边界。

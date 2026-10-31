@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ApprovalDecisionKind, HarnessAdapter } from './adapters/harness.js';
 import { SubmitOutcomeUnknownError } from './adapters/harness.js';
+import { buildResultEnvelope, type ResultEnvelope } from './content.js';
 import type { Project } from './kernel.js';
 import {
   SubmitFailedError,
@@ -185,6 +186,28 @@ export class Workbench {
       return { connection: connectionName, execution: cloneExecution(historical) };
     }
     return undefined;
+  }
+
+  /**
+   * Build a display-neutral result envelope for one execution. Text stays in
+   * Execution.output for Flow/Transfer compatibility; attachments are exposed
+   * here without interpreting or embedding their bytes.
+   */
+  getResultEnvelope(connectionName: string, executionId: string): ResultEnvelope | undefined {
+    const tagged = this.getExecution(connectionName, executionId);
+    const connection = this.getConnection(connectionName);
+    if (tagged === undefined || connection === undefined) {
+      return undefined;
+    }
+    return buildResultEnvelope({
+      source: {
+        connection: connectionName,
+        executionId,
+        nativeId: connection.conversation.nativeId,
+      },
+      output: tagged.execution.output,
+      attachments: tagged.execution.attachments,
+    });
   }
 
   onEvent(handler: (event: TaggedWorkspaceEvent) => void): () => void {
@@ -469,6 +492,7 @@ function cloneExecution(execution: Execution): Execution {
     conversationId: execution.conversationId,
     state: execution.state,
     output: execution.output,
+    attachments: execution.attachments.map((attachment) => ({ ...attachment })),
     ...(execution.stopReason === undefined ? {} : { stopReason: execution.stopReason }),
     ...(execution.error === undefined ? {} : { error: execution.error }),
   };

@@ -206,6 +206,15 @@ async function main(): Promise<void> {
         }
         return;
       }
+      case 'execution/attachment': {
+        renderState.lastOutputKey = undefined;
+        process.stdout.write(
+          `\n[${connection}] attachment ${event.attachment.kind} ` +
+            `${event.attachment.name ?? event.attachment.path} ` +
+            `(${event.attachment.mimeType})\n`,
+        );
+        return;
+      }
       case 'execution/approval-requested': {
         renderState.lastOutputKey = undefined;
         const entry = inbox.add(connection, event.request);

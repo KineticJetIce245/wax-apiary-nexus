@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Attachment } from './content.js';
 import type { Project } from './kernel.js';
 import { assertProjectDirectory } from './project-directory.js';
 import type {
@@ -22,6 +23,7 @@ export interface Execution {
   readonly conversationId: string;
   readonly state: ExecutionState;
   readonly output: string;
+  readonly attachments: readonly Attachment[];
   readonly stopReason?: StopReason;
   readonly error?: string;
 }
@@ -39,6 +41,11 @@ export type WorkspaceEvent =
       readonly toolCallId: string;
       readonly title: string;
       readonly status: string;
+    }
+  | {
+      readonly type: 'execution/attachment';
+      readonly executionId: string;
+      readonly attachment: Attachment;
     }
   | {
       readonly type: 'execution/approval-requested';
@@ -134,6 +141,7 @@ interface MutableExecution {
   readonly conversationId: string;
   state: ExecutionState;
   output: string;
+  readonly attachments: Attachment[];
   stopReason?: StopReason;
   error?: string;
 }
@@ -210,6 +218,7 @@ export class Workspace {
       conversationId,
       state: 'running',
       output: '',
+      attachments: [],
     };
     this.executions.set(execution.id, execution);
     this.activeExecutionByConversation.set(conversationId, execution.id);
@@ -374,6 +383,16 @@ export class Workspace {
           return;
         }
         this.emit(event);
+        return;
+      }
+      case 'execution/attachment': {
+        const execution = this.runningExecution(event.executionId);
+        if (execution === undefined || event.attachment.path.trim() === '') {
+          return;
+        }
+        const attachment: Attachment = { id: randomUUID(), ...event.attachment };
+        execution.attachments.push(attachment);
+        this.emit({ type: 'execution/attachment', executionId: event.executionId, attachment });
         return;
       }
       case 'execution/approval-requested': {
@@ -581,6 +600,7 @@ function snapshot(execution: MutableExecution): Execution {
     conversationId: execution.conversationId,
     state: execution.state,
     output: execution.output,
+    attachments: execution.attachments.map((attachment) => ({ ...attachment })),
     ...(execution.stopReason === undefined ? {} : { stopReason: execution.stopReason }),
     ...(execution.error === undefined ? {} : { error: execution.error }),
   };

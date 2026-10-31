@@ -23,6 +23,7 @@ import {
   UnknownApprovalError,
   UnknownExecutionError,
   Workspace,
+  type WorkspaceEvent,
 } from '../src/workspace.js';
 
 class FakeAdapter implements HarnessAdapter {
@@ -214,6 +215,58 @@ test('records assistant output and ignores late terminal events', async (t) => {
   const settled = workspace.getExecution(execution.id);
   assert.equal(settled?.state, 'completed');
   assert.equal(settled?.output, 'hello back');
+});
+
+test('records attachment events, snapshots them, and ignores late attachments', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const events: WorkspaceEvent[] = [];
+  workspace.onEvent((event) => events.push(event));
+
+  const execution = await workspace.submit(conversation.id, 'make an image');
+  adapter.emit({
+    type: 'execution/attachment',
+    executionId: execution.id,
+    attachment: {
+      kind: 'image',
+      path: 'C:\\tmp\\generated.png',
+      mimeType: 'image/png',
+      name: 'generated.png',
+      byteLength: 123,
+    },
+  });
+  adapter.emit({
+    type: 'execution/attachment',
+    executionId: execution.id,
+    attachment: {
+      kind: 'file',
+      path: 'C:\\tmp\\notes.txt',
+      mimeType: 'text/plain',
+      name: 'notes.txt',
+    },
+  });
+  adapter.emit({ type: 'execution/completed', executionId: execution.id, stopReason: 'end_turn' });
+  adapter.emit({
+    type: 'execution/attachment',
+    executionId: execution.id,
+    attachment: { kind: 'image', path: 'C:\\tmp\\late.png', mimeType: 'image/png' },
+  });
+
+  const settled = workspace.getExecution(execution.id);
+  assert.equal(settled?.attachments.length, 2);
+  assert.equal(settled?.attachments[0]?.kind, 'image');
+  assert.equal(settled?.attachments[0]?.name, 'generated.png');
+  assert.equal(settled?.attachments[0]?.byteLength, 123);
+  assert.equal(settled?.attachments[1]?.kind, 'file');
+  assert.ok(settled?.attachments[0]?.id !== settled?.attachments[1]?.id);
+
+  const attachmentEvents = events.filter((event) => event.type === 'execution/attachment');
+  assert.equal(attachmentEvents.length, 2);
+
+  assert.ok(settled !== undefined);
+  const mutable = settled.attachments[0] as unknown as { path: string };
+  mutable.path = 'tampered';
+  assert.equal(workspace.getExecution(execution.id)?.attachments[0]?.path, 'C:\\tmp\\generated.png');
 });
 
 test('settles failed and unknown executions without marking success', async (t) => {

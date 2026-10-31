@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { statSync } from 'node:fs';
 import type { Project } from '../../kernel.js';
 import { assertProjectDirectory } from '../../project-directory.js';
+import { attachmentForItem } from './attachments.js';
 import type {
   ApprovalDecision,
   ApprovalOption,
@@ -501,6 +503,25 @@ export class CodexAppServerAdapter implements HarnessAdapter {
         this.emit({ type: 'execution/output', executionId: active.executionId, channel: 'thought', text: summary });
       }
       return;
+    }
+
+    if (method === 'item/completed') {
+      const attachment = attachmentForItem(type, item);
+      if (attachment !== undefined) {
+        try {
+          const stat = statSync(attachment.path);
+          if (stat.isFile()) {
+            this.emit({
+              type: 'execution/attachment',
+              executionId: active.executionId,
+              attachment: { ...attachment, byteLength: stat.size },
+            });
+          }
+        } catch {
+          // A missing/unreadable image path is not a result. Do not fabricate one.
+        }
+        return;
+      }
     }
 
     const title = toolTitle(type, item);

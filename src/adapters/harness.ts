@@ -3,6 +3,7 @@
  * ACP/DSH-specific types stay inside adapters; the kernel only sees these.
  */
 
+import type { AttachmentDraft } from '../content.js';
 import type { Project } from '../kernel.js';
 
 export type ExecutionState = 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
@@ -66,6 +67,11 @@ export type HarnessEvent =
       readonly toolCallId: string;
       readonly title: string;
       readonly status: string;
+    }
+  | {
+      readonly type: 'execution/attachment';
+      readonly executionId: string;
+      readonly attachment: AttachmentDraft;
     }
   | {
       readonly type: 'execution/approval-requested';

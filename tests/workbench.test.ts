@@ -145,6 +145,51 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+test('builds a result envelope with text and attachments', async () => {
+  const { workbench, dsh } = await fixture();
+  try {
+    const submitted = await workbench.submit('make an image');
+    dsh.emit({
+      type: 'execution/output',
+      executionId: submitted.execution.id,
+      channel: 'assistant',
+      text: 'done',
+    });
+    dsh.emit({
+      type: 'execution/attachment',
+      executionId: submitted.execution.id,
+      attachment: {
+        kind: 'image',
+        path: 'C:\\tmp\\generated.png',
+        mimeType: 'image/png',
+        name: 'generated.png',
+        byteLength: 10,
+      },
+    });
+    dsh.emit({ type: 'execution/completed', executionId: submitted.execution.id, stopReason: 'end_turn' });
+    await delay(10);
+
+    const envelope = workbench.getResultEnvelope('dsh', submitted.execution.id);
+    assert.ok(envelope !== undefined);
+    assert.equal(envelope.version, 1);
+    assert.deepEqual(envelope.source, {
+      connection: 'dsh',
+      executionId: submitted.execution.id,
+      nativeId: 'native-dsh',
+    });
+    assert.equal(envelope.parts.length, 2);
+    assert.deepEqual(envelope.parts[0], { type: 'text', text: 'done' });
+    const image = envelope.parts[1];
+    assert.equal(image?.type, 'image');
+    if (image?.type === 'image') {
+      assert.equal(image.attachment.path, 'C:\\tmp\\generated.png');
+      assert.equal(image.attachment.mimeType, 'image/png');
+    }
+  } finally {
+    await workbench.stop();
+  }
+});
+
 test('starts two named connections with their own conversations and tags events', async () => {
   const { workbench, dsh, codex } = await fixture();
   const events: TaggedWorkspaceEvent[] = [];

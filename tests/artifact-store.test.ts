@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -79,7 +79,16 @@ test('rejects unsupported types, oversized files, missing files and symlinks', (
     );
   } catch (error) {
     if (process.platform !== 'win32') throw error;
-    // Windows symlink creation can require developer mode; skip that one case.
+    // File symlinks can require developer mode; a directory junction is a
+    // reparse point available without that privilege and must also be rejected.
+    const targetDir = join(sourceDir, 'target-dir');
+    mkdirSync(targetDir);
+    const junction = join(sourceDir, 'junction.png');
+    symlinkSync(targetDir, junction, 'junction');
+    assert.throws(
+      () => store.register(attachment(junction)),
+      (expected: unknown) => expected instanceof ArtifactError && expected.code === 'not-a-file',
+    );
   }
   store.close();
   assert.equal(existsSync(root), false);

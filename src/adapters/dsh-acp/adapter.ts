@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Project } from '../../kernel.js';
+import { assertProjectDirectory } from '../../project-directory.js';
 import type {
   ApprovalDecision,
   ApprovalOption,
@@ -22,6 +23,7 @@ export interface DshAcpAdapterOptions {
   readonly dshRoot: string;
   readonly nodePath?: string;
   readonly initializeTimeoutMs?: number;
+  readonly sessionTimeoutMs?: number;
   /** Extra launcher flags, for example ['--patch', path]. */
   readonly dshArgs?: readonly string[];
   /** Extra environment for the harness process; never logged. */
@@ -51,16 +53,20 @@ export class DshAcpAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
-    resume: true,
+    // This adapter does not implement session/resume; DSH supporting it
+    // upstream is not enough to advertise it to consumers.
+    resume: false,
   };
 
   private readonly dshRoot: string;
   private readonly nodePath: string;
   private readonly initializeTimeoutMs: number;
+  private readonly sessionTimeoutMs: number;
   private readonly dshArgs: readonly string[];
   private readonly env: NodeJS.ProcessEnv;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly active = new Map<string, ActiveExecution>();
+  private readonly cwdBySession = new Map<string, string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly stderrLines: string[] = [];
   private child: ChildProcessWithoutNullStreams | undefined;
@@ -72,6 +78,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     this.dshRoot = options.dshRoot;
     this.nodePath = options.nodePath ?? process.execPath;
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? DEFAULT_INITIALIZE_TIMEOUT_MS;
+    this.sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.dshArgs = options.dshArgs ?? [];
     this.env = options.env ?? {};
   }
@@ -99,6 +106,18 @@ export class DshAcpAdapter implements HarnessAdapter {
       windowsHide: true,
     });
     this.child = child;
+
+    let rejectSpawn: (error: Error) => void = () => undefined;
+    const spawnFailure = new Promise<never>((_, reject) => {
+      rejectSpawn = reject;
+    });
+    child.once('error', (error) => {
+      rejectSpawn(error);
+    });
+    child.on('error', (error) => {
+      this.handleChildError(error);
+    });
+
     this.client = new AcpRpcClient(child);
 
     child.stderr.setEncoding('utf8');
@@ -123,24 +142,29 @@ export class DshAcpAdapter implements HarnessAdapter {
     this.client.onError((error) => this.emit({ type: 'adapter/error', message: error.message }));
     this.client.onExit((code, signal) => this.handleExit(code, signal));
 
-    this.started = true;
     try {
-      await this.client.request(
-        'initialize',
-        {
-          protocolVersion: 1,
-          clientCapabilities: {
-            fs: { readTextFile: false, writeTextFile: false },
-            terminal: false,
+      await Promise.race([
+        this.client.request(
+          'initialize',
+          {
+            protocolVersion: 1,
+            clientCapabilities: {
+              fs: { readTextFile: false, writeTextFile: false },
+              terminal: false,
+            },
+            clientInfo: { name: 'unified-workspace', version: '0.0.0' },
           },
-          clientInfo: { name: 'unified-workspace', version: '0.0.0' },
-        },
-        this.initializeTimeoutMs,
-      );
+          this.initializeTimeoutMs,
+        ),
+        spawnFailure,
+      ]);
+      this.started = true;
     } catch (error) {
       this.started = false;
       this.client.close();
       child.kill();
+      this.client = undefined;
+      this.child = undefined;
       throw error;
     }
   }
@@ -167,6 +191,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     }
     this.pendingApprovals.clear();
     this.active.clear();
+    this.cwdBySession.clear();
     this.client?.close();
     this.client = undefined;
     this.child = undefined;
@@ -175,21 +200,28 @@ export class DshAcpAdapter implements HarnessAdapter {
   }
 
   async createConversation(project: Project): Promise<string> {
+    assertProjectDirectory(project.directory);
     const client = this.requireClient();
     const result = await client.request(
       'session/new',
       { cwd: project.directory, mcpServers: [] },
-      DEFAULT_SESSION_TIMEOUT_MS,
+      this.sessionTimeoutMs,
     );
     const sessionId = asString(asRecord(result)?.sessionId);
     if (sessionId === undefined) {
       throw new Error('ACP session/new did not return a sessionId');
     }
+    this.cwdBySession.set(sessionId, project.directory);
     return sessionId;
   }
 
   async submit(nativeId: string, executionId: string, text: string): Promise<void> {
     const client = this.requireClient();
+    const cwd = this.cwdBySession.get(nativeId);
+    if (cwd === undefined) {
+      throw new Error(`Unknown ACP session: ${nativeId}`);
+    }
+    assertProjectDirectory(cwd);
     if (this.active.has(nativeId)) {
       throw new Error(`ACP session already has an active execution: ${nativeId}`);
     }
@@ -279,13 +311,11 @@ export class DshAcpAdapter implements HarnessAdapter {
     const client = this.requireClient();
     this.cancelPendingApprovals(nativeId);
     const active = this.active.get(nativeId);
-    try {
-      await client.request('session/close', { sessionId: nativeId }, DEFAULT_SESSION_TIMEOUT_MS);
-    } finally {
-      if (active !== undefined && this.active.get(nativeId)?.executionId === active.executionId) {
-        this.active.delete(nativeId);
-        this.emit({ type: 'execution/cancelled', executionId: active.executionId });
-      }
+    await client.request('session/close', { sessionId: nativeId }, this.sessionTimeoutMs);
+    this.cwdBySession.delete(nativeId);
+    if (active !== undefined && this.active.get(nativeId)?.executionId === active.executionId) {
+      this.active.delete(nativeId);
+      this.emit({ type: 'execution/cancelled', executionId: active.executionId });
     }
   }
 
@@ -377,6 +407,30 @@ export class DshAcpAdapter implements HarnessAdapter {
     });
   }
 
+  private handleChildError(error: Error): void {
+    if (!this.started) {
+      return;
+    }
+    this.started = false;
+    for (const active of this.active.values()) {
+      this.emit({
+        type: 'execution/unknown',
+        executionId: active.executionId,
+        reason: `DSH ACP process error: ${error.message}`,
+      });
+    }
+    this.active.clear();
+    this.cwdBySession.clear();
+    for (const pending of this.pendingApprovals.values()) {
+      pending.resolve(cancelledPermissionOutcome());
+    }
+    this.pendingApprovals.clear();
+    this.client?.close();
+    if (!this.stopping) {
+      this.emit({ type: 'adapter/error', message: `DSH ACP process error: ${error.message}` });
+    }
+  }
+
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     const wasStarted = this.started;
     this.started = false;
@@ -388,6 +442,7 @@ export class DshAcpAdapter implements HarnessAdapter {
       });
     }
     this.active.clear();
+    this.cwdBySession.clear();
     for (const pending of this.pendingApprovals.values()) {
       pending.resolve(cancelledPermissionOutcome());
     }

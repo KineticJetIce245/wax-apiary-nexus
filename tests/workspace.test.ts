@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import type { Project } from '../src/kernel.js';
+import { ProjectDirectoryError } from '../src/project-directory.js';
 import {
   ConversationBusyError,
   UnsupportedApprovalError,
@@ -34,6 +35,7 @@ class FakeAdapter implements HarnessAdapter {
   readonly cancellations: string[] = [];
   readonly approvals: ApprovalDecision[] = [];
   readonly closed: string[] = [];
+  closeError: Error | undefined;
   startCalls = 0;
   stopCalls = 0;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
@@ -65,6 +67,9 @@ class FakeAdapter implements HarnessAdapter {
 
   async closeConversation(nativeId: string): Promise<void> {
     this.closed.push(nativeId);
+    if (this.closeError !== undefined) {
+      throw this.closeError;
+    }
   }
 
   onEvent(handler: (event: HarnessEvent) => void): () => void {
@@ -103,8 +108,9 @@ function approvalEvent(
 async function setup(options: { approvalTimeoutMs?: number } = {}) {
   const adapter = new FakeAdapter();
   const workspace = new Workspace(adapter, options);
-  const conversation = await workspace.createConversation(makeProject());
-  return { adapter, workspace, conversation };
+  const project = makeProject();
+  const conversation = await workspace.createConversation(project);
+  return { adapter, workspace, project, conversation };
 }
 
 function delay(ms: number): Promise<void> {
@@ -269,4 +275,81 @@ test('does not prompt for approval when the adapter advertises policy-only', asy
 
   assert.deepEqual(adapter.approvals, [{ requestId: 'request-1', kind: 'cancelled' }]);
   assert.equal(workspace.getExecution(execution.id)?.state, 'running');
+});
+
+test('rejects conversation creation when the project directory is missing', async (t) => {
+  const adapter = new FakeAdapter();
+  const workspace = new Workspace(adapter);
+  t.after(() => workspace.stop());
+  const missing = join(tmpdir(), `uw-missing-project-${Date.now()}`);
+
+  await assert.rejects(
+    workspace.createConversation({ id: 'missing', directory: missing }),
+    ProjectDirectoryError,
+  );
+  assert.equal(adapter.projects.length, 0);
+});
+
+test('rejects conversation creation when the project path is a file', async (t) => {
+  const adapter = new FakeAdapter();
+  const workspace = new Workspace(adapter);
+  t.after(() => workspace.stop());
+  const file = join(tmpdir(), `uw-project-file-${Date.now()}`);
+  writeFileSync(file, 'not a directory');
+
+  await assert.rejects(
+    workspace.createConversation({ id: 'file', directory: file }),
+    ProjectDirectoryError,
+  );
+  assert.equal(adapter.projects.length, 0);
+});
+
+test('revalidates the project directory before submitting and does not call the adapter', async (t) => {
+  const { adapter, workspace, conversation, project } = await setup();
+  t.after(() => workspace.stop());
+  const moved = `${project.directory}-moved`;
+  renameSync(project.directory, moved);
+
+  try {
+    await assert.rejects(workspace.submit(conversation.id, 'hello'), ProjectDirectoryError);
+    assert.equal(adapter.submissions.length, 0);
+  } finally {
+    renameSync(moved, project.directory);
+  }
+});
+
+test('keeps the conversation and an unknown execution when close fails', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const execution = await workspace.submit(conversation.id, 'close me');
+  adapter.closeError = new Error('close timeout');
+
+  await assert.rejects(workspace.closeConversation(conversation.id), /close timeout/);
+  assert.ok(workspace.getConversation(conversation.id) !== undefined);
+  assert.equal(workspace.getExecution(execution.id)?.state, 'unknown');
+  await assert.rejects(workspace.submit(conversation.id, 'again'), ConversationBusyError);
+
+  adapter.closeError = undefined;
+  await workspace.closeConversation(conversation.id);
+  assert.equal(workspace.getConversation(conversation.id), undefined);
+});
+
+test('does not expose mutable conversation state', async (t) => {
+  const { adapter, workspace, conversation, project } = await setup();
+  t.after(() => workspace.stop());
+  const originalDirectory = project.directory;
+
+  Reflect.set(conversation, 'nativeId', 'different-native');
+  Reflect.set(conversation.project, 'directory', 'Z:/changed');
+  Reflect.set(project, 'directory', 'Z:/changed-too');
+  await workspace.submit(conversation.id, 'hello');
+
+  assert.equal(adapter.submissions[0]?.nativeId, adapter.nativeId);
+  assert.equal(adapter.projects[0]?.directory, originalDirectory);
+
+  const fetched = workspace.getConversation(conversation.id);
+  assert.equal(fetched?.nativeId, adapter.nativeId);
+  assert.equal(fetched?.project.directory, originalDirectory);
+  Reflect.set(fetched!, 'nativeId', 'mutated-again');
+  assert.equal(workspace.getConversation(conversation.id)?.nativeId, adapter.nativeId);
 });

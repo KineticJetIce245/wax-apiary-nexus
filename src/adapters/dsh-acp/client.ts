@@ -82,6 +82,7 @@ export class AcpRpcClient {
     this.readline = createInterface({ input: child.stdout, crlfDelay: Infinity });
     this.readline.on('line', (line) => this.handleLine(line));
     child.on('exit', (code, signal) => this.handleExit(code, signal));
+    child.on('error', (error) => this.failAll(new AcpConnectionClosedError(error.message)));
     child.stdin.on('error', (error) => this.failAll(new AcpConnectionClosedError(error.message)));
     child.stdout.on('error', (error) => this.failAll(new AcpConnectionClosedError(error.message)));
   }

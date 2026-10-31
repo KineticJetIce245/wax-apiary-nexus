@@ -45,6 +45,10 @@ export interface HarnessCapabilities {
   readonly approval: 'interactive' | 'policy-only' | 'none';
   readonly cancel: boolean;
   readonly streaming: boolean;
+  /**
+   * True only when this adapter implements and has tested a resume operation.
+   * An upstream harness supporting resume is not sufficient to advertise it.
+   */
   readonly resume: boolean;
 }
 

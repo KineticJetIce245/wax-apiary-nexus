@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Project } from './kernel.js';
+import { assertProjectDirectory } from './project-directory.js';
 import type {
   ApprovalDecisionKind,
   ApprovalRequest,
@@ -152,10 +153,12 @@ export class Workspace {
   }
 
   async createConversation(project: Project): Promise<Conversation> {
-    const nativeId = await this.adapter.createConversation(project);
-    const conversation: Conversation = { id: randomUUID(), project, nativeId };
+    assertProjectDirectory(project.directory);
+    const storedProject: Project = { id: project.id, directory: project.directory };
+    const nativeId = await this.adapter.createConversation({ ...storedProject });
+    const conversation: Conversation = { id: randomUUID(), project: storedProject, nativeId };
     this.conversations.set(conversation.id, conversation);
-    return conversation;
+    return snapshotConversation(conversation);
   }
 
   async submit(conversationId: string, text: string): Promise<Execution> {
@@ -164,6 +167,7 @@ export class Workspace {
     if (conversation === undefined) {
       throw new UnknownConversationError(conversationId);
     }
+    assertProjectDirectory(conversation.project.directory);
     if (text.trim() === '') {
       throw new Error('Prompt text must not be empty');
     }
@@ -257,14 +261,28 @@ export class Workspace {
 
     try {
       await this.adapter.closeConversation(conversation.nativeId);
-    } finally {
-      this.conversations.delete(conversationId);
-      this.activeExecutionByConversation.delete(conversationId);
+    } catch (error) {
       if (activeId !== undefined) {
         const execution = this.executions.get(activeId);
-        if (execution !== undefined) {
-          this.finish(execution, 'cancelled');
+        if (execution !== undefined && execution.state === 'running') {
+          this.finish(
+            execution,
+            'unknown',
+            undefined,
+            `Conversation close failed: ${messageOf(error)}`,
+            { preserveActive: true },
+          );
         }
+      }
+      throw error;
+    }
+
+    this.conversations.delete(conversationId);
+    this.activeExecutionByConversation.delete(conversationId);
+    if (activeId !== undefined) {
+      const execution = this.executions.get(activeId);
+      if (execution !== undefined) {
+        this.finish(execution, 'cancelled');
       }
     }
   }
@@ -290,7 +308,8 @@ export class Workspace {
   }
 
   getConversation(conversationId: string): Conversation | undefined {
-    return this.conversations.get(conversationId);
+    const conversation = this.conversations.get(conversationId);
+    return conversation === undefined ? undefined : snapshotConversation(conversation);
   }
 
   getExecution(executionId: string): Execution | undefined {
@@ -434,6 +453,7 @@ export class Workspace {
     state: Exclude<ExecutionState, 'running'>,
     stopReason?: StopReason,
     error?: string,
+    options: { readonly preserveActive?: boolean } = {},
   ): void {
     if (execution.state !== 'running') {
       return;
@@ -445,7 +465,9 @@ export class Workspace {
     if (error !== undefined) {
       execution.error = error;
     }
-    this.activeExecutionByConversation.delete(execution.conversationId);
+    if (options.preserveActive !== true) {
+      this.activeExecutionByConversation.delete(execution.conversationId);
+    }
     for (const requestId of [...this.pendingApprovals.keys()]) {
       const pending = this.pendingApprovals.get(requestId);
       if (pending?.request.executionId === execution.id) {
@@ -491,6 +513,14 @@ function snapshot(execution: MutableExecution): Execution {
     output: execution.output,
     ...(execution.stopReason === undefined ? {} : { stopReason: execution.stopReason }),
     ...(execution.error === undefined ? {} : { error: execution.error }),
+  };
+}
+
+function snapshotConversation(conversation: Conversation): Conversation {
+  return {
+    id: conversation.id,
+    nativeId: conversation.nativeId,
+    project: { ...conversation.project },
   };
 }
 

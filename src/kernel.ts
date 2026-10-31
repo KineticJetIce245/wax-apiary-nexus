@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { statSync, type Stats } from 'node:fs';
 import { resolve } from 'node:path';
+import { assertProjectDirectory } from './project-directory.js';
 
 export interface Project {
   readonly id: string;
@@ -19,7 +19,7 @@ export function createKernel(): Kernel {
     registerProject(directory, id) {
       const projectId = id ?? randomUUID();
       const resolvedDirectory = resolve(directory);
-      assertDirectory(resolvedDirectory);
+      assertProjectDirectory(resolvedDirectory);
       if (projects.has(projectId)) {
         throw new Error(`Project ID "${projectId}" is already registered`);
       }
@@ -34,20 +34,4 @@ export function createKernel(): Kernel {
       return project ? { ...project } : null;
     },
   };
-}
-
-function assertDirectory(directory: string): void {
-  let stats: Stats;
-  try {
-    stats = statSync(directory);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`Project directory does not exist: ${directory}`);
-    }
-    throw error;
-  }
-
-  if (!stats.isDirectory()) {
-    throw new Error(`Project path is not a directory: ${directory}`);
-  }
 }

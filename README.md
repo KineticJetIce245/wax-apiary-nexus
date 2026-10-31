@@ -49,6 +49,8 @@ node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-e
 
 Composition Runtime（API，G007）：在既有 DSH/Codex 原生会话上运行 `single-chat` 或简单 `debate`，切换策略只增加 Composition 版本、不新建会话；当前没有 CLI/Web 入口，契约见 [composition.md](contract/composition.md)。
 
+Native Collaboration（API，G009）：Codex 通过原生 MCP 工具 `delegate_to_worker` 调用 localhost Gateway，把任务交给 DSH，拿回 Worker Result 后继续自己的原生 turn；当前没有 CLI/Web 配置入口，契约见 [collaboration.md](contract/collaboration.md)。
+
 ## 本地研究材料
 
 `.research-sources/` 保存官方源码参考材料，默认排除出未来的主项目版本控制；版本与路径见研究索引。研究材料不属于产品依赖，未安装这些项目的依赖，未启动其服务。

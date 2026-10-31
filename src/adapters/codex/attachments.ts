@@ -21,6 +21,13 @@ export function attachmentForItem(
 ): AttachmentDraft | undefined {
   let path: string | undefined;
   if (type === 'imageGeneration') {
+    // A failed generation can still carry metadata; a path is not a result.
+    if (item.failure !== undefined && item.failure !== null) {
+      return undefined;
+    }
+    if (item.status === 'failed') {
+      return undefined;
+    }
     path = asString(item.savedPath);
   } else if (type === 'imageView') {
     path = asString(item.path);

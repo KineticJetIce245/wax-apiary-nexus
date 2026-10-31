@@ -390,7 +390,7 @@ export class Workspace {
         if (execution === undefined || event.attachment.path.trim() === '') {
           return;
         }
-        const attachment: Attachment = { id: randomUUID(), ...event.attachment };
+        const attachment: Attachment = { ...event.attachment, id: randomUUID() };
         execution.attachments.push(attachment);
         this.emit({ type: 'execution/attachment', executionId: event.executionId, attachment });
         return;

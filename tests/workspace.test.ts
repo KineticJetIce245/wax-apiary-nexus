@@ -233,7 +233,8 @@ test('records attachment events, snapshots them, and ignores late attachments', 
       mimeType: 'image/png',
       name: 'generated.png',
       byteLength: 123,
-    },
+      id: 'adapter-supplied-id',
+    } as never,
   });
   adapter.emit({
     type: 'execution/attachment',
@@ -257,6 +258,7 @@ test('records attachment events, snapshots them, and ignores late attachments', 
   assert.equal(settled?.attachments[0]?.kind, 'image');
   assert.equal(settled?.attachments[0]?.name, 'generated.png');
   assert.equal(settled?.attachments[0]?.byteLength, 123);
+  assert.notEqual(settled?.attachments[0]?.id, 'adapter-supplied-id');
   assert.equal(settled?.attachments[1]?.kind, 'file');
   assert.ok(settled?.attachments[0]?.id !== settled?.attachments[1]?.id);
 

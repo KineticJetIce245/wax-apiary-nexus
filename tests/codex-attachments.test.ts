@@ -20,6 +20,24 @@ test('maps completed Codex image generations and image views', () => {
   assert.equal(attachmentForItem('imageGeneration', { savedPath: 'C:\\tmp\\a.gif' })?.mimeType, 'image/gif');
 });
 
+test('does not turn a failed image generation into an attachment', () => {
+  assert.equal(
+    attachmentForItem('imageGeneration', {
+      savedPath: 'C:\\tmp\\a.png',
+      failure: { message: 'blocked' },
+    }),
+    undefined,
+  );
+  assert.equal(
+    attachmentForItem('imageGeneration', {
+      savedPath: 'C:\\tmp\\a.png',
+      status: 'failed',
+    }),
+    undefined,
+  );
+  assert.equal(attachmentForItem('imageGeneration', { status: 'completed', savedPath: 'C:\\tmp\\a.png' })?.kind, 'image');
+});
+
 test('keeps unknown extensions as files and ignores missing paths', () => {
   assert.deepEqual(attachmentForItem('imageGeneration', { savedPath: 'C:\\tmp\\a.bin' }), {
     kind: 'file',

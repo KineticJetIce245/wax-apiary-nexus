@@ -11,8 +11,8 @@
 - [AI 工程契约与反过度工程规则](AGENTS.md)：项目内 AI 工作规范，保留项目所有者的重大决策权。
 - [完整愿景与研究章程 v2.0](docs/vision.md)：原样保存用户提供的讨论结果。
 - [整体设计大纲](docs/architecture.md)：模块边界与需要回答的设计问题。
-- [当前小目标 G001](docs/current-goal.md)：最小内核登记并读取 Project；语言与具体范围待确认，完成后再定义下一项。
-- [内核语言提案](docs/adr/0001-kernel-language.md)：建议 TypeScript + Node.js，尚未采纳。
+- [当前小目标 G001 与 DeepSeek 交接](docs/current-goal.md)：已确认可开工，DeepSeek 实现并测试，Codex 复核。
+- [内核技术决定](docs/adr/0001-kernel-language.md)：TypeScript + Node.js 26 LTS + npm，已采纳。
 - [Git 追踪约定](docs/git-trace.md)：目标、提交与验收证据的关联。
 - [Cordis 初步研究](docs/research/cordis.md)：独立插件运行时、DSH vendoring、生命周期和能力边界。
 - [AionUi / AionCore 初步研究](docs/research/aionui.md)：原生会话接入、恢复、团队通信与复用边界。
@@ -23,7 +23,7 @@
 
 ## 当前边界
 
-已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。尚未决定直接采用哪个 Cordis 发行分支、是否扩展已有项目、最终语言、数据库或前端框架。
+已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。当前内核采用 TypeScript + Node.js 26 LTS + npm。Cordis 选用、已有项目的复用路线、数据库及前端框架仍待验证和决定。
 
 目前没有 Workspace 实现，也没有已通过的 Harness 实测。先读官方源码，再用最小实验验证；不把项目宣传、接口声明或上游测试文件当成本地运行结果。
 

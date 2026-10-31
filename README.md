@@ -11,7 +11,7 @@
 - [AI 工程契约与反过度工程规则](AGENTS.md)：项目内 AI 工作规范，保留项目所有者的重大决策权。
 - [完整愿景与研究章程 v2.0](docs/vision.md)：原样保存用户提供的讨论结果。
 - [整体设计大纲](docs/architecture.md)：模块边界与需要回答的设计问题。
-- [当前小目标 G001 与 DeepSeek 交接](docs/current-goal.md)：最小内核已实现并自测通过，待 Codex 复核。
+- [当前小目标 G001 与 DeepSeek 交接](docs/current-goal.md)：引用泄漏已修正并补回归测试，待 Codex 再复核。
 - [内核技术决定](docs/adr/0001-kernel-language.md)：TypeScript + Node.js 26 LTS + npm，已采纳。
 - [Git 追踪约定](docs/git-trace.md)：目标、提交与验收证据的关联。
 - [Cordis 初步研究](docs/research/cordis.md)：独立插件运行时、DSH vendoring、生命周期和能力边界。

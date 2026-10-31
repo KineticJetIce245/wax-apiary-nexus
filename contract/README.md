@@ -84,7 +84,10 @@ submit() 返回前开始
 1. `submit` 在原生层**接受**这一轮后即可返回，不等待完成；完成通过事件表达。
 2. 每个 execution 必须恰好收到一个终态事件。终态之后的事件必须被忽略或不再发出。
 3. 适配器不得自行重试、重放或重新提交一轮；不确定的失败只能报 `unknown`。
-4. **必须区分“原生明确拒绝”与“提交结果不确定”。** 原生返回错误响应是明确拒绝（普通 `Error`）；响应超时、连接中断或迟到响应属于结果不确定，必须抛出 [`SubmitOutcomeUnknownError`](../src/adapters/harness.ts)，并在原生会话上保留活跃关联。Workspace 会把该执行结算为 `unknown` 并保持会话 busy，直到收到该执行的终态事件或关闭/停止；适配器不得在另一层释放这个关联。
+4. **必须区分“原生明确拒绝”与“提交结果不确定”。** 原生返回错误响应是明确拒绝（普通 `Error`）。响应超时或连接中断时：
+   - 若尚未观察到 `turn/started`，视为结果不确定，必须抛出 [`SubmitOutcomeUnknownError`](../src/adapters/harness.ts)，并在原生会话上保留活跃关联；Workspace 会把该执行结算为 `unknown` 并保持会话 busy，直到收到该执行的终态事件或关闭/停止。
+   - 若已经观察到 `turn/started`，说明原生已接受这一轮：不得报 failed，应继续等待终态（`execution/started` 已发出，后续输出/终态仍归属该执行）。
+   适配器不得在另一层释放这个关联。
 5. `execution/output` 的 `channel` 为 `assistant` 时计入 Workspace 输出；`thought` 只用于展示。
 6. `stop()` 或进程/连接丢失时，仍在运行的 execution 必须报 `execution/unknown`，并附上原因。
 7. 原生层的“完成”不等于“成功”：`completed` 只用于原生明确结束；失败、取消、未知必须分开报。
@@ -139,7 +142,7 @@ submit() 返回前开始
 - [ ] `start` 幂等；`stop` 后所有操作失败
 - [ ] 每个 execution 恰好一个终态；终态后无事件
 - [ ] 同一会话拒绝重叠 `submit`；closing 期间拒绝新提交
-- [ ] 区分原生明确拒绝与提交结果不确定：后者抛 `SubmitOutcomeUnknownError` 并保留活跃关联，不解除互斥
+- [ ] 区分原生明确拒绝与提交结果不确定：未见 `turn/started` 的响应超时抛 `SubmitOutcomeUnknownError` 并保留活跃关联；已见 `turn/started` 则继续等待终态，不报 failed、不解除互斥
 - [ ] 未知 `nativeId` 的 `submit` 拒绝；未知 `requestId` 的审批拒绝
 - [ ] 审批请求的 `turnId` 必须属于当前活跃轮次；旧轮审批必须拒绝
 - [ ] 审批的 `cancelled` 会中断原生轮次；未结算审批不会永久挂起

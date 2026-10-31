@@ -1,4 +1,4 @@
-# 执行结果内容契约（G006 Phase 1，v1）
+# 执行结果内容契约（G006 Phase 1 + 3，v1）
 
 本文描述一次 Execution 的结果如何携带文本、图片、文件和链接。它是 **Execution 结果**，不是流程卡（见 [`flow.md`](flow.md)），也不是 Web 渲染协议。
 
@@ -10,9 +10,10 @@ Phase 1 做到：
 - `execution/attachment` 事件；
 - Codex `imageGeneration` / `imageView` 映射为本地附件；
 - CLI 打印附件；
-- `Workbench.getResultEnvelope` 返回文本 + 附件的统一信封。
+- `Workbench.getResultEnvelope` 返回文本 + 附件的统一信封；
+- Phase 3：`submit`/`transfer` 接受附件；Codex `localImage`；DSH 在 initialize 声明 `promptCapabilities.image` 时发送 ACP image，否则回退文本清单；Flow 节点可用 `attachments` 引用上游附件。
 
-**不做**：Web 服务器、图片复制/托管、浏览器渲染、把附件作为流程输入或跨 Harness 转交、持久化、ACP 图片支持（未证实）。
+**不做**：Web 服务器（Phase 2 另做）、图片复制/托管、浏览器渲染、持久化；文件附件没有原生通用输入通道，只保留文本路径清单。
 
 ## 2. 类型
 
@@ -106,7 +107,23 @@ const envelope = workbench.getResultEnvelope('codex', executionId);
 [codex] attachment image generated.png (image/png)
 ```
 
-## 6. 安全与 Phase 2 边界
+## 6. 附件输入与转交（Phase 3）
+
+```ts
+workspace.submit(conversationId, text, attachments?);
+workbench.submit(text, target?, attachments?);
+workbench.transfer(source, executionId, target, instruction?);
+```
+
+- `transfer` 收集源 Execution 的 `attachments`，在文本里追加附件清单（name、mime、本地路径），并把附件传给目标 `submit`。
+- Codex：image/* 且 kind=image 的附件映射为 `turn/start.input` 的 `{type:'localImage', path}`；其他附件只走文本清单。
+- DSH：初始化响应 `agentCapabilities.promptCapabilities.image === true` 时，把 image/* 附件编码成 ACP `{type:'image', data, mimeType}`；否则/读取失败时只发文本清单。
+- Flow：submit 节点的 `attachments: ["upstreamId"]` 会把上游已产生的附件作为本次输入；引用不可用时在提交前失败。
+- 附件不复制、不重试；目标 Harness 必须能访问该本地路径。文件附件没有统一的原生输入块，路径清单是回退。
+
+真实探测（2026-10-31）：Codex 收到 `localImage` 后回答 `RED`；DSH 直接图片输入回答 `RED`；fake source → DSH 的跨连接 transfer 返回 `submitted`、1 个附件、输入含路径、目标回答 `RED`。
+
+## 7. 安全与 Web 边界
 
 当前 `path` 直接来自原生 Harness，可能是项目外路径。Phase 2 要上 Web 前必须补：
 
@@ -116,8 +133,8 @@ const envelope = workbench.getResultEnvelope('codex', executionId);
 4. 访问控制、清理策略、结果生命周期；
 5. 大文件不 base64 内联。
 
-## 7. 演进
+## 8. 演进
 
 - 新增 part 类型必须提升 `version` 或明确向后兼容；
-- 附件输入、跨 Harness 转交、FlowRuntime 富内容引用属于 Phase 3；
+- 文件附件的原生输入、附件复制/持久化、Web 写操作仍未做；
 - 不把内容类型塞进流程卡；Composition/Strategy 语义不变。

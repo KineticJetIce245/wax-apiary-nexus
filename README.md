@@ -45,7 +45,7 @@ node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-e
 /flow cancel
 ```
 
-支持顺序、条件分叉和跨连接的单层并行汇合；流程数据校验会拒绝环、未知引用、同连接并行分支等。没有循环、嵌套并行、运行中改图或跨重启恢复。示例见 `examples/flows/`，格式、校验与执行语义见 [声明式流程契约](contract/flow.md)。执行结果可通过 `Workbench.getResultEnvelope` 取得文本与本地附件；CLI 会打印附件，但当前没有 Web 展示或附件托管，见 [结果内容契约](contract/result.md)。
+支持顺序、条件分叉和跨连接的单层并行汇合；流程数据校验会拒绝环、未知引用、同连接并行分支等。没有循环、嵌套并行、运行中改图或跨重启恢复。示例见 `examples/flows/`，格式、校验与执行语义见 [声明式流程契约](contract/flow.md)。执行结果可通过 `Workbench.getResultEnvelope` 取得文本与本地附件；CLI 会打印附件，但当前没有 Web 展示或附件托管，见 [结果内容契约](contract/result.md)。手动 transfer 会携带源 Execution 的附件；Codex 图片走 `localImage`，DSH 在声明图片能力时走 ACP image，否则保留文本路径清单；Flow 节点可用 `attachments` 引用上游附件。
 
 ## 本地研究材料
 

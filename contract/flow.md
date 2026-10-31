@@ -60,6 +60,7 @@
 - `prompt` 非空；模板只允许 `{{input}}` 与已完成 submit 节点的 id。
 - `next` 是字符串或条件对象。
 - 作为并行分支时不能有 `next`。
+- `attachments` 可选，是上游 submit 节点 id 列表；把这些节点产生的附件作为本次输入。路径由 Execution 记录，不写进 JSON。
 
 ### parallel
 
@@ -103,7 +104,7 @@
 
 - version/strategy/start/nodes/participants 合法；start 不是 end、不是并行分支。
 - 节点 id、participant 名匹配 `[A-Za-z0-9_-]+`；id 唯一。
-- submit：participant 存在、prompt 非空、next 存在；并行分支叶子不得有 next。
+- submit：participant 存在、prompt 非空、next 存在；并行分支叶子不得有 next；`attachments` 目标必须是存在的 submit 节点，不能引用自己。
 - parallel：branches ≥ 2、不重复、目标为 submit 叶子、不同连接、每个分支只属于一个并行组、分支不能被其他 next 指向。
 - next/then/else 目标存在；条件格式合法。
 - 所有节点从 start 可达；存在 end；图中没有环。
@@ -117,6 +118,7 @@
 | 条件 | 用本节点输出选 then/else，只走一条路径 |
 | 并行 | 同时提交不同连接上的分支；全部 completed 后进入 next |
 | 失败/unknown | 停止流程，不重试、不重放；已完成输出保留在结果 |
+| 附件 | 节点引用上游附件并在提交时传给 Connection；缺失附件在提交前失败；不把二进制写进 JSON |
 | 审批 | 复用 Workbench/Workspace；流程等待用户回答，不自动放行 |
 | 取消 | 取消在飞节点；未开始的节点不再提交；状态 cancelled |
 | 重启 | 状态只在内存，进程退出即丢失 |
@@ -146,6 +148,7 @@ runtime.result; // FlowResult | undefined
     executionId?: string;
     connection?: string;
     output?: string;
+    attachments?: Attachment[]; // 本节点执行产生的附件
     error?: string;
   }>;
   error?: string;

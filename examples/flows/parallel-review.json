@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "id": "parallel-review",
+  "strategy": "graph",
+  "input": "Design a minimal command-line calendar for one user.",
+  "participants": {
+    "planner": { "connection": "dsh" },
+    "reviewer": { "connection": "codex" }
+  },
+  "start": "plan",
+  "nodes": {
+    "plan": {
+      "participant": "planner",
+      "prompt": "Write a short plan for: {{input}}\nEnd your reply with exactly PLAN-OK.",
+      "next": "reviews"
+    },
+    "reviews": {
+      "type": "parallel",
+      "branches": ["review-a", "review-b"],
+      "next": "merge"
+    },
+    "review-a": {
+      "participant": "reviewer",
+      "prompt": "Review this plan for technical risks in two sentences.\nEnd your reply with exactly REVIEW-A-OK.\n\n{{plan}}"
+    },
+    "review-b": {
+      "participant": "planner",
+      "prompt": "Review this plan for simplicity in two sentences.\nEnd your reply with exactly REVIEW-B-OK.\n\n{{plan}}"
+    },
+    "merge": {
+      "participant": "planner",
+      "prompt": "Combine the two reviews into one short decision. Mention both review tokens if present, then end with exactly MERGED-OK.\n\nA: {{review-a}}\nB: {{review-b}}",
+      "next": "done"
+    },
+    "done": { "type": "end" }
+  }
+}

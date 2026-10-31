@@ -4,6 +4,8 @@ import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
 import type { ApprovalDecisionKind } from './adapters/harness.js';
 import { ApprovalInbox } from './approval-inbox.js';
 import { createCodexConnection } from './connection.js';
+import { loadFlowDefinition } from './flow-definition.js';
+import { FlowRuntime, type FlowEvent } from './flow-runtime.js';
 import { createKernel } from './kernel.js';
 import { createRenderState, renderTaggedEvent } from './workbench-renderer.js';
 import { Workbench, type ConnectionSpec, type TaggedWorkspaceEvent } from './workbench.js';
@@ -35,6 +37,9 @@ function usage(): string {
     '  /cancel <connection> <execution-id>  Cancel that connection execution',
     '  /transfer <source> <execution-id> <target> [instruction...]',
     '  /records                             Show in-memory transfer records',
+    '  /flow run <file>                     Start a declarative graph flow',
+    '  /flow status                         Show the current or last flow',
+    '  /flow cancel                         Cancel the running flow',
     '  /close <connection>                  Close one connection',
     '  /quit                                Close and stop all connections',
     '',
@@ -139,6 +144,8 @@ async function main(): Promise<void> {
   const inbox = new ApprovalInbox();
   const renderState = createRenderState();
   let shuttingDown = false;
+  let flowRuntime: FlowRuntime | undefined;
+  let flowRunning: Promise<void> | undefined;
 
   const printPrompt = (): void => {
     if (shuttingDown) {
@@ -154,6 +161,14 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     readline.close();
+    try {
+      await flowRuntime?.cancel();
+      if (flowRunning !== undefined) {
+        await flowRunning.catch(() => undefined);
+      }
+    } catch {
+      // Flow cancellation must not prevent connection cleanup.
+    }
     try {
       await workbench.stop();
     } catch (error) {
@@ -265,6 +280,14 @@ async function main(): Promise<void> {
         printApprovals();
       } else if (line === '/records') {
         printRecords();
+      } else if (line === '/flow') {
+        process.stdout.write('Usage: /flow run <file> | /flow status | /flow cancel\n');
+      } else if (line.startsWith('/flow run ')) {
+        await runFlow(line.slice('/flow run '.length).trim());
+      } else if (line === '/flow status') {
+        printFlowStatus();
+      } else if (line === '/flow cancel') {
+        await cancelFlow();
       } else if (line.startsWith('/use ')) {
         workbench.use(line.slice(5).trim());
         process.stdout.write(`target: ${workbench.activeConnection}\n`);
@@ -371,6 +394,103 @@ async function main(): Promise<void> {
     }
     await workbench.cancel(connection, executionId);
     process.stdout.write(`cancel requested on ${connection} for ${executionId}\n`);
+  }
+
+  async function runFlow(path: string): Promise<void> {
+    if (path === '') {
+      throw new Error('Usage: /flow run <file>');
+    }
+    if (flowRunning !== undefined) {
+      throw new Error('A flow is already running; use /flow status or /flow cancel');
+    }
+    const definition = loadFlowDefinition(path);
+    const runtime = new FlowRuntime(workbench, definition, { pollIntervalMs: 50 });
+    flowRuntime = runtime;
+    runtime.onEvent(renderFlowEvent);
+    process.stdout.write(
+      `\n[flow] started ${runtime.flowId} (${String(Object.keys(definition.nodes).length)} nodes)\n`,
+    );
+    flowRunning = runtime
+      .run()
+      .then((result) => {
+        process.stdout.write(
+          `\n[flow] ${result.status}` +
+            `${result.error === undefined ? '' : `: ${result.error}`}\n`,
+        );
+        for (const state of Object.values(result.nodes)) {
+          if (state.status !== 'pending') {
+            process.stdout.write(
+              `[flow] node ${state.nodeId} ${state.status}` +
+                `${state.executionId === undefined ? '' : ` (${state.executionId.slice(0, 8)})`}\n`,
+            );
+          }
+        }
+      })
+      .catch((error: unknown) => {
+        process.stderr.write(`[flow] failed: ${messageOf(error)}\n`);
+      })
+      .finally(() => {
+        flowRunning = undefined;
+      });
+  }
+
+  function renderFlowEvent(event: FlowEvent): void {
+    switch (event.type) {
+      case 'flow/started':
+        return;
+      case 'node/started':
+        process.stdout.write(
+          `\n[flow] node ${event.nodeId} -> ${event.connection} (${event.executionId.slice(0, 8)})\n`,
+        );
+        return;
+      case 'node/completed':
+        process.stdout.write(`\n[flow] node ${event.nodeId} completed\n`);
+        return;
+      case 'node/failed':
+        process.stdout.write(
+          `\n[flow] node ${event.nodeId} ${event.status}` +
+            `${event.error === undefined ? '' : `: ${event.error}`}\n`,
+        );
+        return;
+      case 'flow/completed':
+        process.stdout.write('\n[flow] completed\n');
+        return;
+      case 'flow/failed':
+        process.stdout.write(`\n[flow] ${event.status}: ${event.error}\n`);
+        return;
+      case 'flow/cancelled':
+        process.stdout.write('\n[flow] cancelled\n');
+        return;
+    }
+  }
+
+  function printFlowStatus(): void {
+    if (flowRuntime === undefined) {
+      process.stdout.write('no flow has run\n');
+      return;
+    }
+    process.stdout.write(`flow ${flowRuntime.flowId}: ${flowRuntime.status}\n`);
+    const result = flowRuntime.result;
+    if (result === undefined) {
+      return;
+    }
+    for (const state of Object.values(result.nodes)) {
+      if (state.status !== 'pending') {
+        process.stdout.write(
+          `  ${state.nodeId} ${state.status}` +
+            `${state.executionId === undefined ? '' : ` (${state.executionId.slice(0, 8)})`}\n`,
+        );
+      }
+    }
+  }
+
+  async function cancelFlow(): Promise<void> {
+    if (flowRuntime === undefined || flowRuntime.status !== 'running') {
+      process.stdout.write('no running flow\n');
+      return;
+    }
+    await flowRuntime.cancel();
+    process.stdout.write('flow cancel requested\n');
   }
 
   async function transfer(line: string): Promise<void> {

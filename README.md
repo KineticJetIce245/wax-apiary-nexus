@@ -35,6 +35,16 @@ node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-e
 
 命令：`/use` 切换输入目标，`/status` 查看连接，`/approvals` 与 `/approve` 处理审批，`/cancel` 取消执行，`/transfer <source> <execution-id> <target> [instruction]` 显式转交一次已完成的 assistant 结果，`/records` 查看内存转交记录，`/close` 关闭单个连接，`/quit` 全部退出。缺少一侧时另一侧仍可单独使用。本实验只在 Windows 实测，没有持久化、自动多轮协作或共享文件并发写保证。
 
+声明式流程用 JSON 描述，不写 TypeScript：
+
+```bash
+/flow run examples/flows/review-chain.json
+/flow status
+/flow cancel
+```
+
+支持顺序、条件分叉和跨连接的单层并行汇合；流程数据校验会拒绝环、未知引用、同连接并行分支等。没有循环、嵌套并行、运行中改图或跨重启恢复。示例见 `examples/flows/`。
+
 ## 本地研究材料
 
 `.research-sources/` 保存官方源码参考材料，默认排除出未来的主项目版本控制；版本与路径见研究索引。研究材料不属于产品依赖，未安装这些项目的依赖，未启动其服务。

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "review-chain",
+  "strategy": "graph",
+  "input": "Design a minimal command-line calendar for one user.",
+  "participants": {
+    "planner": { "connection": "dsh" },
+    "reviewer": { "connection": "codex" }
+  },
+  "start": "plan",
+  "nodes": {
+    "plan": {
+      "participant": "planner",
+      "prompt": "Write a short three-step plan for: {{input}}\nEnd your reply with exactly PLAN-OK.",
+      "next": "review"
+    },
+    "review": {
+      "participant": "reviewer",
+      "prompt": "Review the plan below. If it is acceptable, reply with exactly REVIEW-OK; otherwise reply with exactly REVIEW-NO followed by one sentence.\n\n{{plan}}",
+      "next": {
+        "contains": "REVIEW-OK",
+        "then": "done",
+        "else": "revise"
+      }
+    },
+    "revise": {
+      "participant": "planner",
+      "prompt": "Revise the plan using the review below. End your reply with exactly REVISED-OK.\n\nReview:\n{{review}}\n\nOriginal plan:\n{{plan}}",
+      "next": "done"
+    },
+    "done": { "type": "end" }
+  }
+}

@@ -338,10 +338,14 @@ async function main(): Promise<void> {
       return;
     }
     for (const record of records) {
+      const target =
+        record.target.executionId === undefined
+          ? undefined
+          : workbench.getExecution(record.target.connection, record.target.executionId)?.execution;
       process.stdout.write(
         `${record.id.slice(0, 8)} ${record.outcome} ${record.source.connection}:${record.source.executionId.slice(0, 8)} ` +
           `-> ${record.target.connection}:${record.target.executionId?.slice(0, 8) ?? 'unknown'} ` +
-          `(${String(record.input.length)} chars)\n`,
+          `(${target?.state ?? 'unknown'}, ${String(record.input.length)} chars)\n`,
       );
     }
   }

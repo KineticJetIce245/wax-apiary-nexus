@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test \"dist/tests/**/*.test.js\""
+    "demo": "npm run build && node dist/src/cli.js",
+    "test": "npm run build && node --test \"dist/tests/*.test.js\"",
+    "test:integration": "npm run build && node --test \"dist/tests/integration/**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "26.6.6",

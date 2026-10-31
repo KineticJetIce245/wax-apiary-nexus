@@ -1,6 +1,13 @@
 import { createInterface } from 'node:readline';
-import type { ApprovalDecisionKind, ApprovalRequest } from './adapters/harness.js';
+import type { ApprovalDecisionKind, ApprovalRequest, HarnessAdapter } from './adapters/harness.js';
+import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
+import {
+  createCodexConnection,
+  loadConnectionConfig,
+  type ConnectionConfig,
+  type HarnessKind,
+} from './connection.js';
 import { createKernel } from './kernel.js';
 import {
   ConversationBusyError,
@@ -12,6 +19,9 @@ import {
 interface CliOptions {
   readonly projectDir: string;
   readonly dshRoot?: string;
+  readonly harness?: HarnessKind;
+  readonly codexExe?: string;
+  readonly configPath?: string;
   readonly approvalTimeoutMs: number;
 }
 
@@ -22,12 +32,15 @@ function usage(): string {
     'Usage: node dist/src/cli.js <project-dir> [options]',
     '',
     'Options:',
+    '  --harness <dsh|codex>        Native harness driver (default: dsh)',
+    '  --config <path>              Local connection config: { "harness", "connection": "local", "executable" }',
     '  --dsh-root <path>            DSH checkout containing apps/cli/lib/bin.js',
+    '  --codex-exe <path>           Codex executable override; otherwise PATH is searched',
     '  --approval-timeout-ms <n>    Cancel an unanswered approval after n ms (default 120000)',
     '  -h, --help                   Show this help',
     '',
     'Environment:',
-    '  DSH_ROOT                     Used when --dsh-root is omitted',
+    '  DSH_ROOT                     Used when --dsh-root is omitted (dsh harness)',
     '',
     'Commands:',
     '  /cancel                      Cancel the running execution',
@@ -41,6 +54,9 @@ function usage(): string {
 function parseArgs(argv: readonly string[]): CliOptions | undefined {
   let projectDir: string | undefined;
   let dshRoot: string | undefined;
+  let harness: HarnessKind | undefined;
+  let codexExe: string | undefined;
+  let configPath: string | undefined;
   let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -54,6 +70,25 @@ function parseArgs(argv: readonly string[]): CliOptions | undefined {
     }
     if (arg === '--dsh-root') {
       dshRoot = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg === '--harness') {
+      const raw = argv[index + 1];
+      index += 1;
+      if (raw !== 'dsh' && raw !== 'codex') {
+        throw new Error(`Invalid --harness: ${String(raw)} (expected dsh or codex)`);
+      }
+      harness = raw;
+      continue;
+    }
+    if (arg === '--codex-exe') {
+      codexExe = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg === '--config') {
+      configPath = argv[index + 1];
       index += 1;
       continue;
     }
@@ -83,7 +118,31 @@ function parseArgs(argv: readonly string[]): CliOptions | undefined {
     projectDir,
     approvalTimeoutMs,
     ...(dshRoot === undefined ? {} : { dshRoot }),
+    ...(harness === undefined ? {} : { harness }),
+    ...(codexExe === undefined ? {} : { codexExe }),
+    ...(configPath === undefined ? {} : { configPath }),
   };
+}
+
+async function createAdapter(
+  options: CliOptions,
+  config: ConnectionConfig | undefined,
+): Promise<{ readonly adapter: HarnessAdapter; readonly label: string }> {
+  const harness = options.harness ?? config?.harness ?? 'dsh';
+  if (harness === 'codex') {
+    const executable = options.codexExe ?? config?.executable;
+    const connection = await createCodexConnection(executable === undefined ? {} : { executable });
+    return {
+      adapter: new CodexAppServerAdapter({ launch: connection.launch }),
+      label: `codex ${connection.version.version} (${connection.launch.file})`,
+    };
+  }
+
+  const dshRoot = options.dshRoot ?? process.env.DSH_ROOT;
+  if (dshRoot === undefined || dshRoot.trim() === '') {
+    throw new Error('DSH_ROOT or --dsh-root is required for the dsh harness');
+  }
+  return { adapter: new DshAcpAdapter({ dshRoot }), label: `dsh (${dshRoot})` };
 }
 
 async function main(): Promise<void> {
@@ -91,14 +150,11 @@ async function main(): Promise<void> {
   if (options === undefined) {
     return;
   }
-  const dshRoot = options.dshRoot ?? process.env.DSH_ROOT;
-  if (dshRoot === undefined || dshRoot.trim() === '') {
-    throw new Error('DSH_ROOT or --dsh-root is required');
-  }
+  const config = options.configPath === undefined ? undefined : loadConnectionConfig(options.configPath);
 
   const kernel = createKernel();
   const project = kernel.registerProject(options.projectDir);
-  const adapter = new DshAcpAdapter({ dshRoot });
+  const { adapter, label } = await createAdapter(options, config);
   const workspace = new Workspace(adapter, { approvalTimeoutMs: options.approvalTimeoutMs });
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   // Keep piped input buffered until startup and the line handler are ready.
@@ -187,7 +243,9 @@ async function main(): Promise<void> {
     await adapter.start();
     const conversation = await workspace.createConversation(project);
     conversationId = conversation.id;
-    process.stdout.write(`project: ${project.directory}\nconversation: ${conversation.id}\n`);
+    process.stdout.write(
+      `harness: ${label}\nproject: ${project.directory}\nconversation: ${conversation.id}\n`,
+    );
   } catch (error) {
     readline.close();
     await workspace.stop().catch(() => undefined);

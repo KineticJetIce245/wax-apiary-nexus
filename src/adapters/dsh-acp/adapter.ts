@@ -66,6 +66,7 @@ export class DshAcpAdapter implements HarnessAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly active = new Map<string, ActiveExecution>();
+  private readonly closing = new Set<string>();
   private readonly cwdBySession = new Map<string, string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly stderrLines: string[] = [];
@@ -191,6 +192,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     }
     this.pendingApprovals.clear();
     this.active.clear();
+    this.closing.clear();
     this.cwdBySession.clear();
     this.client?.close();
     this.client = undefined;
@@ -217,6 +219,9 @@ export class DshAcpAdapter implements HarnessAdapter {
 
   async submit(nativeId: string, executionId: string, text: string): Promise<void> {
     const client = this.requireClient();
+    if (this.closing.has(nativeId)) {
+      throw new Error(`ACP session is closing and cannot accept new work: ${nativeId}`);
+    }
     const cwd = this.cwdBySession.get(nativeId);
     if (cwd === undefined) {
       throw new Error(`Unknown ACP session: ${nativeId}`);
@@ -309,9 +314,11 @@ export class DshAcpAdapter implements HarnessAdapter {
 
   async closeConversation(nativeId: string): Promise<void> {
     const client = this.requireClient();
+    this.closing.add(nativeId);
     this.cancelPendingApprovals(nativeId);
     const active = this.active.get(nativeId);
     await client.request('session/close', { sessionId: nativeId }, this.sessionTimeoutMs);
+    this.closing.delete(nativeId);
     this.cwdBySession.delete(nativeId);
     if (active !== undefined && this.active.get(nativeId)?.executionId === active.executionId) {
       this.active.delete(nativeId);
@@ -420,6 +427,7 @@ export class DshAcpAdapter implements HarnessAdapter {
       });
     }
     this.active.clear();
+    this.closing.clear();
     this.cwdBySession.clear();
     for (const pending of this.pendingApprovals.values()) {
       pending.resolve(cancelledPermissionOutcome());
@@ -442,6 +450,7 @@ export class DshAcpAdapter implements HarnessAdapter {
       });
     }
     this.active.clear();
+    this.closing.clear();
     this.cwdBySession.clear();
     for (const pending of this.pendingApprovals.values()) {
       pending.resolve(cancelledPermissionOutcome());

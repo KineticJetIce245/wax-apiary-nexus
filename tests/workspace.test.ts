@@ -16,6 +16,7 @@ import type { Project } from '../src/kernel.js';
 import { ProjectDirectoryError } from '../src/project-directory.js';
 import {
   ConversationBusyError,
+  ConversationClosingError,
   UnsupportedApprovalError,
   UnknownApprovalError,
   UnknownExecutionError,
@@ -36,6 +37,7 @@ class FakeAdapter implements HarnessAdapter {
   readonly approvals: ApprovalDecision[] = [];
   readonly closed: string[] = [];
   closeError: Error | undefined;
+  closePending: Promise<void> | undefined;
   startCalls = 0;
   stopCalls = 0;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
@@ -67,6 +69,9 @@ class FakeAdapter implements HarnessAdapter {
 
   async closeConversation(nativeId: string): Promise<void> {
     this.closed.push(nativeId);
+    if (this.closePending !== undefined) {
+      await this.closePending;
+    }
     if (this.closeError !== undefined) {
       throw this.closeError;
     }
@@ -327,11 +332,39 @@ test('keeps the conversation and an unknown execution when close fails', async (
   await assert.rejects(workspace.closeConversation(conversation.id), /close timeout/);
   assert.ok(workspace.getConversation(conversation.id) !== undefined);
   assert.equal(workspace.getExecution(execution.id)?.state, 'unknown');
-  await assert.rejects(workspace.submit(conversation.id, 'again'), ConversationBusyError);
+  await assert.rejects(workspace.submit(conversation.id, 'again'), ConversationClosingError);
 
   adapter.closeError = undefined;
   await workspace.closeConversation(conversation.id);
   assert.equal(workspace.getConversation(conversation.id), undefined);
+});
+
+test('rejects a submit while close is in progress', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  let releaseClose: () => void = () => undefined;
+  adapter.closePending = new Promise<void>((resolve) => {
+    releaseClose = resolve;
+  });
+
+  const closing = workspace.closeConversation(conversation.id);
+  await assert.rejects(workspace.submit(conversation.id, 'during close'), ConversationClosingError);
+  releaseClose();
+  await closing;
+
+  assert.equal(workspace.getConversation(conversation.id), undefined);
+  assert.equal(adapter.submissions.length, 0);
+});
+
+test('keeps an idle conversation non-submittable after a close failure', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  adapter.closeError = new Error('close timeout');
+
+  await assert.rejects(workspace.closeConversation(conversation.id), /close timeout/);
+  assert.ok(workspace.getConversation(conversation.id) !== undefined);
+  await assert.rejects(workspace.submit(conversation.id, 'after close'), ConversationClosingError);
+  assert.equal(adapter.submissions.length, 0);
 });
 
 test('does not expose mutable conversation state', async (t) => {

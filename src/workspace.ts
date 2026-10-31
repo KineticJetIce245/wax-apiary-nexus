@@ -66,6 +66,13 @@ export class ConversationBusyError extends Error {
   }
 }
 
+export class ConversationClosingError extends Error {
+  constructor(readonly conversationId: string) {
+    super(`Conversation is closing and cannot accept new executions: ${conversationId}`);
+    this.name = 'ConversationClosingError';
+  }
+}
+
 export class UnknownConversationError extends Error {
   constructor(readonly conversationId: string) {
     super(`Unknown conversation: ${conversationId}`);
@@ -127,6 +134,7 @@ export class Workspace {
   private readonly conversations = new Map<string, Conversation>();
   private readonly executions = new Map<string, MutableExecution>();
   private readonly activeExecutionByConversation = new Map<string, string>();
+  private readonly closingConversations = new Set<string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly listeners = new Set<(event: WorkspaceEvent) => void>();
   private readonly unsubscribe: () => void;
@@ -166,6 +174,9 @@ export class Workspace {
     const conversation = this.conversations.get(conversationId);
     if (conversation === undefined) {
       throw new UnknownConversationError(conversationId);
+    }
+    if (this.closingConversations.has(conversationId)) {
+      throw new ConversationClosingError(conversationId);
     }
     assertProjectDirectory(conversation.project.directory);
     if (text.trim() === '') {
@@ -251,15 +262,18 @@ export class Workspace {
       throw new UnknownConversationError(conversationId);
     }
 
+    // Mark the conversation before awaiting anything: a close whose native
+    // outcome is still unknown must not accept a new execution.
+    this.closingConversations.add(conversationId);
     const activeId = this.activeExecutionByConversation.get(conversationId);
-    if (activeId !== undefined) {
-      const pending = this.pendingApprovalFor(activeId);
-      if (pending !== undefined) {
-        await this.decideApproval(activeId, pending.request.requestId, 'cancelled');
-      }
-    }
 
     try {
+      if (activeId !== undefined) {
+        const pending = this.pendingApprovalFor(activeId);
+        if (pending !== undefined) {
+          await this.decideApproval(activeId, pending.request.requestId, 'cancelled');
+        }
+      }
       await this.adapter.closeConversation(conversation.nativeId);
     } catch (error) {
       if (activeId !== undefined) {
@@ -279,6 +293,7 @@ export class Workspace {
 
     this.conversations.delete(conversationId);
     this.activeExecutionByConversation.delete(conversationId);
+    this.closingConversations.delete(conversationId);
     if (activeId !== undefined) {
       const execution = this.executions.get(activeId);
       if (execution !== undefined) {
@@ -302,6 +317,7 @@ export class Workspace {
       this.clearPending(requestId);
       void this.adapter.respondToApproval({ requestId, kind: 'cancelled' }).catch(() => undefined);
     }
+    this.closingConversations.clear();
 
     this.unsubscribe();
     await this.adapter.stop();

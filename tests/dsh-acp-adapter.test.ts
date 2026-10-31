@@ -52,7 +52,25 @@ test('keeps an active execution after a close timeout', async () => {
     assert.equal(events.some((event) => event.type === 'execution/cancelled'), false);
     await assert.rejects(
       adapter.submit(nativeId, 'execution-2', 'again'),
-      /already has an active execution/,
+      /closing/i,
+    );
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('keeps an idle session non-submittable after a close timeout', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_SERVER);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-fake-idle-project-'));
+  const adapter = new DshAcpAdapter({ dshRoot: root, sessionTimeoutMs: 100 });
+
+  try {
+    await adapter.start();
+    const nativeId = await adapter.createConversation({ id: 'fake', directory: projectDir });
+    await assert.rejects(adapter.closeConversation(nativeId), /timed out|timeout/i);
+    await assert.rejects(
+      adapter.submit(nativeId, 'execution-after-close', 'hello'),
+      /closing/i,
     );
   } finally {
     await adapter.stop();

@@ -223,6 +223,9 @@ test('runs a sequential flow with exact rendered prompts', async () => {
     assert.equal(result.nodes.end?.status, 'completed');
     assert.equal(f.events.filter((event) => event.type === 'node/completed').length, 2);
     assert.equal(f.events.at(-1)?.type, 'flow/completed');
+    assert.ok(f.runtime.result !== undefined);
+    (result.outputs as Record<string, string>).plan = 'MUTATED';
+    assert.equal(f.runtime.result?.outputs.plan, 'PLAN');
   } finally {
     await f.workbench.stop().catch(() => undefined);
   }

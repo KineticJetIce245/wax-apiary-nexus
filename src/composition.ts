@@ -111,6 +111,8 @@ export class CompositionRuntime {
   private statusValue: CompositionStatus = 'idle';
   private started = false;
   private cancelRequested = false;
+  private cancelledEmitted = false;
+  private cancelReason = 'Composition cancelled';
   private strategy: CollaborationStrategy | undefined;
   private lastError: Error | undefined;
 
@@ -187,14 +189,25 @@ export class CompositionRuntime {
     }
     this.statusValue = 'running';
     this.cancelRequested = false;
+    this.cancelledEmitted = false;
     this.lastError = undefined;
     try {
       await this.strategy.handleUserMessage(text);
-      this.statusValue = this.cancelRequested ? 'cancelled' : 'idle';
+      if (this.cancelRequested) {
+        this.statusValue = 'cancelled';
+        this.emitCancelled(this.cancelReason);
+      } else {
+        this.statusValue = 'idle';
+      }
     } catch (error) {
       this.lastError = error instanceof Error ? error : new Error(String(error));
-      this.statusValue = this.cancelRequested ? 'cancelled' : 'failed';
-      this.emit({ type: 'composition/failed', error: this.lastError.message });
+      if (this.cancelRequested) {
+        this.statusValue = 'cancelled';
+        this.emitCancelled(this.cancelReason);
+      } else {
+        this.statusValue = 'failed';
+        this.emit({ type: 'composition/failed', error: this.lastError.message });
+      }
       throw error;
     }
   }
@@ -238,6 +251,7 @@ export class CompositionRuntime {
 
   async cancel(reason = 'Composition cancelled'): Promise<void> {
     this.cancelRequested = true;
+    this.cancelReason = reason;
     if (this.statusValue !== 'running') {
       return;
     }
@@ -248,7 +262,8 @@ export class CompositionRuntime {
         // Best effort; the execution settles through its own events.
       }
     }
-    this.emit({ type: 'composition/cancelled', reason });
+    // The cancelled event is emitted by send() after the in-flight turn has
+    // settled, so subscribers never see cancelled followed by failed.
   }
 
   async stop(): Promise<void> {
@@ -266,6 +281,7 @@ export class CompositionRuntime {
     this.started = false;
     this.strategy = undefined;
     this.statusValue = 'idle';
+    this.cancelledEmitted = false;
   }
 
   private createStrategy(composition: Composition): CollaborationStrategy {
@@ -283,7 +299,7 @@ export class CompositionRuntime {
         id: 'single-chat',
         handleUserMessage: async (text) => {
           const role = context.config.participant ?? roles[0];
-          if (role === undefined || !(role in composition.participants)) {
+          if (role === undefined || !Object.hasOwn(composition.participants, role)) {
             throw new CompositionStateError(`Unknown single-chat participant: ${String(role)}`);
           }
           await context.sendTo(role, text);
@@ -296,7 +312,10 @@ export class CompositionRuntime {
     if (first === undefined || second === undefined || first === second) {
       throw new CompositionStateError('Debate needs two distinct participants');
     }
-    if (!(first in composition.participants) || !(second in composition.participants)) {
+    if (
+      !Object.hasOwn(composition.participants, first) ||
+      !Object.hasOwn(composition.participants, second)
+    ) {
       throw new CompositionStateError('Debate names an unknown participant');
     }
     if (
@@ -323,9 +342,12 @@ export class CompositionRuntime {
     if (this.cancelRequested) {
       throw new CompositionStateError('Composition was cancelled before the turn started');
     }
-    const participant = this.compositionValue.participants[role];
-    if (participant === undefined) {
+    if (!Object.hasOwn(this.compositionValue.participants, role)) {
       throw new CompositionStateError(`Unknown participant: ${role}`);
+    }
+    const participant = this.compositionValue.participants[role];
+    if (participant === undefined || participant.connection === undefined) {
+      throw new CompositionStateError(`Participant ${role} has no connection binding`);
     }
     const submitted = await this.workbench.submit(text, participant.connection);
     const executionId = submitted.execution.id;
@@ -372,11 +394,24 @@ export class CompositionRuntime {
   private async waitForTerminal(connection: string, executionId: string): Promise<Execution> {
     while (true) {
       const found = this.workbench.getExecution(connection, executionId);
-      if (found !== undefined && found.execution.state !== 'running') {
+      if (found === undefined) {
+        throw new CompositionStateError(
+          `Execution ${executionId} on ${connection} is no longer available`,
+        );
+      }
+      if (found.execution.state !== 'running') {
         return found.execution;
       }
       await delay(this.pollIntervalMs);
     }
+  }
+
+  private emitCancelled(reason: string): void {
+    if (this.cancelledEmitted) {
+      return;
+    }
+    this.cancelledEmitted = true;
+    this.emit({ type: 'composition/cancelled', reason });
   }
 
   private assertConnections(composition: Composition): void {

@@ -161,7 +161,7 @@ export class FlowRuntime {
   }
 
   get result(): FlowResult | undefined {
-    return this.resultValue;
+    return this.resultValue === undefined ? undefined : cloneFlowResult(this.resultValue);
   }
 
   onEvent(handler: (event: FlowEvent) => void): () => void {
@@ -445,7 +445,12 @@ export class FlowRuntime {
   private async waitForTerminal(connection: string, executionId: string): Promise<Execution> {
     while (true) {
       const found = this.workbench.getExecution(connection, executionId);
-      if (found !== undefined && found.execution.state !== 'running') {
+      if (found === undefined) {
+        throw new Error(
+          `Execution ${executionId} on ${connection} is no longer available`,
+        );
+      }
+      if (found.execution.state !== 'running') {
         return found.execution;
       }
       await delay(this.pollIntervalMs);
@@ -482,8 +487,7 @@ export class FlowRuntime {
       ...(error === undefined ? {} : { error }),
     };
     this.resultValue = result;
-    if (status === 'completed') {
-      this.emit({ type: 'flow/completed', flowId: this.flowId, outputs });
+    if (status === 'completed') {      this.emit({ type: 'flow/completed', flowId: this.flowId, outputs });
     } else if (status === 'cancelled') {
       this.emit({ type: 'flow/cancelled', flowId: this.flowId, outputs });
     } else {
@@ -495,7 +499,7 @@ export class FlowRuntime {
         outputs,
       });
     }
-    return result;
+    return cloneFlowResult(result);
   }
 
   private usedConnections(): string[] {
@@ -571,8 +575,25 @@ function mapFlowStatus(
   }
 }
 
-function snapshotNode(state: MutableNodeState): FlowNodeState {
+function cloneFlowResult(result: FlowResult): FlowResult {
   return {
+    ...result,
+    outputs: { ...result.outputs },
+    nodes: Object.fromEntries(
+      Object.entries(result.nodes).map(([nodeId, state]) => [
+        nodeId,
+        {
+          ...state,
+          ...(state.attachments === undefined
+            ? {}
+            : { attachments: state.attachments.map(cloneAttachment) }),
+        },
+      ]),
+    ),
+  };
+}
+
+function snapshotNode(state: MutableNodeState): FlowNodeState {  return {
     nodeId: state.nodeId,
     status: state.status,
     ...(state.executionId === undefined ? {} : { executionId: state.executionId }),

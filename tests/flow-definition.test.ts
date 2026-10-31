@@ -207,6 +207,19 @@ test('rejects malformed names and empty ids', () => {  assert.throws(
     /Participant name/,
   );
   assert.throws(() => parseFlowDefinition(definition({ id: '  ' })), /flow.id/);
+  assert.throws(
+    () =>
+      parseFlowDefinition(
+        definition({
+          start: 'input',
+          nodes: {
+            input: { participant: 'planner', prompt: 'Plan', next: 'end' },
+            end: { type: 'end' },
+          },
+        }),
+      ),
+    /reserved/,
+  );
 });
 
 test('rejects unknown participants, placeholders and malformed braces', () => {

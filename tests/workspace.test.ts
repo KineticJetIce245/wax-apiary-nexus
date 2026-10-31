@@ -280,6 +280,11 @@ test('records attachment events, snapshots them, and ignores late attachments', 
 
   const attachmentEvents = events.filter((event) => event.type === 'execution/attachment');
   assert.equal(attachmentEvents.length, 2);
+  const eventAttachment = attachmentEvents[0];
+  if (eventAttachment?.type === 'execution/attachment') {
+    (eventAttachment.attachment as { path: string }).path = 'C:\\tmp\\event-mutated.png';
+  }
+  assert.equal(workspace.getExecution(execution.id)?.attachments[0]?.path, 'C:\\tmp\\generated.png');
 
   assert.ok(settled !== undefined);
   const mutable = settled.attachments[0] as unknown as { path: string };

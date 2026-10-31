@@ -184,6 +184,51 @@ test('switches single -> debate -> single without changing native conversations'
   }
 });
 
+test('rejects unknown participants that collide with Object.prototype names', async () => {
+  const { workbench, dsh } = await fixture();
+  const runtime = new CompositionRuntime(
+    workbench,
+    makeComposition({ config: { participant: 'toString' } }),
+    { pollIntervalMs: 5 },
+  );
+  try {
+    await runtime.start();
+    await assert.rejects(runtime.send('x'), /Unknown single-chat participant/);
+    assert.equal(dsh.submissions.length, 0);
+    assert.equal(runtime.status, 'failed');
+  } finally {
+    await runtime.stop();
+    await workbench.stop();
+  }
+});
+
+test('emits cancelled once after the in-flight turn settles, never failed', async () => {
+  const { workbench } = await fixture({
+    dsh: () => ({ hang: true }),
+  });
+  const runtime = new CompositionRuntime(workbench, makeComposition(), { pollIntervalMs: 5 });
+  const events: string[] = [];
+  runtime.onEvent((event) => events.push(event.type));
+  try {
+    await runtime.start();
+    const first = runtime.send('hang');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.cancel('stop requested');
+    await assert.rejects(first, /cancelled/);
+    assert.equal(runtime.status, 'cancelled');
+    assert.equal(events.includes('composition/failed'), false);
+    assert.deepEqual(events, [
+      'composition/started',
+      'turn/started',
+      'turn/completed',
+      'composition/cancelled',
+    ]);
+  } finally {
+    await runtime.stop();
+    await workbench.stop();
+  }
+});
+
 test('rejects concurrent sends and cancels an in-flight turn', async () => {
   const { workbench, dsh } = await fixture({
     dsh: () => ({ hang: true }),

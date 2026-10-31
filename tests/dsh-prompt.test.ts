@@ -32,6 +32,26 @@ test('emits ACP image content only when the capability is enabled', () => {
   assert.deepEqual(disabled, [{ type: 'text', text: 'look' }]);
 });
 
+test('skips images above the inline size cap and keeps the text fallback', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uw-dsh-cap-'));
+  const image = join(dir, 'a.png');
+  writeFileSync(image, Buffer.from('12345678'));
+  const prompt = buildDshPrompt(
+    'cap',
+    [{ kind: 'image', path: image, mimeType: 'image/png', name: 'a.png' }],
+    true,
+    4,
+  );
+  assert.deepEqual(prompt, [{ type: 'text', text: 'cap' }]);
+  const allowed = buildDshPrompt(
+    'cap',
+    [{ kind: 'image', path: image, mimeType: 'image/png', name: 'a.png' }],
+    true,
+    8,
+  );
+  assert.equal(allowed.length, 2);
+});
+
 test('keeps the text fallback for unreadable images and ignores non-images', () => {
   const prompt = buildDshPrompt(
     'fallback',

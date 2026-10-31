@@ -17,7 +17,7 @@ import { WebServer } from '../src/web-server.js';
 
 class FakeAdapter implements HarnessAdapter {
   capabilities: HarnessCapabilities = {
-    approval: 'none',
+    approval: 'interactive',
     cancel: true,
     streaming: true,
     resume: false,
@@ -31,8 +31,7 @@ class FakeAdapter implements HarnessAdapter {
   }
   async submit(): Promise<void> {}
   async cancel(): Promise<void> {}
-  async respondToApproval(_decision: ApprovalDecision): Promise<void> {}
-  async closeConversation(): Promise<void> {}
+  async respondToApproval(_decision: ApprovalDecision): Promise<void> {}  async closeConversation(): Promise<void> {}
 
   onEvent(handler: (event: HarnessEvent) => void): () => void {
     this.listeners.add(handler);
@@ -51,16 +50,20 @@ async function setup() {
   const imageBytes = Buffer.from('fake-png-bytes');
   writeFileSync(imagePath, imageBytes);
 
-  const adapter = new FakeAdapter();
+  const dsh = new FakeAdapter();
+  const codex = new FakeAdapter();
   const project: Project = { id: 'g006-web', directory: projectDir };
   const workbench = new Workbench({
     project,
-    connections: [{ name: 'codex', adapter }],
+    connections: [
+      { name: 'codex', adapter: codex },
+      { name: 'dsh', adapter: dsh },
+    ],
   });
   await workbench.start();
   const web = new WebServer(workbench, { artifactRoot: artifactDir });
   const info = await web.start();
-  return { adapter, workbench, web, info, imagePath, imageBytes };
+  return { adapter: codex, dsh, codex, workbench, web, info, imagePath, imageBytes };
 }
 
 async function delay(ms: number): Promise<void> {
@@ -116,6 +119,54 @@ test('serves a read-only state snapshot and artifact bytes without local paths',
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'none'/);
     assert.match(await page.text(), /Unified Workspace/);
+  } finally {
+    await web.stop();
+    await workbench.stop();
+  }
+});
+
+test('keeps approvals from two connections with the same request id separate', async () => {
+  const { dsh, codex, workbench, web } = await setup();
+  try {
+    const dshExecution = await workbench.submit('dsh approval', 'dsh');
+    const codexExecution = await workbench.submit('codex approval', 'codex');
+    const request = (executionId: string) => ({
+      requestId: '77',
+      executionId,
+      summary: `approval for ${executionId}`,
+      options: [{ id: 'allow', kind: 'allow_once' as const, label: 'Allow' }],
+    });
+    dsh.emit({
+      type: 'execution/approval-requested',
+      executionId: dshExecution.execution.id,
+      request: request(dshExecution.execution.id),
+    });
+    codex.emit({
+      type: 'execution/approval-requested',
+      executionId: codexExecution.execution.id,
+      request: request(codexExecution.execution.id),
+    });
+    await delay(20);
+    assert.equal(web.getState().approvals.length, 2);
+
+    await workbench.decideApproval('dsh', dshExecution.execution.id, '77', 'allow_once');
+    await delay(20);
+    const remaining = web.getState().approvals;
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0]?.connection, 'codex');
+  } finally {
+    await web.stop();
+    await workbench.stop();
+  }
+});
+
+test('restarts with a fresh artifact store after stop', async () => {
+  const { workbench, web } = await setup();
+  try {
+    await web.stop();
+    const info = await web.start();
+    assert.equal(web.running, true);
+    assert.match(info.url, /^http:\/\/127\.0\.0\.1:/);
   } finally {
     await web.stop();
     await workbench.stop();

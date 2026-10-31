@@ -92,7 +92,8 @@ interface MutableExecution {
  */
 export class WebServer {
   private readonly workbench: Workbench;
-  private readonly artifactStore: ArtifactStore;
+  private artifactStore: ArtifactStore;
+  private readonly artifactOptions: ArtifactStoreOptions;
   private readonly port: number;
   private readonly host = '127.0.0.1' as const;
   private readonly executions = new Map<string, MutableExecution>();
@@ -113,6 +114,7 @@ export class WebServer {
       ...(options.artifactRoot === undefined ? {} : { root: options.artifactRoot }),
       ...(options.maxArtifactBytes === undefined ? {} : { maxBytes: options.maxArtifactBytes }),
     };
+    this.artifactOptions = artifactOptions;
     this.artifactStore = new ArtifactStore(artifactOptions);
   }
 
@@ -128,6 +130,9 @@ export class WebServer {
     if (this.server !== undefined) {
       throw new Error('Web server is already running');
     }
+    // A stopped server gets a fresh store on restart; old artifact ids remain
+    // 404 because their files were removed by the previous stop().
+    this.artifactStore = new ArtifactStore(this.artifactOptions);
     this.unsubscribe = this.workbench.onEvent((tagged) => this.handleEvent(tagged));
     const server = createServer((request, response) => this.handleRequest(request, response));
     server.on('connection', (socket) => {
@@ -206,17 +211,20 @@ export class WebServer {
         return;
       }
       if (event.type === 'execution/approval-requested') {
-        this.approvals.set(event.request.requestId, {
-          connection,
-          executionId: event.request.executionId,
-          requestId: event.request.requestId,
-          summary: event.request.summary,
-        });
+        this.approvals.set(
+          approvalKey(connection, event.request.executionId, event.request.requestId),
+          {
+            connection,
+            executionId: event.request.executionId,
+            requestId: event.request.requestId,
+            summary: event.request.summary,
+          },
+        );
         this.touch(connection, event.request.executionId);
         return;
       }
       if (event.type === 'execution/approval-decided') {
-        this.approvals.delete(event.requestId);
+        this.approvals.delete(approvalKey(connection, event.executionId, event.requestId));
         this.touch(connection, event.executionId);
         return;
       }
@@ -245,9 +253,9 @@ export class WebServer {
           break;
       }
       if (event.type === 'execution/state' && event.state !== 'running') {
-        for (const [requestId, approval] of this.approvals) {
-          if (approval.executionId === event.executionId) {
-            this.approvals.delete(requestId);
+        for (const [key, approval] of this.approvals) {
+          if (approval.connection === connection && approval.executionId === event.executionId) {
+            this.approvals.delete(key);
           }
         }
         this.trimExecutions();
@@ -394,8 +402,11 @@ export class WebServer {
   }
 }
 
-function toWebAttachment(artifact: Artifact): WebAttachment {
-  return {
+function approvalKey(connection: string, executionId: string, requestId: string): string {
+  return `${connection}\u0000${executionId}\u0000${requestId}`;
+}
+
+function toWebAttachment(artifact: Artifact): WebAttachment {  return {
     id: artifact.id,
     kind: artifact.kind,
     mimeType: artifact.mimeType,

@@ -109,6 +109,9 @@ export function parseFlowDefinition(value: unknown): FlowDefinition {
         `Node id ${JSON.stringify(nodeId)} must match [A-Za-z0-9_-]+ so templates can reference it`,
       );
     }
+    if (nodeId === 'input') {
+      throw new FlowDefinitionError('Node id "input" is reserved for {{input}}');
+    }
     nodes[nodeId] = parseNode(nodeId, rawNode);
   }
   if (Object.keys(nodes).length === 0) {

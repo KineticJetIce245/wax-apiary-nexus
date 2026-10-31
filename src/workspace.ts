@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Attachment, AttachmentDraft } from './content.js';
+import { cloneAttachment, type Attachment, type AttachmentDraft } from './content.js';
 import type { Project } from './kernel.js';
 import { assertProjectDirectory } from './project-directory.js';
 import type {
@@ -401,7 +401,11 @@ export class Workspace {
         }
         const attachment: Attachment = { ...event.attachment, id: randomUUID() };
         execution.attachments.push(attachment);
-        this.emit({ type: 'execution/attachment', executionId: event.executionId, attachment });
+        this.emit({
+          type: 'execution/attachment',
+          executionId: event.executionId,
+          attachment: cloneAttachment(attachment),
+        });
         return;
       }
       case 'execution/approval-requested': {

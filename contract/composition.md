@@ -57,6 +57,7 @@ runtime.onEvent(handler);
 - 运行中 `switchStrategy` 抛 `CompositionBusyError`；必须先完成或取消。
 - 每个 turn 通过 `Workbench.submit` 发到绑定连接，等待终态；只接受 completed，否则抛 `CompositionExecutionError`。
 - cancel 取消在飞 execution；未开始的后续 turn 不再提交。
+- 取消的 `composition/cancelled` 在在飞 turn 进入终态之后只发一次；取消不会再发 `composition/failed`。
 - 不重试、不新建原生 Conversation、不复制上下文。
 - 没有持久化；进程退出即丢失。
 

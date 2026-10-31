@@ -118,7 +118,7 @@ workbench.transfer(source, executionId, target, instruction?, explicitAttachment
 - `transfer` 收集源 Execution 的 `attachments`，在文本里追加附件清单（name、mime、本地路径），并把附件传给目标 `submit`。
 - `transfer` 的第五个参数可补充显式附件（CLI：`--attach <path>`）；与源附件按 kind/mime/path 去重。显式附件用于工具生成但未被 Harness 登记为 Execution attachment 的本地文件。
 - Codex：image/* 且 kind=image 的附件映射为 `turn/start.input` 的 `{type:'localImage', path}`；其他附件只走文本清单。
-- DSH：初始化响应 `agentCapabilities.promptCapabilities.image === true` 时，把 image/* 附件编码成 ACP `{type:'image', data, mimeType}`；否则/读取失败时只发文本清单。
+- DSH：初始化响应 `agentCapabilities.promptCapabilities.image === true` 时，把 image/* 附件编码成 ACP `{type:'image', data, mimeType}`；单张图片超过 25 MiB 或读取失败时只发文本清单。
 - Flow：submit 节点的 `attachments: ["upstreamId"]` 会把上游已产生的附件作为本次输入；引用不可用时在提交前失败。
 - 附件不复制、不重试；目标 Harness 必须能访问该本地路径。文件附件没有统一的原生输入块，路径清单是回退。
 

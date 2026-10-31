@@ -103,7 +103,7 @@
 流程在提交任何模型请求前全部检查：
 
 - version/strategy/start/nodes/participants 合法；start 不是 end、不是并行分支。
-- 节点 id、participant 名匹配 `[A-Za-z0-9_-]+`；id 唯一。
+- 节点 id、participant 名匹配 `[A-Za-z0-9_-]+`；id 唯一；节点 id `input` 保留给 `{{input}}`，不允许作为节点名。
 - submit：participant 存在、prompt 非空、next 存在；并行分支叶子不得有 next；`attachments` 目标必须是存在的 submit 节点，不能引用自己。
 - parallel：branches ≥ 2、不重复、目标为 submit 叶子、不同连接、每个分支只属于一个并行组、分支不能被其他 next 指向。
 - next/then/else 目标存在；条件格式合法。

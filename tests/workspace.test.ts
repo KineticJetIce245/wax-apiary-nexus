@@ -12,6 +12,7 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from '../src/adapters/harness.js';
+import { SubmitOutcomeUnknownError } from '../src/adapters/harness.js';
 import type { Project } from '../src/kernel.js';
 import { ProjectDirectoryError } from '../src/project-directory.js';
 import {
@@ -37,6 +38,7 @@ class FakeAdapter implements HarnessAdapter {
   readonly approvals: ApprovalDecision[] = [];
   readonly closed: string[] = [];
   closeError: Error | undefined;
+  submitError: Error | undefined;
   closePending: Promise<void> | undefined;
   startCalls = 0;
   stopCalls = 0;
@@ -57,6 +59,9 @@ class FakeAdapter implements HarnessAdapter {
 
   async submit(nativeId: string, executionId: string, text: string): Promise<void> {
     this.submissions.push({ nativeId, executionId, text });
+    if (this.submitError !== undefined) {
+      throw this.submitError;
+    }
   }
 
   async cancel(nativeId: string): Promise<void> {
@@ -138,6 +143,41 @@ test('rejects a second submission while the first execution is running', async (
 
   adapter.emit({ type: 'execution/completed', executionId: execution.id, stopReason: 'end_turn' });
   assert.equal(workspace.getExecution(execution.id)?.state, 'completed');
+});
+
+test('settles an uncertain submit as unknown and blocks until a terminal event', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+
+  adapter.submitError = new SubmitOutcomeUnknownError('native acceptance unknown');
+  await assert.rejects(workspace.submit(conversation.id, 'first'), SubmitOutcomeUnknownError);
+  const executionId = adapter.submissions[0]?.executionId;
+  assert.ok(executionId !== undefined);
+  assert.equal(workspace.getExecution(executionId)?.state, 'unknown');
+
+  await assert.rejects(workspace.submit(conversation.id, 'second'), ConversationBusyError);
+
+  adapter.emit({ type: 'execution/cancelled', executionId });
+  adapter.submitError = undefined;
+  const third = await workspace.submit(conversation.id, 'third');
+  assert.equal(third.state, 'running');
+});
+
+test('marks a preserved unknown execution as released when a terminal event arrives', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+
+  adapter.submitError = new SubmitOutcomeUnknownError('native acceptance unknown');
+  await assert.rejects(workspace.submit(conversation.id, 'first'), SubmitOutcomeUnknownError);
+  const executionId = adapter.submissions[0]?.executionId;
+  assert.ok(executionId !== undefined);
+
+  adapter.emit({ type: 'execution/failed', executionId, error: 'late native failure' });
+  assert.equal(workspace.getExecution(executionId)?.state, 'unknown');
+
+  adapter.submitError = undefined;
+  const next = await workspace.submit(conversation.id, 'next');
+  assert.equal(next.state, 'running');
 });
 
 test('records assistant output and ignores late terminal events', async (t) => {

@@ -106,3 +106,18 @@ export interface HarnessAdapter {
 
   onEvent(handler: (event: HarnessEvent) => void): () => void;
 }
+
+/**
+ * Rejection from `submit` when the native side may have accepted the turn but
+ * the client cannot tell (for example a response timeout after turn/started,
+ * or a lost acknowledgement). The Workspace settles the execution as
+ * `unknown` and keeps the conversation busy until a native terminal event
+ * arrives or the conversation is closed/stopped. A definite rejection from the
+ * native side must use a regular Error instead.
+ */
+export class SubmitOutcomeUnknownError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SubmitOutcomeUnknownError';
+  }
+}

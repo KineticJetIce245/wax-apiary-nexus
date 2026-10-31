@@ -10,15 +10,18 @@ import type {
   HarnessEvent,
   StopReason,
 } from '../harness.js';
+import { SubmitOutcomeUnknownError } from '../harness.js';
 import type { CodexLaunch } from '../../connection.js';
 import {
   CodexRpcClient,
+  CodexRpcError,
   type RpcNotification,
   type RpcServerRequest,
 } from './rpc-client.js';
 
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const DEFAULT_CLOSE_TERMINAL_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 5_000;
 const TOOL_TITLE_LIMIT = 200;
 
@@ -26,6 +29,7 @@ export interface CodexAppServerAdapterOptions {
   readonly launch: CodexLaunch;
   readonly initializeTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
+  readonly closeTerminalTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
 }
 
@@ -69,6 +73,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
   private readonly launch: CodexLaunch;
   private readonly initializeTimeoutMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly closeTerminalTimeoutMs: number;
   private readonly stopTimeoutMs: number;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly threads = new Map<string, ThreadState>();
@@ -85,6 +90,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     this.launch = options.launch;
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? DEFAULT_INITIALIZE_TIMEOUT_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.closeTerminalTimeoutMs = options.closeTerminalTimeoutMs ?? DEFAULT_CLOSE_TERMINAL_TIMEOUT_MS;
     this.stopTimeoutMs = options.stopTimeoutMs ?? STOP_TIMEOUT_MS;
   }
 
@@ -248,14 +254,29 @@ export class CodexAppServerAdapter implements HarnessAdapter {
         active.turnId = turnId;
       }
     } catch (error) {
-      const active = this.threads.get(nativeId)?.active;
-      if (active !== undefined && active.executionId === executionId) {
-        const current = this.threads.get(nativeId);
-        if (current !== undefined) {
-          current.active = undefined;
-        }
+      const current = this.threads.get(nativeId);
+      const active = current?.active;
+      if (current === undefined || active === undefined || active.executionId !== executionId) {
+        // Connection loss already settled this execution and dropped the thread.
+        throw error;
       }
-      throw error;
+      if (active.turnId !== undefined) {
+        // turn/started was observed, so the native side accepted the turn even
+        // though the turn/start response was lost. Keep waiting for the
+        // terminal event instead of reporting a definite failure.
+        return;
+      }
+      if (error instanceof CodexRpcError) {
+        current.active = undefined;
+        throw error;
+      }
+      // The native side may or may not have accepted the turn. Keep the active
+      // association so another submit cannot overlap it; the Workspace settles
+      // this execution as unknown and keeps the conversation busy until a
+      // terminal event arrives.
+      throw new SubmitOutcomeUnknownError(
+        `Codex turn/start outcome is unknown: ${messageOf(error)}`,
+      );
     }
   }
 
@@ -289,24 +310,41 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     this.cancelPendingApprovals(nativeId);
 
     const active = thread.active;
-    if (active !== undefined && active.turnId !== undefined) {
-      try {
-        await this.interrupt(client, nativeId, active);
-      } catch (error) {
-        // A turn that already settled needs no interrupt; anything still
-        // active must fail the close rather than be silently released.
-        if (thread.active !== undefined) {
-          throw error;
-        }
+    if (active !== undefined) {
+      if (active.turnId === undefined) {
+        // Without a turn id the native turn cannot be interrupted, and
+        // unsubscribing would release a turn that may still be running.
+        throw new Error(
+          `Cannot close Codex thread ${nativeId}: the active turn has no known turn id; ` +
+            'wait for a terminal event or stop the adapter.',
+        );
       }
+      void this.interrupt(client, nativeId, active).catch(() => undefined);
+      await this.waitForTurnTerminal(nativeId, active.turnId);
     }
     await client.request('thread/unsubscribe', { threadId: nativeId }, this.requestTimeoutMs);
 
     this.closing.delete(nativeId);
     this.threads.delete(nativeId);
-    if (active !== undefined && thread.active !== undefined) {
-      this.emit({ type: 'execution/cancelled', executionId: active.executionId });
+  }
+
+  /**
+   * A turn/interrupt acknowledgement only proves the request was received.
+   * Release the thread only after the native terminal notification arrives.
+   */
+  private async waitForTurnTerminal(nativeId: string, turnId: string): Promise<void> {
+    const deadline = Date.now() + this.closeTerminalTimeoutMs;
+    while (Date.now() < deadline) {
+      const thread = this.threads.get(nativeId);
+      if (thread === undefined || thread.active === undefined) {
+        return;
+      }
+      await delay(50);
     }
+    throw new Error(
+      `Codex turn ${turnId} did not reach a terminal event within ${this.closeTerminalTimeoutMs}ms; ` +
+        `thread ${nativeId} remains closing`,
+    );
   }
 
   /** Recent stderr, for local diagnosis; callers must not assume it is secret-free. */
@@ -340,8 +378,18 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     if (thread === undefined || threadId === undefined || active === undefined) {
       return;
     }
-    const adoptsTurnId = notification.method === 'turn/started';
-    if (!this.belongsToActiveTurn(active, params, adoptsTurnId)) {
+    const turnId = this.turnIdentity(notification.method, params);
+    if (turnId === undefined) {
+      return;
+    }
+    if (active.turnId === undefined) {
+      // Only turn/started may establish the identity; a terminal or an item
+      // from an older turn must not be adopted by a new execution.
+      if (notification.method !== 'turn/started') {
+        return;
+      }
+      active.turnId = turnId;
+    } else if (active.turnId !== turnId) {
       return;
     }
 
@@ -396,23 +444,19 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     }
   }
 
-  private belongsToActiveTurn(
-    active: ActiveExecution,
-    params: Record<string, unknown>,
-    adoptsTurnId: boolean,
-  ): boolean {
-    const turnId = asString(params.turnId);
-    if (turnId === undefined) {
-      return true;
+  /**
+   * Turn identity lives in `params.turnId` for item/approval notifications and
+   * in `params.turn.id` for turn/started and turn/completed.
+   */
+  private turnIdentity(method: string, params: Record<string, unknown>): string | undefined {
+    const direct = asString(params.turnId);
+    if (direct !== undefined) {
+      return direct;
     }
-    if (active.turnId === undefined) {
-      if (!adoptsTurnId) {
-        return false;
-      }
-      active.turnId = turnId;
-      return true;
+    if (method === 'turn/started' || method === 'turn/completed') {
+      return asString(asRecord(params.turn)?.id);
     }
-    return active.turnId === turnId;
+    return undefined;
   }
 
   private handleItem(
@@ -513,9 +557,10 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     }
     const params = asRecord(request.params);
     const threadId = asString(params?.threadId);
+    const turnId = asString(params?.turnId);
     const thread = threadId === undefined ? undefined : this.threads.get(threadId);
     const active = thread?.active;
-    if (threadId === undefined || active === undefined) {
+    if (threadId === undefined || turnId === undefined || active === undefined || active.turnId !== turnId) {
       return Promise.resolve({ decision: 'decline' });
     }
     const requestId = String(request.id);
@@ -663,6 +708,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isString(value: unknown): value is string {

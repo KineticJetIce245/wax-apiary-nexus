@@ -9,6 +9,7 @@ import type {
   HarnessEvent,
   StopReason,
 } from './adapters/harness.js';
+import { SubmitOutcomeUnknownError } from './adapters/harness.js';
 
 export interface Conversation {
   readonly id: string;
@@ -200,7 +201,13 @@ export class Workspace {
     try {
       await this.adapter.submit(conversation.nativeId, execution.id, text);
     } catch (error) {
-      this.finish(execution, 'failed', undefined, messageOf(error));
+      if (error instanceof SubmitOutcomeUnknownError) {
+        // The native side may have accepted the turn. Keep the association so a
+        // second submission cannot overlap it; a later terminal event releases it.
+        this.finish(execution, 'unknown', undefined, messageOf(error), { preserveActive: true });
+      } else {
+        this.finish(execution, 'failed', undefined, messageOf(error));
+      }
       throw error;
     }
 
@@ -380,30 +387,50 @@ export class Workspace {
         return;
       }
       case 'execution/completed': {
-        const execution = this.runningExecution(event.executionId);
-        if (execution !== undefined) {
+        const execution = this.executions.get(event.executionId);
+        if (execution === undefined) {
+          return;
+        }
+        if (execution.state === 'running') {
           this.finish(execution, 'completed', event.stopReason);
+        } else {
+          this.releasePreservedActive(execution);
         }
         return;
       }
       case 'execution/failed': {
-        const execution = this.runningExecution(event.executionId);
-        if (execution !== undefined) {
+        const execution = this.executions.get(event.executionId);
+        if (execution === undefined) {
+          return;
+        }
+        if (execution.state === 'running') {
           this.finish(execution, 'failed', undefined, event.error);
+        } else {
+          this.releasePreservedActive(execution);
         }
         return;
       }
       case 'execution/cancelled': {
-        const execution = this.runningExecution(event.executionId);
-        if (execution !== undefined) {
+        const execution = this.executions.get(event.executionId);
+        if (execution === undefined) {
+          return;
+        }
+        if (execution.state === 'running') {
           this.finish(execution, 'cancelled');
+        } else {
+          this.releasePreservedActive(execution);
         }
         return;
       }
       case 'execution/unknown': {
-        const execution = this.runningExecution(event.executionId);
-        if (execution !== undefined) {
+        const execution = this.executions.get(event.executionId);
+        if (execution === undefined) {
+          return;
+        }
+        if (execution.state === 'running') {
           this.finish(execution, 'unknown', undefined, event.reason);
+        } else {
+          this.releasePreservedActive(execution);
         }
         return;
       }
@@ -502,6 +529,17 @@ export class Workspace {
   private runningExecution(executionId: string): MutableExecution | undefined {
     const execution = this.executions.get(executionId);
     return execution?.state === 'running' ? execution : undefined;
+  }
+
+  /**
+   * An execution that was settled as unknown while its conversation stayed
+   * busy has now received a native terminal event; release the association so
+   * the conversation can accept new work. The execution state is not rewritten.
+   */
+  private releasePreservedActive(execution: MutableExecution): void {
+    if (this.activeExecutionByConversation.get(execution.conversationId) === execution.id) {
+      this.activeExecutionByConversation.delete(execution.conversationId);
+    }
   }
 
   private emit(event: WorkspaceEvent): void {

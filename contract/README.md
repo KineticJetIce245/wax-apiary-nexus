@@ -84,17 +84,21 @@ submit() 返回前开始
 1. `submit` 在原生层**接受**这一轮后即可返回，不等待完成；完成通过事件表达。
 2. 每个 execution 必须恰好收到一个终态事件。终态之后的事件必须被忽略或不再发出。
 3. 适配器不得自行重试、重放或重新提交一轮；不确定的失败只能报 `unknown`。
-4. `execution/output` 的 `channel` 为 `assistant` 时计入 Workspace 输出；`thought` 只用于展示。
-5. `stop()` 或进程/连接丢失时，仍在运行的 execution 必须报 `execution/unknown`，并附上原因。
-6. 原生层的“完成”不等于“成功”：`completed` 只用于原生明确结束；失败、取消、未知必须分开报。
+4. **必须区分“原生明确拒绝”与“提交结果不确定”。** 原生返回错误响应是明确拒绝（普通 `Error`）；响应超时、连接中断或迟到响应属于结果不确定，必须抛出 [`SubmitOutcomeUnknownError`](../src/adapters/harness.ts)，并在原生会话上保留活跃关联。Workspace 会把该执行结算为 `unknown` 并保持会话 busy，直到收到该执行的终态事件或关闭/停止；适配器不得在另一层释放这个关联。
+5. `execution/output` 的 `channel` 为 `assistant` 时计入 Workspace 输出；`thought` 只用于展示。
+6. `stop()` 或进程/连接丢失时，仍在运行的 execution 必须报 `execution/unknown`，并附上原因。
+7. 原生层的“完成”不等于“成功”：`completed` 只用于原生明确结束；失败、取消、未知必须分开报。
+8. 终态和输出的身份必须取自协议规定的位置（例如 `params.turnId` 与嵌套的 `params.turn.id`），并只与当前活跃轮次比较。旧轮次的迟到事件不得结算新执行，也不得作为新执行的审批呈现。
 
 ## 6. 并发与关闭
 
 - 同一原生会话同一时间只允许一个活跃 execution。适配器必须拒绝重叠的 `submit`（Workspace 也会挡，但适配器不能依赖上层）。
 - 关闭开始时先标记 closing，再 await 任何原生调用；closing 期间 `submit` 必须拒绝。
+- **关闭活跃轮次必须以原生终态为证据。** `turn/interrupt` 的响应、`thread/unsubscribe` 的成功都不是“轮次已终止”的证明；必须等到原生终态事件后再退订/释放。超时仍无终态时，关闭失败并保留 closing + 活跃关联，由 Workspace 把执行标为 `unknown`。
+- 关闭时如果活跃轮次连 turn id 都未知（提交结果不确定且没有 `turn/started`），无法安全中断：关闭必须失败并保留状态，调用方只能等待或 `stop()`。
 - `closeConversation` 失败时：保留会话状态与 closing 标记，不宣告 cancelled；由 Workspace 决定把运行中的 execution 标为 unknown。
-- `closeConversation` 成功时：释放本地状态；有待决审批时先拒绝/取消它们；活跃轮次应先中断再释放。
-- 取消、关闭、停止都是“本地释放”；原生会话历史是否继续存在由原生层决定，必须文档化。
+- `closeConversation` 成功时：释放本地状态；有待决审批时先拒绝/取消它们；活跃轮次应已有原生终态。
+- 取消、关闭、停止都属于**本地解除关联**，与原生中断/终止是两件事：`cancel()` 必须到达原生层，`close` 必须确认原生终态；三者都不自动删除原生历史，除非另有明确文档。
 
 ## 7. 审批
 
@@ -135,12 +139,17 @@ submit() 返回前开始
 - [ ] `start` 幂等；`stop` 后所有操作失败
 - [ ] 每个 execution 恰好一个终态；终态后无事件
 - [ ] 同一会话拒绝重叠 `submit`；closing 期间拒绝新提交
+- [ ] 区分原生明确拒绝与提交结果不确定：后者抛 `SubmitOutcomeUnknownError` 并保留活跃关联，不解除互斥
 - [ ] 未知 `nativeId` 的 `submit` 拒绝；未知 `requestId` 的审批拒绝
+- [ ] 审批请求的 `turnId` 必须属于当前活跃轮次；旧轮审批必须拒绝
 - [ ] 审批的 `cancelled` 会中断原生轮次；未结算审批不会永久挂起
 - [ ] `cancel` 幂等，且能到达原生层
+- [ ] `close` 等到原生终态再释放；没有终态时关闭失败并保留状态，不报 cancelled
+- [ ] 终态/输出/审批按协议身份字段关联当前轮次；旧轮迟到事件不影响新执行
 - [ ] 进程/连接丢失时，活跃 execution 报 `unknown`
 - [ ] 不重放、不重试有副作用的操作
 - [ ] 目录失效时拒绝操作；使用 Project 的目录而不是宿主 cwd
+- [ ] Windows 上只接受原生可执行文件；`.cmd`/`.bat` 等 shim 明确拒绝并给出可操作错误，不能“定位成功、启动失败”
 - [ ] 通过 `tests/support/harness-adapter-contract.ts` 的一致性检查
 - [ ] 至少一个真实原生集成测试（同一会话两轮、终态、取消、进程丢失）
 
@@ -164,7 +173,7 @@ await assertHarnessAdapterContract({
 
 当前检查项：能力字段形状、`start` 幂等、两个会话得到不同原生 id、`execution/started` 送达、重叠提交被拒、取消订阅后不再收到事件、未知 `nativeId` 提交被拒、未知审批被拒、`stop` 后提交被拒。DSH 与 Codex 两个适配器都通过同一套检查（各自的假服务端）。
 
-**不覆盖**：审批真实放行/拒绝、取消的真实语义、关闭失败与超时、进程丢失、跨轮上下文、能力声明的真实性。这些必须在各自适配器的测试中用协议假服务端和真实原生集成验证。
+**不覆盖**：审批真实放行/拒绝、取消的真实语义、关闭失败与超时、进程丢失、跨轮上下文、能力声明的真实性、提交结果不确定时的阻塞与释放、旧轮次事件的隔离。这些必须在各自适配器的测试中用协议假服务端和真实原生集成验证。
 
 ## 13. 参考实现对照
 
@@ -176,7 +185,7 @@ await assertHarnessAdapterContract({
 | 完成依据 | `prompt` 响应的 `stopReason` | `turn/completed` 的 `turn.status` |
 | 审批 | `session/request_permission` 服务端请求 | `item/commandExecution/requestApproval`、`item/fileChange/requestApproval` |
 | 取消 | `session/cancel` 通知 | `turn/interrupt` 请求 |
-| 关闭 | `session/close` | `turn/interrupt`（若有活跃轮次）+ `thread/unsubscribe` |
+| 关闭 | `session/close` | `turn/interrupt`（若有活跃轮次）→ 等 `turn/completed` → `thread/unsubscribe` |
 | `resume` | false（未实现） | false（未实现） |
 
 ## 14. 已知边界
@@ -184,4 +193,6 @@ await assertHarnessAdapterContract({
 - 两个适配器都未实现原生恢复；`resume` 一律为 false。
 - 未验证单个适配器进程内多会话并发执行；当前 Workspace 是“单会话单执行”，但契约要求每个会话各自互斥。
 - 远端连接、受管引擎下载、插件动态加载不在本契约范围。
+- 提交结果不确定且连 turn id 都未知时，会话会保持 busy 且无法安全关闭；当前只能等待或 `stop()`。这是有意的保守行为，不是完整恢复方案。
+- Windows 上 npm 常见的 `codex.cmd` shim 不被接受；需要指向原生 `codex.exe`。这是“宁可不启动，也不悄悄用 shell 拼接”的取舍。
 - 本契约是行为约束，不是对上游 Harness 稳定性的承诺；`codex app-server` 仍标记为 experimental。

@@ -6,7 +6,9 @@ import test from 'node:test';
 
 import { CodexAppServerAdapter } from '../src/adapters/codex/adapter.js';
 import type { HarnessEvent } from '../src/adapters/harness.js';
+import { SubmitOutcomeUnknownError } from '../src/adapters/harness.js';
 import type { CodexLaunch } from '../src/connection.js';
+import { ConversationBusyError, ConversationClosingError, Workspace } from '../src/workspace.js';
 import { assertHarnessAdapterContract } from './support/harness-adapter-contract.js';
 
 const FAKE_SERVER = String.raw`
@@ -64,6 +66,16 @@ rl.on('line', (line) => {
   if (message.method === 'turn/start') {
     turnSeq += 1;
     activeTurn = 'turn-' + turnSeq;
+    if (mode === 'no-accept') {
+      return;
+    }
+    if (mode === 'late-start' && turnSeq === 1) {
+      setTimeout(() => {
+        notify('turn/started', { threadId: currentThread, turn: { id: activeTurn } });
+        setTimeout(() => finish('completed'), 50);
+      }, 150);
+      return;
+    }
     respond(message.id, { turn: { id: activeTurn } });
     notify('turn/started', { threadId: currentThread, turn: { id: activeTurn } });
     if (mode === 'exit') {
@@ -95,10 +107,36 @@ rl.on('line', (line) => {
     if (mode === 'hang-turn') {
       // never settle
     }
+    if (mode === 'stale-terminal' && turnSeq === 2) {
+      setTimeout(
+        () => notify('turn/completed', { threadId: currentThread, turn: { id: 'turn-1', status: 'completed' } }),
+        20,
+      );
+      setTimeout(() => finish('completed'), 100);
+    }
+    if (mode === 'stale-approval') {
+      if (turnSeq === 1) {
+        setTimeout(() => finish('completed'), 20);
+      } else {
+        const id = approvalId++;
+        send({
+          id,
+          method: 'item/commandExecution/requestApproval',
+          params: { threadId: currentThread, turnId: 'turn-1', itemId: 'old-exec', command: 'old command' },
+        });
+      }
+    }
     return;
   }
   if (message.method === 'turn/interrupt') {
     respond(message.id, {});
+    if (mode === 'no-terminal') {
+      return;
+    }
+    if (mode === 'late-terminal') {
+      setTimeout(() => finish('interrupted'), 100);
+      return;
+    }
     if (activeTurn !== null) {
       finish('interrupted');
     }
@@ -143,11 +181,11 @@ async function open(mode: string): Promise<{ adapter: CodexAppServerAdapter; eve
   return { adapter, events, projectDir };
 }
 
-async function waitForEvent(
-  events: HarnessEvent[],
-  predicate: (event: HarnessEvent) => boolean,
+async function waitForEvent<T extends { readonly type: string }>(
+  events: readonly T[],
+  predicate: (event: T) => boolean,
   timeoutMs = 5_000,
-): Promise<HarnessEvent> {
+): Promise<T> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const found = events.find(predicate);
@@ -345,5 +383,137 @@ test('satisfies the harness adapter contract', async () => {
     });
   } finally {
     await adapter.stop().catch(() => undefined);
+  }
+});
+
+test('treats a timed-out turn/start without acceptance as unknown and keeps the conversation busy', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-uncertain-'));
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('no-accept'),
+    requestTimeoutMs: 100,
+    closeTerminalTimeoutMs: 200,
+  });
+  const workspace = new Workspace(adapter);
+  const states: string[] = [];
+  workspace.onEvent((event) => {
+    if (event.type === 'execution/state') {
+      states.push(event.state);
+    }
+  });
+
+  try {
+    await adapter.start();
+    const conversation = await workspace.createConversation({ id: 'uncertain', directory: projectDir });
+    await assert.rejects(workspace.submit(conversation.id, 'first'), SubmitOutcomeUnknownError);
+    assert.equal(states[0], 'unknown');
+    await assert.rejects(workspace.submit(conversation.id, 'second'), ConversationBusyError);
+  } finally {
+    await workspace.stop();
+  }
+});
+
+test('keeps a timed-out turn alive when turn/started arrives later and releases it afterwards', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-late-start-'));
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('late-start'),
+    requestTimeoutMs: 100,
+    closeTerminalTimeoutMs: 1_000,
+  });
+  const workspace = new Workspace(adapter);
+
+  try {
+    await adapter.start();
+    const conversation = await workspace.createConversation({ id: 'late', directory: projectDir });
+    await assert.rejects(workspace.submit(conversation.id, 'first'), SubmitOutcomeUnknownError);
+    await delay(300);
+    const second = await workspace.submit(conversation.id, 'second');
+    assert.equal(second.state, 'running');
+  } finally {
+    await workspace.stop();
+  }
+});
+
+test('does not report cancelled when close cannot confirm a native terminal', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-no-terminal-'));
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('no-terminal'),
+    requestTimeoutMs: 200,
+    closeTerminalTimeoutMs: 200,
+  });
+  const workspace = new Workspace(adapter);
+  try {
+    await adapter.start();
+    const conversation = await workspace.createConversation({ id: 'no-terminal', directory: projectDir });
+    const execution = await workspace.submit(conversation.id, 'first');
+    await assert.rejects(workspace.closeConversation(conversation.id), /did not reach a terminal/);
+    assert.equal(workspace.getExecution(execution.id)?.state, 'unknown');
+    await assert.rejects(workspace.submit(conversation.id, 'second'), ConversationClosingError);
+  } finally {
+    await workspace.stop();
+  }
+});
+
+test('closes only after a late native terminal event arrives', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-late-terminal-'));
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('late-terminal'),
+    requestTimeoutMs: 200,
+    closeTerminalTimeoutMs: 1_000,
+  });
+  const workspace = new Workspace(adapter);
+  try {
+    await adapter.start();
+    const conversation = await workspace.createConversation({ id: 'late-terminal', directory: projectDir });
+    const execution = await workspace.submit(conversation.id, 'first');
+    await workspace.closeConversation(conversation.id);
+    assert.equal(workspace.getExecution(execution.id)?.state, 'cancelled');
+  } finally {
+    await workspace.stop();
+  }
+});
+
+test('ignores a stale turn completion instead of settling the new execution', async () => {
+  const session = await open('stale-terminal');
+  try {
+    const nativeId = await session.adapter.createConversation({ id: 'p', directory: session.projectDir });
+    await session.adapter.submit(nativeId, 'exec-1', 'first');
+    await delay(20);
+    await session.adapter.cancel(nativeId);
+    await waitForEvent(session.events, (event) => event.type === 'execution/cancelled');
+
+    await session.adapter.submit(nativeId, 'exec-2', 'second');
+    await delay(60);
+    assert.equal(
+      session.events.some((event) => event.type === 'execution/completed'),
+      false,
+      'stale turn-1 completion settled the second execution',
+    );
+    const completed = await waitForEvent(session.events, (event) => event.type === 'execution/completed', 2_000);
+    assert.equal(completed.type === 'execution/completed' ? completed.executionId : '', 'exec-2');
+  } finally {
+    await session.adapter.stop();
+  }
+});
+
+test('declines an approval request that belongs to a previous turn', async () => {
+  const session = await open('stale-approval');
+  try {
+    const nativeId = await session.adapter.createConversation({ id: 'p', directory: session.projectDir });
+    await session.adapter.submit(nativeId, 'exec-1', 'first');
+    await waitForEvent(session.events, (event) => event.type === 'execution/completed');
+
+    await session.adapter.submit(nativeId, 'exec-2', 'second');
+    await waitForEvent(
+      session.events,
+      (event) => event.type === 'execution/completed' && event.executionId === 'exec-2',
+      2_000,
+    );
+    assert.equal(
+      session.events.some((event) => event.type === 'execution/approval-requested'),
+      false,
+      'an old-turn approval was presented to the new execution',
+    );
+  } finally {
+    await session.adapter.stop();
   }
 });

@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   ConnectionConfigError,
+  assertCodexVersion,
   buildCodexLaunch,
   isSupportedCodexVersion,
   loadConnectionConfig,
@@ -51,14 +52,25 @@ test('rejects an explicit executable override that does not exist', () => {
 
 test('finds codex on PATH without changing global state', () => {
   const dir = mkdtempSync(join(tmpdir(), 'uw-path-'));
-  const name = process.platform === 'win32' ? 'codex.cmd' : 'codex';
+  const name = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const executable = join(dir, name);
   writeFileSync(executable, '', 'utf8');
-  const env: NodeJS.ProcessEnv =
-    process.platform === 'win32'
-      ? { PATH: dir, PATHEXT: '.CMD' }
-      : { PATH: dir };
-  assert.equal(resolveCodexExecutable(undefined, env), executable);
+  assert.equal(resolveCodexExecutable(undefined, { PATH: dir }), executable);
+});
+
+test('rejects Windows command shims instead of finding them', () => {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'uw-shim-'));
+  const shim = join(dir, 'codex.cmd');
+  writeFileSync(shim, '@echo off\r\n', 'utf8');
+  assert.throws(() => resolveCodexExecutable(undefined, { PATH: dir }), /command shim|native executables/);
+  assert.throws(() => resolveCodexExecutable(shim), /command shim|native executables/);
+});
+
+test('runs the version probe against a native executable and rejects non-Codex output', async () => {
+  await assert.rejects(assertCodexVersion(process.execPath), /Could not parse/);
 });
 
 test('reports a missing codex with an actionable error', () => {

@@ -90,13 +90,18 @@ export function loadConnectionConfig(path: string): ConnectionConfig {
 
 /**
  * Resolve the Codex CLI. An explicit override is used verbatim (and must be a
- * file); otherwise PATH is searched, which keeps published configs portable.
+ * launchable file); otherwise PATH is searched, which keeps published configs
+ * portable.
+ *
+ * Windows command shims (`.cmd`/`.bat`/`.ps1`/`.js`) are rejected instead of
+ * being accepted by the locator and failing later in `execFile`/`spawn`.
  */
 export function resolveCodexExecutable(override?: string, env: NodeJS.ProcessEnv = process.env): string {
   if (override !== undefined) {
     if (!existsSync(override) || !isFile(override)) {
       throw new CodexExecutableError(`Codex executable not found: ${override}`);
     }
+    assertNativeLaunchable(override);
     return override;
   }
   const pathValue = env.PATH ?? env.Path ?? '';
@@ -105,11 +110,9 @@ export function resolveCodexExecutable(override?: string, env: NodeJS.ProcessEnv
       'Codex CLI was not found because PATH is empty. Install Codex or pass --codex-exe <path>.',
     );
   }
-  const extensions =
-    process.platform === 'win32'
-      ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((entry) => entry !== '')
-      : [''];
-  const names = ['codex', ...extensions.map((extension) => `codex${extension.toLowerCase()}`)];
+  const names = process.platform === 'win32' ? ['codex.exe'] : ['codex'];
+  const shimNames = process.platform === 'win32' ? ['codex.cmd', 'codex.bat'] : [];
+  let foundShim: string | undefined;
   for (const directory of pathValue.split(delimiter)) {
     if (directory.trim() === '') {
       continue;
@@ -120,6 +123,19 @@ export function resolveCodexExecutable(override?: string, env: NodeJS.ProcessEnv
         return candidate;
       }
     }
+    for (const name of shimNames) {
+      const candidate = join(directory, name);
+      if (existsSync(candidate) && isFile(candidate)) {
+        foundShim ??= candidate;
+      }
+    }
+  }
+  if (foundShim !== undefined) {
+    throw new CodexExecutableError(
+      `Found ${foundShim}, but this driver only launches native executables; ` +
+        'Windows command shims (.cmd/.bat) cannot be spawned without a shell. ' +
+        'Pass the real codex.exe with --codex-exe <path>.',
+    );
   }
   throw new CodexExecutableError(
     'Codex CLI was not found on PATH. Install Codex, or point at an existing installation with --codex-exe <path>.',
@@ -222,6 +238,18 @@ function isFile(path: string): boolean {
     return statSync(path).isFile();
   } catch {
     return false;
+  }
+}
+
+function assertNativeLaunchable(path: string): void {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  if (/\.(cmd|bat|ps1|vbs|js|mjs|cjs)$/i.test(path)) {
+    throw new CodexExecutableError(
+      `${path} is a Windows command shim; this driver only launches native executables. ` +
+        'Pass the real codex.exe with --codex-exe <path>.',
+    );
   }
 }
 

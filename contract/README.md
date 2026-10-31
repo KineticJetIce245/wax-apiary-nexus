@@ -87,7 +87,7 @@ submit() 返回前开始
 4. **必须区分“原生明确拒绝”与“提交结果不确定”。** 原生返回错误响应是明确拒绝（普通 `Error`）。响应超时或连接中断时：
    - 若尚未观察到 `turn/started`，视为结果不确定，必须抛出 [`SubmitOutcomeUnknownError`](../src/adapters/harness.ts)，并在原生会话上保留活跃关联；Workspace 会把该执行结算为 `unknown` 并保持会话 busy，直到收到该执行的终态事件或关闭/停止。
    - 若已经观察到 `turn/started`，说明原生已接受这一轮：不得报 failed，应继续等待终态（`execution/started` 已发出，后续输出/终态仍归属该执行）。
-   适配器不得在另一层释放这个关联。
+   适配器不得在另一层释放这个关联。原生明确拒绝仍由适配器抛普通 `Error`；Workspace 会把它包装成带 `executionId` 的 `SubmitFailedError`，供需要关联失败尝试的调用方使用。
 5. `execution/output` 的 `channel` 为 `assistant` 时计入 Workspace 输出；`thought` 只用于展示。
 6. `stop()` 或进程/连接丢失时，仍在运行的 execution 必须报 `execution/unknown`，并附上原因。
 7. 原生层的“完成”不等于“成功”：`completed` 只用于原生明确结束；失败、取消、未知必须分开报。

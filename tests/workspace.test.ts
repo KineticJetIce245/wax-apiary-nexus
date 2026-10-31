@@ -18,6 +18,7 @@ import { ProjectDirectoryError } from '../src/project-directory.js';
 import {
   ConversationBusyError,
   ConversationClosingError,
+  SubmitFailedError,
   UnsupportedApprovalError,
   UnknownApprovalError,
   UnknownExecutionError,
@@ -143,6 +144,22 @@ test('rejects a second submission while the first execution is running', async (
 
   adapter.emit({ type: 'execution/completed', executionId: execution.id, stopReason: 'end_turn' });
   assert.equal(workspace.getExecution(execution.id)?.state, 'completed');
+});
+
+test('associates a definite submit failure with its execution', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+
+  adapter.submitError = new Error('native refused');
+  let failure: unknown;
+  await assert.rejects(workspace.submit(conversation.id, 'rejected'), (error: unknown) => {
+    failure = error;
+    return true;
+  });
+  assert.ok(failure instanceof SubmitFailedError);
+  assert.equal(failure.message, 'native refused');
+  assert.equal(failure.executionId, adapter.submissions[0]?.executionId);
+  assert.equal(workspace.getExecution(failure.executionId)?.state, 'failed');
 });
 
 test('settles an uncertain submit as unknown and blocks until a terminal event', async (t) => {

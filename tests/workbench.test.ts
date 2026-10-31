@@ -425,6 +425,56 @@ test('rejects a transfer whose assembled input exceeds the local guard', async (
   }
 });
 
+test('keeps a failed target submit visible and associated with its execution', async () => {
+  const { workbench, dsh, codex } = await fixture();
+  try {
+    const source = await workbench.submit('source');
+    await complete(dsh, source.execution.id, 'SOURCE-OUTPUT');
+    codex.submitError = new Error('native refused');
+
+    await assert.rejects(
+      workbench.transfer('dsh', source.execution.id, 'codex'),
+      /native refused/,
+    );
+    assert.equal(codex.submissions.length, 1);
+    const records = workbench.transferRecords;
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.outcome, 'failed');
+    assert.equal(records[0]?.error, 'native refused');
+    assert.ok(records[0]?.target.executionId !== undefined);
+    assert.equal(
+      workbench.getExecution('codex', records[0]?.target.executionId ?? '')?.execution.state,
+      'failed',
+    );
+  } finally {
+    await workbench.stop();
+  }
+});
+
+test('keeps a transferred target result queryable after closing that connection', async () => {
+  const { workbench, dsh, codex } = await fixture();
+  try {
+    const source = await workbench.submit('source');
+    await complete(dsh, source.execution.id, 'SOURCE-OUTPUT');
+    const record = await workbench.transfer('dsh', source.execution.id, 'codex');
+    assert.ok(record.target.executionId !== undefined);
+    await complete(codex, record.target.executionId, 'TARGET-OUTPUT');
+    assert.equal(
+      workbench.getExecution('codex', record.target.executionId)?.execution.state,
+      'completed',
+    );
+
+    await workbench.closeConnection('codex');
+    assert.equal(workbench.getConnection('codex'), undefined);
+    assert.equal(workbench.transferRecords.length, 1);
+    const historical = workbench.getExecution('codex', record.target.executionId);
+    assert.equal(historical?.execution.state, 'completed');
+    assert.equal(historical?.execution.output, 'TARGET-OUTPUT');
+  } finally {
+    await workbench.stop().catch(() => undefined);
+  }
+});
+
 test('rejects duplicate connection names before starting either adapter', async () => {
   const project: Project = {
     id: 'g004-duplicate',

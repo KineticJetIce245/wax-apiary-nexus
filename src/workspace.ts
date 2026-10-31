@@ -109,6 +109,22 @@ export class CancelNotSupportedError extends Error {
   }
 }
 
+/**
+ * A definite refusal from the harness after an execution was created. The
+ * execution is settled as `failed`; the id lets callers (e.g. the workbench
+ * transfer log) keep the failed attempt associated with its execution.
+ */
+export class SubmitFailedError extends Error {
+  constructor(
+    message: string,
+    readonly executionId: string,
+    options?: { readonly cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = 'SubmitFailedError';
+  }
+}
+
 export interface WorkspaceOptions {
   readonly approvalTimeoutMs?: number;
 }
@@ -205,10 +221,10 @@ export class Workspace {
         // The native side may have accepted the turn. Keep the association so a
         // second submission cannot overlap it; a later terminal event releases it.
         this.finish(execution, 'unknown', undefined, messageOf(error), { preserveActive: true });
-      } else {
-        this.finish(execution, 'failed', undefined, messageOf(error));
+        throw error;
       }
-      throw error;
+      this.finish(execution, 'failed', undefined, messageOf(error));
+      throw new SubmitFailedError(messageOf(error), execution.id, { cause: error });
     }
 
     return snapshot(execution);

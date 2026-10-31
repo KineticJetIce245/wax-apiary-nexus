@@ -190,6 +190,13 @@ test('runs one explicit plan, review and revise handoff across both harnesses', 
     );
     assert.match(continued.output, /APPLIED-731/);
 
+    const codexContinued = await submitAndWait(
+      session.workbench,
+      'codex',
+      'What token did you output in your previous reply? Reply with only that token.',
+    );
+    assert.match(codexContinued.output, /REVIEWED-731/);
+
     assert.equal(session.workbench.getConnection('dsh')?.conversation.nativeId, dshConversation);
     assert.equal(session.workbench.getConnection('codex')?.conversation.nativeId, codexConversation);
   } finally {

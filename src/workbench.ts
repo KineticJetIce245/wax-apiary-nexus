@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { ApprovalDecisionKind, HarnessAdapter } from './adapters/harness.js';
 import { SubmitOutcomeUnknownError } from './adapters/harness.js';
 import type { Project } from './kernel.js';
-import { Workspace, type Conversation, type Execution, type WorkspaceEvent } from './workspace.js';
+import {
+  SubmitFailedError,
+  Workspace,
+  type Conversation,
+  type Execution,
+  type WorkspaceEvent,
+} from './workspace.js';
 
 /** A conservative local guard, not a claim about a model context window. */
 export const MAX_TRANSFER_INPUT_CHARS = 200_000;
@@ -46,8 +52,9 @@ export interface TransferRecord {
   readonly target: TransferTarget;
   readonly instruction?: string;
   readonly input: string;
-  /** `unknown` keeps the attempted handoff visible without claiming acceptance. */
-  readonly outcome: 'submitted' | 'unknown';
+  /** `unknown`/`failed` keep attempted handoffs visible without claiming success. */
+  readonly outcome: 'submitted' | 'unknown' | 'failed';
+  readonly error?: string;
 }
 
 export interface WorkbenchOptions {
@@ -98,6 +105,7 @@ export class Workbench {
   private readonly connections = new Map<string, RuntimeConnection>();
   private readonly failures: ConnectionFailure[] = [];
   private readonly transfers: TransferRecord[] = [];
+  private readonly terminalHistory = new Map<string, Execution>();
   private readonly listeners = new Set<(event: TaggedWorkspaceEvent) => void>();
   private active: string | undefined;
   private started = false;
@@ -165,12 +173,15 @@ export class Workbench {
   }
 
   getExecution(connectionName: string, executionId: string): TaggedExecution | undefined {
-    const connection = this.connections.get(connectionName);
-    const execution = connection?.workspace.getExecution(executionId);
-    if (connection === undefined || execution === undefined) {
-      return undefined;
+    const live = this.connections.get(connectionName)?.workspace.getExecution(executionId);
+    if (live !== undefined) {
+      return { connection: connectionName, execution: live };
     }
-    return { connection: connectionName, execution };
+    const historical = this.terminalHistory.get(historyKey(connectionName, executionId));
+    if (historical !== undefined) {
+      return { connection: connectionName, execution: historical };
+    }
+    return undefined;
   }
 
   onEvent(handler: (event: TaggedWorkspaceEvent) => void): () => void {
@@ -269,6 +280,20 @@ export class Workbench {
           input,
           outcome: 'unknown',
         });
+      } else if (error instanceof SubmitFailedError) {
+        this.transfers.push({
+          id: randomUUID(),
+          source: { connection: sourceName, conversationId: source.conversationId, executionId },
+          target: {
+            connection: targetName,
+            conversationId: target.conversationId,
+            executionId: error.executionId,
+          },
+          ...(instructionText === undefined ? {} : { instruction: instructionText }),
+          input,
+          outcome: 'failed',
+          error: error.message,
+        });
       }
       throw error;
     }
@@ -351,6 +376,12 @@ export class Workbench {
       );
       const conversation = await workspace.createConversation(this.project);
       const unsubscribe = workspace.onEvent((event) => {
+        if (event.type === 'execution/state' && event.state !== 'running') {
+          const execution = workspace.getExecution(event.executionId);
+          if (execution !== undefined) {
+            this.terminalHistory.set(historyKey(spec.name, event.executionId), execution);
+          }
+        }
         this.emit({ connection: spec.name, event });
       });
       this.connections.set(spec.name, {
@@ -421,7 +452,12 @@ function cloneTransfer(record: TransferRecord): TransferRecord {
     ...(record.instruction === undefined ? {} : { instruction: record.instruction }),
     input: record.input,
     outcome: record.outcome,
+    ...(record.error === undefined ? {} : { error: record.error }),
   };
+}
+
+function historyKey(connection: string, executionId: string): string {
+  return `${connection}:${executionId}`;
 }
 
 function messageOf(error: unknown): string {

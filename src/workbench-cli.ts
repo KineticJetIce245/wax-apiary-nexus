@@ -1,9 +1,11 @@
 import { createInterface } from 'node:readline';
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
-import type { ApprovalDecisionKind, ApprovalRequest } from './adapters/harness.js';
+import type { ApprovalDecisionKind } from './adapters/harness.js';
+import { ApprovalInbox } from './approval-inbox.js';
 import { createCodexConnection } from './connection.js';
 import { createKernel } from './kernel.js';
+import { createRenderState, renderTaggedEvent } from './workbench-renderer.js';
 import { Workbench, type ConnectionSpec, type TaggedWorkspaceEvent } from './workbench.js';
 
 interface CliOptions {
@@ -95,11 +97,6 @@ function parseArgs(argv: readonly string[]): CliOptions | undefined {
   };
 }
 
-interface PendingApproval {
-  readonly connection: string;
-  readonly request: ApprovalRequest;
-}
-
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   if (options === undefined) {
@@ -139,8 +136,8 @@ async function main(): Promise<void> {
   });
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   readline.pause();
-  const pending: PendingApproval[] = [];
-  const streams = new Set<string>();
+  const inbox = new ApprovalInbox();
+  const renderState = createRenderState();
   let shuttingDown = false;
 
   const printPrompt = (): void => {
@@ -170,54 +167,38 @@ async function main(): Promise<void> {
     renderEvent(tagged);
   });
 
-  function renderEvent({ connection, event }: TaggedWorkspaceEvent): void {
+  function renderEvent(tagged: TaggedWorkspaceEvent): void {
+    const { connection, event } = tagged;
     switch (event.type) {
-      case 'execution/output': {
-        const key = `${connection}:${event.executionId}`;
-        if (event.channel === 'assistant') {
-          if (!streams.has(key)) {
-            streams.add(key);
-            process.stdout.write(`\n[${connection}:${event.executionId.slice(0, 8)}] `);
-          }
-          process.stdout.write(event.text);
-        }
-        return;
-      }
-      case 'execution/tool': {
-        process.stdout.write(`\n[${connection}] tool ${event.title} ${event.status}\n`);
-        return;
-      }
-      case 'execution/approval-requested': {
-        pending.push({ connection, request: event.request });
-        const index = pending.length;
-        process.stdout.write(
-          `\n[${connection}] approval #${String(index)} ${event.request.summary}\n` +
-            `  execution ${event.request.executionId}, request ${event.request.requestId}\n` +
-            '  /approve ' + String(index) + ' 1|2|3\n',
-        );
-        return;
-      }
-      case 'execution/approval-decided': {
-        const index = pending.findIndex(
-          (entry) => entry.connection === connection && entry.request.requestId === event.requestId,
-        );
-        if (index >= 0) {
-          pending.splice(index, 1);
-        }
-        process.stdout.write(`\n[${connection}] approval ${event.kind}\n`);
-        return;
-      }
+      case 'execution/output':
+      case 'execution/tool':
       case 'execution/state': {
-        process.stdout.write(
-          `\n[${connection}] execution ${event.executionId.slice(0, 8)} ${event.state}` +
-            `${event.stopReason === undefined ? '' : ` (${event.stopReason})`}\n`,
-        );
-        if (event.error !== undefined) {
+        renderTaggedEvent(tagged, renderState, (text) => {
+          process.stdout.write(text);
+        });
+        if (event.type === 'execution/state' && event.error !== undefined) {
           process.stderr.write(`[${connection}] ${event.error}\n`);
         }
         return;
       }
+      case 'execution/approval-requested': {
+        renderState.lastOutputKey = undefined;
+        const entry = inbox.add(connection, event.request);
+        process.stdout.write(
+          `\n[${connection}] approval #${String(entry.id)} ${event.request.summary}\n` +
+            `  execution ${event.request.executionId}, request ${event.request.requestId}\n` +
+            '  /approve ' + String(entry.id) + ' 1|2|3\n',
+        );
+        return;
+      }
+      case 'execution/approval-decided': {
+        renderState.lastOutputKey = undefined;
+        inbox.remove(connection, event.requestId);
+        process.stdout.write(`\n[${connection}] approval ${event.kind}\n`);
+        return;
+      }
       case 'adapter/error': {
+        renderState.lastOutputKey = undefined;
         process.stderr.write(`[${connection}] adapter error: ${event.message}\n`);
         return;
       }
@@ -319,13 +300,14 @@ async function main(): Promise<void> {
   }
 
   function printApprovals(): void {
-    if (pending.length === 0) {
+    const entries = inbox.list();
+    if (entries.length === 0) {
       process.stdout.write('no pending approvals\n');
       return;
     }
-    for (const [index, entry] of pending.entries()) {
+    for (const entry of entries) {
       process.stdout.write(
-        `#${String(index + 1)} [${entry.connection}] ${entry.request.summary} ` +
+        `#${String(entry.id)} [${entry.connection}] ${entry.request.summary} ` +
           `execution=${entry.request.executionId} request=${entry.request.requestId}\n`,
       );
     }
@@ -345,17 +327,18 @@ async function main(): Promise<void> {
       process.stdout.write(
         `${record.id.slice(0, 8)} ${record.outcome} ${record.source.connection}:${record.source.executionId.slice(0, 8)} ` +
           `-> ${record.target.connection}:${record.target.executionId?.slice(0, 8) ?? 'unknown'} ` +
-          `(${target?.state ?? 'unknown'}, ${String(record.input.length)} chars)\n`,
+          `(${target?.state ?? 'unknown'}, ${String(record.input.length)} chars)` +
+          `${record.error === undefined ? '' : ` error: ${record.error}`}\n`,
       );
     }
   }
 
   async function approve(line: string): Promise<void> {
-    const [indexRaw, decisionRaw] = line.slice('/approve '.length).trim().split(/\s+/);
-    const index = Number(indexRaw);
-    const entry = pending[index - 1];
-    if (!Number.isInteger(index) || entry === undefined) {
-      throw new Error(`Unknown approval index: ${String(indexRaw)}`);
+    const [idRaw, decisionRaw] = line.slice('/approve '.length).trim().split(/\s+/);
+    const id = Number(idRaw);
+    const entry = Number.isInteger(id) ? inbox.get(id) : undefined;
+    if (entry === undefined) {
+      throw new Error(`Unknown or expired approval id: ${String(idRaw)}`);
     }
     const kind = parseDecision(decisionRaw);
     await workbench.decideApproval(
@@ -364,6 +347,7 @@ async function main(): Promise<void> {
       entry.request.requestId,
       kind,
     );
+    inbox.remove(entry.connection, entry.request.requestId);
   }
 
   async function cancel(line: string): Promise<void> {

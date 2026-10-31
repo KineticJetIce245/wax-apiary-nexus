@@ -30,6 +30,8 @@ export interface DshAcpAdapterOptions {
   readonly dshArgs?: readonly string[];
   /** Extra environment for the harness process; never logged. */
   readonly env?: NodeJS.ProcessEnv;
+  /** Optional ACP session/new MCP server declarations. */
+  readonly mcpServers?: readonly Record<string, unknown>[];
 }
 
 interface ActiveExecution {
@@ -66,6 +68,7 @@ export class DshAcpAdapter implements HarnessAdapter {
   private readonly sessionTimeoutMs: number;
   private readonly dshArgs: readonly string[];
   private readonly env: NodeJS.ProcessEnv;
+  private readonly mcpServers: readonly Record<string, unknown>[];
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly active = new Map<string, ActiveExecution>();
   private readonly closing = new Set<string>();
@@ -85,6 +88,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     this.sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.dshArgs = options.dshArgs ?? [];
     this.env = options.env ?? {};
+    this.mcpServers = options.mcpServers ?? [];
   }
 
   onEvent(handler: (event: HarnessEvent) => void): () => void {
@@ -213,7 +217,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     const client = this.requireClient();
     const result = await client.request(
       'session/new',
-      { cwd: project.directory, mcpServers: [] },
+      { cwd: project.directory, mcpServers: this.mcpServers },
       this.sessionTimeoutMs,
     );
     const sessionId = asString(asRecord(result)?.sessionId);

@@ -35,6 +35,8 @@ export interface CodexAppServerAdapterOptions {
   readonly requestTimeoutMs?: number;
   readonly closeTerminalTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
+  /** Optional thread/start config override, e.g. mcp_servers. */
+  readonly config?: Record<string, unknown>;
 }
 
 interface ActiveExecution {
@@ -51,6 +53,11 @@ interface PendingApproval {
   readonly resolve: (result: unknown) => void;
   readonly threadId: string;
   readonly executionId: string;
+  readonly permissions?: {
+    readonly requested: unknown;
+    readonly scope: 'turn' | 'session';
+  };
+  readonly elicitation?: boolean;
 }
 
 const APPROVAL_OPTIONS: readonly ApprovalOption[] = [
@@ -79,6 +86,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
   private readonly requestTimeoutMs: number;
   private readonly closeTerminalTimeoutMs: number;
   private readonly stopTimeoutMs: number;
+  private readonly config: Record<string, unknown> | undefined;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly threads = new Map<string, ThreadState>();
   private readonly closing = new Set<string>();
@@ -96,6 +104,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.closeTerminalTimeoutMs = options.closeTerminalTimeoutMs ?? DEFAULT_CLOSE_TERMINAL_TIMEOUT_MS;
     this.stopTimeoutMs = options.stopTimeoutMs ?? STOP_TIMEOUT_MS;
+    this.config = options.config;
   }
 
   onEvent(handler: (event: HarnessEvent) => void): () => void {
@@ -201,7 +210,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
       }
     }
     for (const pending of this.pendingApprovals.values()) {
-      pending.resolve({ decision: 'cancel' });
+      pending.resolve(cancelApprovalResult(pending));
     }
     this.pendingApprovals.clear();
     this.threads.clear();
@@ -218,7 +227,14 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     assertProjectDirectory(project.directory);
     const client = this.requireClient();
     const result = asRecord(
-      await client.request('thread/start', { cwd: project.directory }, this.requestTimeoutMs),
+      await client.request(
+        'thread/start',
+        {
+          cwd: project.directory,
+          ...(this.config === undefined ? {} : { config: this.config }),
+        },
+        this.requestTimeoutMs,
+      ),
     );
     const threadId = asString(asRecord(result?.thread)?.id);
     if (threadId === undefined) {
@@ -307,6 +323,21 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     }
     const mapped = mapApprovalDecision(decision.kind);
     this.pendingApprovals.delete(decision.requestId);
+    if (pending.elicitation === true) {
+      pending.resolve({
+        action:
+          decision.kind === 'allow_once' ? 'accept' : decision.kind === 'cancelled' ? 'cancel' : 'decline',
+        content: decision.kind === 'allow_once' ? {} : null,
+      });
+      return;
+    }
+    if (pending.permissions !== undefined) {
+      pending.resolve({
+        permissions: decision.kind === 'allow_once' ? pending.permissions.requested : {},
+        scope: pending.permissions.scope,
+      });
+      return;
+    }
     pending.resolve({ decision: mapped });
   }
 
@@ -581,7 +612,12 @@ export class CodexAppServerAdapter implements HarnessAdapter {
 
   private handleServerRequest(request: RpcServerRequest): Promise<unknown> {
     const method = request.method;
-    if (method !== 'item/commandExecution/requestApproval' && method !== 'item/fileChange/requestApproval') {
+    if (
+      method !== 'item/commandExecution/requestApproval' &&
+      method !== 'item/fileChange/requestApproval' &&
+      method !== 'item/permissions/requestApproval' &&
+      method !== 'mcpServer/elicitation/request'
+    ) {
       return Promise.reject(new Error(`Unsupported Codex app-server request: ${method}`));
     }
     const params = asRecord(request.params);
@@ -589,13 +625,29 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     const turnId = asString(params?.turnId);
     const thread = threadId === undefined ? undefined : this.threads.get(threadId);
     const active = thread?.active;
-    if (threadId === undefined || turnId === undefined || active === undefined || active.turnId !== turnId) {
-      return Promise.resolve({ decision: 'decline' });
+    const isElicitation = method === 'mcpServer/elicitation/request';
+    if (
+      threadId === undefined ||
+      active === undefined ||
+      (!isElicitation && (turnId === undefined || active.turnId !== turnId))
+    ) {
+      return Promise.resolve(
+        isElicitation ? { action: 'decline', content: null } : { decision: 'decline' },
+      );
     }
     const requestId = String(request.id);
     if (this.pendingApprovals.has(requestId)) {
-      return Promise.resolve({ decision: 'decline' });
+      return Promise.resolve(
+        isElicitation ? { action: 'decline', content: null } : { decision: 'decline' },
+      );
     }
+    const permissions =
+      method === 'item/permissions/requestApproval'
+        ? {
+            requested: params?.permissions ?? {},
+            scope: 'turn' as const,
+          }
+        : undefined;
     const approval: ApprovalRequest = {
       requestId,
       executionId: active.executionId,
@@ -608,6 +660,8 @@ export class CodexAppServerAdapter implements HarnessAdapter {
         resolve,
         threadId,
         executionId: active.executionId,
+        ...(permissions === undefined ? {} : { permissions }),
+        ...(isElicitation ? { elicitation: true } : {}),
       });
       this.emit({ type: 'execution/approval-requested', executionId: active.executionId, request: approval });
     });
@@ -617,7 +671,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     for (const [requestId, pending] of this.pendingApprovals) {
       if (pending.threadId === threadId) {
         this.pendingApprovals.delete(requestId);
-        pending.resolve({ decision: 'cancel' });
+        pending.resolve(cancelApprovalResult(pending));
       }
     }
   }
@@ -656,7 +710,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     }
     this.closing.clear();
     for (const pending of this.pendingApprovals.values()) {
-      pending.resolve({ decision: 'cancel' });
+      pending.resolve(cancelApprovalResult(pending));
     }
     this.pendingApprovals.clear();
     this.deltaItems.clear();
@@ -680,8 +734,17 @@ export class CodexAppServerAdapter implements HarnessAdapter {
   }
 }
 
-export function mapApprovalDecision(kind: ApprovalDecision['kind']): string {
-  switch (kind) {
+function cancelApprovalResult(pending: PendingApproval): unknown {
+  if (pending.elicitation === true) {
+    return { action: 'cancel', content: null };
+  }
+  if (pending.permissions !== undefined) {
+    return { permissions: {}, scope: pending.permissions.scope };
+  }
+  return { decision: 'cancel' };
+}
+
+export function mapApprovalDecision(kind: ApprovalDecision['kind']): string {  switch (kind) {
     case 'allow_once':
       return 'accept';
     case 'reject_once':
@@ -696,6 +759,17 @@ function approvalSummary(method: string, params: Record<string, unknown> | undef
     return method === 'item/fileChange/requestApproval' ? 'Codex wants to apply file changes' : 'Codex wants to run a command';
   }
   const reason = asString(params.reason);
+  if (method === 'mcpServer/elicitation/request') {
+    const server = asString(params.serverName);
+    return server === undefined
+      ? 'An MCP server requests input'
+      : `MCP server ${server} requests input`;
+  }
+  if (method === 'item/permissions/requestApproval') {
+    return reason === undefined
+      ? 'Codex requests additional permissions'
+      : `Codex requests additional permissions: ${reason}`;
+  }
   if (method === 'item/fileChange/requestApproval') {
     return reason === undefined ? 'Codex wants to apply file changes' : `Codex wants to apply file changes: ${reason}`;
   }

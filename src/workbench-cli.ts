@@ -7,6 +7,7 @@ import { createCodexConnection } from './connection.js';
 import { loadFlowDefinition } from './flow-definition.js';
 import { FlowRuntime, type FlowEvent } from './flow-runtime.js';
 import { createKernel } from './kernel.js';
+import { WebServer } from './web-server.js';
 import { createRenderState, renderTaggedEvent } from './workbench-renderer.js';
 import { Workbench, type ConnectionSpec, type TaggedWorkspaceEvent } from './workbench.js';
 
@@ -40,6 +41,9 @@ function usage(): string {
     '  /flow run <file>                     Start a declarative graph flow',
     '  /flow status                         Show the current or last flow',
     '  /flow cancel                         Cancel the running flow',
+    '  /web start [port]                    Start the read-only local web view',
+    '  /web stop                            Stop the web view',
+    '  /web status                          Show the web view URL',
     '  /close <connection>                  Close one connection',
     '  /quit                                Close and stop all connections',
     '',
@@ -146,6 +150,7 @@ async function main(): Promise<void> {
   let shuttingDown = false;
   let flowRuntime: FlowRuntime | undefined;
   let flowRunning: Promise<void> | undefined;
+  let webServer: WebServer | undefined;
 
   const printPrompt = (): void => {
     if (shuttingDown) {
@@ -168,6 +173,12 @@ async function main(): Promise<void> {
       }
     } catch {
       // Flow cancellation must not prevent connection cleanup.
+    }
+    try {
+      await webServer?.stop();
+      webServer = undefined;
+    } catch {
+      // Web cleanup must not prevent connection cleanup.
     }
     try {
       await workbench.stop();
@@ -297,6 +308,14 @@ async function main(): Promise<void> {
         printFlowStatus();
       } else if (line === '/flow cancel') {
         await cancelFlow();
+      } else if (line === '/web') {
+        process.stdout.write('Usage: /web start [port] | /web stop | /web status\n');
+      } else if (line.startsWith('/web start')) {
+        await startWeb(line);
+      } else if (line === '/web stop') {
+        await stopWeb();
+      } else if (line === '/web status') {
+        printWeb();
       } else if (line.startsWith('/use ')) {
         workbench.use(line.slice(5).trim());
         process.stdout.write(`target: ${workbench.activeConnection}\n`);
@@ -500,6 +519,39 @@ async function main(): Promise<void> {
     }
     await flowRuntime.cancel();
     process.stdout.write('flow cancel requested\n');
+  }
+
+  async function startWeb(line: string): Promise<void> {
+    if (webServer?.running === true) {
+      throw new Error('Web view is already running; use /web stop first');
+    }
+    const raw = line.slice('/web start'.length).trim();
+    const port = raw === '' ? 0 : Number(raw);
+    if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+      throw new Error(`Invalid web port: ${raw}`);
+    }
+    const server = new WebServer(workbench, { port });
+    const info = await server.start();
+    webServer = server;
+    process.stdout.write(`web: ${info.url}\n`);
+  }
+
+  async function stopWeb(): Promise<void> {
+    if (webServer === undefined) {
+      process.stdout.write('web: not running\n');
+      return;
+    }
+    await webServer.stop();
+    webServer = undefined;
+    process.stdout.write('web: stopped\n');
+  }
+
+  function printWeb(): void {
+    if (webServer?.url === undefined) {
+      process.stdout.write('web: not running\n');
+      return;
+    }
+    process.stdout.write(`web: ${webServer.url}\n`);
   }
 
   async function transfer(line: string): Promise<void> {

@@ -233,6 +233,26 @@ export class CollaborationGateway {
     return { note: buildRecoveryNote(items), items, tornTail };
   }
 
+  /**
+   * A manually repaired tail should not require a restart: while degraded,
+   * re-read the ledger and resync derived state once the tail is appendable.
+   */
+  private refreshDegraded(): void {
+    if (this.degradedReason === undefined) {
+      return;
+    }
+    const ledger = this.ledger;
+    if (ledger === undefined || this.active.size > 0) {
+      return;
+    }
+    const read = ledger.refresh();
+    if (read.tornTail && !read.tornTailAppendable) {
+      return;
+    }
+    this.loadLedger(ledger);
+    this.degradedReason = undefined;
+  }
+
   private loadLedger(ledger: DelegationLedger): void {
     const read = ledger.readAll();
     this.entries = [...read.entries];
@@ -291,6 +311,7 @@ export class CollaborationGateway {
     if (mandate === undefined) {
       throw new CollaborationGatewayError('Delegation gateway is not running', 503);
     }
+    this.refreshDegraded();
     if (this.degradedReason !== undefined) {
       throw new CollaborationGatewayError(
         `Delegation ledger needs manual repair: ${this.degradedReason}`,
@@ -406,7 +427,7 @@ export class CollaborationGateway {
         // A definite rejection did not start work; an unknown outcome may have.
         // Never collapse the two into one "failed" record.
         if (error instanceof SubmitOutcomeUnknownError) {
-          this.settle(workItemId, 'unknown', messageOf(error));
+          this.settle(workItemId, 'unknown', messageOf(error), error.executionId);
           throw new CollaborationGatewayError(`Worker submit outcome is unknown: ${messageOf(error)}`, 503);
         }
         if (error instanceof SubmitFailedError) {
@@ -555,7 +576,11 @@ function messageOf(error: unknown): string {
 
 /** Ledger entries stay bounded: worker text is model-controlled. */
 function capText(text: string, limit: number): string {
-  return text.length <= limit ? text : `${text.slice(0, limit)}...`;
+  if (text.length <= limit) {
+    return text;
+  }
+  // Reserve room for the ellipsis so the stored string never exceeds `limit`.
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
 const MAX_ERROR_CHARS = 2000;

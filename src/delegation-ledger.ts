@@ -128,7 +128,14 @@ export class DelegationLedger {
       rmSync(lockPath, { force: true });
       throw error;
     }
-    const fd = openSync(ledgerPath, 'a', 0o600);
+    let fd: number;
+    try {
+      fd = openSync(ledgerPath, 'a', 0o600);
+    } catch (error) {
+      // Do not leak the writer lock when the ledger file cannot be opened.
+      rmSync(lockPath, { force: true });
+      throw error;
+    }
     return new DelegationLedger(
       directory,
       lockPath,
@@ -163,6 +170,18 @@ export class DelegationLedger {
 
   readAll(): LedgerReadResult {
     return readLedgerFile(this.ledgerPath);
+  }
+
+  /**
+   * Re-read the file after an external repair. Updates the cached tail state
+   * and the next sequence number; the writer lock is unaffected.
+   */
+  refresh(): LedgerReadResult {
+    const read = readLedgerFile(this.ledgerPath);
+    this.tornTail = read.tornTail;
+    this.tornTailAppendable = read.tornTailAppendable;
+    this.nextSeq = read.entries.length + 1;
+    return read;
   }
 
   append(type: LedgerEntryType, data: Readonly<Record<string, unknown>>): LedgerEntry {

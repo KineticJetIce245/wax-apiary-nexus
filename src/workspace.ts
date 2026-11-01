@@ -239,7 +239,9 @@ export class Workspace {
         // The native side may have accepted the turn. Keep the association so a
         // second submission cannot overlap it; a later terminal event releases it.
         this.finish(execution, 'unknown', undefined, messageOf(error), { preserveActive: true });
-        throw error;
+        // Re-throw with an execution id so the ledger can name a worker that
+        // may already be running. Keep the adapter-provided id when it has one.
+        throw new SubmitOutcomeUnknownError(messageOf(error), error.executionId ?? execution.id);
       }
       this.finish(execution, 'failed', undefined, messageOf(error));
       throw new SubmitFailedError(messageOf(error), execution.id, { cause: error });

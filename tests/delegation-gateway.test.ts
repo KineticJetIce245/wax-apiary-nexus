@@ -382,7 +382,59 @@ test('reports an unknown submit outcome instead of claiming failure', async () =
     assert.equal(response.status, 503);
     const body = (await response.json()) as { error: string };
     assert.match(body.error, /outcome is unknown/);
-    assert.equal(context.gateway.workItems[0]?.state, 'unknown');
+    const item = context.gateway.workItems[0];
+    assert.equal(item?.state, 'unknown');
+    // The Workspace knows the execution id it created; the ledger must name it.
+    assert.equal(typeof item?.executionId, 'string');
+    assert.equal(context.dsh.submissions.length, 1);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('caps a long worker error at the documented limit', async () => {
+  const context = await setup({ submitError: new Error('x'.repeat(5_000)) });
+  try {
+    const response = await delegate(context.info, { task: 'x' });
+    assert.equal(response.status, 502);
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    const settled = read.entries.find((entry) => entry.type === 'delivery/settled');
+    assert.equal(typeof settled?.data.error, 'string');
+    assert.equal((settled?.data.error as string).length, 2000);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('recovers from a repaired ledger tail without a restart', async () => {
+  const stateDirectory = mkdtempSync(join(tmpdir(), 'uw-g010-repair-'));
+  const entry = {
+    seq: 1,
+    writer: 'previous',
+    at: new Date().toISOString(),
+    type: 'work-item/created',
+    data: {
+      id: 'w-repaired',
+      mandateId: 'm',
+      requester: 'operator',
+      basis: 'policy',
+      policyVersion: 'v',
+      worker: 'dsh',
+      taskLength: 1,
+      taskDigest: 'a'.repeat(64),
+    },
+  };
+  const ledgerPath = join(stateDirectory, 'ledger.jsonl');
+  writeFileSync(ledgerPath, `${JSON.stringify(entry)}\n{"seq":2,"writer":"previous"`, 'utf8');
+
+  const context = await setup({ stateDirectory });
+  try {
+    const blocked = await delegate(context.info, { task: 'x' });
+    assert.equal(blocked.status, 503);
+    // Operator repairs the torn fragment by hand: keep only complete records.
+    writeFileSync(ledgerPath, `${JSON.stringify(entry)}\n`, 'utf8');
+    const response = await delegate(context.info, { task: 'after repair' });
+    assert.equal(response.status, 200);
     assert.equal(context.dsh.submissions.length, 1);
   } finally {
     await cleanup(context);

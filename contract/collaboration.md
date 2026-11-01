@@ -50,20 +50,21 @@ Codex native turn
 
 ### 2.2 工作项与 Outbox
 
-- 每次通过 Gate 的委派创建一个 Work Item，并在 append-only ledger 中按顺序记录：`work-item/created` → `delivery/intent` → `delivery/submitted` → `delivery/settled`。
+- 每次通过 Gate 的委派创建一个 Work Item，并在 append-only ledger 中按顺序记录：`work-item/created` → `delivery/intent` → `delivery/submitted`（仅在拿到 execution 时）→ `delivery/settled`。提交被明确拒绝或结果无法确认时可能没有 execution，因此只有 `created`、`intent`、`settled` 三段。
 - Work Item 字段：`id`、`mandateId`、`requester`、`basis`、`policyVersion`、`worker`、`taskLength`、`taskDigest`、`idempotencyKey?`、`state`、`executionId?`、`error?`、`createdAt`、`updatedAt`。
-- 状态由 ledger 折叠得出，不另存副本：`created` → `in-flight` → `completed | failed | cancelled | unknown`。
+- 状态由 ledger 折叠得出，不另存副本：`created` → `in-flight` → `completed | failed | cancelled | unknown`。`unknown` 是一次尝试的终点，但按恢复语义仍需人工检查。
 - 并发上限按**本进程**正在执行的委派计数；历史未结算记录不占用新的并发名额。
 - 同一 `Idempotency-Key` 的第二次投递返回 409 并指出原 Work Item；本版本不缓存 Worker 输出，因此不重放结果。
 - `delivery/intent` 在提交前写入；拿到 execution 后**先写 `delivery/submitted`**，再处理断线。这样提交阶段断开也能从 ledger 认出可能已启动的 Worker。
-- 提交结果的三种语义必须分开：明确拒绝（未创建 execution，409）、明确失败（`SubmitFailedError`，502，`settled` 记录带 `executionId`）、结果未知（`SubmitOutcomeUnknownError`，503，记为 `unknown`）。不得把“未知”折叠成“失败”。
+- 提交结果的三种语义必须分开：明确拒绝（未创建 execution，409）、明确失败（`SubmitFailedError`，502，`settled` 记录带 `executionId`）、结果未知（`SubmitOutcomeUnknownError`，503，记为 `unknown`，Workspace 已创建 execution 时同样带 `executionId`）。不得把“未知”折叠成“失败”。
 - 断线时取消失败会写进 `delivery/settled` 的 `error`，状态记为 `unknown`；`executionId` 仍在 `delivery/submitted`/`settled` 里可查。
 
 ### 2.3 恢复（Recovery Note）
 
-- 启动时读取 ledger。未结算记录（`created` / `in-flight` / `unknown`）进入 `getRecoveryReport()`：`{note, items, tornTail}`。`unknown` 表示结果无法判定，正是最需要人工检查的状态。
+- 启动时读取 ledger。需要人工结算的记录（`created` / `in-flight` / `unknown`）进入 `getRecoveryReport()`：`{note, items, tornTail}`。`unknown` 虽然是一次尝试的终态，却表示结果无法判定，正是最需要人工检查的状态。
 - 启动**不会**自动重投或重放任何委派；`note` 明确要求先检查 Project 文件、git 历史与 Worker 原生会话，再人工结算。
-- 最后一行不完整（进程在写记录时被杀）：读取时保留原字节、丢弃该片段并标记 `tornTail`。完整但缺少换行的记录可以安全补行；无法解析的片段会阻止后续 append，Gateway 仍可启动并给出恢复报告，但对新委派返回 503，直到人工处理。
+- 最后一行不完整（进程在写记录时被杀）：读取时保留原字节、丢弃该片段并标记 `tornTail`。完整但缺少换行的记录可以安全补行；无法解析的片段会阻止后续 append，Gateway 仍可启动并给出恢复报告，但对新委派返回 503。
+- 残尾被人工修好之后，同一 Gateway 实例会在下一次委派时重新读取并恢复写入（不需要重启）；仍无法解析时继续返回 503。
 - `tornTail` 在恢复报告里按磁盘当前状态重新计算，补行成功后会变为 false。
 - 文件中间出现无法解析或序号不连续的行时拒绝启动（`LedgerCorruptError`），不静默修复。
 
@@ -102,6 +103,7 @@ Codex native turn
 - 没有 Web/CLI 配置入口；当前由 API/probe 组装 Codex MCP config 与 policy。
 - Gateway 与 bridge 都只用于本机受控环境；token 在本地环境变量中传递。token 可能被 Codex 写入 thread config/rollout；token 随 Gateway 实例失效，更换 Gateway 后需要重建带新 env 的 thread。mandate 与 token 同生命周期，因此审计记录不能跨实例证明“谁曾经授权”，只能证明“这一实例按该策略执行过”。
 - 没有总超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host 取消或断开客户端触发 Gateway 取消。
-- 同一 state 目录只允许一个写者（`writer.lock`）。锁属于已死亡的本机进程时，必须显式 `allowStaleLedgerLock` 才能接管；来自**其他主机**的锁一律按“已占用”处理，不自动判定陈旧。关闭时只删除自己持有的锁；接管存在一个受限的时间窗（删除后、写入前），期间若被第三方抢先，重试会识别并报冲突而不是并发写。
-- ledger 不保存 task 全文与 Worker 输出；要复核内容需回到 Worker 原生会话。错误文本最多 2000 字符，`gate/rejected` 的 detail 最多 64 字符。
+- 同一 state 目录只允许一个写者（`writer.lock`）。锁属于已死亡的本机进程时，必须显式 `allowStaleLedgerLock` 才能接管；来自**其他主机**的锁一律按“已占用”处理，不自动判定陈旧。关闭时只删除自己持有的锁。
+- 陈旧锁接管不是强互斥：删除旧锁到写入新锁之间存在一个很短的时间窗，两个进程同时接管时理论上可能都拿到写权。本版本靠重试时的 `EEXIST` + pid 检查把冲突暴露出来，但不提供跨进程的原子接管；需要强保证时应先停掉旧进程再启动。
+- ledger 不保存 task 全文与 Worker 输出；要复核内容需回到 Worker 原生会话。错误文本最多 2000 字符（含省略号），`gate/rejected` 的 detail 最多 64 字符。
 - bridge 对无法解析的 JSON 行返回 `-32700`；不支持的方法返回 `-32601`。每次 `tools/call` 生成新幂等键只用于识别“同一次调用被重复投递”，不提供跨重试去重（bridge 本身不重试）。

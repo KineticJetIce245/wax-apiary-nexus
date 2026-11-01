@@ -118,7 +118,7 @@ Codex native turn
 - 没有模型 Assessment 层；授权只有确定性 Gate，`observe`/`auto` 两档未实现。
 - 没有 Web/CLI 配置入口；当前由 API/probe 组装 Codex MCP config 与 policy。
 - Gateway 与 bridge 都只用于本机受控环境；token 在本地环境变量中传递。token 可能被 Codex 写入 thread config/rollout；token 随 Gateway 实例失效，更换 Gateway 后需要重建带新 env 的 thread。mandate 与 token 同生命周期，因此审计记录不能跨实例证明“谁曾经授权”，只能证明“这一实例按该策略执行过”。
-- 同步委派没有总超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host 取消或断开客户端触发 Gateway 取消。异步委派受 `asyncTimeoutMs` 约束。
+- 同步委派没有总超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host 取消或断开客户端触发 Gateway 取消。异步委派受 `asyncTimeoutMs` 约束。超时取消失败时原生会话仍可能 busy，下一次委派会得到 409（`Conversation already has a running execution`），这不是 Gateway 的并发上限，需要先停掉或释放该原生会话。
 - 同一 state 目录只允许一个写者（`writer.lock`）。锁属于已死亡的本机进程时，必须显式 `allowStaleLedgerLock` 才能接管；来自**其他主机**的锁一律按“已占用”处理，不自动判定陈旧。关闭时只删除自己持有的锁。
 - 陈旧锁接管不是强互斥：删除旧锁到写入新锁之间存在一个很短的时间窗，两个进程同时接管时理论上可能都拿到写权。本版本靠重试时的 `EEXIST` + pid 检查把冲突暴露出来，但不提供跨进程的原子接管；需要强保证时应先停掉旧进程再启动。
 - ledger 不保存 task 全文；异步结果保存在受控结果文件里（0600、有上限），同步委派的结果不落盘。错误文本最多 2000 字符（含省略号），`gate/rejected` 的 detail 最多 64 字符。

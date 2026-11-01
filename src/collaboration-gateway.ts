@@ -6,6 +6,7 @@ import { isAbsolute, join, relative } from 'node:path';
 
 import {
   DelegationLedger,
+  LedgerClosedError,
   defaultDelegationStateDirectory,
   type LedgerEntry,
   type LedgerEntryType,
@@ -97,6 +98,7 @@ export class CollaborationGateway {
   private readonly idempotency = new Map<string, string>();
   /** Background delegations owned by this process, keyed by work item id. */
   private readonly background = new Map<string, BackgroundDelegation>();
+  private stopping = false;
   private entries: LedgerEntry[] = [];
   private items: WorkItemView[] = [];
   private tornTail = false;
@@ -152,6 +154,7 @@ export class CollaborationGateway {
     if (this.server !== undefined) {
       throw new Error('Collaboration gateway is already running');
     }
+    this.stopping = false;
     const stateDirectory = this.stateDirectoryOption ?? defaultDelegationStateDirectory(this.workbench.getProject().id);
     const ledger = DelegationLedger.open({
       directory: stateDirectory,
@@ -226,6 +229,7 @@ export class CollaborationGateway {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     const server = this.server;
     this.server = undefined;
     this.info = undefined;
@@ -621,8 +625,12 @@ export class CollaborationGateway {
           id: workItemId,
           executionId: entry.executionId,
         });
-      } catch {
-        // stop() may have closed the ledger while submit was in flight.
+      } catch (error) {
+        // Only a concurrent stop may close the ledger under us. A real append
+        // failure must surface instead of being reported as an accepted 202.
+        if (!this.stopping && !(error instanceof LedgerClosedError)) {
+          throw error;
+        }
       }
       if (entry.controller.signal.aborted || entry.settled) {
         // The gateway stopped during submission: cancel the worker that may

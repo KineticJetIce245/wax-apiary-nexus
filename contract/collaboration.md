@@ -102,6 +102,10 @@ Codex native turn
 - Codex 的 MCP elicitation 请求会转成普通 approval；allow 返回 `{action:'accept',content:{}}`，reject 返回 decline。请求带 `turnId` 时必须匹配当前 turn；缺省时挂到当前活跃 turn。只适用于不需要表单内容的 MCP 工具调用。
 - Codex 的 `item/permissions/requestApproval` 也会转成普通 approval；approval 摘要包含请求的 permission profile，allow 授予该 profile（scope=turn）。
 - 客户端在 Worker 完成前断开时，Gateway 会 best-effort 取消 Worker execution；取消不保证原生侧立刻停止。断线监听在提交之前安装，因此提交阶段的断开也会被捕获并写入 ledger，不会留下“无人知晓”的运行中 Worker。
+- 忙时再输入（G014 真实探针，绕过适配器守卫直接说协议）：
+  - DSH ACP：第二次 `session/prompt` 被原生拒绝，错误 `-32602 Invalid params: a prompt is already in flight for this session`；没有 `session/steer`（`-32601 Method not found`）。
+  - Codex app-server：`turn/steer` 存在且生效，参数需 `{ threadId, expectedTurnId, input }`；探针把运行中的“数到 500”改为 `STEER-OK`，模型输出确实变成 `STEER-OK`。`turn/steer` 返回 `{ turnId }`。
+  - 两个适配器目前都在本地拒绝第二次提交（“already has an active execution”），Workspace 也保持单活跃执行；原生 steer 能力尚未通过 Workspace 暴露。
 
 ## 5. 验收证据
 

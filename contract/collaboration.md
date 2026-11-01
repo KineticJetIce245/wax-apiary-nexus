@@ -95,7 +95,10 @@ Codex native turn
 ## 4. 适配器接入
 
 - Codex `thread/start` 支持 `config`；可传 `mcp_servers.<name>`（command/args/env）让 Codex 启动 bridge。
-- DSH `session/new` 支持 `mcpServers` stdio/HTTP 声明；本目标只实现配置透传，未做 DSH-host 真实委派验收。
+- DSH `session/new` 支持 `mcpServers` stdio/HTTP 声明；G012 已在真实 DSH-host 会话上验证：DSH 声明 bridge、调用 `start_delegation`/`get_delegation_result`、委派给 Codex Worker 并取回 `WORKER-OK`。
+- 两种注入形状不同，必须按各自的 Harness 声明：
+  - Codex：`thread/start` 的 `config.mcp_servers.<name> = { command, args, env: { KEY: value } }`（env 是对象）；
+  - DSH ACP：`session/new.mcpServers = [{ name, command, args, env: [{ name, value }] }]`（env 是数组）。
 - Codex 的 MCP elicitation 请求会转成普通 approval；allow 返回 `{action:'accept',content:{}}`，reject 返回 decline。请求带 `turnId` 时必须匹配当前 turn；缺省时挂到当前活跃 turn。只适用于不需要表单内容的 MCP 工具调用。
 - Codex 的 `item/permissions/requestApproval` 也会转成普通 approval；approval 摘要包含请求的 permission profile，allow 授予该 profile（scope=turn）。
 - 客户端在 Worker 完成前断开时，Gateway 会 best-effort 取消 Worker execution；取消不保证原生侧立刻停止。断线监听在提交之前安装，因此提交阶段的断开也会被捕获并写入 ledger，不会留下“无人知晓”的运行中 Worker。
@@ -108,10 +111,11 @@ Codex native turn
 - Codex/DSH 均未重建；Host 的 native conversation 保持原 thread；
 - G010 追加：ledger 里出现该次委派的 `work-item/created` → `intent` → `submitted` → `settled` 四条记录，且记录中的 `mandateId` 与 Gateway 启动时返回的 mandate 一致。
 - G011 追加：Codex 调用 `start_delegation` 拿到 `workItemId` 后继续自己的 turn，再用 `get_delegation_result` 取回 `WORKER-OK`；`GET /delegations/<id>` 在完成后带 `output`，结果文件位于 `<stateDirectory>/results/<id>.txt`。
+- G012 追加：DSH 作为 Host 的对称方向已验证 —— DSH 会话通过 `session/new.mcpServers` 声明 bridge，调用 `start_delegation` → `get_delegation_result`，委派给 Codex Worker，最终输出 `DELEGATE-DONE` + `WORKER-OK`；Gateway 记录的 `worker` 为 `codex`，ledger 四段齐全。
 
 ## 6. 限制
 
-- 只有 Codex-host 完成真实验收；DSH-host 的 `mcpServers` 只做了声明透传。
+- Codex-host 与 DSH-host 都完成了真实验收（各自方向见 §5），但都只是单 Worker、单任务；没有多 Worker 编排或并发委派压测。
 - MCP elicitation 只按 approval 处理，不能填写表单；接受时 content 为空。带 `turnId` 且不匹配当前 turn 的请求直接 decline，不产生 approval。
 - 没有 handoff、worker 选择策略、多 worker 编排或自动重试；投递失败不重放。
 - 异步委派依赖 Host 主动取回结果：Gateway 不推送；Host 在拿到 id 后结束 turn 时，结果只能由人或后续 turn 再取。

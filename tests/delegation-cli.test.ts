@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { hostname, tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -15,6 +15,7 @@ import type {
 import {
   buildCodexHostConfig,
   buildDshMcpServers,
+  createSignalShutdown,
   decideApprovalDecision,
   parseDelegationCliArgs,
   resolveCodexExecutableOption,
@@ -217,7 +218,13 @@ class FakeAdapter implements HarnessAdapter {
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
 
   constructor(
-    private readonly options: { failStart?: boolean; failClose?: boolean; failStop?: boolean; output?: string } = {},
+    private readonly options: {
+      failStart?: boolean;
+      failClose?: boolean;
+      failStop?: boolean;
+      output?: string;
+      onStop?: () => void;
+    } = {},
   ) {}
 
   async start(): Promise<void> {
@@ -228,6 +235,7 @@ class FakeAdapter implements HarnessAdapter {
   }
   async stop(): Promise<void> {
     this.stopped = true;
+    this.options.onStop?.();
     if (this.options.failStop === true) {
       throw new Error('stop failed');
     }
@@ -261,6 +269,7 @@ class FakeAdapter implements HarnessAdapter {
 function cliOptions(overrides: Partial<DelegationCliOptions> = {}): DelegationCliOptions {
   return {
     projectDir: mkdtempSync(join(tmpdir(), 'uw-g013-cli-')),
+    stateDirectory: mkdtempSync(join(tmpdir(), 'uw-g013-cli-state-')),
     host: 'codex',
     worker: 'dsh',
     task: 'reply WORKER-OK',
@@ -307,9 +316,10 @@ test('cleans up the worker and gateway when the host fails to start', async () =
   assert.equal(worker.stopped, true);
 });
 
-test('runs one task and reports success', async () => {
-  const worker = new FakeAdapter();
-  const host = new FakeAdapter({ output: 'DELEGATE-DONE WORKER-OK' });
+test('runs one task, reports success, and stops host before worker', async () => {
+  const order: string[] = [];
+  const worker = new FakeAdapter({ onStop: () => order.push('worker') });
+  const host = new FakeAdapter({ output: 'DELEGATE-DONE WORKER-OK', onStop: () => order.push('host') });
   const calls: string[] = [];
   const output: string[] = [];
   const result = await runDelegationCli(cliOptions(), fakeDeps(worker, host, calls, output));
@@ -317,6 +327,8 @@ test('runs one task and reports success', async () => {
   assert.equal(output.join('').includes('DELEGATE-DONE WORKER-OK'), true);
   assert.equal(worker.stopped, true);
   assert.equal(host.stopped, true);
+  assert.deepEqual(order, ['host', 'worker']);
+  assert.equal(output.join('').includes('UW_GATEWAY_TOKEN'), false);
 });
 
 test('raises the exit code when cleanup fails after a successful task', async () => {
@@ -325,4 +337,61 @@ test('raises the exit code when cleanup fails after a successful task', async ()
   const calls: string[] = [];
   const result = await runDelegationCli(cliOptions(), fakeDeps(worker, host, calls));
   assert.equal(result.exitCode, 1);
+});
+
+test('stops the worker when the gateway cannot start', async () => {
+  const stateDirectory = mkdtempSync(join(tmpdir(), 'uw-g013-cli-locked-'));
+  writeFileSync(
+    join(stateDirectory, 'writer.lock'),
+    JSON.stringify({ pid: process.pid, writer: 'other', host: hostname() }),
+    'utf8',
+  );
+  const worker = new FakeAdapter();
+  const host = new FakeAdapter();
+  const calls: string[] = [];
+  const result = await runDelegationCli(
+    cliOptions({ stateDirectory }),
+    fakeDeps(worker, host, calls),
+  );
+  assert.equal(result.exitCode, 1);
+  assert.equal(worker.stopped, true);
+  assert.deepEqual(calls, ['dsh']);
+});
+
+test('signal shutdown stops once and exits with the signal code', async () => {
+  let stops = 0;
+  const exits: number[] = [];
+  const handler = createSignalShutdown(
+    async () => {
+      stops += 1;
+    },
+    (code) => exits.push(code),
+    20,
+  );
+  handler(130);
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+  assert.equal(stops, 1);
+  assert.deepEqual(exits, [130]);
+});
+
+test('signal shutdown still exits when stopAll hangs', async () => {
+  const exits: number[] = [];
+  const handler = createSignalShutdown(() => new Promise<void>(() => {}), (code) => exits.push(code), 20);
+  handler(143);
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 60));
+  assert.deepEqual(exits, [143]);
+});
+
+test('removes process signal handlers after a normal run', async () => {
+  const before = process.listenerCount('SIGINT');
+  const worker = new FakeAdapter();
+  const host = new FakeAdapter();
+  const calls: string[] = [];
+  const result = await runDelegationCli(cliOptions(), {
+    ...fakeDeps(worker, host, calls),
+    installSignalHandlers: true,
+    exit: () => {},
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(process.listenerCount('SIGINT'), before);
 });

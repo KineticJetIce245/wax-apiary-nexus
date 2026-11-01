@@ -428,6 +428,23 @@ export interface DelegationCliDeps {
   readonly writeError?: (text: string) => void;
   /** Tests pass false so repeated runs do not accumulate process handlers. */
   readonly installSignalHandlers?: boolean;
+  /** Tests pass a recorder instead of terminating the test process. */
+  readonly exit?: (code: number) => void;
+}
+
+/** Bounded shutdown for SIGINT/SIGTERM: stop once, then exit with `code`. */
+export function createSignalShutdown(
+  stopAll: () => Promise<void>,
+  exit: (code: number) => void,
+  timeoutMs = 5_000,
+): (code: number) => void {
+  return (code: number): void => {
+    const timeout = new Promise<void>((resolveTimeout) => {
+      const timer = setTimeout(resolveTimeout, timeoutMs);
+      timer.unref();
+    });
+    void Promise.race([stopAll(), timeout]).finally(() => exit(code));
+  };
 }
 
 export interface DelegationCliResult {
@@ -481,16 +498,14 @@ export async function runDelegationCli(
     }
   };
 
-  const onSignal = (code: number): void => {
-    const timeout = new Promise<void>((resolveTimeout) => {
-      const timer = setTimeout(resolveTimeout, 5_000);
-      timer.unref();
-    });
-    void Promise.race([stopAll(), timeout]).finally(() => process.exit(code));
-  };
-  if (deps.installSignalHandlers !== false) {
-    process.once('SIGINT', () => onSignal(130));
-    process.once('SIGTERM', () => onSignal(143));
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const onSignal = createSignalShutdown(stopAll, exit);
+  const signalsInstalled = deps.installSignalHandlers !== false;
+  const onSigint = (): void => onSignal(130);
+  const onSigterm = (): void => onSignal(143);
+  if (signalsInstalled) {
+    process.once('SIGINT', onSigint);
+    process.once('SIGTERM', onSigterm);
   }
 
   try {
@@ -556,7 +571,7 @@ export async function runDelegationCli(
           async (text) => (await runTask(text)).ok,
           options.host,
           write,
-          () => onSignal(130),
+          signalsInstalled ? () => onSignal(130) : undefined,
         );
       } finally {
         readline.close();
@@ -566,6 +581,10 @@ export async function runDelegationCli(
     writeError(`delegation-cli failed: ${messageOf(error)}\n`);
     exitCode = 1;
   } finally {
+    if (signalsInstalled) {
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+    }
     await stopAll();
     if (cleanupFailed && exitCode === 0) {
       exitCode = 1;

@@ -39,6 +39,8 @@ function usage(): string {
     '  /approvals                           List pending approvals',
     '  /approve <id> <1|2|3>                Answer the stable approval id (1 allow, 2 reject, 3 cancel)',
     '  /cancel <connection> <execution-id>  Cancel that connection execution',
+    '  /replace <connection> <execution-id> <instruction...>',
+    '                                       Cancel that execution, then submit the instruction',
     '  /transfer <source> <execution-id> <target> [instruction...] [--attach <path>]...',
     '  /records                             Show in-memory transfer records',
     '  /flow run <file>                     Start a declarative graph flow',
@@ -326,6 +328,8 @@ async function main(): Promise<void> {
         await approve(line);
       } else if (line.startsWith('/cancel ')) {
         await cancel(line);
+      } else if (line.startsWith('/replace ')) {
+        await replace(line);
       } else if (line.startsWith('/transfer ')) {
         await transfer(line);
       } else if (line.startsWith('/close ')) {
@@ -425,6 +429,22 @@ async function main(): Promise<void> {
     }
     await workbench.cancel(connection, executionId);
     process.stdout.write(`cancel requested on ${connection} for ${executionId}\n`);
+  }
+
+  async function replace(line: string): Promise<void> {
+    const rest = line.slice('/replace '.length).trim();
+    const match = rest.match(/^(\S+)\s+(\S+)\s+([\s\S]+)$/);
+    if (match === null) {
+      throw new Error('Usage: /replace <connection> <execution-id> <instruction...>');
+    }
+    const [, connection, executionId, text] = match;
+    if (connection === undefined || executionId === undefined || text === undefined) {
+      throw new Error('Usage: /replace <connection> <execution-id> <instruction...>');
+    }
+    const execution = await workbench.replace(connection, executionId, text.trim());
+    process.stdout.write(
+      `replace requested on ${connection}: ${executionId} -> ${execution.execution.id}\n`,
+    );
   }
 
   async function runFlow(path: string): Promise<void> {

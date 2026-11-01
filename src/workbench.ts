@@ -261,6 +261,22 @@ export class Workbench {
   }
 
   /**
+   * Cancel a running execution and submit a new prompt on the same
+   * conversation. The workspace waits for the cancelled execution to settle
+   * before submitting, so the two prompts never run concurrently.
+   */
+  async replace(
+    connectionName: string,
+    executionId: string,
+    text: string,
+    attachments?: readonly AttachmentDraft[],
+  ): Promise<TaggedExecution> {
+    const connection = this.requireReady(connectionName);
+    const execution = await connection.workspace.replace(executionId, text, attachments);
+    return { connection: connectionName, execution };
+  }
+
+  /**
    * Hand one completed assistant output snapshot to another connection's
    * existing conversation. This is a user-triggered action; there is no queue,
    * retry, or automatic follow-up, and the call issues at most one submit.

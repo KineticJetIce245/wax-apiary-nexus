@@ -95,6 +95,19 @@ export class UnknownExecutionError extends Error {
   }
 }
 
+/** Cancel did not settle before the replace timeout; no second prompt is sent. */
+export class ReplaceTimeoutError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly timeoutMs: number,
+  ) {
+    super(
+      `Execution ${executionId} did not stop within ${String(timeoutMs)}ms; refusing to submit a second prompt`,
+    );
+    this.name = 'ReplaceTimeoutError';
+  }
+}
+
 export class UnknownApprovalError extends Error {
   constructor(readonly requestId: string) {
     super(`Unknown or already settled approval request: ${requestId}`);
@@ -134,6 +147,8 @@ export class SubmitFailedError extends Error {
 
 export interface WorkspaceOptions {
   readonly approvalTimeoutMs?: number;
+  /** How long replace() waits for a cancelled execution to settle. */
+  readonly replaceTimeoutMs?: number;
 }
 
 interface MutableExecution {
@@ -152,10 +167,12 @@ interface PendingApproval {
 }
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
+const DEFAULT_REPLACE_TIMEOUT_MS = 10_000;
 
 export class Workspace {
   private readonly adapter: HarnessAdapter;
   private readonly approvalTimeoutMs: number;
+  private readonly replaceTimeoutMs: number;
   private readonly conversations = new Map<string, Conversation>();
   private readonly executions = new Map<string, MutableExecution>();
   private readonly activeExecutionByConversation = new Map<string, string>();
@@ -170,6 +187,10 @@ export class Workspace {
     this.approvalTimeoutMs = options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
     if (!Number.isFinite(this.approvalTimeoutMs) || this.approvalTimeoutMs <= 0) {
       throw new Error(`approvalTimeoutMs must be a positive number: ${String(options.approvalTimeoutMs)}`);
+    }
+    this.replaceTimeoutMs = options.replaceTimeoutMs ?? DEFAULT_REPLACE_TIMEOUT_MS;
+    if (!Number.isFinite(this.replaceTimeoutMs) || this.replaceTimeoutMs <= 0) {
+      throw new Error(`replaceTimeoutMs must be a positive number: ${String(options.replaceTimeoutMs)}`);
     }
     this.unsubscribe = adapter.onEvent((event) => this.handleAdapterEvent(event));
   }
@@ -296,6 +317,40 @@ export class Workspace {
     if (conversation !== undefined) {
       await this.adapter.cancel(conversation.nativeId);
     }
+  }
+
+  /**
+   * Forced conversion: cancel the running execution, wait for it to settle,
+   * then submit the new prompt on the same conversation. If the native side
+   * does not settle in time we refuse to submit, so two prompts never run
+   * concurrently. A finished execution skips the cancel step.
+   */
+  async replace(
+    executionId: string,
+    text: string,
+    attachments: readonly AttachmentDraft[] = [],
+  ): Promise<Execution> {
+    this.assertRunning();
+    const execution = this.executions.get(executionId);
+    if (execution === undefined) {
+      throw new UnknownExecutionError(executionId);
+    }
+    if (execution.state === 'running') {
+      await this.cancel(executionId);
+      const deadline = Date.now() + this.replaceTimeoutMs;
+      while (Date.now() < deadline) {
+        const current = this.executions.get(executionId);
+        if (current === undefined || current.state !== 'running') {
+          break;
+        }
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+      }
+      const current = this.executions.get(executionId);
+      if (current !== undefined && current.state === 'running') {
+        throw new ReplaceTimeoutError(executionId, this.replaceTimeoutMs);
+      }
+    }
+    return this.submit(execution.conversationId, text, attachments);
   }
 
   async closeConversation(conversationId: string): Promise<void> {

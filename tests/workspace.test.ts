@@ -133,7 +133,7 @@ function approvalEvent(
   };
 }
 
-async function setup(options: { approvalTimeoutMs?: number } = {}) {
+async function setup(options: { approvalTimeoutMs?: number; replaceTimeoutMs?: number } = {}) {
   const adapter = new FakeAdapter();
   const workspace = new Workspace(adapter, options);
   const project = makeProject();
@@ -533,3 +533,50 @@ test('does not expose mutable conversation state', async (t) => {
   Reflect.set(fetched!, 'nativeId', 'mutated-again');
   assert.equal(workspace.getConversation(conversation.id)?.nativeId, adapter.nativeId);
 });
+
+test('replace cancels the running execution then submits the new prompt', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  const replacing = workspace.replace(first.id, 'second');
+  await delay(20);
+  adapter.emit({ type: 'execution/cancelled', executionId: first.id });
+  const second = await replacing;
+  assert.equal(adapter.cancellations.length, 1);
+  assert.equal(adapter.submissions.length, 2);
+  assert.equal(adapter.submissions[1]?.text, 'second');
+  assert.equal(second.state, 'running');
+  assert.equal(workspace.getExecution(first.id)?.state, 'cancelled');
+});
+
+test('replace refuses to submit when the cancelled execution never settles', async (t) => {
+  const { adapter, workspace, conversation } = await setup({ replaceTimeoutMs: 40 });
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  await assert.rejects(
+    () => workspace.replace(first.id, 'second'),
+    (error: Error) => error.name === 'ReplaceTimeoutError',
+  );
+  assert.equal(adapter.cancellations.length, 1);
+  assert.equal(adapter.submissions.length, 1);
+});
+
+test('replace submits directly when the execution already finished', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  adapter.emit({ type: 'execution/completed', executionId: first.id, stopReason: 'end_turn' });
+  const second = await workspace.replace(first.id, 'second');
+  assert.equal(adapter.cancellations.length, 0);
+  assert.equal(second.state, 'running');
+});
+
+test('replace rejects an unknown execution', async (t) => {
+  const { workspace } = await setup();
+  t.after(() => workspace.stop());
+  await assert.rejects(
+    () => workspace.replace('missing', 'second'),
+    (error: Error) => error.name === 'UnknownExecutionError',
+  );
+});
+

@@ -107,7 +107,13 @@ Codex native turn
   - Codex app-server：`turn/steer` 存在且生效，参数需 `{ threadId, expectedTurnId, input }`；探针把运行中的“数到 500”改为 `STEER-OK`，模型输出确实变成 `STEER-OK`。`turn/steer` 返回 `{ turnId }`。
   - 两个适配器目前都在本地拒绝第二次提交（“already has an active execution”），Workspace 也保持单活跃执行；原生 steer 能力尚未通过 Workspace 暴露。
   - 决定（2026-11-01，所有者确认）：**不引入 steer / 输入队列**。理由：DSH 无原生能力，两 Harness 语义不一致；引入会改变并发语义与审计边界，而当前场景以短回合为主，收益不足。忙时行为保持“拒绝第二次提交”。
-- 强制转换（G015）：`Workspace.replace(executionId, text)` 若该 execution 仍在运行，先 `cancel`，等待它进入终态（默认 10 秒），再在同一会话提交新 prompt；超时抛 `ReplaceTimeoutError` 且不提交，保证两个 prompt 不并发。`Workbench.replace(connection, executionId, text)` 与 `workbench-cli` 的 `/replace <connection> <execution-id> <instruction...>` 使用同一语义。Codex/DSH 真实验证：取消到新 execution 完成约 73ms/32ms，新输出 `REPLACED-OK`，旧 execution 为 `cancelled`。
+- 强制转换（G015）：`Workspace.replace(executionId, text)` 的语义：
+  - 空文本在 cancel 之前拒绝；
+  - 已确认终态（`completed`/`failed`/`cancelled`）直接提交；
+  - 运行中先 `cancel`，等待终态（默认 10 秒），再提交；
+  - `unknown`（结果无法确认，native 可能仍在跑）抛 `ReplaceUnknownError` 且不提交；
+  - 超时抛 `ReplaceTimeoutError` 且不提交。
+  以上保证两个 prompt 不并发。`Workbench.replace` 与 `workbench-cli` 的 `/replace <connection> <execution-id> <instruction...>` 使用同一语义。Codex/DSH 真实验证：取消到新 execution 完成约 73ms/32ms，新输出 `REPLACED-OK`，旧 execution 为 `cancelled`。
 
 ## 5. 验收证据
 

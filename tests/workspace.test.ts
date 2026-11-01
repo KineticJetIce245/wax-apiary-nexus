@@ -47,6 +47,7 @@ class FakeAdapter implements HarnessAdapter {
   readonly closed: string[] = [];
   closeError: Error | undefined;
   submitError: Error | undefined;
+  cancelError: Error | undefined;
   closePending: Promise<void> | undefined;
   startCalls = 0;
   stopCalls = 0;
@@ -84,6 +85,9 @@ class FakeAdapter implements HarnessAdapter {
 
   async cancel(nativeId: string): Promise<void> {
     this.cancellations.push(nativeId);
+    if (this.cancelError !== undefined) {
+      throw this.cancelError;
+    }
   }
 
   async respondToApproval(decision: ApprovalDecision): Promise<void> {
@@ -578,5 +582,67 @@ test('replace rejects an unknown execution', async (t) => {
     () => workspace.replace('missing', 'second'),
     (error: Error) => error.name === 'UnknownExecutionError',
   );
+});
+
+
+test('replace refuses an execution whose outcome is unknown', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  adapter.emit({ type: 'execution/unknown', executionId: first.id, reason: 'connection dropped' });
+  await assert.rejects(
+    () => workspace.replace(first.id, 'second'),
+    (error: Error) => error.name === 'ReplaceUnknownError',
+  );
+  assert.equal(adapter.cancellations.length, 0);
+  assert.equal(adapter.submissions.length, 1);
+});
+
+test('replace rejects empty text before cancelling the running execution', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  await assert.rejects(
+    () => workspace.replace(first.id, '   '),
+    /Prompt text must not be empty/,
+  );
+  assert.equal(adapter.cancellations.length, 0);
+  assert.equal(adapter.submissions.length, 1);
+});
+
+test('replace does not submit when cancel throws', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  adapter.cancelError = new Error('native cancel failed');
+  await assert.rejects(() => workspace.replace(first.id, 'second'), /native cancel failed/);
+  assert.equal(adapter.cancellations.length, 1);
+  assert.equal(adapter.submissions.length, 1);
+});
+
+test('after a replace timeout the old execution can still be cancelled and closed', async (t) => {
+  const { adapter, workspace, conversation } = await setup({ replaceTimeoutMs: 30 });
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  await assert.rejects(
+    () => workspace.replace(first.id, 'second'),
+    (error: Error) => error.name === 'ReplaceTimeoutError',
+  );
+  await workspace.cancel(first.id);
+  assert.equal(adapter.cancellations.length, 2);
+  adapter.emit({ type: 'execution/cancelled', executionId: first.id });
+  await workspace.closeConversation(conversation.id);
+  assert.equal(adapter.closed.length, 1);
+});
+
+test('replace passes attachments through to the new submission', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  adapter.emit({ type: 'execution/completed', executionId: first.id, stopReason: 'end_turn' });
+  const attachment = { kind: 'file', path: 'C:/tmp/notes.txt', name: 'notes.txt', mimeType: 'text/plain' } as const;
+  await workspace.replace(first.id, 'second', [attachment]);
+  assert.equal(adapter.submissions[1]?.attachments?.length, 1);
+  assert.equal(adapter.submissions[1]?.attachments?.[0]?.name, 'notes.txt');
 });
 

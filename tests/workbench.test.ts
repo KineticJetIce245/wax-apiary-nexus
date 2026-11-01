@@ -638,3 +638,20 @@ test('rejects duplicate connection names before starting either adapter', async 
   assert.equal(first.startCalls, 0);
   assert.equal(second.startCalls, 0);
 });
+
+test('workbench replace delegates to the workspace and returns the new execution', async () => {
+  const { workbench, dsh } = await fixture();
+  try {
+    const first = await workbench.submit('first', 'dsh');
+    const replacing = workbench.replace('dsh', first.execution.id, 'second');
+    await delay(10);
+    dsh.emit({ type: 'execution/cancelled', executionId: first.execution.id });
+    const replaced = await replacing;
+    assert.equal(replaced.connection, 'dsh');
+    assert.equal(dsh.cancellations.length, 1);
+    assert.equal(dsh.submissions.at(-1)?.text, 'second');
+    assert.notEqual(replaced.execution.id, first.execution.id);
+  } finally {
+    await workbench.stop();
+  }
+});

@@ -108,6 +108,14 @@ export class ReplaceTimeoutError extends Error {
   }
 }
 
+/** The previous outcome is unknown, so a second prompt could overlap it. */
+export class ReplaceUnknownError extends Error {
+  constructor(readonly executionId: string) {
+    super(`Execution ${executionId} has an unknown outcome; refusing to replace it`);
+    this.name = 'ReplaceUnknownError';
+  }
+}
+
 export class UnknownApprovalError extends Error {
   constructor(readonly requestId: string) {
     super(`Unknown or already settled approval request: ${requestId}`);
@@ -321,9 +329,10 @@ export class Workspace {
 
   /**
    * Forced conversion: cancel the running execution, wait for it to settle,
-   * then submit the new prompt on the same conversation. If the native side
-   * does not settle in time we refuse to submit, so two prompts never run
-   * concurrently. A finished execution skips the cancel step.
+   * then submit the new prompt on the same conversation. A confirmed terminal
+   * state submits directly; `unknown` refuses, because the native side may
+   * still be running the previous prompt. Empty text is rejected before any
+   * cancel, so an invalid call cannot destroy the running turn.
    */
   async replace(
     executionId: string,
@@ -331,9 +340,15 @@ export class Workspace {
     attachments: readonly AttachmentDraft[] = [],
   ): Promise<Execution> {
     this.assertRunning();
+    if (text.trim() === '') {
+      throw new Error('Prompt text must not be empty');
+    }
     const execution = this.executions.get(executionId);
     if (execution === undefined) {
       throw new UnknownExecutionError(executionId);
+    }
+    if (execution.state === 'unknown') {
+      throw new ReplaceUnknownError(executionId);
     }
     if (execution.state === 'running') {
       await this.cancel(executionId);
@@ -348,6 +363,9 @@ export class Workspace {
       const current = this.executions.get(executionId);
       if (current !== undefined && current.state === 'running') {
         throw new ReplaceTimeoutError(executionId, this.replaceTimeoutMs);
+      }
+      if (current !== undefined && current.state === 'unknown') {
+        throw new ReplaceUnknownError(executionId);
       }
     }
     return this.submit(execution.conversationId, text, attachments);

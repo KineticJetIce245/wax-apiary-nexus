@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { statSync } from 'node:fs';
-import { basename, extname } from 'node:path';
+import { basename, extname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
 import type { ApprovalDecisionKind } from './adapters/harness.js';
@@ -54,6 +55,34 @@ function usage(): string {
     '',
     'Anything else is submitted to the current target.',
   ].join('\n');
+}
+
+export interface ReplaceCommand {
+  readonly connection: string;
+  readonly executionId: string;
+  readonly text: string;
+}
+
+/** Parse `/replace <connection> <execution-id> <instruction...>`. */
+export function parseReplaceCommand(line: string): ReplaceCommand | undefined {
+  if (!line.startsWith('/replace ')) {
+    return undefined;
+  }
+  const rest = line.slice('/replace '.length).trim();
+  const match = rest.match(/^(\S+)\s+(\S+)\s+([\s\S]+)$/);
+  if (match === null) {
+    return undefined;
+  }
+  const [, connection, executionId, text] = match;
+  if (
+    connection === undefined ||
+    executionId === undefined ||
+    text === undefined ||
+    text.trim() === ''
+  ) {
+    return undefined;
+  }
+  return { connection, executionId, text: text.trim() };
 }
 
 function parseArgs(argv: readonly string[]): CliOptions | undefined {
@@ -328,6 +357,8 @@ async function main(): Promise<void> {
         await approve(line);
       } else if (line.startsWith('/cancel ')) {
         await cancel(line);
+      } else if (line === '/replace') {
+        throw new Error('Usage: /replace <connection> <execution-id> <instruction...>');
       } else if (line.startsWith('/replace ')) {
         await replace(line);
       } else if (line.startsWith('/transfer ')) {
@@ -432,18 +463,13 @@ async function main(): Promise<void> {
   }
 
   async function replace(line: string): Promise<void> {
-    const rest = line.slice('/replace '.length).trim();
-    const match = rest.match(/^(\S+)\s+(\S+)\s+([\s\S]+)$/);
-    if (match === null) {
+    const parsed = parseReplaceCommand(line);
+    if (parsed === undefined) {
       throw new Error('Usage: /replace <connection> <execution-id> <instruction...>');
     }
-    const [, connection, executionId, text] = match;
-    if (connection === undefined || executionId === undefined || text === undefined) {
-      throw new Error('Usage: /replace <connection> <execution-id> <instruction...>');
-    }
-    const execution = await workbench.replace(connection, executionId, text.trim());
+    const execution = await workbench.replace(parsed.connection, parsed.executionId, parsed.text);
     process.stdout.write(
-      `replace requested on ${connection}: ${executionId} -> ${execution.execution.id}\n`,
+      `replace requested on ${parsed.connection}: ${parsed.executionId} -> ${execution.execution.id}\n`,
     );
   }
 
@@ -662,7 +688,11 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`fatal: ${messageOf(error)}\n`);
-  process.exitCode = 1;
-});
+const invokedDirectly =
+  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (invokedDirectly) {
+  main().catch((error: unknown) => {
+    process.stderr.write(`fatal: ${messageOf(error)}\n`);
+    process.exitCode = 1;
+  });
+}

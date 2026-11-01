@@ -646,3 +646,17 @@ test('replace passes attachments through to the new submission', async (t) => {
   assert.equal(adapter.submissions[1]?.attachments?.[0]?.name, 'notes.txt');
 });
 
+
+test('replace refuses when the execution becomes unknown while waiting for cancel', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+  const first = await workspace.submit(conversation.id, 'first');
+  const replacing = workspace.replace(first.id, 'second');
+  await delay(10);
+  adapter.emit({ type: 'execution/unknown', executionId: first.id, reason: 'late unknown' });
+  await assert.rejects(
+    replacing,
+    (error: Error) => error.name === 'ReplaceUnknownError',
+  );
+  assert.equal(adapter.submissions.length, 1);
+});

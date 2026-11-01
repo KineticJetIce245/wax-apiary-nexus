@@ -161,6 +161,11 @@ export class Workbench {
     return this.transfers.map((record) => cloneTransfer(record));
   }
 
+  /** Snapshot of the registered project; callers cannot mutate workbench state. */
+  getProject(): Project {
+    return { id: this.project.id, directory: this.project.directory };
+  }
+
   getConnection(name: string): { conversation: Conversation; status: RuntimeConnection['status'] } | undefined {
     const connection = this.connections.get(name);
     if (connection === undefined) {

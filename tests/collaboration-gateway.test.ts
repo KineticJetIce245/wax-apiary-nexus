@@ -71,7 +71,10 @@ async function setup(hang = false) {
   const dsh = new FakeAdapter('dsh-native', hang);
   const workbench = new Workbench({ project, connections: [{ name: 'dsh', adapter: dsh }] });
   await workbench.start();
-  const gateway = new CollaborationGateway(workbench, { pollIntervalMs: 5 });
+  const gateway = new CollaborationGateway(workbench, {
+    pollIntervalMs: 5,
+    stateDirectory: mkdtempSync(join(tmpdir(), 'uw-g009-gateway-state-')),
+  });
   const info = await gateway.start();
   return { dsh, workbench, gateway, info };
 }
@@ -153,7 +156,11 @@ test('resets state after a failed listen and can be started again', async () => 
   if (address === null || typeof address === 'string') {
     throw new Error('blocker has no port');
   }
-  const retry = new CollaborationGateway(workbench, { port: address.port, pollIntervalMs: 5 });
+  const retry = new CollaborationGateway(workbench, {
+    port: address.port,
+    pollIntervalMs: 5,
+    stateDirectory: mkdtempSync(join(tmpdir(), 'uw-g009-gateway-retry-')),
+  });
   try {
     await assert.rejects(retry.start(), /EADDRINUSE/);
     assert.equal(retry.running, false);

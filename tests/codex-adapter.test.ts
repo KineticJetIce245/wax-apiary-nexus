@@ -123,6 +123,14 @@ rl.on('line', (line) => {
         params: { serverName: 'unified_delegate', threadId: currentThread, turnId: activeTurn },
       });
     }
+    if (mode === 'elicitation-mismatch') {
+      const id = approvalId++;
+      send({
+        id,
+        method: 'mcpServer/elicitation/request',
+        params: { serverName: 'unified_delegate', threadId: currentThread, turnId: 'stale-turn' },
+      });
+    }
     if (mode === 'fail') {
       finish('failed', { message: 'boom' });
     }
@@ -177,7 +185,7 @@ rl.on('line', (line) => {
   if (message.id !== undefined && message.result !== undefined) {
     const decision = message.result.decision;
     const text =
-      mode === 'permissions' || mode === 'permissions-deny' || mode === 'elicitation' || mode === 'elicitation-deny'
+      mode === 'permissions' || mode === 'permissions-deny' || mode === 'elicitation' || mode === 'elicitation-deny' || mode === 'elicitation-mismatch'
         ? 'result=' + JSON.stringify(message.result)
         : 'decision=' + decision;
     notify('item/completed', {
@@ -325,6 +333,8 @@ test('maps permissions approval to a turn-scoped grant', async () => {
       return;
     }
     assert.match(requested.request.summary, /permissions/);
+    assert.match(requested.request.summary, /network/);
+    assert.match(requested.request.summary, /enabled/);
     await session.adapter.respondToApproval({ requestId: requested.request.requestId, kind: 'allow_once' });
     await waitForEvent(session.events, (event) => event.type === 'execution/completed');
     const text = session.events
@@ -357,6 +367,24 @@ test('maps elicitation approval to accept with empty content', async () => {
       .map((event) => (event.type === 'execution/output' ? event.text : ''))
       .join('');
     assert.equal(text, 'result={"action":"accept","content":{}}');
+  } finally {
+    await session.adapter.stop();
+  }
+});
+
+test('declines an elicitation whose turn is not the active turn', async () => {
+  const session = await open('elicitation-mismatch');
+  try {
+    const nativeId = await session.adapter.createConversation({ id: 'p', directory: session.projectDir });
+    await session.adapter.submit(nativeId, 'exec-1', 'call tool');
+    await waitForEvent(session.events, (event) => event.type === 'execution/completed');
+    const requested = session.events.filter((event) => event.type === 'execution/approval-requested');
+    assert.equal(requested.length, 0);
+    const text = session.events
+      .filter((event) => event.type === 'execution/output')
+      .map((event) => (event.type === 'execution/output' ? event.text : ''))
+      .join('');
+    assert.equal(text, 'result={"action":"decline","content":null}');
   } finally {
     await session.adapter.stop();
   }

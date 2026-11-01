@@ -1,6 +1,7 @@
 // Minimal MCP stdio bridge. The native harness (Codex/DSH) launches this file;
 // it forwards one tool call to the local CollaborationGateway. It deliberately
 // implements only initialize/tools/list/tools/call/ping.
+import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 
 const GATEWAY_URL = process.env.UW_GATEWAY_URL;
@@ -60,6 +61,8 @@ async function callGateway(args: Record<string, unknown>): Promise<string> {
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${GATEWAY_TOKEN}`,
+      // One key per tool call: a retry of the same delivery stays one work item.
+      'idempotency-key': randomUUID(),
     },
     body: JSON.stringify({ task, worker }),
   });

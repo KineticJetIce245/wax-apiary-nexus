@@ -113,6 +113,8 @@ async function setup(
     policy?: DelegationPolicy;
     asyncTimeoutMs?: number;
     resultMaxBytes?: number;
+    stopDrainMs?: number;
+    cancelTimeoutMs?: number;
   } & FakeOptions = {},
 ) {
   const project: Project = {
@@ -129,6 +131,8 @@ async function setup(
     policy: options.policy ?? policy(),
     ...(options.asyncTimeoutMs === undefined ? {} : { asyncTimeoutMs: options.asyncTimeoutMs }),
     ...(options.resultMaxBytes === undefined ? {} : { resultMaxBytes: options.resultMaxBytes }),
+    ...(options.stopDrainMs === undefined ? {} : { stopDrainMs: options.stopDrainMs }),
+    ...(options.cancelTimeoutMs === undefined ? {} : { cancelTimeoutMs: options.cancelTimeoutMs }),
   });
   const info = await gateway.start();
   return { dsh, workbench, gateway, info, stateDirectory };
@@ -861,4 +865,50 @@ test('stop is not blocked by a cancel that never returns', async () => {
   } finally {
     await context.workbench.stop().catch(() => undefined);
   }
+});
+
+test('honours a custom cancel timeout during stop', async () => {
+  const context = await setup({ hang: true, cancelHangs: true, cancelTimeoutMs: 25 });
+  try {
+    const response = await startAsync(context.info, { task: 'cancel hangs' });
+    assert.equal(response.status, 202);
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'in-flight');
+    const started = Date.now();
+    await context.gateway.stop();
+    assert.ok(Date.now() - started < 500, 'custom cancel timeout should bound the wait');
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    assert.equal(read.entries.filter((entry) => entry.type === 'delivery/settled').length, 1);
+  } finally {
+    await context.workbench.stop().catch(() => undefined);
+  }
+});
+
+test('honours a custom stop drain window', async () => {
+  const context = await setup({ hang: true, submitDelayMs: 500, stopDrainMs: 25 });
+  try {
+    const pending = startAsync(context.info, { task: 'slow accept' });
+    void pending.catch(() => undefined);
+    await waitUntil(() => context.dsh.submissions.length === 1);
+    const started = Date.now();
+    await context.gateway.stop();
+    assert.ok(Date.now() - started < 400, 'custom drain window should end the stop quickly');
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    assert.equal(read.entries.filter((entry) => entry.type === 'delivery/settled').length, 1);
+    assert.equal(read.entries.some((entry) => entry.type === 'delivery/submitted'), false);
+    // Let the late submit finish so the workbench can be stopped cleanly.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+  } finally {
+    await context.workbench.stop().catch(() => undefined);
+  }
+});
+
+test('rejects invalid stop timing options', () => {
+  assert.throws(
+    () => new CollaborationGateway({} as unknown as Workbench, { stopDrainMs: 0 }),
+    /stopDrainMs/,
+  );
+  assert.throws(
+    () => new CollaborationGateway({} as unknown as Workbench, { cancelTimeoutMs: Number.NaN }),
+    /cancelTimeoutMs/,
+  );
 });

@@ -37,6 +37,10 @@ export interface CollaborationGatewayOptions {
   readonly asyncTimeoutMs?: number;
   /** Cap for the stored async result file; default 256 KiB. */
   readonly resultMaxBytes?: number;
+  /** Drain window for accepts still inside submit when stopping; default 2s. */
+  readonly stopDrainMs?: number;
+  /** Upper bound for one cancel call during shutdown; default 1s. */
+  readonly cancelTimeoutMs?: number;
 }
 
 /** Facts that authorize this gateway instance; never derived from tool arguments. */
@@ -90,6 +94,8 @@ export class CollaborationGateway {
   private readonly allowStaleLedgerLock: boolean;
   private readonly asyncTimeoutMs: number;
   private readonly resultMaxBytes: number;
+  private readonly stopDrainMs: number;
+  private readonly cancelTimeoutMs: number;
   private readonly token = randomUUID();
   private readonly host = '127.0.0.1' as const;
   private readonly sockets = new Set<Socket>();
@@ -117,11 +123,19 @@ export class CollaborationGateway {
     this.allowStaleLedgerLock = options.allowStaleLedgerLock === true;
     this.asyncTimeoutMs = options.asyncTimeoutMs ?? 30 * 60 * 1000;
     this.resultMaxBytes = options.resultMaxBytes ?? 256 * 1024;
+    this.stopDrainMs = options.stopDrainMs ?? 2_000;
+    this.cancelTimeoutMs = options.cancelTimeoutMs ?? 1_000;
     if (!Number.isInteger(this.asyncTimeoutMs) || this.asyncTimeoutMs < 1) {
       throw new Error('asyncTimeoutMs must be a positive integer');
     }
     if (!Number.isInteger(this.resultMaxBytes) || this.resultMaxBytes < 1) {
       throw new Error('resultMaxBytes must be a positive integer');
+    }
+    if (!Number.isInteger(this.stopDrainMs) || this.stopDrainMs < 1) {
+      throw new Error('stopDrainMs must be a positive integer');
+    }
+    if (!Number.isInteger(this.cancelTimeoutMs) || this.cancelTimeoutMs < 1) {
+      throw new Error('cancelTimeoutMs must be a positive integer');
     }
     this.policy = parseDelegationPolicy(
       options.policy === undefined
@@ -249,7 +263,7 @@ export class CollaborationGateway {
     for (const [, entry] of pending) {
       entry.controller.abort();
     }
-    const drainUntil = Date.now() + BACKGROUND_STOP_DRAIN_MS;
+    const drainUntil = Date.now() + this.stopDrainMs;
     while (this.background.size > 0 && Date.now() < drainUntil) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
@@ -730,7 +744,7 @@ export class CollaborationGateway {
     await Promise.race([
       this.workbench.cancel(worker, executionId).catch(() => undefined),
       new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, CANCEL_TIMEOUT_MS);
+        const timer = setTimeout(resolve, this.cancelTimeoutMs);
         timer.unref();
       }),
     ]);
@@ -952,8 +966,6 @@ function capText(text: string, limit: number): string {
 
 const MAX_ERROR_CHARS = 2000;
 const MAX_DETAIL_CHARS = 64;
-const BACKGROUND_STOP_DRAIN_MS = 2_000;
-const CANCEL_TIMEOUT_MS = 1_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Truncate on a UTF-8 code-point boundary so the stored text stays valid. */

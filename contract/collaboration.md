@@ -51,7 +51,7 @@ Codex native turn
 - `GET /delegations/<id>` 返回 `{workItemId, state, executionId?, error?, output?, truncated?}`；只有 `completed` 且结果文件存在时才带 `output`。id 必须是严格的 UUID 形状（8-4-4-4-12），非法 id 返回 400，未知 UUID 返回 404。
 - 结果取回是 **Host 的责任**：Gateway 不推送。Host 若在拿到 workItemId 后结束 turn，就只能由人或后续 turn 再取。
 - 重启后未结算的异步 Work Item 与同步记录一样进入恢复报告；不自动重放。已完成项的结果文件保留在状态目录，可继续读取。
-- `stop()` 会中止本进程内的后台委派：abort 等待中的任务，给“仍在 submit 内”的接受过程一个有界窗口（默认 2 秒）自行取消并结算；窗口过后仍未结算的项记为 `unknown`（`gateway stopped before the delegation settled`），然后关闭 ledger。若 submit 在 ledger 关闭后才返回，Gateway 仍会 best-effort 取消该 Worker，但这次取消不会再写进已关闭的 ledger——这类迟到启动的 Worker 由“unknown + 恢复报告”体现。
+- `stop()` 会中止本进程内的后台委派：abort 等待中的任务，给“仍在 submit 内”的接受过程一个有界窗口（默认 2 秒，可用 `stopDrainMs` 覆盖）自行取消并结算；窗口过后仍未结算的项记为 `unknown`（`gateway stopped before the delegation settled`），然后关闭 ledger。cancel 调用另受 `cancelTimeoutMs`（默认 1 秒）约束，两者都必须是正整数，避免关闭流程被永不返回的 cancel 挂住。若 submit 在 ledger 关闭后才返回，Gateway 仍会 best-effort 取消该 Worker，但这次取消不会再写进已关闭的 ledger——这类迟到启动的 Worker 由“unknown + 恢复报告”体现。
 
 ### 2.1 授权（Mandate 与确定性 Gate）
 

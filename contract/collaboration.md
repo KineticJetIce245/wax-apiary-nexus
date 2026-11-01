@@ -24,21 +24,31 @@ Codex native turn
 
 ## 2. Gateway
 
-`CollaborationGateway(workbench, { workerConnection?, port?, pollIntervalMs?, maxTaskChars?, policy?, stateDirectory?, allowStaleLedgerLock? })`
+`CollaborationGateway(workbench, { workerConnection?, port?, pollIntervalMs?, maxTaskChars?, policy?, stateDirectory?, allowStaleLedgerLock?, asyncTimeoutMs?, resultMaxBytes? })`
 
 - 只绑定 `127.0.0.1`，端口默认 `0`（系统分配）。
 - `start()` 返回 `{url, token, workerConnection, mandate}`；token 与 mandate 每次实例生成一次。
 - `policy` 必须是 [`delegation-policy.ts`](../src/delegation-policy.ts) 定义的对象；未知字段拒绝。缺省策略只允许 `workerConnection` 一个 worker，`maxConcurrent` 为 1。
 - `stateDirectory` 缺省为 `~/.unified-workspace/<projectId>/`（`UW_STATE_DIR` 可覆盖根目录；projectId 不匹配白名单时改用哈希目录）。
-- 端点仅 `POST /delegate`：
-  - `Authorization: Bearer <token>` 必须匹配；
-  - `Host` 必须是 `127.0.0.1:<port>`；
-  - body 仅允许 `{task: string, worker?: string}`；未知字段拒绝（包括任何自称的授权字段）；
-  - 可选请求头 `Idempotency-Key`，1–128 个 `[A-Za-z0-9._:-]`；
-  - `task` 非空，上限 `policy.maxTaskChars`；`worker` 上限 64 字符；
-  - 错误：400 输入/JSON/未知字段/非法幂等键、401 认证、403 Host 或策略拒绝或 mandate 过期、404 路径错误、405 方法、409 worker 不可用/并发上限/重复幂等键/提交被明确拒绝、413 body 超限、499 客户端已断开（不返回响应体）、500 内部错误、502 Worker 明确失败或非 completed、503 提交结果未知或 ledger 需要人工修复。
-- 成功响应：`{worker, executionId, output, workItemId, mandateId}`；不返回本地附件路径。
-- Gateway 不记录 task 或 output 内容；ledger 只保存任务长度与 sha256 摘要，错误文本最多 2000 字符。
+- 端点：
+  - `POST /delegate`：同步委派，等到 Worker 终态才响应；
+  - `POST /delegations`：异步委派，提交成功后立即返回 202；
+  - `GET /delegations/<workItemId>`：读取异步（或同步）委派的当前状态与已存结果。
+  - 三个端点共用同一套认证、Gate 与 ledger；`Authorization: Bearer <token>` 与 `Host: 127.0.0.1:<port>` 都必须匹配。
+  - POST body 仅允许 `{task: string, worker?: string}`；未知字段拒绝（包括任何自称的授权字段）；可选请求头 `Idempotency-Key`，1–128 个 `[A-Za-z0-9._:-]`；`task` 非空，上限 `policy.maxTaskChars`；`worker` 上限 64 字符。
+  - 错误：400 输入/JSON/未知字段/非法幂等键/非法 work item id、401 认证、403 Host 或策略拒绝或 mandate 过期、404 路径或 work item 不存在、405 方法、409 worker 不可用/并发上限/重复幂等键/提交被明确拒绝、413 body 超限、499 客户端已断开（不返回响应体）、500 内部错误、502 Worker 明确失败或非 completed、503 提交结果未知或 ledger 需要人工修复。
+- 同步成功响应：`{worker, executionId, output, workItemId, mandateId}`；不返回本地附件路径。
+- 异步成功响应（202）：`{workItemId, executionId, state:'accepted', mandateId}`。
+- Gateway 不记录 task 内容；ledger 只保存任务长度与 sha256 摘要，错误文本最多 2000 字符。异步完成后的 Worker 输出写入受控结果文件（见 2.4）。
+
+### 2.4 异步委派与结果取回
+
+- `POST /delegations` 通过同一 Gate 后立即提交 Worker 并返回 202；HTTP 连接结束**不取消** Worker。
+- 后台最长运行 `asyncTimeoutMs`（默认 30 分钟）；到点取消 Worker，Work Item 记为 `failed`，错误文本含 `timed out`。
+- Worker completed 时，输出写入 `<stateDirectory>/results/<workItemId>.txt`（目录 0700、文件 0600），最多 `resultMaxBytes`（默认 256 KiB）；超出部分截断，`settled` 记录带 `resultFile`、`resultBytes`、`resultTruncated`。
+- `GET /delegations/<id>` 返回 `{workItemId, state, executionId?, error?, output?, truncated?}`；只有 `completed` 且结果文件存在时才带 `output`。未知 id 返回 404，格式不合法返回 400。
+- 结果取回是 **Host 的责任**：Gateway 不推送。Host 若在拿到 workItemId 后结束 turn，就只能由人或后续 turn 再取。
+- 重启后未结算的异步 Work Item 与同步记录一样进入恢复报告；不自动重放。已完成项的结果文件保留在状态目录，可继续读取。
 
 ### 2.1 授权（Mandate 与确定性 Gate）
 
@@ -70,11 +80,12 @@ Codex native turn
 
 ## 3. MCP bridge
 
-- stdio JSON-RPC（一行一条消息）；工具名 `delegate_to_worker`。
+- stdio JSON-RPC（一行一条消息）；工具：`delegate_to_worker`（同步等待）、`start_delegation`（异步，返回 `workItemId`）、`get_delegation_result`（按 id 取状态/结果）。
 - `initialize`、`tools/list`、`tools/call`、`ping`；未知方法返回 JSON-RPC error。
-- `tools/call` 参数：`{task: string, worker?: string}`；返回 MCP text content。
-- 每次 `tools/call` 生成一个新的 `Idempotency-Key` 请求头；bridge 不自行重试。
-- 通过 `UW_GATEWAY_URL`、`UW_GATEWAY_TOKEN`、`UW_WORKER` 连接 Gateway。
+- `delegate_to_worker` / `start_delegation` 参数：`{task: string, worker?: string}`；`get_delegation_result` 参数：`{workItemId: string}`。
+- 异步工具返回 JSON 文本：`start_delegation` → `{workItemId, state, executionId}`；`get_delegation_result` → `{workItemId, state, executionId?, error?, output?, truncated?}`。
+- 每次 POST `tools/call` 生成一个新的 `Idempotency-Key` 请求头；bridge 不自行重试。
+- 通过 `UW_GATEWAY_URL`、`UW_GATEWAY_TOKEN`、`UW_WORKER` 连接 Gateway；`start_delegation` / `get_delegation_result` 由 `UW_GATEWAY_URL` 推导同源 `/delegations` 路由。
 - Gateway 非 2xx 或 Worker 失败时返回 `isError: true` 的 text content。
 - bridge 不写 stdout 日志（stdout 只跑 JSON-RPC）。
 
@@ -93,17 +104,19 @@ Codex native turn
 - Codex 收到工具结果后继续，最终输出 `DELEGATE-DONE` + `WORKER-OK`；
 - Codex/DSH 均未重建；Host 的 native conversation 保持原 thread；
 - G010 追加：ledger 里出现该次委派的 `work-item/created` → `intent` → `submitted` → `settled` 四条记录，且记录中的 `mandateId` 与 Gateway 启动时返回的 mandate 一致。
+- G011 追加：Codex 调用 `start_delegation` 拿到 `workItemId` 后继续自己的 turn，再用 `get_delegation_result` 取回 `WORKER-OK`；`GET /delegations/<id>` 在完成后带 `output`，结果文件位于 `<stateDirectory>/results/<id>.txt`。
 
 ## 6. 限制
 
 - 只有 Codex-host 完成真实验收；DSH-host 的 `mcpServers` 只做了声明透传。
 - MCP elicitation 只按 approval 处理，不能填写表单；接受时 content 为空。带 `turnId` 且不匹配当前 turn 的请求直接 decline，不产生 approval。
-- 没有异步/后台任务、handoff、worker 选择策略、多 worker 编排或自动重试；投递失败不重放。
+- 没有 handoff、worker 选择策略、多 worker 编排或自动重试；投递失败不重放。
+- 异步委派依赖 Host 主动取回结果：Gateway 不推送；Host 在拿到 id 后结束 turn 时，结果只能由人或后续 turn 再取。
 - 没有模型 Assessment 层；授权只有确定性 Gate，`observe`/`auto` 两档未实现。
 - 没有 Web/CLI 配置入口；当前由 API/probe 组装 Codex MCP config 与 policy。
 - Gateway 与 bridge 都只用于本机受控环境；token 在本地环境变量中传递。token 可能被 Codex 写入 thread config/rollout；token 随 Gateway 实例失效，更换 Gateway 后需要重建带新 env 的 thread。mandate 与 token 同生命周期，因此审计记录不能跨实例证明“谁曾经授权”，只能证明“这一实例按该策略执行过”。
-- 没有总超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host 取消或断开客户端触发 Gateway 取消。
+- 同步委派没有总超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host 取消或断开客户端触发 Gateway 取消。异步委派受 `asyncTimeoutMs` 约束。
 - 同一 state 目录只允许一个写者（`writer.lock`）。锁属于已死亡的本机进程时，必须显式 `allowStaleLedgerLock` 才能接管；来自**其他主机**的锁一律按“已占用”处理，不自动判定陈旧。关闭时只删除自己持有的锁。
 - 陈旧锁接管不是强互斥：删除旧锁到写入新锁之间存在一个很短的时间窗，两个进程同时接管时理论上可能都拿到写权。本版本靠重试时的 `EEXIST` + pid 检查把冲突暴露出来，但不提供跨进程的原子接管；需要强保证时应先停掉旧进程再启动。
-- ledger 不保存 task 全文与 Worker 输出；要复核内容需回到 Worker 原生会话。错误文本最多 2000 字符（含省略号），`gate/rejected` 的 detail 最多 64 字符。
+- ledger 不保存 task 全文；异步结果保存在受控结果文件里（0600、有上限），同步委派的结果不落盘。错误文本最多 2000 字符（含省略号），`gate/rejected` 的 detail 最多 64 字符。
 - bridge 对无法解析的 JSON 行返回 `-32700`；不支持的方法返回 `-32601`。每次 `tools/call` 生成新幂等键只用于识别“同一次调用被重复投递”，不提供跨重试去重（bridge 本身不重试）。

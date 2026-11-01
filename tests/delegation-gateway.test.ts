@@ -94,7 +94,12 @@ function policy(overrides: Partial<DelegationPolicy> = {}): DelegationPolicy {
 }
 
 async function setup(
-  options: { stateDirectory?: string; policy?: DelegationPolicy } & FakeOptions = {},
+  options: {
+    stateDirectory?: string;
+    policy?: DelegationPolicy;
+    asyncTimeoutMs?: number;
+    resultMaxBytes?: number;
+  } & FakeOptions = {},
 ) {
   const project: Project = {
     id: `g010-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -108,6 +113,8 @@ async function setup(
     pollIntervalMs: 5,
     stateDirectory,
     policy: options.policy ?? policy(),
+    ...(options.asyncTimeoutMs === undefined ? {} : { asyncTimeoutMs: options.asyncTimeoutMs }),
+    ...(options.resultMaxBytes === undefined ? {} : { resultMaxBytes: options.resultMaxBytes }),
   });
   const info = await gateway.start();
   return { dsh, workbench, gateway, info, stateDirectory };
@@ -549,6 +556,116 @@ test('keeps the execution id when the client disconnects during submission', asy
     );
     const submitted = read.entries.find((entry) => entry.type === 'delivery/submitted');
     assert.equal(typeof submitted?.data.executionId, 'string');
+  } finally {
+    await cleanup(context);
+  }
+});
+
+function gatewayOrigin(info: { url: string }): string {
+  return new URL(info.url).origin;
+}
+
+function startAsync(
+  info: { url: string; token: string },
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(`${gatewayOrigin(info)}/delegations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${info.token}` },
+    body: JSON.stringify(body),
+    ...(signal === undefined ? {} : { signal }),
+  });
+}
+
+function getStatus(info: { url: string; token: string }, workItemId: string): Promise<Response> {
+  return fetch(`${gatewayOrigin(info)}/delegations/${workItemId}`, {
+    headers: { authorization: `Bearer ${info.token}` },
+  });
+}
+
+test('accepts an async delegation, answers 202, and serves the stored result', async () => {
+  const context = await setup();
+  try {
+    const response = await startAsync(context.info, { task: 'reply WORKER-OK' });
+    assert.equal(response.status, 202);
+    const accepted = (await response.json()) as { workItemId: string; state: string; executionId: string };
+    assert.equal(accepted.state, 'accepted');
+    assert.equal(typeof accepted.workItemId, 'string');
+
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'completed');
+    const status = await getStatus(context.info, accepted.workItemId);
+    assert.equal(status.status, 200);
+    const body = (await status.json()) as { state: string; output: string; executionId: string };
+    assert.equal(body.state, 'completed');
+    assert.equal(body.output, 'WORKER-OK');
+    assert.equal(body.executionId, accepted.executionId);
+
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    const settled = read.entries.find((entry) => entry.type === 'delivery/settled');
+    assert.equal(typeof settled?.data.resultFile, 'string');
+    assert.equal(settled?.data.resultTruncated, false);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('async delegations keep running after the request ends', async () => {
+  const context = await setup({ hang: true });
+  try {
+    const response = await startAsync(context.info, { task: 'slow' });
+    assert.equal(response.status, 202);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(context.dsh.cancels.length, 0);
+    assert.equal(context.gateway.workItems[0]?.state, 'in-flight');
+    const status = (await (await getStatus(context.info, context.gateway.workItems[0]!.id)).json()) as {
+      state: string;
+    };
+    assert.equal(status.state, 'in-flight');
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('times out a background delegation and cancels its worker', async () => {
+  const context = await setup({ hang: true, asyncTimeoutMs: 25 });
+  try {
+    const response = await startAsync(context.info, { task: 'too slow' });
+    assert.equal(response.status, 202);
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'failed');
+    assert.equal(context.dsh.cancels.length, 1);
+    const item = context.gateway.workItems[0];
+    assert.match(item?.error ?? '', /timed out/);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('caps a stored async result and reports truncation', async () => {
+  const context = await setup({ resultMaxBytes: 8 });
+  try {
+    const response = await startAsync(context.info, { task: 'reply WORKER-OK' });
+    assert.equal(response.status, 202);
+    const accepted = (await response.json()) as { workItemId: string };
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'completed');
+    const body = (await (await getStatus(context.info, accepted.workItemId)).json()) as {
+      output: string;
+      truncated: boolean;
+    };
+    assert.equal(body.output, 'WORKER-O');
+    assert.equal(body.truncated, true);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('returns 404 for an unknown work item and 400 for a bad id', async () => {
+  const context = await setup();
+  try {
+    const missing = await getStatus(context.info, '00000000-0000-0000-0000-000000000000');
+    assert.equal(missing.status, 404);
+    const invalid = await getStatus(context.info, 'not-a-uuid');
+    assert.equal(invalid.status, 400);
   } finally {
     await cleanup(context);
   }

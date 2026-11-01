@@ -46,6 +46,88 @@ test('returns protocol errors for malformed lines and unknown methods', async ()
   }
 });
 
+test('starts an async delegation and reads its result through the bridge tools', async () => {
+  const workItemId = '11111111-1111-1111-1111-111111111111';
+  const seen: Array<{ method: string | undefined; url: string | undefined }> = [];
+  const server = createServer((request, response) => {
+    seen.push({ method: request.method, url: request.url });
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      response.writeHead(request.method === 'POST' ? 202 : 200, { 'content-type': 'application/json' });
+      if (request.method === 'POST') {
+        response.end(JSON.stringify({ workItemId, state: 'accepted', executionId: 'exec-1' }));
+      } else {
+        response.end(JSON.stringify({ workItemId, state: 'completed', output: 'WORKER-OK' }));
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('test server has no port');
+  }
+  const child = spawn(process.execPath, [bridgePath], {
+    env: {
+      ...process.env,
+      UW_GATEWAY_URL: `http://127.0.0.1:${String(address.port)}/delegate`,
+      UW_GATEWAY_TOKEN: 'test-token',
+      UW_WORKER: 'dsh',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  try {
+    const messages: Array<Record<string, unknown>> = [];
+    const waitForMessages = new Promise<void>((resolve) => {
+      let buffer = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.trim() !== '') {
+            messages.push(JSON.parse(line) as Record<string, unknown>);
+          }
+        }
+        if (messages.length >= 4) {
+          resolve();
+        }
+      });
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`);
+    child.stdin.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'start_delegation', arguments: { task: 'reply WORKER-OK' } },
+    })}\n`);
+    child.stdin.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'get_delegation_result', arguments: { workItemId } },
+    })}\n`);
+    await waitForMessages;
+
+    const byId = new Map(messages.map((message) => [message.id, message]));
+    const tools = (byId.get(2)?.result as { tools?: Array<{ name?: string }> } | undefined)?.tools;
+    assert.deepEqual(
+      tools?.map((tool) => tool.name),
+      ['delegate_to_worker', 'start_delegation', 'get_delegation_result'],
+    );
+    const started = byId.get(3)?.result as { content?: Array<{ text?: string }> } | undefined;
+    assert.equal(JSON.parse(started?.content?.[0]?.text ?? '{}').workItemId, workItemId);
+    const result = byId.get(4)?.result as { content?: Array<{ text?: string }> } | undefined;
+    assert.equal(JSON.parse(result?.content?.[0]?.text ?? '{}').output, 'WORKER-OK');
+    const calls = seen.map((entry) => `${String(entry.method)} ${String(entry.url)}`).sort();
+    assert.deepEqual(calls, ['GET /delegations/' + workItemId, 'POST /delegations'].sort());
+  } finally {
+    child.kill();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test('MCP bridge initializes, lists the tool and forwards a call to the gateway', async () => {
   let received: unknown;
   const server = createServer((request, response) => {

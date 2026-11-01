@@ -1,5 +1,5 @@
 // Minimal MCP stdio bridge. The native harness (Codex/DSH) launches this file;
-// it forwards one tool call to the local CollaborationGateway. It deliberately
+// it forwards tool calls to the local CollaborationGateway. It deliberately
 // implements only initialize/tools/list/tools/call/ping.
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
@@ -27,10 +27,10 @@ function replyError(id: string | number, code: number, message: string): void {
   send({ jsonrpc: '2.0', id, error: { code, message } });
 }
 
-const TOOL = {
+const DELEGATE_TOOL = {
   name: 'delegate_to_worker',
   description:
-    'Delegate one task to another native AI harness (default worker: dsh). Returns the completed worker output.',
+    'Delegate one task to another native AI harness (default worker: dsh) and wait for the completed output.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -45,10 +45,93 @@ const TOOL = {
   },
 };
 
-async function callGateway(args: Record<string, unknown>): Promise<string> {
+const START_TOOL = {
+  name: 'start_delegation',
+  description:
+    'Start a task on another native AI harness and return immediately with a work item id. ' +
+    'Use get_delegation_result later to read the outcome.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      task: { type: 'string', description: 'The task to give the worker.' },
+      worker: {
+        type: 'string',
+        description: 'Optional worker connection name; defaults to the configured worker.',
+      },
+    },
+    required: ['task'],
+    additionalProperties: false,
+  },
+};
+
+const RESULT_TOOL = {
+  name: 'get_delegation_result',
+  description:
+    'Read the current state of a delegation started with start_delegation. ' +
+    'Returns the state and, once completed, the stored worker output.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      workItemId: { type: 'string', description: 'The id returned by start_delegation.' },
+    },
+    required: ['workItemId'],
+    additionalProperties: false,
+  },
+};
+
+function requireConfig(): { url: string; token: string } {
   if (GATEWAY_URL === undefined || GATEWAY_TOKEN === undefined) {
     throw new Error('Collaboration gateway is not configured');
   }
+  return { url: GATEWAY_URL, token: GATEWAY_TOKEN };
+}
+
+function gatewayBase(): string {
+  const { url } = requireConfig();
+  // UW_GATEWAY_URL points at /delegate; derive the origin for sibling routes.
+  const parsed = new URL(url);
+  return parsed.origin;
+}
+
+async function requestGateway(
+  method: 'GET' | 'POST',
+  url: string,
+  body?: unknown,
+): Promise<Record<string, unknown>> {
+  const { token } = requireConfig();
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  if (method === 'POST') {
+    headers['content-type'] = 'application/json';
+    // One key per tool call: it identifies this call if the same request is
+    // delivered twice. The bridge does not retry, so this is not a retry
+    // cache across attempts.
+    headers['idempotency-key'] = randomUUID();
+  }
+  const response = await fetch(url, {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`Gateway returned non-JSON (HTTP ${String(response.status)})`);
+  }
+  if (!response.ok) {
+    const message = typeof parsed === 'object' && parsed !== null && 'error' in parsed
+      ? String((parsed as { error: unknown }).error)
+      : `Gateway HTTP ${String(response.status)}`;
+    throw new Error(message);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Gateway response is not an object');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function readTaskArgs(args: Record<string, unknown>): { task: string; worker: string } {
   const task = args.task;
   if (typeof task !== 'string' || task.trim() === '') {
     throw new Error('task must be a non-empty string');
@@ -56,38 +139,53 @@ async function callGateway(args: Record<string, unknown>): Promise<string> {
   const worker = typeof args.worker === 'string' && args.worker.trim() !== ''
     ? args.worker
     : DEFAULT_WORKER;
-  const response = await fetch(GATEWAY_URL, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${GATEWAY_TOKEN}`,
-      // One key per tool call: it identifies this call if the same request is
-      // delivered twice. The bridge does not retry, so this is not a retry
-      // cache across attempts.
-      'idempotency-key': randomUUID(),
-    },
-    body: JSON.stringify({ task, worker }),
-  });
-  const text = await response.text();
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw new Error(`Gateway returned non-JSON (HTTP ${String(response.status)})`);
-  }
-  if (!response.ok) {
-    const message = typeof body === 'object' && body !== null && 'error' in body
-      ? String((body as { error: unknown }).error)
-      : `Gateway HTTP ${String(response.status)}`;
-    throw new Error(message);
-  }
-  const output = typeof body === 'object' && body !== null && 'output' in body
-    ? (body as { output: unknown }).output
-    : undefined;
+  return { task, worker };
+}
+
+async function delegateToWorker(args: Record<string, unknown>): Promise<string> {
+  const { task, worker } = readTaskArgs(args);
+  const { url } = requireConfig();
+  const body = await requestGateway('POST', url, { task, worker });
+  const output = body.output;
   if (typeof output !== 'string') {
     throw new Error('Gateway response has no output');
   }
   return output;
+}
+
+async function startDelegation(args: Record<string, unknown>): Promise<string> {
+  const { task, worker } = readTaskArgs(args);
+  const body = await requestGateway('POST', `${gatewayBase()}/delegations`, { task, worker });
+  const workItemId = body.workItemId;
+  if (typeof workItemId !== 'string') {
+    throw new Error('Gateway response has no workItemId');
+  }
+  return JSON.stringify({ workItemId, state: body.state, executionId: body.executionId });
+}
+
+async function getDelegationResult(args: Record<string, unknown>): Promise<string> {
+  const workItemId = args.workItemId;
+  if (typeof workItemId !== 'string' || !/^[0-9a-fA-F-]{36}$/.test(workItemId)) {
+    throw new Error('workItemId must be a work item uuid');
+  }
+  const body = await requestGateway(
+    'GET',
+    `${gatewayBase()}/delegations/${encodeURIComponent(workItemId)}`,
+  );
+  return JSON.stringify(body);
+}
+
+async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
+  switch (name) {
+    case 'delegate_to_worker':
+      return delegateToWorker(args);
+    case 'start_delegation':
+      return startDelegation(args);
+    case 'get_delegation_result':
+      return getDelegationResult(args);
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
 }
 
 async function handle(message: JsonRpcRequest): Promise<void> {
@@ -110,23 +208,16 @@ async function handle(message: JsonRpcRequest): Promise<void> {
       reply(id, {});
       return;
     case 'tools/list':
-      reply(id, { tools: [TOOL] });
+      reply(id, { tools: [DELEGATE_TOOL, START_TOOL, RESULT_TOOL] });
       return;
     case 'tools/call': {
       const params = message.params as { name?: unknown; arguments?: unknown } | undefined;
-      if (params?.name !== 'delegate_to_worker') {
-        reply(id, {
-          content: [{ type: 'text', text: `Unknown tool: ${String(params?.name)}` }],
-          isError: true,
-        });
-        return;
-      }
-      const args = typeof params.arguments === 'object' && params.arguments !== null
+      const args = typeof params?.arguments === 'object' && params.arguments !== null
         ? (params.arguments as Record<string, unknown>)
         : {};
       try {
-        const output = await callGateway(args);
-        reply(id, { content: [{ type: 'text', text: output }], isError: false });
+        const text = await callTool(String(params?.name), args);
+        reply(id, { content: [{ type: 'text', text }], isError: false });
       } catch (error) {
         reply(id, {
           content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }],

@@ -1,6 +1,8 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
+import { join } from 'node:path';
 
 import {
   DelegationLedger,
@@ -30,6 +32,10 @@ export interface CollaborationGatewayOptions {
   readonly stateDirectory?: string;
   /** Allow taking over a lock whose owning process is gone. */
   readonly allowStaleLedgerLock?: boolean;
+  /** Upper bound for a background (async) delegation; default 30 minutes. */
+  readonly asyncTimeoutMs?: number;
+  /** Cap for the stored async result file; default 256 KiB. */
+  readonly resultMaxBytes?: number;
 }
 
 /** Facts that authorize this gateway instance; never derived from tool arguments. */
@@ -81,6 +87,8 @@ export class CollaborationGateway {
   private readonly policy: DelegationPolicy;
   private readonly stateDirectoryOption: string | undefined;
   private readonly allowStaleLedgerLock: boolean;
+  private readonly asyncTimeoutMs: number;
+  private readonly resultMaxBytes: number;
   private readonly token = randomUUID();
   private readonly host = '127.0.0.1' as const;
   private readonly sockets = new Set<Socket>();
@@ -103,6 +111,14 @@ export class CollaborationGateway {
     this.pollIntervalMs = options.pollIntervalMs ?? 50;
     this.stateDirectoryOption = options.stateDirectory;
     this.allowStaleLedgerLock = options.allowStaleLedgerLock === true;
+    this.asyncTimeoutMs = options.asyncTimeoutMs ?? 30 * 60 * 1000;
+    this.resultMaxBytes = options.resultMaxBytes ?? 256 * 1024;
+    if (!Number.isInteger(this.asyncTimeoutMs) || this.asyncTimeoutMs < 1) {
+      throw new Error('asyncTimeoutMs must be a positive integer');
+    }
+    if (!Number.isInteger(this.resultMaxBytes) || this.resultMaxBytes < 1) {
+      throw new Error('resultMaxBytes must be a positive integer');
+    }
     this.policy = parseDelegationPolicy(
       options.policy === undefined
         ? defaultDelegationPolicy(this.workerConnection, options.maxTaskChars)
@@ -304,11 +320,17 @@ export class CollaborationGateway {
     if (expectedHost === undefined || request.headers.host?.toLowerCase() !== expectedHost) {
       throw new CollaborationGatewayError('Forbidden host', 403);
     }
-    if (request.method !== 'POST') {
-      response.setHeader('Allow', 'POST');
+    const method = request.method ?? 'GET';
+    const url = request.url ?? '';
+    const statusMatch = /^\/delegations\/([^/]+)$/.exec(url);
+    if (method !== 'POST' && method !== 'GET') {
+      response.setHeader('Allow', 'POST, GET');
       throw new CollaborationGatewayError('Method not allowed', 405);
     }
-    if (request.url !== '/delegate') {
+    const isSync = method === 'POST' && url === '/delegate';
+    const isAsync = method === 'POST' && url === '/delegations';
+    const isStatus = method === 'GET' && statusMatch !== null;
+    if (!isSync && !isAsync && !isStatus) {
       throw new CollaborationGatewayError('Not found', 404);
     }
     const authorization = request.headers.authorization;
@@ -326,7 +348,23 @@ export class CollaborationGateway {
         503,
       );
     }
+    if (isStatus) {
+      this.sendDelegationStatus(response, decodeURIComponent(statusMatch?.[1] ?? ''));
+      return;
+    }
+    const prepared = await this.readDelegationRequest(request, mandate);
+    if (isAsync) {
+      await this.startAsyncDelegation(response, prepared);
+      return;
+    }
+    await this.runSyncDelegation(response, prepared);
+  }
 
+  /** Parse and gate one delegation request; shared by the sync and async paths. */
+  private async readDelegationRequest(
+    request: IncomingMessage,
+    mandate: DelegationMandate,
+  ): Promise<PreparedDelegation> {
     const body = await readBody(request, this.policy.maxTaskChars * 4 + 1024);
     let parsed: unknown;
     try {
@@ -386,7 +424,11 @@ export class CollaborationGateway {
     if (this.workbench.getConnection(worker)?.status !== 'ready') {
       throw new CollaborationGatewayError(`Worker connection is not available: ${worker}`, 409);
     }
+    return { task, worker, idempotencyKey, mandate };
+  }
 
+  private createWorkItem(prepared: PreparedDelegation): string {
+    const { task, worker, idempotencyKey, mandate } = prepared;
     const workItemId = randomUUID();
     this.appendEntry('work-item/created', {
       id: workItemId,
@@ -403,6 +445,30 @@ export class CollaborationGateway {
     if (idempotencyKey !== undefined) {
       this.idempotency.set(idempotencyKey, workItemId);
     }
+    return workItemId;
+  }
+
+  private submitFailure(workItemId: string, error: unknown): CollaborationGatewayError {
+    // A definite rejection did not start work; an unknown outcome may have.
+    // Never collapse the two into one "failed" record.
+    if (error instanceof SubmitOutcomeUnknownError) {
+      this.settle(workItemId, 'unknown', messageOf(error), error.executionId);
+      return new CollaborationGatewayError(`Worker submit outcome is unknown: ${messageOf(error)}`, 503);
+    }
+    if (error instanceof SubmitFailedError) {
+      this.settle(workItemId, 'failed', messageOf(error), error.executionId);
+      return new CollaborationGatewayError(`Worker failed to accept the task: ${messageOf(error)}`, 502);
+    }
+    this.settle(workItemId, 'failed', messageOf(error));
+    return new CollaborationGatewayError(`Worker submission rejected: ${messageOf(error)}`, 409);
+  }
+
+  private async runSyncDelegation(
+    response: ServerResponse,
+    prepared: PreparedDelegation,
+  ): Promise<void> {
+    const { task, worker, mandate } = prepared;
+    const workItemId = this.createWorkItem(prepared);
 
     let clientGone = false;
     let executionId: string | undefined;
@@ -432,18 +498,7 @@ export class CollaborationGateway {
       try {
         submitted = await this.workbench.submit(task, worker);
       } catch (error) {
-        // A definite rejection did not start work; an unknown outcome may have.
-        // Never collapse the two into one "failed" record.
-        if (error instanceof SubmitOutcomeUnknownError) {
-          this.settle(workItemId, 'unknown', messageOf(error), error.executionId);
-          throw new CollaborationGatewayError(`Worker submit outcome is unknown: ${messageOf(error)}`, 503);
-        }
-        if (error instanceof SubmitFailedError) {
-          this.settle(workItemId, 'failed', messageOf(error), error.executionId);
-          throw new CollaborationGatewayError(`Worker failed to accept the task: ${messageOf(error)}`, 502);
-        }
-        this.settle(workItemId, 'failed', messageOf(error));
-        throw new CollaborationGatewayError(`Worker submission rejected: ${messageOf(error)}`, 409);
+        throw this.submitFailure(workItemId, error);
       }
       executionId = submitted.execution.id;
       if (response.destroyed) {
@@ -506,17 +561,162 @@ export class CollaborationGateway {
     }
   }
 
+  /**
+   * Accept the delegation, answer 202, and settle it in the background. The
+   * HTTP connection ending no longer means the work should stop.
+   */
+  private async startAsyncDelegation(
+    response: ServerResponse,
+    prepared: PreparedDelegation,
+  ): Promise<void> {
+    const { task, worker } = prepared;
+    const workItemId = this.createWorkItem(prepared);
+    this.appendEntry('delivery/intent', { id: workItemId });
+    let submitted;
+    try {
+      submitted = await this.workbench.submit(task, worker);
+    } catch (error) {
+      throw this.submitFailure(workItemId, error);
+    }
+    const executionId = submitted.execution.id;
+    this.appendEntry('delivery/submitted', { id: workItemId, executionId });
+    this.sendJson(response, 202, {
+      workItemId,
+      executionId,
+      state: 'accepted',
+      mandateId: prepared.mandate.id,
+    });
+    void this.runAsyncDelegation(workItemId, worker, executionId);
+  }
+
+  private async runAsyncDelegation(
+    workItemId: string,
+    worker: string,
+    executionId: string,
+  ): Promise<void> {
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void this.workbench.cancel(worker, executionId).catch(() => undefined);
+    }, this.asyncTimeoutMs);
+    timer.unref();
+    try {
+      const execution = await this.waitForTerminal(worker, executionId);
+      if (timedOut) {
+        this.settleSafely(workItemId, 'failed', 'background delegation timed out', executionId);
+        return;
+      }
+      const state = settleState(execution.state);
+      if (state === 'completed') {
+        const stored = this.storeResult(workItemId, execution.output);
+        this.settleSafely(workItemId, state, undefined, executionId, stored);
+      } else {
+        this.settleSafely(workItemId, state, execution.error, executionId);
+      }
+    } catch (error) {
+      this.settleSafely(workItemId, 'unknown', messageOf(error), executionId);
+    } finally {
+      clearTimeout(timer);
+      this.active.delete(workItemId);
+    }
+  }
+
+  private settleSafely(
+    workItemId: string,
+    state: string,
+    error: string | undefined,
+    executionId?: string,
+    result?: StoredResult,
+  ): void {
+    try {
+      this.settle(workItemId, state, error, executionId, result);
+    } catch {
+      // The gateway may be shutting down; the unsettled record stays visible.
+    }
+  }
+
+  private storeResult(workItemId: string, output: string): StoredResult {
+    const ledger = this.ledger;
+    if (ledger === undefined) {
+      throw new Error('Delegation ledger is not open');
+    }
+    const directory = join(ledger.stateDirectory, 'results');
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const bytes = Buffer.from(output, 'utf8');
+    const truncated = bytes.byteLength > this.resultMaxBytes;
+    const body = truncated ? bytes.subarray(0, this.resultMaxBytes) : bytes;
+    const name = `${workItemId}.txt`;
+    writeFileSync(join(directory, name), body, { flag: 'w', mode: 0o600 });
+    return { file: `results/${name}`, bytes: body.byteLength, truncated };
+  }
+
+  private sendDelegationStatus(response: ServerResponse, workItemId: string): void {
+    if (!/^[0-9a-fA-F-]{36}$/.test(workItemId)) {
+      throw new CollaborationGatewayError('Invalid work item id', 400);
+    }
+    const item = this.items.find((entry) => entry.id === workItemId);
+    if (item === undefined) {
+      throw new CollaborationGatewayError(`Unknown work item: ${workItemId}`, 404);
+    }
+    let output: string | undefined;
+    let truncated: boolean | undefined;
+    if (item.state === 'completed') {
+      const settled = this.entries.find(
+        (entry) => entry.type === 'delivery/settled' && entry.data.id === workItemId,
+      );
+      const resultFile = asStringValue(settled?.data.resultFile);
+      const stored = resultFile === undefined ? undefined : this.readStoredResult(resultFile);
+      if (stored !== undefined) {
+        output = stored;
+        truncated = settled?.data.resultTruncated === true;
+      }
+    }
+    this.sendJson(response, 200, {
+      workItemId: item.id,
+      state: item.state,
+      ...(item.executionId === undefined ? {} : { executionId: item.executionId }),
+      ...(item.error === undefined ? {} : { error: item.error }),
+      ...(output === undefined ? {} : { output }),
+      ...(truncated === undefined ? {} : { truncated }),
+    });
+  }
+
+  private readStoredResult(relative: string): string | undefined {
+    const ledger = this.ledger;
+    if (ledger === undefined) {
+      return undefined;
+    }
+    const base = ledger.stateDirectory;
+    const target = join(base, relative);
+    if (!target.startsWith(base)) {
+      return undefined;
+    }
+    try {
+      return readFileSync(target, 'utf8');
+    } catch {
+      return undefined;
+    }
+  }
+
   private settle(
     workItemId: string,
     state: string,
     error: string | undefined,
     executionId?: string,
+    result?: StoredResult,
   ): void {
     this.appendEntry('delivery/settled', {
       id: workItemId,
       state,
       ...(error === undefined ? {} : { error: capText(error, MAX_ERROR_CHARS) }),
       ...(executionId === undefined ? {} : { executionId }),
+      ...(result === undefined
+        ? {}
+        : {
+            resultFile: result.file,
+            resultBytes: result.bytes,
+            resultTruncated: result.truncated,
+          }),
     });
   }
 
@@ -580,6 +780,23 @@ function settleState(state: Execution['state']): 'completed' | 'failed' | 'cance
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function asStringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+interface PreparedDelegation {
+  readonly task: string;
+  readonly worker: string;
+  readonly idempotencyKey: string | undefined;
+  readonly mandate: DelegationMandate;
+}
+
+interface StoredResult {
+  readonly file: string;
+  readonly bytes: number;
+  readonly truncated: boolean;
 }
 
 /** Ledger entries stay bounded: worker text is model-controlled. */

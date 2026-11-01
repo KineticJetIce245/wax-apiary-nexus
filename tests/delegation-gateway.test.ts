@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -21,6 +21,8 @@ interface FakeOptions {
   readonly hang?: boolean;
   readonly submitDelayMs?: number;
   readonly submitError?: Error;
+  readonly cancelError?: Error;
+  readonly output?: string;
 }
 
 class FakeAdapter implements HarnessAdapter {
@@ -58,7 +60,12 @@ class FakeAdapter implements HarnessAdapter {
       return;
     }
     setTimeout(() => {
-      this.emit({ type: 'execution/output', executionId, channel: 'assistant', text: 'WORKER-OK' });
+      this.emit({
+        type: 'execution/output',
+        executionId,
+        channel: 'assistant',
+        text: this.options.output ?? 'WORKER-OK',
+      });
       this.emit({ type: 'execution/completed', executionId, stopReason: 'end_turn' });
     }, 0);
   }
@@ -66,6 +73,9 @@ class FakeAdapter implements HarnessAdapter {
     for (const id of executionId === undefined ? [...this.active] : [executionId]) {
       this.cancels.push(id);
       this.active.delete(id);
+      if (this.options.cancelError !== undefined) {
+        throw this.options.cancelError;
+      }
       this.emit({ type: 'execution/cancelled', executionId: id });
     }
   }
@@ -666,7 +676,132 @@ test('returns 404 for an unknown work item and 400 for a bad id', async () => {
     assert.equal(missing.status, 404);
     const invalid = await getStatus(context.info, 'not-a-uuid');
     assert.equal(invalid.status, 400);
+    const dashes = await getStatus(context.info, '-'.repeat(36));
+    assert.equal(dashes.status, 400);
+    const malformed = await fetch(`${gatewayOrigin(context.info)}/delegations/%E0%A4%A`, {
+      headers: { authorization: `Bearer ${context.info.token}` },
+    });
+    assert.equal(malformed.status, 400);
   } finally {
     await cleanup(context);
+  }
+});
+
+test('releases the concurrency slot when an async submit fails', async () => {
+  const context = await setup({ submitError: new Error('submit exploded') });
+  try {
+    const first = await startAsync(context.info, { task: 'one' });
+    assert.equal(first.status, 502);
+    const second = await startAsync(context.info, { task: 'two' });
+    assert.equal(second.status, 502);
+    const body = (await second.json()) as { error: string };
+    assert.equal(body.error.includes('concurrency limit'), false);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('settles a timed-out delegation even when cancelling fails', async () => {
+  const context = await setup({
+    hang: true,
+    cancelError: new Error('cancel refused'),
+    asyncTimeoutMs: 25,
+  });
+  try {
+    const response = await startAsync(context.info, { task: 'stuck' });
+    assert.equal(response.status, 202);
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'failed');
+    assert.match(context.gateway.workItems[0]?.error ?? '', /timed out/);
+    assert.equal(context.dsh.cancels.length, 1);
+
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    const settled = read.entries.filter((entry) => entry.type === 'delivery/settled');
+    assert.equal(settled.length, 1);
+
+    // The slot is free even though the cancel failed. The next submit may still
+    // be rejected because the native session stayed busy, but never by the
+    // gateway's own concurrency limit.
+    const second = await startAsync(context.info, { task: 'second' });
+    assert.equal(second.status, 409);
+    const secondBody = (await second.json()) as { error: string };
+    assert.equal(secondBody.error.includes('concurrency limit'), false);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('truncates the stored result on a UTF-8 code point boundary', async () => {
+  const context = await setup({ resultMaxBytes: 5, output: 'é'.repeat(10) });
+  try {
+    const response = await startAsync(context.info, { task: 'accents' });
+    const accepted = (await response.json()) as { workItemId: string };
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'completed');
+    const body = (await (await getStatus(context.info, accepted.workItemId)).json()) as {
+      output: string;
+      truncated: boolean;
+    };
+    assert.equal(body.output, 'éé');
+    assert.equal(body.truncated, true);
+    const bytes = Buffer.from(body.output, 'utf8');
+    assert.equal(bytes.byteLength, 4);
+    assert.equal(bytes.toString('utf8'), body.output);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('refuses to read a result file outside the results directory', async () => {
+  const stateDirectory = mkdtempSync(join(tmpdir(), 'uw-g011-escape-'));
+  const sibling = `${stateDirectory}-evil`;
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(join(sibling, 'secret.txt'), 'SIBLING-SECRET', 'utf8');
+  const ledger = DelegationLedger.open({ directory: stateDirectory });
+  const workItemId = '22222222-2222-2222-2222-222222222222';
+  try {
+    ledger.append('work-item/created', {
+      id: workItemId,
+      mandateId: 'm',
+      requester: 'operator',
+      basis: 'policy',
+      policyVersion: 'v',
+      worker: 'dsh',
+      taskLength: 1,
+      taskDigest: 'a'.repeat(64),
+    });
+    ledger.append('delivery/settled', {
+      id: workItemId,
+      state: 'completed',
+      resultFile: `../${sibling.split(/[\\/]/).pop()}/secret.txt`,
+    });
+  } finally {
+    ledger.close();
+  }
+
+  const context = await setup({ stateDirectory });
+  try {
+    const status = await getStatus(context.info, workItemId);
+    assert.equal(status.status, 200);
+    const body = (await status.json()) as { state: string; output?: string };
+    assert.equal(body.state, 'completed');
+    assert.equal(body.output, undefined);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('cancels and settles background delegations on stop', async () => {
+  const context = await setup({ hang: true });
+  try {
+    const response = await startAsync(context.info, { task: 'still running' });
+    assert.equal(response.status, 202);
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'in-flight');
+    await context.gateway.stop();
+    assert.equal(context.dsh.cancels.length, 1);
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    const settled = read.entries.filter((entry) => entry.type === 'delivery/settled');
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0]?.data.state, 'unknown');
+  } finally {
+    await context.workbench.stop().catch(() => undefined);
   }
 });

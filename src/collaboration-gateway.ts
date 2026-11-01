@@ -2,7 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 
 import {
   DelegationLedger,
@@ -95,6 +95,11 @@ export class CollaborationGateway {
   /** Work items started by this process and not settled yet. */
   private readonly active = new Set<string>();
   private readonly idempotency = new Map<string, string>();
+  /** Background delegations owned by this process, keyed by work item id. */
+  private readonly background = new Map<
+    string,
+    { readonly worker: string; readonly executionId: string; readonly controller: AbortController }
+  >();
   private entries: LedgerEntry[] = [];
   private items: WorkItemView[] = [];
   private tornTail = false;
@@ -236,6 +241,28 @@ export class CollaborationGateway {
         server.close(() => resolve());
       });
     }
+    // Stop background delegations instead of leaving workers running with no
+    // gateway to report them: abort the wait, cancel best-effort, and record
+    // the attempt as unknown before the ledger closes.
+    const pending = [...this.background.entries()];
+    this.background.clear();
+    for (const [, entry] of pending) {
+      entry.controller.abort();
+    }
+    for (const [workItemId, entry] of pending) {
+      try {
+        await this.workbench.cancel(entry.worker, entry.executionId);
+      } catch {
+        // Best effort: the ledger still records that the outcome is unknown.
+      }
+      this.settleSafely(
+        workItemId,
+        'unknown',
+        'gateway stopped before the delegation settled',
+        entry.executionId,
+      );
+      this.active.delete(workItemId);
+    }
     const ledger = this.ledger;
     this.ledger = undefined;
     // Unsettled work items stay unsettled in the ledger on purpose: a stop in
@@ -349,7 +376,13 @@ export class CollaborationGateway {
       );
     }
     if (isStatus) {
-      this.sendDelegationStatus(response, decodeURIComponent(statusMatch?.[1] ?? ''));
+      let workItemId: string;
+      try {
+        workItemId = decodeURIComponent(statusMatch?.[1] ?? '');
+      } catch {
+        throw new CollaborationGatewayError('Invalid work item id', 400);
+      }
+      this.sendDelegationStatus(response, workItemId);
       return;
     }
     const prepared = await this.readDelegationRequest(request, mandate);
@@ -571,22 +604,28 @@ export class CollaborationGateway {
   ): Promise<void> {
     const { task, worker } = prepared;
     const workItemId = this.createWorkItem(prepared);
-    this.appendEntry('delivery/intent', { id: workItemId });
-    let submitted;
     try {
-      submitted = await this.workbench.submit(task, worker);
+      this.appendEntry('delivery/intent', { id: workItemId });
+      let submitted;
+      try {
+        submitted = await this.workbench.submit(task, worker);
+      } catch (error) {
+        throw this.submitFailure(workItemId, error);
+      }
+      const executionId = submitted.execution.id;
+      this.appendEntry('delivery/submitted', { id: workItemId, executionId });
+      this.sendJson(response, 202, {
+        workItemId,
+        executionId,
+        state: 'accepted',
+        mandateId: prepared.mandate.id,
+      });
+      void this.runAsyncDelegation(workItemId, worker, executionId);
     } catch (error) {
-      throw this.submitFailure(workItemId, error);
+      // A failed async accept must release the concurrency slot it took.
+      this.active.delete(workItemId);
+      throw error;
     }
-    const executionId = submitted.execution.id;
-    this.appendEntry('delivery/submitted', { id: workItemId, executionId });
-    this.sendJson(response, 202, {
-      workItemId,
-      executionId,
-      state: 'accepted',
-      mandateId: prepared.mandate.id,
-    });
-    void this.runAsyncDelegation(workItemId, worker, executionId);
   }
 
   private async runAsyncDelegation(
@@ -594,29 +633,45 @@ export class CollaborationGateway {
     worker: string,
     executionId: string,
   ): Promise<void> {
-    let timedOut = false;
+    const controller = new AbortController();
+    this.background.set(workItemId, { worker, executionId, controller });
+    let finished = false;
+    const finish = (state: string, error: string | undefined, result?: StoredResult): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      this.settleSafely(workItemId, state, error, executionId, result);
+      this.active.delete(workItemId);
+    };
     const timer = setTimeout(() => {
-      timedOut = true;
+      // The deadline settles the work item by itself: a cancel that fails or a
+      // worker that never reports a terminal event must not leave it in-flight.
+      finish('failed', 'background delegation timed out');
       void this.workbench.cancel(worker, executionId).catch(() => undefined);
+      controller.abort();
     }, this.asyncTimeoutMs);
     timer.unref();
     try {
-      const execution = await this.waitForTerminal(worker, executionId);
-      if (timedOut) {
-        this.settleSafely(workItemId, 'failed', 'background delegation timed out', executionId);
+      const execution = await this.waitForTerminal(worker, executionId, controller.signal);
+      if (finished) {
         return;
       }
       const state = settleState(execution.state);
       if (state === 'completed') {
         const stored = this.storeResult(workItemId, execution.output);
-        this.settleSafely(workItemId, state, undefined, executionId, stored);
+        finish(state, undefined, stored);
       } else {
-        this.settleSafely(workItemId, state, execution.error, executionId);
+        finish(state, execution.error);
       }
     } catch (error) {
-      this.settleSafely(workItemId, 'unknown', messageOf(error), executionId);
+      // A stop() aborts the wait after settling the item itself.
+      if (!finished && !controller.signal.aborted) {
+        finish('unknown', messageOf(error));
+      }
     } finally {
       clearTimeout(timer);
+      this.background.delete(workItemId);
       this.active.delete(workItemId);
     }
   }
@@ -642,16 +697,23 @@ export class CollaborationGateway {
     }
     const directory = join(ledger.stateDirectory, 'results');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const bytes = Buffer.from(output, 'utf8');
-    const truncated = bytes.byteLength > this.resultMaxBytes;
-    const body = truncated ? bytes.subarray(0, this.resultMaxBytes) : bytes;
+    // Truncate on a code-point boundary: slicing raw bytes can split a
+    // multi-byte character and make the stored file invalid UTF-8.
+    const capped = truncateUtf8(output, this.resultMaxBytes);
     const name = `${workItemId}.txt`;
-    writeFileSync(join(directory, name), body, { flag: 'w', mode: 0o600 });
-    return { file: `results/${name}`, bytes: body.byteLength, truncated };
+    writeFileSync(join(directory, name), Buffer.from(capped.text, 'utf8'), {
+      flag: 'w',
+      mode: 0o600,
+    });
+    return {
+      file: `results/${name}`,
+      bytes: Buffer.byteLength(capped.text, 'utf8'),
+      truncated: capped.truncated,
+    };
   }
 
   private sendDelegationStatus(response: ServerResponse, workItemId: string): void {
-    if (!/^[0-9a-fA-F-]{36}$/.test(workItemId)) {
+    if (!UUID_PATTERN.test(workItemId)) {
       throw new CollaborationGatewayError('Invalid work item id', 400);
     }
     const item = this.items.find((entry) => entry.id === workItemId);
@@ -681,14 +743,20 @@ export class CollaborationGateway {
     });
   }
 
-  private readStoredResult(relative: string): string | undefined {
+  private readStoredResult(resultFile: string): string | undefined {
     const ledger = this.ledger;
     if (ledger === undefined) {
       return undefined;
     }
+    // Only our own result layout may be read, and only inside the state
+    // directory. A forged ledger entry must not reach sibling paths.
+    if (!/^results[\\/][0-9a-f-]{36}\.txt$/i.test(resultFile)) {
+      return undefined;
+    }
     const base = ledger.stateDirectory;
-    const target = join(base, relative);
-    if (!target.startsWith(base)) {
+    const target = join(base, resultFile);
+    const rest = relative(base, target);
+    if (rest === '' || rest.startsWith('..') || isAbsolute(rest)) {
       return undefined;
     }
     try {
@@ -738,8 +806,15 @@ export class CollaborationGateway {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   }
 
-  private async waitForTerminal(connection: string, executionId: string): Promise<Execution> {
+  private async waitForTerminal(
+    connection: string,
+    executionId: string,
+    signal?: AbortSignal,
+  ): Promise<Execution> {
     while (true) {
+      if (signal?.aborted === true) {
+        throw new Error('background delegation stopped');
+      }
       const found = this.workbench.getExecution(connection, executionId);
       if (found === undefined) {
         throw new Error('Worker execution is no longer available');
@@ -810,6 +885,25 @@ function capText(text: string, limit: number): string {
 
 const MAX_ERROR_CHARS = 2000;
 const MAX_DETAIL_CHARS = 64;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Truncate on a UTF-8 code-point boundary so the stored text stays valid. */
+function truncateUtf8(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) {
+    return { text, truncated: false };
+  }
+  let used = 0;
+  let end = 0;
+  for (const character of text) {
+    const size = Buffer.byteLength(character, 'utf8');
+    if (used + size > maxBytes) {
+      break;
+    }
+    used += size;
+    end += character.length;
+  }
+  return { text: text.slice(0, end), truncated: true };
+}
 
 function readIdempotencyKey(request: IncomingMessage): string | undefined {
   const raw = request.headers['idempotency-key'];

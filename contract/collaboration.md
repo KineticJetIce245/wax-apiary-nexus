@@ -45,10 +45,13 @@ Codex native turn
 
 - `POST /delegations` 通过同一 Gate 后立即提交 Worker 并返回 202；HTTP 连接结束**不取消** Worker。
 - 后台最长运行 `asyncTimeoutMs`（默认 30 分钟）；到点取消 Worker，Work Item 记为 `failed`，错误文本含 `timed out`。
-- Worker completed 时，输出写入 `<stateDirectory>/results/<workItemId>.txt`（目录 0700、文件 0600），最多 `resultMaxBytes`（默认 256 KiB）；超出部分截断，`settled` 记录带 `resultFile`、`resultBytes`、`resultTruncated`。
-- `GET /delegations/<id>` 返回 `{workItemId, state, executionId?, error?, output?, truncated?}`；只有 `completed` 且结果文件存在时才带 `output`。未知 id 返回 404，格式不合法返回 400。
+- Worker completed 时，输出写入 `<stateDirectory>/results/<workItemId>.txt`（目录 0700、文件 0600），最多 `resultMaxBytes`（默认 256 KiB）；超出部分按 UTF-8 码点边界截断（不会切坏多字节字符），`settled` 记录带 `resultFile`、`resultBytes`、`resultTruncated`。
+- 结果文件的读取只允许 `results/<uuid>.txt` 这一种布局，且必须落在 state 目录内；ledger 里被篡改的 `resultFile` 不会让 GET 读到兄弟目录或外部文件。
+- 文件权限：POSIX 上目录 0700、文件 0600；Windows 上 Node 的 `mode` 只映射只读位，实际访问由 ACL 决定（本机实测为 666），不要依赖 Windows 的 mode 值。
+- `GET /delegations/<id>` 返回 `{workItemId, state, executionId?, error?, output?, truncated?}`；只有 `completed` 且结果文件存在时才带 `output`。id 必须是严格的 UUID 形状（8-4-4-4-12），非法 id 返回 400，未知 UUID 返回 404。
 - 结果取回是 **Host 的责任**：Gateway 不推送。Host 若在拿到 workItemId 后结束 turn，就只能由人或后续 turn 再取。
 - 重启后未结算的异步 Work Item 与同步记录一样进入恢复报告；不自动重放。已完成项的结果文件保留在状态目录，可继续读取。
+- `stop()` 会中止本进程内的后台委派：best-effort 取消 Worker，并把未结算项记为 `unknown`（错误文本 `gateway stopped before the delegation settled`），然后关闭 ledger；不会让 Worker 在无人记录的情况下继续跑。
 
 ### 2.1 授权（Mandate 与确定性 Gate）
 

@@ -163,9 +163,11 @@ async function startDelegation(args: Record<string, unknown>): Promise<string> {
   return JSON.stringify({ workItemId, state: body.state, executionId: body.executionId });
 }
 
+const WORK_ITEM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function getDelegationResult(args: Record<string, unknown>): Promise<string> {
   const workItemId = args.workItemId;
-  if (typeof workItemId !== 'string' || !/^[0-9a-fA-F-]{36}$/.test(workItemId)) {
+  if (typeof workItemId !== 'string' || !WORK_ITEM_ID.test(workItemId)) {
     throw new Error('workItemId must be a work item uuid');
   }
   const body = await requestGateway(

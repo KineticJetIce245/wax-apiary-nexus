@@ -33,7 +33,7 @@ Codex native turn
   - `Host` 必须是 `127.0.0.1:<port>`；
   - body 仅允许 `{task: string, worker?: string}`；未知字段拒绝；
   - `task` 非空，默认上限 20,000 字符；`worker` 上限 64 字符；
-  - 错误：400 输入/JSON、401/403 认证或 Host、405 方法、409 worker 不可用/提交冲突、502 Worker 非 completed。
+  - 错误：400 输入/JSON、401/403 认证或 Host、405 方法、409 worker 不可用/提交冲突、413 body 超限、502 Worker 非 completed。
 - 成功响应：`{worker, executionId, output}`；不返回本地附件路径。
 - Gateway 不记录 task/output 内容。
 
@@ -50,8 +50,9 @@ Codex native turn
 
 - Codex `thread/start` 支持 `config`；可传 `mcp_servers.<name>`（command/args/env）让 Codex 启动 bridge。
 - DSH `session/new` 支持 `mcpServers` stdio/HTTP 声明；本目标只实现配置透传，未做 DSH-host 真实委派验收。
-- Codex 的 MCP elicitation 请求会转成普通 approval；allow 返回 `{action:'accept',content:{}}`，reject 返回 decline。只适用于不需要表单内容的 MCP 工具调用。
-- Codex 的 `item/permissions/requestApproval` 也会转成普通 approval；allow 授予请求的 permission profile（scope=turn）。
+- Codex 的 MCP elicitation 请求会转成普通 approval；allow 返回 `{action:'accept',content:{}}`，reject 返回 decline。请求带 `turnId` 时必须匹配当前 turn；缺省时挂到当前活跃 turn。只适用于不需要表单内容的 MCP 工具调用。
+- Codex 的 `item/permissions/requestApproval` 也会转成普通 approval；approval 摘要包含请求的 permission profile，allow 授予该 profile（scope=turn）。
+- 客户端在 Worker 完成前断开时，Gateway 会 best-effort 取消 Worker execution；取消不保证原生侧立刻停止。
 
 ## 5. 验收证据
 
@@ -66,5 +67,6 @@ Codex native turn
 - MCP elicitation 只按 approval 处理，不能填写表单；接受时 content 为空。
 - 没有异步/后台任务、handoff、worker 选择策略、多 worker 编排、重试或持久化。
 - 没有 Web/CLI 配置入口；当前由 API/probe 组装 Codex MCP config。
-- Gateway 与 bridge 都只用于本机受控环境；token 在本地环境变量中传递。
-- 没有超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host/Gateway 取消。
+- Gateway 与 bridge 都只用于本机受控环境；token 在本地环境变量中传递。token 可能被 Codex 写入 thread config/rollout；token 随 Gateway 实例失效，更换 Gateway 后需要重建带新 env 的 thread。
+- 没有总超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host 取消或断开客户端触发 Gateway 取消。
+- bridge 对无法解析的 JSON 行返回 `-32700`；不支持的方法返回 `-32601`。

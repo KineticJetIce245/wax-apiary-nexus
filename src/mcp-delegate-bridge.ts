@@ -144,6 +144,7 @@ rl.on('line', (line) => {
   try {
     message = JSON.parse(line) as JsonRpcRequest;
   } catch {
+    send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
     return;
   }
   void handle(message).catch((error: unknown) => {

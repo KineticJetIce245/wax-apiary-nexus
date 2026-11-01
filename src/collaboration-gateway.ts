@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 
@@ -70,13 +70,28 @@ export class CollaborationGateway {
       socket.once('close', () => this.sockets.delete(socket));
     });
     this.server = server;
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(this.port, this.host, () => {
-        server.off('error', reject);
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(this.port, this.host, () => {
+          server.off('error', reject);
+          resolve();
+        });
       });
-    });
+    } catch (error) {
+      this.server = undefined;
+      this.info = undefined;
+      for (const socket of this.sockets) {
+        socket.destroy();
+      }
+      this.sockets.clear();
+      try {
+        server.close();
+      } catch {
+        // The server never reached listening state.
+      }
+      throw error;
+    }
     const address = server.address() as AddressInfo;
     this.info = {
       url: `http://${this.host}:${String(address.port)}/delegate`,
@@ -126,7 +141,7 @@ export class CollaborationGateway {
       throw new CollaborationGatewayError('Not found', 404);
     }
     const authorization = request.headers.authorization;
-    if (authorization !== `Bearer ${this.token}`) {
+    if (!this.authorized(authorization)) {
       throw new CollaborationGatewayError('Unauthorized', 401);
     }
 
@@ -170,7 +185,26 @@ export class CollaborationGateway {
         409,
       );
     }
-    const execution = await this.waitForTerminal(worker, submitted.execution.id);
+    const execution = await (async () => {
+      let clientGone = false;
+      const executionId = submitted.execution.id;
+      const onClose = (): void => {
+        if (!response.writableEnded) {
+          clientGone = true;
+          void this.workbench.cancel(worker, executionId).catch(() => undefined);
+        }
+      };
+      response.once('close', onClose);
+      try {
+        const settled = await this.waitForTerminal(worker, executionId);
+        if (clientGone) {
+          throw new CollaborationGatewayError('Client disconnected', 499);
+        }
+        return settled;
+      } finally {
+        response.off('close', onClose);
+      }
+    })();
     if (execution.state !== 'completed') {
       throw new CollaborationGatewayError(
         `Worker ended as ${execution.state}: ${execution.error ?? 'no output'}`,
@@ -182,6 +216,15 @@ export class CollaborationGateway {
       executionId: execution.id,
       output: execution.output,
     });
+  }
+
+  private authorized(header: string | undefined): boolean {
+    if (header === undefined) {
+      return false;
+    }
+    const expected = Buffer.from(`Bearer ${this.token}`);
+    const actual = Buffer.from(header);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
   }
 
   private async waitForTerminal(connection: string, executionId: string): Promise<Execution> {
@@ -198,7 +241,7 @@ export class CollaborationGateway {
   }
 
   private sendJson(response: ServerResponse, status: number, value: unknown): void {
-    if (response.headersSent) {
+    if (response.headersSent || response.destroyed || response.writableEnded) {
       return;
     }
     const body = JSON.stringify(value);
@@ -207,6 +250,7 @@ export class CollaborationGateway {
       'Content-Length': Buffer.byteLength(body),
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
+      ...(status === 413 ? { Connection: 'close' } : {}),
     });
     response.end(body);
   }
@@ -215,17 +259,30 @@ export class CollaborationGateway {
 function readBody(request: IncomingMessage, limit: number): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let size = 0;
+    let failed = false;
     const chunks: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => {
+    const onData = (chunk: Buffer): void => {
+      if (failed) {
+        return;
+      }
       size += chunk.byteLength;
       if (size > limit) {
+        failed = true;
+        request.removeListener('data', onData);
+        // Keep draining after writing the response. Destroying the socket here
+        // would make the 413 unreachable for the client.
+        request.resume();
         reject(new CollaborationGatewayError('Request body too large', 413));
-        request.destroy();
         return;
       }
       chunks.push(chunk);
+    };
+    request.on('data', onData);
+    request.on('end', () => {
+      if (!failed) {
+        resolve(Buffer.concat(chunks).toString('utf8'));
+      }
     });
-    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     request.on('error', reject);
   });
 }

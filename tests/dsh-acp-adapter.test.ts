@@ -29,6 +29,31 @@ rl.on('line', (line) => {
 });
 `;
 
+const FAKE_ACP_RECORDER = String.raw`
+const fs = require('node:fs');
+const readline = require('node:readline');
+const recordPath = process.argv[4];
+const rl = readline.createInterface({ input: process.stdin });
+function send(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send(message.id, { protocolVersion: 1 });
+    return;
+  }
+  if (message.method === 'session/new') {
+    fs.writeFileSync(recordPath, JSON.stringify(message.params));
+    send(message.id, { sessionId: 'recorded-session' });
+    return;
+  }
+  if (message.method === 'session/close') {
+    send(message.id, {});
+  }
+});
+`;
+
 function makeFakeDshRoot(binSource: string): string {
   const root = mkdtempSync(join(tmpdir(), 'uw-fake-dsh-'));
   const dir = join(root, 'apps', 'cli', 'lib');
@@ -36,6 +61,36 @@ function makeFakeDshRoot(binSource: string): string {
   writeFileSync(join(dir, 'bin.js'), binSource, 'utf8');
   return root;
 }
+
+test('passes mcpServers through to ACP session/new', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_RECORDER);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-fake-mcp-project-'));
+  const recordPath = join(projectDir, 'session-new.json');
+  const mcpServers = [
+    {
+      name: 'unified_delegate',
+      command: 'node',
+      args: ['bridge.js'],
+      env: [{ name: 'UW_WORKER', value: 'dsh' }],
+    },
+  ];
+  const adapter = new DshAcpAdapter({
+    dshRoot: root,
+    dshArgs: [recordPath],
+    sessionTimeoutMs: 100,
+    mcpServers,
+  });
+  try {
+    await adapter.start();
+    await adapter.createConversation({ id: 'fake', directory: projectDir });
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as {
+      mcpServers?: unknown;
+    };
+    assert.deepEqual(recorded.mcpServers, mcpServers);
+  } finally {
+    await adapter.stop();
+  }
+});
 
 test('keeps an active execution after a close timeout', async () => {
   const root = makeFakeDshRoot(FAKE_ACP_SERVER);

@@ -6,6 +6,46 @@ import test from 'node:test';
 
 const bridgePath = fileURLToPath(new URL('../src/mcp-delegate-bridge.js', import.meta.url));
 
+test('returns protocol errors for malformed lines and unknown methods', async () => {
+  const child = spawn(process.execPath, [bridgePath], {
+    env: { ...process.env, UW_GATEWAY_URL: '', UW_GATEWAY_TOKEN: '', UW_WORKER: 'dsh' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  try {
+    const messages: Array<Record<string, unknown>> = [];
+    const ready = new Promise<void>((resolve) => {
+      let buffer = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.trim() !== '') {
+            messages.push(JSON.parse(line) as Record<string, unknown>);
+          }
+        }
+        if (messages.length >= 3) {
+          resolve();
+        }
+      });
+    });
+    child.stdin.write('not-json\n');
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'does/not/exist' })}\n`);
+    child.stdin.write(`${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'delegate_to_worker', arguments: { task: 'x' } },
+    })}\n`);
+    await ready;
+    assert.equal((messages[0]?.error as { code?: number } | undefined)?.code, -32700);
+    assert.equal((messages[1]?.error as { code?: number } | undefined)?.code, -32601);
+    assert.equal((messages[2]?.result as { isError?: boolean } | undefined)?.isError, true);
+  } finally {
+    child.kill();
+  }
+});
+
 test('MCP bridge initializes, lists the tool and forwards a call to the gateway', async () => {
   let received: unknown;
   const server = createServer((request, response) => {

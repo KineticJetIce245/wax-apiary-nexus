@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -14,6 +14,7 @@ import { assertHarnessAdapterContract } from './support/harness-adapter-contract
 const FAKE_SERVER = String.raw`
 const readline = require('node:readline');
 const mode = process.argv[2];
+const recordPath = process.argv[3];
 const rl = readline.createInterface({ input: process.stdin });
 let turnSeq = 0;
 let threadSeq = 0;
@@ -55,6 +56,9 @@ rl.on('line', (line) => {
   if (message.method === 'thread/start') {
     threadSeq += 1;
     currentThread = 'thr-' + threadSeq;
+    if (recordPath) {
+      require('node:fs').writeFileSync(recordPath, JSON.stringify(message.params));
+    }
     respond(message.id, {
       thread: { id: currentThread },
       model: 'fake-model',
@@ -96,6 +100,27 @@ rl.on('line', (line) => {
         id,
         method: 'item/commandExecution/requestApproval',
         params: { threadId: currentThread, turnId: activeTurn, itemId: 'exec-1', command: 'echo hi' },
+      });
+    }
+    if (mode === 'permissions' || mode === 'permissions-deny') {
+      const id = approvalId++;
+      send({
+        id,
+        method: 'item/permissions/requestApproval',
+        params: {
+          threadId: currentThread,
+          turnId: activeTurn,
+          permissions: { network: { enabled: true } },
+          reason: 'network access',
+        },
+      });
+    }
+    if (mode === 'elicitation' || mode === 'elicitation-deny') {
+      const id = approvalId++;
+      send({
+        id,
+        method: 'mcpServer/elicitation/request',
+        params: { serverName: 'unified_delegate', threadId: currentThread, turnId: activeTurn },
       });
     }
     if (mode === 'fail') {
@@ -151,10 +176,14 @@ rl.on('line', (line) => {
   }
   if (message.id !== undefined && message.result !== undefined) {
     const decision = message.result.decision;
+    const text =
+      mode === 'permissions' || mode === 'permissions-deny' || mode === 'elicitation' || mode === 'elicitation-deny'
+        ? 'result=' + JSON.stringify(message.result)
+        : 'decision=' + decision;
     notify('item/completed', {
       threadId: currentThread,
       turnId: activeTurn,
-      item: { type: 'agentMessage', id: 'msg-approval', text: 'decision=' + decision },
+      item: { type: 'agentMessage', id: 'msg-approval', text },
     });
     finish('completed');
     return;
@@ -165,11 +194,11 @@ rl.on('line', (line) => {
 });
 `;
 
-function makeFakeServer(mode: string): CodexLaunch {
+function makeFakeServer(mode: string, recordPath?: string): CodexLaunch {
   const dir = mkdtempSync(join(tmpdir(), 'uw-fake-codex-'));
   const script = join(dir, 'fake-app-server.cjs');
   writeFileSync(script, FAKE_SERVER, 'utf8');
-  return { file: process.execPath, args: [script, mode] };
+  return { file: process.execPath, args: [script, mode, recordPath ?? ''] };
 }
 
 async function open(mode: string): Promise<{ adapter: CodexAppServerAdapter; events: HarnessEvent[]; projectDir: string }> {
@@ -261,6 +290,103 @@ test('maps reject_once to decline', async () => {
     assert.equal(text, 'decision=decline');
   } finally {
     await session.adapter.stop();
+  }
+});
+
+test('passes thread/start config through to Codex', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-config-project-'));
+  const recordPath = join(projectDir, 'thread-start.json');
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('happy', recordPath),
+    requestTimeoutMs: 2_000,
+    config: { mcp_servers: { unified_delegate: { command: 'node' } } },
+  });
+  try {
+    await adapter.start();
+    await adapter.createConversation({ id: 'p', directory: projectDir });
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as {
+      config?: unknown;
+    };
+    assert.deepEqual(recorded.config, {
+      mcp_servers: { unified_delegate: { command: 'node' } },
+    });
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('maps permissions approval to a turn-scoped grant', async () => {
+  const session = await open('permissions');
+  try {
+    const nativeId = await session.adapter.createConversation({ id: 'p', directory: session.projectDir });
+    await session.adapter.submit(nativeId, 'exec-1', 'need network');
+    const requested = await waitForEvent(session.events, (event) => event.type === 'execution/approval-requested');
+    if (requested.type !== 'execution/approval-requested') {
+      return;
+    }
+    assert.match(requested.request.summary, /permissions/);
+    await session.adapter.respondToApproval({ requestId: requested.request.requestId, kind: 'allow_once' });
+    await waitForEvent(session.events, (event) => event.type === 'execution/completed');
+    const text = session.events
+      .filter((event) => event.type === 'execution/output')
+      .map((event) => (event.type === 'execution/output' ? event.text : ''))
+      .join('');
+    assert.equal(
+      text,
+      'result={"permissions":{"network":{"enabled":true}},"scope":"turn"}',
+    );
+  } finally {
+    await session.adapter.stop();
+  }
+});
+
+test('maps elicitation approval to accept with empty content', async () => {
+  const session = await open('elicitation');
+  try {
+    const nativeId = await session.adapter.createConversation({ id: 'p', directory: session.projectDir });
+    await session.adapter.submit(nativeId, 'exec-1', 'call tool');
+    const requested = await waitForEvent(session.events, (event) => event.type === 'execution/approval-requested');
+    if (requested.type !== 'execution/approval-requested') {
+      return;
+    }
+    assert.match(requested.request.summary, /unified_delegate/);
+    await session.adapter.respondToApproval({ requestId: requested.request.requestId, kind: 'allow_once' });
+    await waitForEvent(session.events, (event) => event.type === 'execution/completed');
+    const text = session.events
+      .filter((event) => event.type === 'execution/output')
+      .map((event) => (event.type === 'execution/output' ? event.text : ''))
+      .join('');
+    assert.equal(text, 'result={"action":"accept","content":{}}');
+  } finally {
+    await session.adapter.stop();
+  }
+});
+
+test('maps permissions and elicitation rejection to empty/decline shapes', async () => {
+  for (const mode of ['permissions-deny', 'elicitation-deny']) {
+    const session = await open(mode);
+    try {
+      const nativeId = await session.adapter.createConversation({ id: 'p', directory: session.projectDir });
+      await session.adapter.submit(nativeId, 'exec-1', 'deny');
+      const requested = await waitForEvent(session.events, (event) => event.type === 'execution/approval-requested');
+      if (requested.type !== 'execution/approval-requested') {
+        continue;
+      }
+      await session.adapter.respondToApproval({ requestId: requested.request.requestId, kind: 'reject_once' });
+      await waitForEvent(session.events, (event) => event.type === 'execution/completed');
+      const text = session.events
+        .filter((event) => event.type === 'execution/output')
+        .map((event) => (event.type === 'execution/output' ? event.text : ''))
+        .join('');
+      assert.equal(
+        text,
+        mode === 'permissions-deny'
+          ? 'result={"permissions":{},"scope":"turn"}'
+          : 'result={"action":"decline","content":null}',
+      );
+    } finally {
+      await session.adapter.stop();
+    }
   }
 });
 

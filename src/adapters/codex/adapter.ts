@@ -629,7 +629,8 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     if (
       threadId === undefined ||
       active === undefined ||
-      (!isElicitation && (turnId === undefined || active.turnId !== turnId))
+      (!isElicitation && (turnId === undefined || active.turnId !== turnId)) ||
+      (isElicitation && turnId !== undefined && active.turnId !== turnId)
     ) {
       return Promise.resolve(
         isElicitation ? { action: 'decline', content: null } : { decision: 'decline' },
@@ -744,7 +745,8 @@ function cancelApprovalResult(pending: PendingApproval): unknown {
   return { decision: 'cancel' };
 }
 
-export function mapApprovalDecision(kind: ApprovalDecision['kind']): string {  switch (kind) {
+export function mapApprovalDecision(kind: ApprovalDecision['kind']): string {
+  switch (kind) {
     case 'allow_once':
       return 'accept';
     case 'reject_once':
@@ -766,9 +768,12 @@ function approvalSummary(method: string, params: Record<string, unknown> | undef
       : `MCP server ${server} requests input`;
   }
   if (method === 'item/permissions/requestApproval') {
+    const requested = params.permissions;
+    const detail =
+      requested === undefined ? '' : `: ${truncate(JSON.stringify(requested), TOOL_TITLE_LIMIT)}`;
     return reason === undefined
-      ? 'Codex requests additional permissions'
-      : `Codex requests additional permissions: ${reason}`;
+      ? `Codex requests additional permissions${detail}`
+      : `Codex requests additional permissions${detail} (${reason})`;
   }
   if (method === 'item/fileChange/requestApproval') {
     return reason === undefined ? 'Codex wants to apply file changes' : `Codex wants to apply file changes: ${reason}`;

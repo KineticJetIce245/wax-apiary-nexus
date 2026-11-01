@@ -96,10 +96,7 @@ export class CollaborationGateway {
   private readonly active = new Set<string>();
   private readonly idempotency = new Map<string, string>();
   /** Background delegations owned by this process, keyed by work item id. */
-  private readonly background = new Map<
-    string,
-    { readonly worker: string; readonly executionId: string; readonly controller: AbortController }
-  >();
+  private readonly background = new Map<string, BackgroundDelegation>();
   private entries: LedgerEntry[] = [];
   private items: WorkItemView[] = [];
   private tornTail = false;
@@ -241,28 +238,21 @@ export class CollaborationGateway {
         server.close(() => resolve());
       });
     }
-    // Stop background delegations instead of leaving workers running with no
-    // gateway to report them: abort the wait, cancel best-effort, and record
-    // the attempt as unknown before the ledger closes.
+    // Stop background delegations before the ledger closes. Abort first so a
+    // waiting runner can cancel and settle itself; give accepts that are still
+    // inside submit a bounded window, then settle anything left as unknown.
     const pending = [...this.background.entries()];
-    this.background.clear();
     for (const [, entry] of pending) {
       entry.controller.abort();
     }
-    for (const [workItemId, entry] of pending) {
-      try {
-        await this.workbench.cancel(entry.worker, entry.executionId);
-      } catch {
-        // Best effort: the ledger still records that the outcome is unknown.
-      }
-      this.settleSafely(
-        workItemId,
-        'unknown',
-        'gateway stopped before the delegation settled',
-        entry.executionId,
-      );
-      this.active.delete(workItemId);
+    const drainUntil = Date.now() + BACKGROUND_STOP_DRAIN_MS;
+    while (this.background.size > 0 && Date.now() < drainUntil) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    for (const [workItemId, entry] of [...this.background.entries()]) {
+      this.settleOnce(workItemId, entry, 'unknown', 'gateway stopped before the delegation settled');
+    }
+    this.background.clear();
     const ledger = this.ledger;
     this.ledger = undefined;
     // Unsettled work items stay unsettled in the ledger on purpose: a stop in
@@ -604,76 +594,138 @@ export class CollaborationGateway {
   ): Promise<void> {
     const { task, worker } = prepared;
     const workItemId = this.createWorkItem(prepared);
+    const entry: BackgroundDelegation = {
+      worker,
+      controller: new AbortController(),
+      executionId: undefined,
+      settled: false,
+    };
+    // Registered before submit, so stop() also sees an accept that is still
+    // inside `workbench.submit` and can abort it.
+    this.background.set(workItemId, entry);
     try {
       this.appendEntry('delivery/intent', { id: workItemId });
       let submitted;
       try {
         submitted = await this.workbench.submit(task, worker);
       } catch (error) {
-        throw this.submitFailure(workItemId, error);
+        const mapped = this.submitFailure(workItemId, error);
+        entry.settled = true;
+        this.background.delete(workItemId);
+        this.active.delete(workItemId);
+        throw mapped;
       }
-      const executionId = submitted.execution.id;
-      this.appendEntry('delivery/submitted', { id: workItemId, executionId });
+      entry.executionId = submitted.execution.id;
+      try {
+        this.appendEntry('delivery/submitted', {
+          id: workItemId,
+          executionId: entry.executionId,
+        });
+      } catch {
+        // stop() may have closed the ledger while submit was in flight.
+      }
+      if (entry.controller.signal.aborted || entry.settled) {
+        // The gateway stopped during submission: cancel the worker that may
+        // just have started and record that its outcome is unknown.
+        await this.cancelBestEffort(worker, entry.executionId);
+        this.settleOnce(workItemId, entry, 'unknown', 'gateway stopped during submission');
+        return;
+      }
       this.sendJson(response, 202, {
         workItemId,
-        executionId,
+        executionId: entry.executionId,
         state: 'accepted',
         mandateId: prepared.mandate.id,
       });
-      void this.runAsyncDelegation(workItemId, worker, executionId);
+      void this.runAsyncDelegation(workItemId, entry);
     } catch (error) {
       // A failed async accept must release the concurrency slot it took.
       this.active.delete(workItemId);
+      this.background.delete(workItemId);
       throw error;
     }
   }
 
   private async runAsyncDelegation(
     workItemId: string,
-    worker: string,
-    executionId: string,
+    entry: BackgroundDelegation,
   ): Promise<void> {
-    const controller = new AbortController();
-    this.background.set(workItemId, { worker, executionId, controller });
-    let finished = false;
-    const finish = (state: string, error: string | undefined, result?: StoredResult): void => {
-      if (finished) {
-        return;
-      }
-      finished = true;
-      this.settleSafely(workItemId, state, error, executionId, result);
-      this.active.delete(workItemId);
-    };
+    const { worker, executionId } = entry;
+    if (executionId === undefined) {
+      this.settleOnce(workItemId, entry, 'unknown', 'background delegation has no execution id');
+      return;
+    }
     const timer = setTimeout(() => {
       // The deadline settles the work item by itself: a cancel that fails or a
       // worker that never reports a terminal event must not leave it in-flight.
-      finish('failed', 'background delegation timed out');
-      void this.workbench.cancel(worker, executionId).catch(() => undefined);
-      controller.abort();
+      this.settleOnce(workItemId, entry, 'failed', 'background delegation timed out', executionId);
+      void this.cancelBestEffort(worker, executionId);
+      entry.controller.abort();
     }, this.asyncTimeoutMs);
     timer.unref();
     try {
-      const execution = await this.waitForTerminal(worker, executionId, controller.signal);
-      if (finished) {
+      const execution = await this.waitForTerminal(worker, executionId, entry.controller.signal);
+      if (entry.settled) {
         return;
       }
       const state = settleState(execution.state);
       if (state === 'completed') {
         const stored = this.storeResult(workItemId, execution.output);
-        finish(state, undefined, stored);
+        this.settleOnce(workItemId, entry, state, undefined, executionId, stored);
       } else {
-        finish(state, execution.error);
+        this.settleOnce(workItemId, entry, state, execution.error, executionId);
       }
     } catch (error) {
-      // A stop() aborts the wait after settling the item itself.
-      if (!finished && !controller.signal.aborted) {
-        finish('unknown', messageOf(error));
+      if (entry.settled) {
+        // The deadline already settled this item and asked the worker to stop.
+        return;
       }
+      if (entry.controller.signal.aborted) {
+        // stop() aborted the wait: cancel the worker and settle the item once.
+        await this.cancelBestEffort(worker, executionId);
+        this.settleOnce(
+          workItemId,
+          entry,
+          'unknown',
+          'gateway stopped before the delegation settled',
+          executionId,
+        );
+        return;
+      }
+      this.settleOnce(workItemId, entry, 'unknown', messageOf(error), executionId);
     } finally {
       clearTimeout(timer);
       this.background.delete(workItemId);
       this.active.delete(workItemId);
     }
+  }
+
+  /** Settle a background item at most once; whoever gets here first wins. */
+  private settleOnce(
+    workItemId: string,
+    entry: BackgroundDelegation,
+    state: string,
+    error: string | undefined,
+    executionId?: string,
+    result?: StoredResult,
+  ): void {
+    if (entry.settled) {
+      return;
+    }
+    entry.settled = true;
+    this.settleSafely(workItemId, state, error, executionId ?? entry.executionId, result);
+    this.active.delete(workItemId);
+    this.background.delete(workItemId);
+  }
+
+  private async cancelBestEffort(worker: string, executionId: string): Promise<void> {
+    await Promise.race([
+      this.workbench.cancel(worker, executionId).catch(() => undefined),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, CANCEL_TIMEOUT_MS);
+        timer.unref();
+      }),
+    ]);
   }
 
   private settleSafely(
@@ -874,6 +926,13 @@ interface StoredResult {
   readonly truncated: boolean;
 }
 
+interface BackgroundDelegation {
+  readonly worker: string;
+  readonly controller: AbortController;
+  executionId: string | undefined;
+  settled: boolean;
+}
+
 /** Ledger entries stay bounded: worker text is model-controlled. */
 function capText(text: string, limit: number): string {
   if (text.length <= limit) {
@@ -885,6 +944,8 @@ function capText(text: string, limit: number): string {
 
 const MAX_ERROR_CHARS = 2000;
 const MAX_DETAIL_CHARS = 64;
+const BACKGROUND_STOP_DRAIN_MS = 2_000;
+const CANCEL_TIMEOUT_MS = 1_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Truncate on a UTF-8 code-point boundary so the stored text stays valid. */

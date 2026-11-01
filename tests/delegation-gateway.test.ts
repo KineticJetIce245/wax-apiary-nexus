@@ -22,6 +22,7 @@ interface FakeOptions {
   readonly submitDelayMs?: number;
   readonly submitError?: Error;
   readonly cancelError?: Error;
+  readonly cancelHangs?: boolean;
   readonly output?: string;
 }
 
@@ -73,6 +74,9 @@ class FakeAdapter implements HarnessAdapter {
     for (const id of executionId === undefined ? [...this.active] : [executionId]) {
       this.cancels.push(id);
       this.active.delete(id);
+      if (this.options.cancelHangs === true) {
+        await new Promise<void>(() => {});
+      }
       if (this.options.cancelError !== undefined) {
         throw this.options.cancelError;
       }
@@ -797,6 +801,59 @@ test('cancels and settles background delegations on stop', async () => {
     await waitUntil(() => context.gateway.workItems[0]?.state === 'in-flight');
     await context.gateway.stop();
     assert.equal(context.dsh.cancels.length, 1);
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    const settled = read.entries.filter((entry) => entry.type === 'delivery/settled');
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0]?.data.state, 'unknown');
+  } finally {
+    await context.workbench.stop().catch(() => undefined);
+  }
+});
+
+test('cancels and settles an accept that is still submitting when stopped', async () => {
+  const context = await setup({ hang: true, submitDelayMs: 100 });
+  try {
+    const pending = startAsync(context.info, { task: 'submitting' });
+    void pending.catch(() => undefined);
+    await waitUntil(() => context.dsh.submissions.length === 1);
+    await context.gateway.stop();
+    assert.equal(context.dsh.cancels.length, 1);
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    const settled = read.entries.filter((entry) => entry.type === 'delivery/settled');
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0]?.data.state, 'unknown');
+    const submitted = read.entries.find((entry) => entry.type === 'delivery/submitted');
+    assert.equal(typeof submitted?.data.executionId, 'string');
+  } finally {
+    await context.workbench.stop().catch(() => undefined);
+  }
+});
+
+test('does not settle a timed-out delegation twice when stopped afterwards', async () => {
+  const context = await setup({ hang: true, asyncTimeoutMs: 20 });
+  try {
+    const response = await startAsync(context.info, { task: 'times out' });
+    assert.equal(response.status, 202);
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'failed');
+    await context.gateway.stop();
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    const settled = read.entries.filter((entry) => entry.type === 'delivery/settled');
+    assert.equal(settled.length, 1);
+    assert.equal(settled[0]?.data.state, 'failed');
+  } finally {
+    await context.workbench.stop().catch(() => undefined);
+  }
+});
+
+test('stop is not blocked by a cancel that never returns', async () => {
+  const context = await setup({ hang: true, cancelHangs: true });
+  try {
+    const response = await startAsync(context.info, { task: 'cancel hangs' });
+    assert.equal(response.status, 202);
+    await waitUntil(() => context.gateway.workItems[0]?.state === 'in-flight');
+    const started = Date.now();
+    await context.gateway.stop();
+    assert.ok(Date.now() - started < 3_000, 'stop should not wait for a hung cancel');
     const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
     const settled = read.entries.filter((entry) => entry.type === 'delivery/settled');
     assert.equal(settled.length, 1);

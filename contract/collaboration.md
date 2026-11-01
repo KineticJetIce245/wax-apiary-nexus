@@ -36,16 +36,16 @@ Codex native turn
   - body 仅允许 `{task: string, worker?: string}`；未知字段拒绝（包括任何自称的授权字段）；
   - 可选请求头 `Idempotency-Key`，1–128 个 `[A-Za-z0-9._:-]`；
   - `task` 非空，上限 `policy.maxTaskChars`；`worker` 上限 64 字符；
-  - 错误：400 输入/JSON/未知字段/非法幂等键、401 认证、403 Host 或策略拒绝或 mandate 过期、405 方法、409 worker 不可用/并发上限/重复幂等键/提交冲突、413 body 超限、502 Worker 非 completed。
+  - 错误：400 输入/JSON/未知字段/非法幂等键、401 认证、403 Host 或策略拒绝或 mandate 过期、404 路径错误、405 方法、409 worker 不可用/并发上限/重复幂等键/提交被明确拒绝、413 body 超限、499 客户端已断开（不返回响应体）、500 内部错误、502 Worker 明确失败或非 completed、503 提交结果未知或 ledger 需要人工修复。
 - 成功响应：`{worker, executionId, output, workItemId, mandateId}`；不返回本地附件路径。
-- Gateway 不记录 task 或 output 内容；ledger 只保存任务长度与 sha256 摘要。
+- Gateway 不记录 task 或 output 内容；ledger 只保存任务长度与 sha256 摘要，错误文本最多 2000 字符。
 
 ### 2.1 授权（Mandate 与确定性 Gate）
 
 - 授权事实**只**来自 Gateway 配置中的 `DelegationPolicy` 与实例启动时生成的 mandate：`{id, requester, basis:'policy', policyVersion, issuedAt, expiresAt, allowedWorkers}`。
 - 工具参数、Host 模型文本、Worker 输出都不是授权来源；`basis` 固定为 `policy`，模型不能自述“已获明确授权”。
-- Gate 顺序固定：Host → 方法/路径 → bearer → JSON/字段白名单 → worker 在 `allowedWorkers` → task 长度 → mandate 未过期 → 幂等键未占用 → 并发未超限 → worker 连接 ready。
-- 通过认证后的策略拒绝会写成 `gate/rejected` 记录（只含原因码，不含 task 内容）；未认证请求不写。
+- Gate 顺序固定：Host → 方法/路径 → bearer → JSON/字段白名单 → worker 在 `allowedWorkers` → task 长度 → mandate 未过期 → 幂等键未占用 → 并发未超限 → worker 连接 ready。白名单在 task 长度之前，未授权 worker 不能借超长 task 拿到不同的错误码。
+- 通过认证后的策略拒绝会写成 `gate/rejected` 记录：`code` 加最长 64 字符的 `detail`，不含 task 内容；未认证请求不写。
 - Gateway 不做模型 Assessment；本版本没有“升级为 auto”的路径。
 
 ### 2.2 工作项与 Outbox
@@ -55,13 +55,16 @@ Codex native turn
 - 状态由 ledger 折叠得出，不另存副本：`created` → `in-flight` → `completed | failed | cancelled | unknown`。
 - 并发上限按**本进程**正在执行的委派计数；历史未结算记录不占用新的并发名额。
 - 同一 `Idempotency-Key` 的第二次投递返回 409 并指出原 Work Item；本版本不缓存 Worker 输出，因此不重放结果。
-- `delivery/intent` 在提交前写入：进程在提交阶段断开时，ledger 能区分“已记意图未确认提交”和“已提交”。
+- `delivery/intent` 在提交前写入；拿到 execution 后**先写 `delivery/submitted`**，再处理断线。这样提交阶段断开也能从 ledger 认出可能已启动的 Worker。
+- 提交结果的三种语义必须分开：明确拒绝（未创建 execution，409）、明确失败（`SubmitFailedError`，502，`settled` 记录带 `executionId`）、结果未知（`SubmitOutcomeUnknownError`，503，记为 `unknown`）。不得把“未知”折叠成“失败”。
+- 断线时取消失败会写进 `delivery/settled` 的 `error`，状态记为 `unknown`；`executionId` 仍在 `delivery/submitted`/`settled` 里可查。
 
 ### 2.3 恢复（Recovery Note）
 
-- 启动时读取 ledger。未结算记录（`created` / `in-flight`）只进入 `getRecoveryReport()`：`{note, items, tornTail}`。
+- 启动时读取 ledger。未结算记录（`created` / `in-flight` / `unknown`）进入 `getRecoveryReport()`：`{note, items, tornTail}`。`unknown` 表示结果无法判定，正是最需要人工检查的状态。
 - 启动**不会**自动重投或重放任何委派；`note` 明确要求先检查 Project 文件、git 历史与 Worker 原生会话，再人工结算。
-- 最后一行不完整（进程在写记录时被杀）：读取时保留原字节、丢弃该片段并标记 `tornTail`。完整但缺少换行的记录可以安全补行；无法解析的片段会阻止后续 append（`LedgerTornTailError`），需人工处理。
+- 最后一行不完整（进程在写记录时被杀）：读取时保留原字节、丢弃该片段并标记 `tornTail`。完整但缺少换行的记录可以安全补行；无法解析的片段会阻止后续 append，Gateway 仍可启动并给出恢复报告，但对新委派返回 503，直到人工处理。
+- `tornTail` 在恢复报告里按磁盘当前状态重新计算，补行成功后会变为 false。
 - 文件中间出现无法解析或序号不连续的行时拒绝启动（`LedgerCorruptError`），不静默修复。
 
 ## 3. MCP bridge
@@ -99,6 +102,6 @@ Codex native turn
 - 没有 Web/CLI 配置入口；当前由 API/probe 组装 Codex MCP config 与 policy。
 - Gateway 与 bridge 都只用于本机受控环境；token 在本地环境变量中传递。token 可能被 Codex 写入 thread config/rollout；token 随 Gateway 实例失效，更换 Gateway 后需要重建带新 env 的 thread。mandate 与 token 同生命周期，因此审计记录不能跨实例证明“谁曾经授权”，只能证明“这一实例按该策略执行过”。
 - 没有总超时上限；Worker 长时间运行会阻塞 Host turn，需由 Host 取消或断开客户端触发 Gateway 取消。
-- 同一 state 目录只允许一个写者（`writer.lock`）；锁属于已死亡进程时必须显式 `allowStaleLedgerLock` 才能接管。
-- ledger 不保存 task 全文与 Worker 输出；要复核内容需回到 Worker 原生会话。
-- bridge 对无法解析的 JSON 行返回 `-32700`；不支持的方法返回 `-32601`。
+- 同一 state 目录只允许一个写者（`writer.lock`）。锁属于已死亡的本机进程时，必须显式 `allowStaleLedgerLock` 才能接管；来自**其他主机**的锁一律按“已占用”处理，不自动判定陈旧。关闭时只删除自己持有的锁；接管存在一个受限的时间窗（删除后、写入前），期间若被第三方抢先，重试会识别并报冲突而不是并发写。
+- ledger 不保存 task 全文与 Worker 输出；要复核内容需回到 Worker 原生会话。错误文本最多 2000 字符，`gate/rejected` 的 detail 最多 64 字符。
+- bridge 对无法解析的 JSON 行返回 `-32700`；不支持的方法返回 `-32601`。每次 `tools/call` 生成新幂等键只用于识别“同一次调用被重复投递”，不提供跨重试去重（bridge 本身不重试）。

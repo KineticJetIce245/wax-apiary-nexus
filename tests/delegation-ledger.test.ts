@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -108,6 +108,29 @@ test('accepts a complete record that only lost its newline and starts a new line
     read.entries.map((entry) => entry.seq),
     [1, 2],
   );
+});
+
+test('does not release a lock that another writer owns', () => {
+  const directory = stateDirectory();
+  const ledger = DelegationLedger.open({ directory });
+  const lockPath = join(directory, 'writer.lock');
+  writeFileSync(
+    lockPath,
+    JSON.stringify({ pid: process.pid, writer: 'someone-else', host: hostname() }),
+    'utf8',
+  );
+  ledger.close();
+  assert.equal(existsSync(lockPath), true);
+});
+
+test('never treats a lock from another host as stale', () => {
+  const directory = stateDirectory();
+  writeFileSync(
+    join(directory, 'writer.lock'),
+    JSON.stringify({ pid: 999_999, writer: 'remote', host: 'other-host' }),
+    'utf8',
+  );
+  assert.throws(() => DelegationLedger.open({ directory, allowStaleLock: true }), LedgerLockedError);
 });
 
 test('rejects a corrupt line in the middle and keeps the file intact', () => {

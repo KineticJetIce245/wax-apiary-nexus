@@ -13,8 +13,9 @@ import {
   parseDelegationPolicy,
   type DelegationPolicy,
 } from './delegation-policy.js';
+import { SubmitOutcomeUnknownError } from './adapters/harness.js';
 import { buildRecoveryNote, projectWorkItems, unsettledWorkItems, type WorkItemView } from './work-item.js';
-import type { Execution } from './workspace.js';
+import { SubmitFailedError, type Execution } from './workspace.js';
 import type { Workbench } from './workbench.js';
 
 export interface CollaborationGatewayOptions {
@@ -88,6 +89,7 @@ export class CollaborationGateway {
   private entries: LedgerEntry[] = [];
   private items: WorkItemView[] = [];
   private tornTail = false;
+  private degradedReason: string | undefined;
   private ledger: DelegationLedger | undefined;
   private mandate: DelegationMandate | undefined;
   private server: Server | undefined;
@@ -100,10 +102,11 @@ export class CollaborationGateway {
     this.pollIntervalMs = options.pollIntervalMs ?? 50;
     this.stateDirectoryOption = options.stateDirectory;
     this.allowStaleLedgerLock = options.allowStaleLedgerLock === true;
-    this.policy =
+    this.policy = parseDelegationPolicy(
       options.policy === undefined
         ? defaultDelegationPolicy(this.workerConnection, options.maxTaskChars)
-        : parseDelegationPolicy(options.policy);
+        : options.policy,
+    );
     if (!Number.isInteger(this.port) || this.port < 0 || this.port > 65_535) {
       throw new Error(`port must be an integer between 0 and 65535: ${String(options.port)}`);
     }
@@ -141,6 +144,10 @@ export class CollaborationGateway {
       ledger.close();
       throw error;
     }
+    // A fragment that cannot be terminated makes every append impossible; keep
+    // the recovery report available and refuse new delegations with a clear
+    // status instead of failing each request with an internal error.
+    this.degradedReason = ledger.tornTailBlocksAppend ? 'ledger has an incomplete record' : undefined;
     const issuedAt = Date.now();
     this.mandate = {
       id: randomUUID(),
@@ -176,6 +183,7 @@ export class CollaborationGateway {
       this.items = [];
       this.active.clear();
       this.idempotency.clear();
+      this.degradedReason = undefined;
       ledger.close();
       for (const socket of this.sockets) {
         socket.destroy();
@@ -218,10 +226,11 @@ export class CollaborationGateway {
     ledger?.close();
   }
 
-  /** Unsettled work items plus the guidance for resolving them by hand. */
+  /** Work items that still need manual settlement, plus the guidance for it. */
   getRecoveryReport(): CollaborationRecoveryReport {
     const items = unsettledWorkItems(this.items);
-    return { note: buildRecoveryNote(items), items, tornTail: this.tornTail };
+    const tornTail = this.ledger?.readAll().tornTail ?? this.tornTail;
+    return { note: buildRecoveryNote(items), items, tornTail };
   }
 
   private loadLedger(ledger: DelegationLedger): void {
@@ -282,6 +291,12 @@ export class CollaborationGateway {
     if (mandate === undefined) {
       throw new CollaborationGatewayError('Delegation gateway is not running', 503);
     }
+    if (this.degradedReason !== undefined) {
+      throw new CollaborationGatewayError(
+        `Delegation ledger needs manual repair: ${this.degradedReason}`,
+        503,
+      );
+    }
 
     const body = await readBody(request, this.policy.maxTaskChars * 4 + 1024);
     let parsed: unknown;
@@ -299,10 +314,6 @@ export class CollaborationGateway {
       // Authorization claims are rejected here: only the operator policy decides.
       throw new CollaborationGatewayError(`Unknown fields: ${extra.join(', ')}`, 400);
     }
-    const task = record.task;
-    if (typeof task !== 'string' || task.trim() === '' || task.length > this.policy.maxTaskChars) {
-      throw new CollaborationGatewayError('task must be a non-empty bounded string', 400);
-    }
     const requestedWorker = record.worker;
     if (requestedWorker !== undefined && (typeof requestedWorker !== 'string' || requestedWorker.length > 64)) {
       throw new CollaborationGatewayError('worker must be a bounded string', 400);
@@ -312,9 +323,15 @@ export class CollaborationGateway {
         ? requestedWorker
         : this.workerConnection;
 
+    // Contract order: worker allowlist first, so an unauthorized worker cannot
+    // probe task bounds or receive a more permissive error.
     if (!this.policy.allowedWorkers.includes(worker)) {
       this.recordRejection('worker-not-allowed', worker);
       throw new CollaborationGatewayError(`Worker is not allowed by policy: ${worker}`, 403);
+    }
+    const task = record.task;
+    if (typeof task !== 'string' || task.trim() === '' || task.length > this.policy.maxTaskChars) {
+      throw new CollaborationGatewayError('task must be a non-empty bounded string', 400);
     }
     if (Date.parse(mandate.expiresAt) <= Date.now()) {
       this.recordRejection('mandate-expired', mandate.policyVersion);
@@ -360,14 +377,23 @@ export class CollaborationGateway {
 
     let clientGone = false;
     let executionId: string | undefined;
+    let cancelFailure: string | undefined;
+    const tryCancel = async (): Promise<void> => {
+      if (executionId === undefined) {
+        return;
+      }
+      try {
+        await this.workbench.cancel(worker, executionId);
+      } catch (error) {
+        cancelFailure = messageOf(error);
+      }
+    };
     const onClose = (): void => {
       if (response.writableEnded) {
         return;
       }
       clientGone = true;
-      if (executionId !== undefined) {
-        void this.workbench.cancel(worker, executionId).catch(() => undefined);
-      }
+      void tryCancel();
     };
     // Installed before submit: a disconnect during submission must not be lost.
     response.once('close', onClose);
@@ -377,42 +403,61 @@ export class CollaborationGateway {
       try {
         submitted = await this.workbench.submit(task, worker);
       } catch (error) {
-        this.settle(workItemId, 'unknown', error instanceof Error ? error.message : String(error));
-        throw new CollaborationGatewayError(
-          `Worker submission failed: ${error instanceof Error ? error.message : String(error)}`,
-          409,
-        );
+        // A definite rejection did not start work; an unknown outcome may have.
+        // Never collapse the two into one "failed" record.
+        if (error instanceof SubmitOutcomeUnknownError) {
+          this.settle(workItemId, 'unknown', messageOf(error));
+          throw new CollaborationGatewayError(`Worker submit outcome is unknown: ${messageOf(error)}`, 503);
+        }
+        if (error instanceof SubmitFailedError) {
+          this.settle(workItemId, 'failed', messageOf(error), error.executionId);
+          throw new CollaborationGatewayError(`Worker failed to accept the task: ${messageOf(error)}`, 502);
+        }
+        this.settle(workItemId, 'failed', messageOf(error));
+        throw new CollaborationGatewayError(`Worker submission rejected: ${messageOf(error)}`, 409);
       }
       executionId = submitted.execution.id;
       if (response.destroyed) {
         clientGone = true;
       }
+      // Record the execution before handling the disconnect: if a worker may
+      // have started, the ledger must be able to name it.
+      this.appendEntry('delivery/submitted', { id: workItemId, executionId });
       if (clientGone) {
-        await this.workbench.cancel(worker, executionId).catch(() => undefined);
-        this.settle(workItemId, 'cancelled', 'client disconnected before submission settled');
+        await tryCancel();
+        this.settle(
+          workItemId,
+          cancelFailure === undefined ? 'cancelled' : 'unknown',
+          cancelFailure === undefined
+            ? 'client disconnected; worker cancelled'
+            : `client disconnected; cancel failed: ${cancelFailure}`,
+          executionId,
+        );
         throw new CollaborationGatewayError('Client disconnected', 499);
       }
-      this.appendEntry('delivery/submitted', { id: workItemId, executionId });
 
       let execution: Execution;
       try {
         execution = await this.waitForTerminal(worker, executionId);
       } catch (error) {
-        this.settle(workItemId, 'unknown', error instanceof Error ? error.message : String(error));
+        this.settle(workItemId, 'unknown', messageOf(error), executionId);
         throw new CollaborationGatewayError(
-          `Worker execution is no longer available: ${error instanceof Error ? error.message : String(error)}`,
+          `Worker execution is no longer available: ${messageOf(error)}`,
           502,
         );
       }
       if (clientGone) {
-        this.settle(workItemId, execution.state === 'cancelled' ? 'cancelled' : 'unknown', 'client disconnected');
+        this.settle(
+          workItemId,
+          cancelFailure === undefined ? settleState(execution.state) : 'unknown',
+          cancelFailure === undefined
+            ? 'client disconnected'
+            : `client disconnected; cancel failed: ${cancelFailure}`,
+          executionId,
+        );
         throw new CollaborationGatewayError('Client disconnected', 499);
       }
-      this.settle(
-        workItemId,
-        settleState(execution.state),
-        execution.error,
-      );
+      this.settle(workItemId, settleState(execution.state), execution.error, executionId);
       if (execution.state !== 'completed') {
         throw new CollaborationGatewayError(
           `Worker ended as ${execution.state}: ${execution.error ?? 'no output'}`,
@@ -432,18 +477,24 @@ export class CollaborationGateway {
     }
   }
 
-  private settle(workItemId: string, state: string, error: string | undefined): void {
+  private settle(
+    workItemId: string,
+    state: string,
+    error: string | undefined,
+    executionId?: string,
+  ): void {
     this.appendEntry('delivery/settled', {
       id: workItemId,
       state,
-      ...(error === undefined ? {} : { error }),
+      ...(error === undefined ? {} : { error: capText(error, MAX_ERROR_CHARS) }),
+      ...(executionId === undefined ? {} : { executionId }),
     });
   }
 
   /** Rejections after authentication are auditable; unauthenticated spam is not. */
   private recordRejection(code: string, detail: string): void {
     try {
-      this.appendEntry('gate/rejected', { code, detail });
+      this.appendEntry('gate/rejected', { code, detail: capText(detail, MAX_DETAIL_CHARS) });
     } catch {
       // The rejection still stands even if the audit record cannot be written.
     }
@@ -497,6 +548,18 @@ function settleState(state: Execution['state']): 'completed' | 'failed' | 'cance
       return 'unknown';
   }
 }
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Ledger entries stay bounded: worker text is model-controlled. */
+function capText(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit)}...`;
+}
+
+const MAX_ERROR_CHARS = 2000;
+const MAX_DETAIL_CHARS = 64;
 
 function readIdempotencyKey(request: IncomingMessage): string | undefined {
   const raw = request.headers['idempotency-key'];

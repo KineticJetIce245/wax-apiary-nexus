@@ -1,20 +1,27 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import type {
-  ApprovalDecision,
-  HarnessAdapter,
-  HarnessCapabilities,
-  HarnessEvent,
+import {
+  SubmitOutcomeUnknownError,
+  type ApprovalDecision,
+  type HarnessAdapter,
+  type HarnessCapabilities,
+  type HarnessEvent,
 } from '../src/adapters/harness.js';
 import { CollaborationGateway } from '../src/collaboration-gateway.js';
 import { DelegationLedger, readLedgerFile } from '../src/delegation-ledger.js';
 import type { DelegationPolicy } from '../src/delegation-policy.js';
 import type { Project } from '../src/kernel.js';
 import { Workbench } from '../src/workbench.js';
+
+interface FakeOptions {
+  readonly hang?: boolean;
+  readonly submitDelayMs?: number;
+  readonly submitError?: Error;
+}
 
 class FakeAdapter implements HarnessAdapter {
   capabilities: HarnessCapabilities = {
@@ -30,7 +37,7 @@ class FakeAdapter implements HarnessAdapter {
 
   constructor(
     readonly nativeId: string,
-    private readonly hang = false,
+    private readonly options: FakeOptions = {},
   ) {}
 
   async start(): Promise<void> {}
@@ -40,7 +47,13 @@ class FakeAdapter implements HarnessAdapter {
   }
   async submit(_nativeId: string, executionId: string, text: string): Promise<void> {
     this.submissions.push(text);
-    if (this.hang) {
+    if (this.options.submitError !== undefined) {
+      throw this.options.submitError;
+    }
+    if (this.options.submitDelayMs !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, this.options.submitDelayMs));
+    }
+    if (this.options.hang === true) {
       this.active.add(executionId);
       return;
     }
@@ -81,13 +94,13 @@ function policy(overrides: Partial<DelegationPolicy> = {}): DelegationPolicy {
 }
 
 async function setup(
-  options: { hang?: boolean; stateDirectory?: string; policy?: DelegationPolicy } = {},
+  options: { stateDirectory?: string; policy?: DelegationPolicy } & FakeOptions = {},
 ) {
   const project: Project = {
     id: `g010-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     directory: mkdtempSync(join(tmpdir(), 'uw-g010-project-')),
   };
-  const dsh = new FakeAdapter('dsh-native', options.hang === true);
+  const dsh = new FakeAdapter('dsh-native', options);
   const workbench = new Workbench({ project, connections: [{ name: 'dsh', adapter: dsh }] });
   await workbench.start();
   const stateDirectory = options.stateDirectory ?? mkdtempSync(join(tmpdir(), 'uw-g010-state-'));
@@ -181,6 +194,21 @@ test('rejects a worker outside the policy without submitting it', async () => {
   }
 });
 
+test('checks the worker allowlist before the task bound', async () => {
+  const context = await setup({ policy: policy({ maxTaskChars: 16 }) });
+  try {
+    const response = await delegate(context.info, { task: 'x'.repeat(64), worker: 'codex' });
+    assert.equal(response.status, 403);
+    const body = (await response.json()) as { error: string };
+    assert.match(body.error, /not allowed by policy/);
+    assert.equal(context.dsh.submissions.length, 0);
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    assert.equal(read.entries[0]?.data.code, 'worker-not-allowed');
+  } finally {
+    await cleanup(context);
+  }
+});
+
 test('rejects authorization claims in the tool arguments', async () => {
   const context = await setup();
   try {
@@ -227,16 +255,14 @@ test('turns a repeated idempotency key into one work item', async () => {
 test('enforces the concurrency limit', async () => {
   const context = await setup({ hang: true });
   try {
-    const controller = new AbortController();
-    const first = delegate(context.info, { task: 'slow' });
-    void first.catch(() => undefined);
+    const pending = delegate(context.info, { task: 'slow' });
+    void pending.catch(() => undefined);
     await waitUntil(() => context.dsh.submissions.length === 1);
     const second = await delegate(context.info, { task: 'second' });
     assert.equal(second.status, 409);
     const body = (await second.json()) as { error: string };
     assert.match(body.error, /concurrency limit/);
     assert.equal(context.dsh.submissions.length, 1);
-    controller.abort();
   } finally {
     await cleanup(context);
   }
@@ -277,6 +303,107 @@ test('reports and never replays unsettled work items after a restart', async () 
   }
 });
 
+test('includes an unknown outcome in the recovery report', async () => {
+  const stateDirectory = mkdtempSync(join(tmpdir(), 'uw-g010-unknown-'));
+  const ledger = DelegationLedger.open({ directory: stateDirectory });
+  try {
+    ledger.append('work-item/created', {
+      id: 'w-unknown',
+      mandateId: 'm-1',
+      requester: 'operator',
+      basis: 'policy',
+      policyVersion: 'g010-test',
+      worker: 'dsh',
+      taskLength: 4,
+      taskDigest: 'a'.repeat(64),
+    });
+    ledger.append('delivery/intent', { id: 'w-unknown' });
+    ledger.append('delivery/settled', { id: 'w-unknown', state: 'unknown', error: 'accept timeout' });
+  } finally {
+    ledger.close();
+  }
+
+  const context = await setup({ stateDirectory });
+  try {
+    const report = context.gateway.getRecoveryReport();
+    assert.equal(report.items.length, 1);
+    assert.equal(report.items[0]?.state, 'unknown');
+    assert.match(report.note, /unknown/);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('refuses new delegations while an unrepairable ledger tail exists', async () => {
+  const stateDirectory = mkdtempSync(join(tmpdir(), 'uw-g010-torn-'));
+  const entry = {
+    seq: 1,
+    writer: 'previous',
+    at: new Date().toISOString(),
+    type: 'work-item/created',
+    data: {
+      id: 'w-torn',
+      mandateId: 'm',
+      requester: 'operator',
+      basis: 'policy',
+      policyVersion: 'v',
+      worker: 'dsh',
+      taskLength: 1,
+      taskDigest: 'a'.repeat(64),
+    },
+  };
+  writeFileSync(
+    join(stateDirectory, 'ledger.jsonl'),
+    `${JSON.stringify(entry)}\n{"seq":2,"writer":"previous"`,
+    'utf8',
+  );
+
+  const context = await setup({ stateDirectory });
+  try {
+    const report = context.gateway.getRecoveryReport();
+    assert.equal(report.tornTail, true);
+    assert.equal(report.items.length, 1);
+    const response = await delegate(context.info, { task: 'x' });
+    assert.equal(response.status, 503);
+    const body = (await response.json()) as { error: string };
+    assert.match(body.error, /manual repair/);
+    assert.equal(context.dsh.submissions.length, 0);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('reports an unknown submit outcome instead of claiming failure', async () => {
+  const context = await setup({
+    submitError: new SubmitOutcomeUnknownError('native turn acceptance is unknown'),
+  });
+  try {
+    const response = await delegate(context.info, { task: 'x' });
+    assert.equal(response.status, 503);
+    const body = (await response.json()) as { error: string };
+    assert.match(body.error, /outcome is unknown/);
+    assert.equal(context.gateway.workItems[0]?.state, 'unknown');
+    assert.equal(context.dsh.submissions.length, 1);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('records a definite submit failure with its execution id', async () => {
+  const context = await setup({ submitError: new Error('harness refused the turn') });
+  try {
+    const response = await delegate(context.info, { task: 'x' });
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: string };
+    assert.match(body.error, /failed to accept/);
+    const item = context.gateway.workItems[0];
+    assert.equal(item?.state, 'failed');
+    assert.equal(typeof item?.executionId, 'string');
+  } finally {
+    await cleanup(context);
+  }
+});
+
 test('cancels the worker and settles the item when the client disconnects', async () => {
   const context = await setup({ hang: true });
   try {
@@ -291,6 +418,32 @@ test('cancels the worker and settles the item when the client disconnects', asyn
     });
     assert.equal(context.dsh.cancels.length, 1);
     assert.equal(context.dsh.submissions.length, 1);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('keeps the execution id when the client disconnects during submission', async () => {
+  const context = await setup({ hang: true, submitDelayMs: 150 });
+  try {
+    const controller = new AbortController();
+    const pending = delegate(context.info, { task: 'slow submit' }, {}, controller.signal);
+    void pending.catch(() => undefined);
+    await waitUntil(() => context.dsh.submissions.length === 1);
+    controller.abort();
+    await assert.rejects(pending);
+    await waitUntil(() => {
+      const state = context.gateway.workItems[0]?.state;
+      return state === 'cancelled' || state === 'unknown';
+    });
+    assert.equal(context.dsh.cancels.length, 1);
+    const read = readLedgerFile(join(context.stateDirectory, 'ledger.jsonl'));
+    assert.deepEqual(
+      read.entries.map((entry) => entry.type),
+      ['work-item/created', 'delivery/intent', 'delivery/submitted', 'delivery/settled'],
+    );
+    const submitted = read.entries.find((entry) => entry.type === 'delivery/submitted');
+    assert.equal(typeof submitted?.data.executionId, 'string');
   } finally {
     await cleanup(context);
   }

@@ -86,6 +86,10 @@ export function projectWorkItems(entries: readonly LedgerEntry[]): WorkItemView[
         const item = items.get(id);
         if (item !== undefined) {
           item.state = asSettledState(entry.data.state);
+          const executionId = asString(entry.data.executionId);
+          if (executionId !== undefined) {
+            item.executionId = executionId;
+          }
           const error = asString(entry.data.error);
           if (error !== undefined) {
             item.error = error;
@@ -117,9 +121,14 @@ export function projectWorkItems(entries: readonly LedgerEntry[]): WorkItemView[
   }));
 }
 
-/** Items that never reached a settled state: candidates for manual recovery. */
+/**
+ * Items that a person still has to resolve: never started, started but not
+ * settled, or settled as `unknown` (the outcome could not be established).
+ */
 export function unsettledWorkItems(items: readonly WorkItemView[]): WorkItemView[] {
-  return items.filter((item) => item.state === 'created' || item.state === 'in-flight');
+  return items.filter(
+    (item) => item.state === 'created' || item.state === 'in-flight' || item.state === 'unknown',
+  );
 }
 
 /**
@@ -131,9 +140,10 @@ export function buildRecoveryNote(items: readonly WorkItemView[]): string {
     return '';
   }
   const lines = [
-    `Collaboration ledger has ${String(items.length)} unsettled work item(s).`,
+    `Collaboration ledger has ${String(items.length)} work item(s) that need manual settlement.`,
     'Before repeating any work, check the Project files, git history and the worker native session.',
     'Do not replay a delegation automatically; settle each item by hand after inspecting it.',
+    'State `unknown` means the outcome could not be established: inspect before deciding.',
   ];
   for (const item of items) {
     lines.push(

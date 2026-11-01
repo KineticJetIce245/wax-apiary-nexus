@@ -45,8 +45,14 @@ export interface LedgerReadResult {
 }
 
 export class LedgerLockedError extends Error {
-  constructor(readonly pid: number) {
-    super(`Delegation ledger is locked by a live writer (pid ${String(pid)})`);
+  constructor(
+    readonly pid: number,
+    detail?: string,
+  ) {
+    super(
+      `Delegation ledger is locked by another writer (pid ${String(pid)})` +
+        (detail === undefined ? '' : `: ${detail}`),
+    );
     this.name = 'LedgerLockedError';
   }
 }
@@ -112,7 +118,8 @@ export class DelegationLedger {
   static open(options: { readonly directory: string; readonly allowStaleLock?: boolean }): DelegationLedger {
     const directory = options.directory;
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const lockPath = acquireLock(directory, options.allowStaleLock === true);
+    const writerId = randomUUID();
+    const lockPath = acquireLock(directory, writerId, options.allowStaleLock === true);
     const ledgerPath = join(directory, 'ledger.jsonl');
     let read: LedgerReadResult;
     try {
@@ -126,7 +133,7 @@ export class DelegationLedger {
       directory,
       lockPath,
       ledgerPath,
-      randomUUID(),
+      writerId,
       fd,
       read.entries.length + 1,
       read.tornTail,
@@ -198,7 +205,13 @@ export class DelegationLedger {
     } catch {
       // Ignore double-close races during shutdown.
     }
-    rmSync(this.lockPath, { force: true });
+    // Only release the lock we still own: another writer may have taken over
+    // after a stale-lock recovery, and deleting its lock would let a third
+    // process write concurrently.
+    const lock = readLockInfo(this.lockPath);
+    if (lock !== undefined && lock.writer === this.writerId) {
+      rmSync(this.lockPath, { force: true });
+    }
   }
 }
 
@@ -323,10 +336,11 @@ function sanitizeSegment(id: string): string {
   return `id-${digest}`;
 }
 
-function acquireLock(directory: string, allowStaleLock: boolean): string {
+function acquireLock(directory: string, writerId: string, allowStaleLock: boolean): string {
   const lockPath = join(directory, 'writer.lock');
   const payload = JSON.stringify({
     pid: process.pid,
+    writer: writerId,
     startedAt: new Date().toISOString(),
     host: hostname(),
     version: 1,
@@ -339,23 +353,39 @@ function acquireLock(directory: string, allowStaleLock: boolean): string {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
         throw error;
       }
-      const pid = readLockPid(lockPath);
-      if (pid !== undefined && isProcessAlive(pid)) {
-        throw new LedgerLockedError(pid);
+      const info = readLockInfo(lockPath);
+      // A lock from another host cannot be probed; treat it as owned.
+      if (info?.host !== undefined && info.host !== hostname()) {
+        throw new LedgerLockedError(info.pid ?? -1, `lock owner host is ${info.host}`);
+      }
+      if (info?.pid !== undefined && isProcessAlive(info.pid)) {
+        throw new LedgerLockedError(info.pid);
       }
       if (!allowStaleLock) {
-        throw new LedgerLockStaleError(pid ?? -1, lockPath);
+        throw new LedgerLockStaleError(info?.pid ?? -1, lockPath);
       }
+      // Bounded race: another process may win between the removal and the
+      // retry; the retry then observes its lock and reports it.
       rmSync(lockPath, { force: true });
     }
   }
   throw new Error(`Cannot acquire the delegation ledger lock at ${lockPath}`);
 }
 
-function readLockPid(lockPath: string): number | undefined {
+interface LockInfo {
+  readonly pid: number | undefined;
+  readonly host: string | undefined;
+  readonly writer: string | undefined;
+}
+
+function readLockInfo(lockPath: string): LockInfo | undefined {
   try {
     const parsed = JSON.parse(readFileSync(lockPath, 'utf8')) as Record<string, unknown>;
-    return typeof parsed.pid === 'number' && Number.isInteger(parsed.pid) ? parsed.pid : undefined;
+    return {
+      pid: typeof parsed.pid === 'number' && Number.isInteger(parsed.pid) ? parsed.pid : undefined,
+      host: typeof parsed.host === 'string' ? parsed.host : undefined,
+      writer: typeof parsed.writer === 'string' ? parsed.writer : undefined,
+    };
   } catch {
     return undefined;
   }

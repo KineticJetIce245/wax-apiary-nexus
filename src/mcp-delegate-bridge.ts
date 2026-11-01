@@ -61,7 +61,9 @@ async function callGateway(args: Record<string, unknown>): Promise<string> {
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${GATEWAY_TOKEN}`,
-      // One key per tool call: a retry of the same delivery stays one work item.
+      // One key per tool call: it identifies this call if the same request is
+      // delivered twice. The bridge does not retry, so this is not a retry
+      // cache across attempts.
       'idempotency-key': randomUUID(),
     },
     body: JSON.stringify({ task, worker }),

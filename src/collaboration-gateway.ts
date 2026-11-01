@@ -7,6 +7,7 @@ import {
   defaultDelegationStateDirectory,
   type LedgerEntry,
   type LedgerEntryType,
+  type LedgerReadResult,
 } from './delegation-ledger.js';
 import {
   defaultDelegationPolicy,
@@ -245,7 +246,14 @@ export class CollaborationGateway {
     if (ledger === undefined || this.active.size > 0) {
       return;
     }
-    const read = ledger.refresh();
+    let read: LedgerReadResult;
+    try {
+      read = ledger.refresh();
+    } catch {
+      // Reopening the repaired path failed; stay degraded instead of writing
+      // through a descriptor that may point at a removed file.
+      return;
+    }
     if (read.tornTail && !read.tornTailAppendable) {
       return;
     }

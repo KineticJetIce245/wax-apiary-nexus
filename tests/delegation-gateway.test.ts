@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -368,6 +368,59 @@ test('refuses new delegations while an unrepairable ledger tail exists', async (
     const body = (await response.json()) as { error: string };
     assert.match(body.error, /manual repair/);
     assert.equal(context.dsh.submissions.length, 0);
+  } finally {
+    await cleanup(context);
+  }
+});
+
+test('recovers when the repaired ledger is replaced atomically', async () => {
+  const stateDirectory = mkdtempSync(join(tmpdir(), 'uw-g010-replace-'));
+  const entry = {
+    seq: 1,
+    writer: 'previous',
+    at: new Date().toISOString(),
+    type: 'work-item/created',
+    data: {
+      id: 'w-replaced',
+      mandateId: 'm',
+      requester: 'operator',
+      basis: 'policy',
+      policyVersion: 'v',
+      worker: 'dsh',
+      taskLength: 1,
+      taskDigest: 'a'.repeat(64),
+    },
+  };
+  const ledgerPath = join(stateDirectory, 'ledger.jsonl');
+  writeFileSync(ledgerPath, `${JSON.stringify(entry)}\n{"seq":2,"writer":"previous"`, 'utf8');
+
+  const context = await setup({ stateDirectory });
+  try {
+    const blocked = await delegate(context.info, { task: 'x' });
+    assert.equal(blocked.status, 503);
+
+    // Operator repairs by writing a new file and renaming it over the ledger:
+    // the old descriptor now points at an unlinked inode.
+    const repaired = join(stateDirectory, 'ledger.repaired');
+    writeFileSync(repaired, `${JSON.stringify(entry)}\n`, 'utf8');
+    rmSync(ledgerPath);
+    renameSync(repaired, ledgerPath);
+
+    const response = await delegate(context.info, { task: 'after replacement' });
+    assert.equal(response.status, 200);
+
+    const read = readLedgerFile(ledgerPath);
+    assert.deepEqual(
+      read.entries.map((line) => line.type),
+      [
+        'work-item/created',
+        'work-item/created',
+        'delivery/intent',
+        'delivery/submitted',
+        'delivery/settled',
+      ],
+    );
+    assert.equal(context.gateway.workItems.length, 2);
   } finally {
     await cleanup(context);
   }

@@ -109,7 +109,7 @@ export class DelegationLedger {
     private readonly lockPath: string,
     private readonly ledgerPath: string,
     private readonly writerId: string,
-    private readonly fd: number,
+    private fd: number,
     private nextSeq: number,
     private tornTail: boolean,
     private tornTailAppendable: boolean,
@@ -175,12 +175,26 @@ export class DelegationLedger {
   /**
    * Re-read the file after an external repair. Updates the cached tail state
    * and the next sequence number; the writer lock is unaffected.
+   *
+   * The file may have been replaced rather than truncated in place (write a
+   * temporary file, then rename it over the ledger). An append descriptor
+   * would keep writing to the unlinked inode, so reopen the current path
+   * before accepting new records. A failure here leaves the caller degraded
+   * and the old descriptor untouched.
    */
   refresh(): LedgerReadResult {
     const read = readLedgerFile(this.ledgerPath);
+    const nextFd = openSync(this.ledgerPath, 'a', 0o600);
+    const previousFd = this.fd;
+    this.fd = nextFd;
     this.tornTail = read.tornTail;
     this.tornTailAppendable = read.tornTailAppendable;
     this.nextSeq = read.entries.length + 1;
+    try {
+      closeSync(previousFd);
+    } catch {
+      // The old descriptor may already be gone; the new one is what matters.
+    }
     return read;
   }
 

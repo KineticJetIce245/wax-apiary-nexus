@@ -1,15 +1,26 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
+import type {
+  ApprovalDecision as HarnessApprovalDecision,
+  HarnessAdapter,
+  HarnessCapabilities,
+  HarnessEvent,
+} from '../src/adapters/harness.js';
 import {
   buildCodexHostConfig,
   buildDshMcpServers,
   decideApprovalDecision,
   parseDelegationCliArgs,
   resolveCodexExecutableOption,
+  runDelegationCli,
   runInteractive,
+  type DelegationCliOptions,
 } from '../src/delegation-cli.js';
 
 const info = { url: 'http://127.0.0.1:1234/delegate', token: 'test-token' };
@@ -104,6 +115,10 @@ test('prefers --codex-exe, then a trimmed CODEX_EXE, then PATH lookup', () => {
     'C:/flag/codex.exe',
   );
   assert.equal(
+    resolveCodexExecutableOption({ codexExe: '  C:/flag/codex.exe  ' }, {}),
+    'C:/flag/codex.exe',
+  );
+  assert.equal(
     resolveCodexExecutableOption({}, { CODEX_EXE: '  C:/env/codex.exe  ' }),
     'C:/env/codex.exe',
   );
@@ -116,6 +131,11 @@ test('host approvals stay limited to delegation unless permissions are opted in'
   assert.equal(decideApprovalDecision('host', 'MCP server unified_delegate requests input', strict), 'allow_once');
   assert.equal(decideApprovalDecision('host', 'Codex requests additional permissions: network', strict), 'reject_once');
   assert.equal(decideApprovalDecision('host', 'Codex wants to run: rm -rf build', strict), 'reject_once');
+  // Command text that merely mentions the tool must not pass.
+  assert.equal(
+    decideApprovalDecision('host', 'Codex wants to run: unified_delegate --danger', strict),
+    'reject_once',
+  );
   assert.equal(
     decideApprovalDecision('host', 'Codex requests additional permissions: network', {
       allowHostPermissions: true,
@@ -188,4 +208,121 @@ test('interactive loop buffers lines and stops on /quit', async () => {
   input.end();
   await withTimeout(loop, 'interactive loop');
   assert.deepEqual(seen, ['a', 'b']);
+});
+
+class FakeAdapter implements HarnessAdapter {
+  capabilities: HarnessCapabilities = { approval: 'none', cancel: true, streaming: true, resume: false };
+  started = false;
+  stopped = false;
+  private readonly listeners = new Set<(event: HarnessEvent) => void>();
+
+  constructor(
+    private readonly options: { failStart?: boolean; failClose?: boolean; failStop?: boolean; output?: string } = {},
+  ) {}
+
+  async start(): Promise<void> {
+    if (this.options.failStart === true) {
+      throw new Error('start failed');
+    }
+    this.started = true;
+  }
+  async stop(): Promise<void> {
+    this.stopped = true;
+    if (this.options.failStop === true) {
+      throw new Error('stop failed');
+    }
+  }
+  async createConversation(): Promise<string> {
+    return 'native';
+  }
+  async submit(_nativeId: string, executionId: string): Promise<void> {
+    const output = this.options.output ?? 'WORKER-OK';
+    setTimeout(() => {
+      this.emit({ type: 'execution/output', executionId, channel: 'assistant', text: output });
+      this.emit({ type: 'execution/completed', executionId, stopReason: 'end_turn' });
+    }, 0);
+  }
+  async cancel(): Promise<void> {}
+  async respondToApproval(_decision: HarnessApprovalDecision): Promise<void> {}
+  async closeConversation(): Promise<void> {
+    if (this.options.failClose === true) {
+      throw new Error('close failed');
+    }
+  }
+  onEvent(handler: (event: HarnessEvent) => void): () => void {
+    this.listeners.add(handler);
+    return () => this.listeners.delete(handler);
+  }
+  private emit(event: HarnessEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
+
+function cliOptions(overrides: Partial<DelegationCliOptions> = {}): DelegationCliOptions {
+  return {
+    projectDir: mkdtempSync(join(tmpdir(), 'uw-g013-cli-')),
+    host: 'codex',
+    worker: 'dsh',
+    task: 'reply WORKER-OK',
+    maxTaskChars: 1_000,
+    allowHostPermissions: false,
+    trustWorker: false,
+    ...overrides,
+  };
+}
+
+function fakeDeps(
+  worker: FakeAdapter,
+  host: FakeAdapter,
+  calls: string[],
+  output: string[] = [],
+): Parameters<typeof runDelegationCli>[1] {
+  return {
+    installSignalHandlers: false,
+    write: (text) => output.push(text),
+    writeError: (text) => output.push(text),
+    createAdapter: async (harness) => {
+      calls.push(harness);
+      return harness === 'dsh' ? worker : host;
+    },
+  };
+}
+
+test('stops before creating the host when the worker fails to start', async () => {
+  const worker = new FakeAdapter({ failStart: true });
+  const host = new FakeAdapter();
+  const calls: string[] = [];
+  const result = await runDelegationCli(cliOptions(), fakeDeps(worker, host, calls));
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(calls, ['dsh']);
+  assert.equal(host.started, false);
+});
+
+test('cleans up the worker and gateway when the host fails to start', async () => {
+  const worker = new FakeAdapter();
+  const host = new FakeAdapter({ failStart: true });
+  const calls: string[] = [];
+  const result = await runDelegationCli(cliOptions(), fakeDeps(worker, host, calls));
+  assert.equal(result.exitCode, 1);
+  assert.equal(worker.stopped, true);
+});
+
+test('runs one task and reports success', async () => {
+  const worker = new FakeAdapter();
+  const host = new FakeAdapter({ output: 'DELEGATE-DONE WORKER-OK' });
+  const calls: string[] = [];
+  const output: string[] = [];
+  const result = await runDelegationCli(cliOptions(), fakeDeps(worker, host, calls, output));
+  assert.equal(result.exitCode, 0);
+  assert.equal(output.join('').includes('DELEGATE-DONE WORKER-OK'), true);
+  assert.equal(worker.stopped, true);
+  assert.equal(host.stopped, true);
+});
+
+test('raises the exit code when cleanup fails after a successful task', async () => {
+  const worker = new FakeAdapter({ failStop: true });
+  const host = new FakeAdapter();
+  const calls: string[] = [];
+  const result = await runDelegationCli(cliOptions(), fakeDeps(worker, host, calls));
+  assert.equal(result.exitCode, 1);
 });

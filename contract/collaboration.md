@@ -106,6 +106,7 @@ Codex native turn
   - DSH ACP：第二次 `session/prompt` 被原生拒绝，错误 `-32602 Invalid params: a prompt is already in flight for this session`；没有 `session/steer`（`-32601 Method not found`）。
   - Codex app-server：`turn/steer` 存在且生效，参数需 `{ threadId, expectedTurnId, input }`；探针把运行中的“数到 500”改为 `STEER-OK`，模型输出确实变成 `STEER-OK`。`turn/steer` 返回 `{ turnId }`。
   - 两个适配器目前都在本地拒绝第二次提交（“already has an active execution”），Workspace 也保持单活跃执行；原生 steer 能力尚未通过 Workspace 暴露。
+  - 决定（2026-11-01，所有者确认）：**不引入 steer / 输入队列**。理由：DSH 无原生能力，两 Harness 语义不一致；引入会改变并发语义与审计边界，而当前场景以短回合为主，收益不足。忙时行为保持“拒绝第二次提交”。
 
 ## 5. 验收证据
 

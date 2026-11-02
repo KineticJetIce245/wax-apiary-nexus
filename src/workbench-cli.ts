@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ConversationStore,
   defaultConversationStorePath,
+  expandHomePath,
   sameProjectPath,
   type ConversationRecord,
 } from './conversation-store.js';
@@ -209,7 +210,7 @@ async function main(): Promise<void> {
   }
 
   const store = new ConversationStore(
-    options.conversationStore ?? defaultConversationStorePath(),
+    expandHomePath(options.conversationStore ?? defaultConversationStorePath()),
   );
   let resumeRecord: ConversationRecord | undefined;
   if (options.resume !== undefined) {
@@ -824,4 +825,5 @@ if (invokedDirectly) {
     process.exitCode = 1;
   });
 }
+
 

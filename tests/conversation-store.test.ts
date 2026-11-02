@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { ConversationStore, type ConversationRecord } from '../src/conversation-store.js';
+import { ConversationStore, expandHomePath, type ConversationRecord } from '../src/conversation-store.js';
 
 function store(): ConversationStore {
   return new ConversationStore(join(mkdtempSync(join(tmpdir(), 'uw-conv-store-')), 'conversations.json'));
@@ -111,4 +111,27 @@ test('compares project paths case-insensitively on Windows', () => {
   assert.equal(found?.conversationId, 'conversation-1');
 });
 
+
+
+
+test('expands a leading ~ in store paths', () => {
+  const home = process.env.USERPROFILE ?? process.env.HOME ?? '';
+  assert.equal(expandHomePath('~'), home);
+  assert.equal(expandHomePath('~/state.json'), join(home, 'state.json'));
+  assert.equal(expandHomePath('C:/state.json'), 'C:/state.json');
+});
+
+test('removes stale temp files but keeps fresh ones', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uw-conv-tmp-'));
+  const filePath = join(dir, 'conversations.json');
+  const stale = `${filePath}.1.dead.tmp`;
+  const fresh = `${filePath}.2.dead.tmp`;
+  writeFileSync(stale, '{}', 'utf8');
+  writeFileSync(fresh, '{}', 'utf8');
+  utimesSync(stale, new Date(Date.now() - 2 * 3_600_000), new Date(Date.now() - 2 * 3_600_000));
+
+  new ConversationStore(filePath).upsert(record());
+  assert.equal(existsSync(stale), false);
+  assert.equal(existsSync(fresh), true);
+});
 

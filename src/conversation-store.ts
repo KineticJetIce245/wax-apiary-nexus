@@ -4,6 +4,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -11,7 +12,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 /** One persisted conversation ↔ native session mapping. */
 export interface ConversationRecord {
@@ -30,6 +31,17 @@ const heldLocks = new Map<string, { depth: number; token: string }>();
 
 export function defaultConversationStorePath(): string {
   return join(homedir(), '.unified-workspace', 'conversations.json');
+}
+
+/** Expand a leading `~` or `~/` to the user's home directory. */
+export function expandHomePath(input: string): string {
+  if (input === '~') {
+    return homedir();
+  }
+  if (input.startsWith('~/') || input.startsWith('~\\')) {
+    return join(homedir(), input.slice(2));
+  }
+  return input;
 }
 
 /** Case-insensitive on Windows, exact elsewhere. */
@@ -97,6 +109,7 @@ export class ConversationStore {
   upsert(record: ConversationRecord): void {
     const release = this.acquireLock();
     try {
+      this.cleanupStaleTemps();
       // Call the public load() (it may run user-provided hooks) and then merge
       // against a fresh read so a writer that slipped in during load() is not
       // lost.
@@ -145,6 +158,31 @@ export class ConversationStore {
     );
     matches.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     return matches[0];
+  }
+
+  /** Remove temp files left behind by a crashed writer (older than one hour). */
+  private cleanupStaleTemps(): void {
+    const directory = dirname(this.filePath);
+    const prefix = `${basename(this.filePath)}.`;
+    let entries: string[];
+    try {
+      entries = readdirSync(directory);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) {
+        continue;
+      }
+      const target = join(directory, name);
+      try {
+        if (Date.now() - statSync(target).mtimeMs > 3_600_000) {
+          unlinkSync(target);
+        }
+      } catch {
+        // Another writer may have removed it first.
+      }
+    }
   }
 
   private write(records: readonly ConversationRecord[]): void {

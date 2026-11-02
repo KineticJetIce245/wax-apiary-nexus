@@ -94,6 +94,9 @@ class FakeAdapter implements HarnessAdapter {
 
   async resume(nativeId: string, cwd: string): Promise<void> {
     this.resumes.push({ nativeId, cwd });
+    if (this.resumeGate !== undefined) {
+      await this.resumeGate;
+    }
   }
 
   async respondToApproval(decision: ApprovalDecision): Promise<void> {
@@ -709,10 +712,15 @@ test('concurrent duplicate resume rejects one caller', async (t) => {
   });
   const first = workspace.resumeConversation(project, 'native-old', 'dup-id');
   await delay(0);
-  await assert.rejects(
-    () => workspace.resumeConversation(project, 'native-old', 'dup-id'),
-    /already exists or is being resumed/,
-  );
+  const second = workspace.resumeConversation(project, 'native-old', 'dup-id');
+  const outcome = await Promise.race([
+    second.then(
+      () => 'resolved',
+      (error: Error) => `rejected: ${error.message}`,
+    ),
+    delay(200).then(() => 'timeout'),
+  ]);
+  assert.match(outcome, /already exists or is being resumed/);
   release();
   const resumed = await first;
   assert.equal(resumed.id, 'dup-id');

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   closeSync,
   fsyncSync,
@@ -25,7 +26,7 @@ export interface ConversationRecord {
 const LOCK_TIMEOUT_MS = 2_000;
 const STALE_LOCK_MS = 30_000;
 /** Per-process lock depth so nested writers in one process do not self-deadlock. */
-const heldLocks = new Map<string, number>();
+const heldLocks = new Map<string, { depth: number; token: string }>();
 
 export function defaultConversationStorePath(): string {
   return join(homedir(), '.unified-workspace', 'conversations.json');
@@ -147,8 +148,9 @@ export class ConversationStore {
   }
 
   private write(records: readonly ConversationRecord[]): void {
-    mkdirSync(dirname(this.filePath), { recursive: true, mode: 0o700 });
-    const tmp = `${this.filePath}.${String(process.pid)}.tmp`;
+    const directory = dirname(this.filePath);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const tmp = `${this.filePath}.${String(process.pid)}.${randomUUID()}.tmp`;
     const fd = openSync(tmp, 'wx', 0o600);
     try {
       writeSync(fd, JSON.stringify(records, null, 2));
@@ -158,6 +160,18 @@ export class ConversationStore {
     }
     try {
       renameSync(tmp, this.filePath);
+      if (process.platform !== 'win32') {
+        try {
+          const dirFd = openSync(directory, 'r');
+          try {
+            fsyncSync(dirFd);
+          } finally {
+            closeSync(dirFd);
+          }
+        } catch {
+          // Directory fsync is best effort.
+        }
+      }
     } catch (error) {
       try {
         unlinkSync(tmp);
@@ -171,23 +185,27 @@ export class ConversationStore {
   /** Exclusive lock with bounded retries and stale-lock recovery. */
   private acquireLock(): () => void {
     const lockPath = `${this.filePath}.lock`;
-    const depth = heldLocks.get(lockPath);
-    if (depth !== undefined) {
+    const held = heldLocks.get(lockPath);
+    if (held !== undefined) {
       // Reentrant within this process: the outer writer already owns the file.
-      heldLocks.set(lockPath, depth + 1);
+      held.depth += 1;
       return () => this.releaseLock(lockPath);
     }
     mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const token = `${String(process.pid)}-${randomUUID()}`;
     while (true) {
       try {
         const fd = openSync(lockPath, 'wx', 0o600);
         try {
-          writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+          writeSync(
+            fd,
+            JSON.stringify({ pid: process.pid, at: new Date().toISOString(), token }),
+          );
         } finally {
           closeSync(fd);
         }
-        heldLocks.set(lockPath, 1);
+        heldLocks.set(lockPath, { depth: 1, token });
         return () => this.releaseLock(lockPath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
@@ -212,16 +230,29 @@ export class ConversationStore {
   }
 
   private releaseLock(lockPath: string): void {
-    const depth = (heldLocks.get(lockPath) ?? 1) - 1;
-    if (depth > 0) {
-      heldLocks.set(lockPath, depth);
+    const held = heldLocks.get(lockPath);
+    if (held === undefined) {
+      return;
+    }
+    if (held.depth > 1) {
+      held.depth -= 1;
       return;
     }
     heldLocks.delete(lockPath);
+    // Another process may have recovered this lock after it went stale; never
+    // delete a lock file that no longer carries our token.
+    try {
+      const parsed = JSON.parse(readFileSync(lockPath, 'utf8')) as { token?: unknown };
+      if (parsed.token !== held.token) {
+        return;
+      }
+    } catch {
+      return;
+    }
     try {
       unlinkSync(lockPath);
     } catch {
-      // Another process may have recovered a stale lock already.
+      // The lock is already gone.
     }
   }
 }

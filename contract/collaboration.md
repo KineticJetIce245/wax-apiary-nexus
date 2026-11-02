@@ -114,6 +114,10 @@ Codex native turn
   - `unknown`（结果无法确认，native 可能仍在跑）抛 `ReplaceUnknownError` 且不提交；
   - 超时抛 `ReplaceTimeoutError` 且不提交。
   以上保证两个 prompt 不并发。`Workbench.replace` 与 `workbench-cli` 的 `/replace <connection> <execution-id> <instruction...>` 使用同一语义。Codex/DSH 真实验证：取消到新 execution 完成约 73ms/32ms，新输出 `REPLACED-OK`，旧 execution 为 `cancelled`。
+- 原生 resume（G016 探针，跨进程验证）：
+  - Codex：`thread/resume { threadId }` 在新 app-server 进程中被接受，返回旧 thread（含 turns 计数），随后 `turn/start` 能答出上一进程留下的口令。
+  - DSH：`session/load` 不存在（`-32601`）；`session/resume { sessionId, cwd }` 被接受，新进程追问同样答出旧口令。
+  - 两个适配器目前仍声明 `resume: false`，Workspace 没有 conversationId ↔ nativeId 的持久映射，也没有恢复入口；产品化属于持久化语义变更，尚未立项。
 
 ## 5. 验收证据
 

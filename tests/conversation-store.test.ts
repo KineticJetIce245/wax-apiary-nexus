@@ -81,14 +81,24 @@ test('blocks a second writer until the lock file is removed', async () => {
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let exited = false;
+  let exitCode: number | null = null;
+  let stderr = '';
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString('utf8');
+  });
   const exitPromise = new Promise<void>((resolveExit) => {
-    child.once('exit', () => {
+    child.once('exit', (code) => {
       exited = true;
+      exitCode = code;
       resolveExit();
     });
   });
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
-  assert.equal(exited, false, 'writer should wait for the lock');
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
+  assert.equal(
+    exited,
+    false,
+    `writer should wait for the lock (exit=${String(exitCode)}, stderr=${stderr})`,
+  );
   unlinkSync(`${filePath}.lock`);
   await exitPromise;
   assert.equal(new ConversationStore(filePath).load().length, 1);

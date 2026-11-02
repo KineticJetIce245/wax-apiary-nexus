@@ -331,3 +331,78 @@ test('keeps the prompt endpoint disabled without a control token', async () => {
     await web.stop();
   }
 });
+
+
+function postRaw(
+  port: number,
+  payload: Buffer,
+  chunked: boolean,
+  token?: string,
+): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string | number> = { 'Content-Type': 'application/json' };
+    if (!chunked) {
+      headers['Content-Length'] = payload.byteLength;
+    }
+    if (token !== undefined) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const request = httpRequest(
+      { host: '127.0.0.1', port, path: '/api/prompt', method: 'POST', headers },
+      (response) => {
+        let data = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          data += chunk;
+        });
+        response.on('end', () => {
+          let json: any;
+          try {
+            json = data === '' ? undefined : JSON.parse(data);
+          } catch {
+            json = undefined;
+          }
+          resolve({ status: response.statusCode ?? 0, json });
+        });
+      },
+    );
+    request.on('error', reject);
+    if (chunked) {
+      request.write(payload.subarray(0, 1_000));
+      request.end(payload.subarray(1_000));
+    } else {
+      request.end(payload);
+    }
+  });
+}
+
+test('rejects oversized fixed and chunked bodies with 413', async () => {
+  const { web, info } = await setup('secret-token');
+  try {
+    const payload = Buffer.from(
+      JSON.stringify({ connection: 'codex', text: 'x'.repeat(70 * 1024) }),
+      'utf8',
+    );
+    assert.equal((await postRaw(info.port, payload, false, 'secret-token')).status, 413);
+    assert.equal((await postRaw(info.port, payload, true, 'secret-token')).status, 413);
+  } finally {
+    await web.stop();
+  }
+});
+
+test('accepts exactly 20000 characters and rejects 20001', async () => {
+  const { web, info } = await setup('secret-token');
+  try {
+    assert.equal(
+      (await postPrompt(info.port, { connection: 'codex', text: 'x'.repeat(20_000) }, 'secret-token')).status,
+      202,
+    );
+    assert.equal(
+      (await postPrompt(info.port, { connection: 'codex', text: 'x'.repeat(20_001) }, 'secret-token')).status,
+      400,
+    );
+  } finally {
+    await web.stop();
+  }
+});
+

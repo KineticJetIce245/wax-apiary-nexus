@@ -4,7 +4,8 @@ import type { AddressInfo, Socket } from 'node:net';
 
 import { ArtifactStore, type Artifact, type ArtifactStoreOptions } from './artifact-store.js';
 import type { Attachment, AttachmentKind } from './content.js';
-import type { TaggedWorkspaceEvent, Workbench } from './workbench.js';
+import type { TaggedWorkspaceEvent } from './workbench.js';
+import type { Workbench } from './workbench.js';
 
 const MAX_EXECUTIONS = 50;
 const MAX_TOOLS_PER_EXECUTION = 50;
@@ -425,8 +426,14 @@ export class WebServer {
       total += chunk.length;
       if (total > limit) {
         failed = true;
+        // Stop buffering but keep the socket alive long enough for the 413 to
+        // flush; destroying the request here resets chunked clients.
+        request.removeAllListeners('data');
+        request.pause();
         this.sendJson(response, 413, { error: 'Payload too large' });
-        request.destroy();
+        response.once('finish', () => {
+          request.resume();
+        });
         return;
       }
       chunks.push(chunk);

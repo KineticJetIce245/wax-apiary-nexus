@@ -52,6 +52,7 @@ export interface WebExecution {
   readonly connection: string;
   readonly state: string;
   readonly output: string;
+  readonly prompt?: string;
   readonly tools: readonly WebTool[];
   readonly attachments: readonly (WebAttachment | UnavailableWebAttachment)[];
   readonly error?: string;
@@ -102,6 +103,7 @@ export class WebServer {
   private readonly port: number;
   private readonly host = '127.0.0.1' as const;
   private readonly executions = new Map<string, MutableExecution>();
+  private readonly prompts = new Map<string, string>();
   private readonly approvals = new Map<string, WebApproval>();
   private readonly errors: string[] = [];
   private readonly sockets = new Set<Socket>();
@@ -214,6 +216,7 @@ export class WebServer {
           output: execution.output,
           tools: execution.tools.map((tool) => ({ ...tool })),
           attachments: execution.attachments.map((attachment) => ({ ...attachment })),
+          ...(this.prompts.has(execution.id) ? { prompt: this.prompts.get(execution.id) as string } : {}),
           ...(execution.error === undefined ? {} : { error: execution.error }),
           updatedAt: new Date(execution.updatedAt).toISOString(),
         })),
@@ -471,6 +474,14 @@ export class WebServer {
       void this.workbench
         .submit(text, connection)
         .then((execution) => {
+          this.prompts.set(execution.execution.id, text);
+          while (this.prompts.size > MAX_EXECUTIONS) {
+            const oldest = this.prompts.keys().next().value;
+            if (oldest === undefined) {
+              break;
+            }
+            this.prompts.delete(oldest);
+          }
           this.sendJson(response, 202, {
             connection: execution.connection,
             executionId: execution.execution.id,
@@ -554,7 +565,7 @@ const PAGE = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unified Workspace — read only</title>
+<title>Unified Workspace — local view</title>
 <style>
   /* Visual language follows DSH ui-theme (MIT): dark semantic tokens,
      hairlines, 8/12/16px radii, system + code stacks. No DSH runtime is loaded. */
@@ -672,7 +683,7 @@ const PAGE = `<!doctype html>
     padding: 4px 10px;
   }
   .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
-  .scroll { overflow: auto; padding: 24px 28px 44px; }
+  .scroll { flex: 1; min-height: 0; overflow: auto; padding: 24px 28px 44px; }
   .content { width: 100%; max-width: 840px; margin: 0 auto; }
   .approval {
     margin-bottom: 12px;
@@ -797,24 +808,39 @@ const PAGE = `<!doctype html>
   .empty span { font-size: 12px; }
   .footer-note { margin-top: 24px; color: var(--label-tertiary); font-size: 11px; text-align: center; }
   .composer {
-    display: flex; gap: 8px; align-items: flex-end;
-    padding: 12px 16px; border-top: 0.5px solid var(--border-l1);
+    display: flex; gap: 10px; align-items: flex-end; flex: none;
+    padding: 12px 16px 16px; border-top: 0.5px solid var(--border-l1);
     background: var(--bg-layer-1);
   }
   .composer[hidden] { display: none; }
   .composer select, .composer textarea {
     background: var(--bg-base); color: var(--label-primary);
-    border: 0.5px solid var(--border-l2); border-radius: 6px;
-    padding: 7px 9px; font: 13px system-ui, sans-serif;
+    border: 0.5px solid var(--border-l2); border-radius: var(--radius-sm);
+    padding: 9px 11px; font: 13px system-ui, sans-serif;
+    transition: border-color 0.12s, box-shadow 0.12s;
   }
-  .composer textarea { flex: 1; resize: vertical; min-height: 38px; max-height: 160px; }
+  .composer select { min-width: 132px; }
+  .composer textarea { flex: 1; resize: none; min-height: 42px; max-height: 132px; line-height: 1.45; }
+  .composer select:focus, .composer textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(86, 134, 254, 0.18);
+  }
   .composer button {
-    padding: 8px 14px; border-radius: 6px; border: 0.5px solid var(--border-l3);
-    background: var(--bg-layer-3); color: var(--label-primary);
-    cursor: pointer; font: 600 13px system-ui, sans-serif;
+    flex: none; padding: 10px 16px; border-radius: var(--radius-sm); border: 0;
+    background: var(--accent); color: #fff; cursor: pointer;
+    font: 600 13px system-ui, sans-serif;
   }
-  .composer button:disabled { opacity: 0.5; cursor: default; }
-  .send-status { font-size: 11px; color: var(--label-tertiary); min-width: 90px; }
+  .composer button:hover { filter: brightness(1.06); }
+  .composer button:disabled { opacity: 0.45; cursor: default; filter: none; }
+  .send-status { font-size: 11px; color: var(--label-tertiary); min-width: 84px; padding-bottom: 11px; }
+  .turn.user {
+    background: rgba(86, 134, 254, 0.10);
+    border-color: rgba(86, 134, 254, 0.34);
+  }
+  .user-text {
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    font-size: 14px; line-height: 1.65; margin-top: 6px;
+  }
   @media (max-width: 760px) {
     .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: auto; min-height: 100%; }
     .sidebar { border-right: 0; border-bottom: 0.5px solid var(--border-l1); gap: 10px; }
@@ -824,6 +850,9 @@ const PAGE = `<!doctype html>
     .main { min-height: 70vh; }
     .scroll { padding: 16px 14px 32px; }
     .topbar { padding: 0 16px; height: 58px; }
+    .composer { flex-wrap: wrap; }
+    .composer textarea { flex-basis: 100%; order: -1; }
+    .send-status { padding-bottom: 0; }
   }
 </style>
 </head>
@@ -849,7 +878,7 @@ const PAGE = `<!doctype html>
     <header class="topbar">
       <div>
         <h1>协作记录</h1>
-        <div class="topbar-sub">文本 · 工具 · 图片 · 文件</div>
+        <div class="topbar-sub"><span id="session">本地会话</span> · 文本 · 工具 · 图片 · 文件</div>
       </div>
       <div class="live"><span class="live-dot"></span><span id="count">0</span> 条</div>
     </header>
@@ -876,6 +905,8 @@ const connections = document.getElementById('connections');
 const approvals = document.getElementById('approvals');
 const errors = document.getElementById('errors');
 const count = document.getElementById('count');
+const session = document.getElementById('session');
+const scrollEl = document.querySelector('.scroll');
 const composer = document.getElementById('composer');
 const target = document.getElementById('target');
 const promptInput = document.getElementById('prompt');
@@ -908,6 +939,16 @@ function renderConnection(connection) {
 }
 
 function renderExecution(execution) {
+  const group = el('div', 'execution-group');
+  if (execution.prompt) {
+    const userTurn = el('article', 'turn user');
+    const userHead = el('div', 'turn-head');
+    const userWho = el('div', 'who');
+    userWho.append(el('span', 'avatar', '我'), el('span', 'who-name', '你'));
+    userHead.append(userWho);
+    userTurn.append(userHead, el('div', 'user-text', execution.prompt));
+    group.append(userTurn);
+  }
   const turn = el('article', 'turn');
   const head = el('div', 'turn-head');
   const who = el('div', 'who');
@@ -956,7 +997,8 @@ function renderExecution(execution) {
   }
 
   if (execution.error) turn.append(el('div', 'error', execution.error));
-  return turn;
+  group.append(turn);
+  return group;
 }
 
 let targetInitialised = false;
@@ -978,9 +1020,14 @@ function renderTargets(list) {
 }
 
 function render(state) {
+  const nearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 120;
   count.textContent = String(state.executions.length);
   connections.replaceChildren(...state.connections.map(renderConnection));
   renderTargets(state.connections);
+  const active = state.connections.find((connection) => connection.name === target.value) ?? state.connections[0];
+  session.textContent = active
+    ? active.name + (active.conversationId ? ' · ' + active.conversationId.slice(0, 8) : '')
+    : '本地会话';
   approvals.replaceChildren(...state.approvals.map((approval) => {
     const box = el('div', 'approval');
     box.append(el('strong', '', '审批等待（只读）'), el('span', '', approval.connection + ' · ' + approval.summary));
@@ -989,11 +1036,14 @@ function render(state) {
   errors.replaceChildren(...state.errors.map((message) => el('div', 'error', message)));
   if (state.executions.length === 0) {
     const empty = el('div', 'empty');
-    empty.append(el('div', 'empty-mark', '∅'), el('strong', '', '还没有执行记录'), el('span', '', '从 CLI 发送一轮对话后，记录会出现在这里。'));
+    empty.append(el('div', 'empty-mark', '∅'), el('strong', '', '还没有执行记录'), el('span', '', '在下方输入一条消息，发送后会出现在这里。'));
     executions.replaceChildren(empty);
     return;
   }
   executions.replaceChildren(...state.executions.map(renderExecution));
+  if (nearBottom) {
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  }
 }
 
 async function sendPrompt() {

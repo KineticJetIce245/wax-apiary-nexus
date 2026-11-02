@@ -306,6 +306,15 @@ test('accepts an authorized prompt on the selected connection', async () => {
     assert.equal(response.json.connection, 'codex');
     assert.equal(codex.submissions.length, 1);
     assert.equal(codex.submissions[0]?.text, 'hello web');
+    codex.emit({
+      type: 'execution/output',
+      executionId: response.json.executionId,
+      channel: 'assistant',
+      text: 'done',
+    });
+    const state = await (await fetch(new URL('/api/state', info.url))).json() as any;
+    const execution = state.executions.find((entry: any) => entry.id === response.json.executionId);
+    assert.equal(execution?.prompt, 'hello web');
   } finally {
     await web.stop();
   }
@@ -401,6 +410,22 @@ test('accepts exactly 20000 characters and rejects 20001', async () => {
       (await postPrompt(info.port, { connection: 'codex', text: 'x'.repeat(20_001) }, 'secret-token')).status,
       400,
     );
+  } finally {
+    await web.stop();
+  }
+});
+
+
+
+test('serves a local-view title and composer in the page', async () => {
+  const { web, info } = await setup('secret-token');
+  try {
+    const response = await fetch(new URL('/', info.url));
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(html, /local view/);
+    assert.doesNotMatch(html, /read only/);
+    assert.match(html, /send-status/);
   } finally {
     await web.stop();
   }

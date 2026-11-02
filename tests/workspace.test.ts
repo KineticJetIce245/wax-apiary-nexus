@@ -44,6 +44,7 @@ class FakeAdapter implements HarnessAdapter {
   }> = [];
   readonly cancellations: string[] = [];
   readonly resumes: Array<{ nativeId: string; cwd: string }> = [];
+  resumeGate: Promise<void> | undefined;
   readonly approvals: ApprovalDecision[] = [];
   readonly closed: string[] = [];
   closeError: Error | undefined;
@@ -696,4 +697,24 @@ test('resumeConversation requires the adapter to advertise resume', async (t) =>
     () => workspace.resumeConversation(project, 'native-old'),
     (error: Error) => error.name === 'ResumeNotSupportedError',
   );
+});
+
+
+test('concurrent duplicate resume rejects one caller', async (t) => {
+  const { adapter, workspace, project } = await setup();
+  t.after(() => workspace.stop());
+  let release!: () => void;
+  adapter.resumeGate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  const first = workspace.resumeConversation(project, 'native-old', 'dup-id');
+  await delay(0);
+  await assert.rejects(
+    () => workspace.resumeConversation(project, 'native-old', 'dup-id'),
+    /already exists or is being resumed/,
+  );
+  release();
+  const resumed = await first;
+  assert.equal(resumed.id, 'dup-id');
+  assert.equal(adapter.resumes.length, 1);
 });

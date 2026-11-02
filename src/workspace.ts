@@ -189,6 +189,7 @@ export class Workspace {
   private readonly approvalTimeoutMs: number;
   private readonly replaceTimeoutMs: number;
   private readonly conversations = new Map<string, Conversation>();
+  private readonly resumingConversations = new Set<string>();
   private readonly executions = new Map<string, MutableExecution>();
   private readonly activeExecutionByConversation = new Map<string, string>();
   private readonly closingConversations = new Set<string>();
@@ -245,17 +246,35 @@ export class Workspace {
     if (this.adapter.capabilities.resume !== true || this.adapter.resume === undefined) {
       throw new ResumeNotSupportedError();
     }
-    if (conversationId !== undefined && this.conversations.has(conversationId)) {
-      throw new Error(`Conversation already exists: ${conversationId}`);
+    if (
+      conversationId !== undefined &&
+      (this.conversations.has(conversationId) || this.resumingConversations.has(conversationId))
+    ) {
+      throw new Error(`Conversation already exists or is being resumed: ${conversationId}`);
+    }
+    if (conversationId !== undefined) {
+      // Reserve the id before awaiting the native call so two concurrent
+      // resumes of the same id cannot both succeed.
+      this.resumingConversations.add(conversationId);
     }
     const storedProject: Project = { id: project.id, directory: project.directory };
-    await this.adapter.resume(nativeId, storedProject.directory);
+    try {
+      await this.adapter.resume(nativeId, storedProject.directory);
+    } catch (error) {
+      if (conversationId !== undefined) {
+        this.resumingConversations.delete(conversationId);
+      }
+      throw error;
+    }
     const conversation: Conversation = {
       id: conversationId ?? randomUUID(),
       project: storedProject,
       nativeId,
     };
     this.conversations.set(conversation.id, conversation);
+    if (conversationId !== undefined) {
+      this.resumingConversations.delete(conversationId);
+    }
     return snapshotConversation(conversation);
   }
 

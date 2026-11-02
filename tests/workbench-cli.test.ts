@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseReplaceCommand } from '../src/workbench-cli.js';
+import { assertResumeTargetReady, parseReplaceCommand, parseArgs } from '../src/workbench-cli.js';
 
 test('parses a replace command with a multi-word instruction', () => {
   assert.deepEqual(parseReplaceCommand('/replace codex 1234-abc do the next thing'), {
@@ -27,8 +27,6 @@ test('rejects a missing instruction, missing arguments and empty text', () => {
   assert.equal(parseReplaceCommand('not a command'), undefined);
 });
 
-import { parseArgs } from '../src/workbench-cli.js';
-
 test('parses --resume and --conversation-store', () => {
   const options = parseArgs(['C:/work', '--resume', 'conv-1', '--conversation-store', 'C:/state.json']);
   assert.equal(options?.resume, 'conv-1');
@@ -41,4 +39,32 @@ test('rejects --resume and --conversation-store without a value', () => {
     () => parseArgs(['C:/work', '--conversation-store']),
     /Missing value for --conversation-store/,
   );
+});
+
+
+test('supports --resume=id and trims values', () => {
+  const options = parseArgs(['C:/work', '--resume=  conv-1  ', '--conversation-store=  C:/state.json  ']);
+  assert.equal(options?.resume, 'conv-1');
+  assert.equal(options?.conversationStore, 'C:/state.json');
+});
+
+test('rejects duplicate --resume flags', () => {
+  assert.throws(
+    () => parseArgs(['C:/work', '--resume', 'a', '--resume', 'b']),
+    /Duplicate option: --resume/,
+  );
+});
+
+test('assertResumeTargetReady passes only when the target connection is ready', () => {
+  const ready = {
+    getConnection: () => ({ status: 'ready' }),
+    connectionFailures: [],
+  } as unknown as Parameters<typeof assertResumeTargetReady>[0];
+  assert.doesNotThrow(() => assertResumeTargetReady(ready, 'codex'));
+
+  const failed = {
+    getConnection: () => undefined,
+    connectionFailures: [{ name: 'codex', message: 'thread not found' }],
+  } as unknown as Parameters<typeof assertResumeTargetReady>[0];
+  assert.throws(() => assertResumeTargetReady(failed, 'codex'), /thread not found/);
 });

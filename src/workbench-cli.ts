@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ConversationStore,
   defaultConversationStorePath,
+  sameProjectPath,
   type ConversationRecord,
 } from './conversation-store.js';
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
@@ -95,6 +96,24 @@ export function parseReplaceCommand(line: string): ReplaceCommand | undefined {
   return { connection, executionId, text: text.trim() };
 }
 
+/**
+ * After Workbench.start(), a failed resume only shows up as a connection
+ * failure. Refuse to continue when the requested conversation did not attach.
+ */
+export function assertResumeTargetReady(
+  workbench: Pick<Workbench, 'getConnection' | 'connectionFailures'>,
+  harness: string,
+): void {
+  const connection = workbench.getConnection(harness);
+  if (connection !== undefined && connection.status === 'ready') {
+    return;
+  }
+  const failure = workbench.connectionFailures.find((entry) => entry.name === harness);
+  throw new Error(
+    `Failed to resume ${harness}: ${failure?.message ?? 'connection is not ready'}`,
+  );
+}
+
 export function parseArgs(argv: readonly string[]): CliOptions | undefined {
   let projectDir: string | undefined;
   let dshRoot: string | undefined;
@@ -102,6 +121,7 @@ export function parseArgs(argv: readonly string[]): CliOptions | undefined {
   let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
   let resume: string | undefined;
   let conversationStore: string | undefined;
+  const seen = new Set<string>();
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -132,22 +152,32 @@ export function parseArgs(argv: readonly string[]): CliOptions | undefined {
       approvalTimeoutMs = parsed;
       continue;
     }
-    if (arg === '--resume') {
-      const raw = argv[index + 1];
-      index += 1;
+    if (arg === '--resume' || arg.startsWith('--resume=')) {
+      if (seen.has('--resume')) {
+        throw new Error('Duplicate option: --resume');
+      }
+      seen.add('--resume');
+      const raw =
+        arg === '--resume' ? argv[(index += 1)] : arg.slice('--resume='.length);
       if (raw === undefined || raw.trim() === '') {
         throw new Error('Missing value for --resume');
       }
-      resume = raw;
+      resume = raw.trim();
       continue;
     }
-    if (arg === '--conversation-store') {
-      const raw = argv[index + 1];
-      index += 1;
+    if (arg === '--conversation-store' || arg.startsWith('--conversation-store=')) {
+      if (seen.has('--conversation-store')) {
+        throw new Error('Duplicate option: --conversation-store');
+      }
+      seen.add('--conversation-store');
+      const raw =
+        arg === '--conversation-store'
+          ? argv[(index += 1)]
+          : arg.slice('--conversation-store='.length);
       if (raw === undefined || raw.trim() === '') {
         throw new Error('Missing value for --conversation-store');
       }
-      conversationStore = raw;
+      conversationStore = raw.trim();
       continue;
     }
     if (arg.startsWith('-')) {
@@ -187,7 +217,7 @@ async function main(): Promise<void> {
     if (resumeRecord === undefined) {
       throw new Error(`Unknown conversation to resume: ${options.resume}`);
     }
-    if (resolve(resumeRecord.projectDirectory) !== resolve(options.projectDir)) {
+    if (!sameProjectPath(resumeRecord.projectDirectory, options.projectDir)) {
       throw new Error(
         `Conversation ${options.resume} belongs to a different project: ${resumeRecord.projectDirectory}`,
       );
@@ -363,6 +393,9 @@ async function main(): Promise<void> {
 
   try {
     await workbench.start();
+    if (resumeRecord !== undefined) {
+      assertResumeTargetReady(workbench, resumeRecord.harness);
+    }
     for (const name of workbench.connectionNames) {
       const connection = workbench.getConnection(name);
       if (connection === undefined) {

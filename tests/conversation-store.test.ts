@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -65,3 +67,48 @@ test('throws on a file that is not a JSON array', () => {
   writeFileSync(conversations.filePath, JSON.stringify({ nope: true }), 'utf8');
   assert.throws(() => conversations.load(), /must contain an array/);
 });
+
+
+test('blocks a second writer until the lock file is removed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uw-conv-lock-'));
+  const filePath = join(dir, 'conversations.json');
+  const storePath = fileURLToPath(new URL('../src/conversation-store.js', import.meta.url));
+  writeFileSync(`${filePath}.lock`, JSON.stringify({ pid: process.pid }), 'utf8');
+
+  const storeUrl = pathToFileURL(storePath).href;
+  const script = `import { ConversationStore } from ${JSON.stringify(storeUrl)};\nnew ConversationStore(process.argv[1]).upsert(JSON.parse(process.argv[2]));`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script, filePath, JSON.stringify(record())], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let exited = false;
+  const exitPromise = new Promise<void>((resolveExit) => {
+    child.once('exit', () => {
+      exited = true;
+      resolveExit();
+    });
+  });
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 400));
+  assert.equal(exited, false, 'writer should wait for the lock');
+  unlinkSync(`${filePath}.lock`);
+  await exitPromise;
+  assert.equal(new ConversationStore(filePath).load().length, 1);
+});
+
+test('recovers a stale lock file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uw-conv-stale-'));
+  const filePath = join(dir, 'conversations.json');
+  writeFileSync(`${filePath}.lock`, JSON.stringify({ pid: 1 }), 'utf8');
+  utimesSync(`${filePath}.lock`, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+  const conversations = new ConversationStore(filePath);
+  conversations.upsert(record());
+  assert.equal(conversations.load().length, 1);
+});
+
+test('compares project paths case-insensitively on Windows', () => {
+  const conversations = store();
+  conversations.upsert(record({ projectDirectory: 'C:/Work/Project' }));
+  const found = conversations.latestForProject(process.platform === 'win32' ? 'C:/work/project' : 'C:/Work/Project');
+  assert.equal(found?.conversationId, 'conversation-1');
+});
+
+

@@ -41,6 +41,7 @@ class FakeAdapter implements HarnessAdapter {
   readonly approvals: ApprovalDecision[] = [];
   readonly cancellations: string[] = [];
   readonly resumes: Array<{ nativeId: string; cwd: string }> = [];
+  resumeError: Error | undefined;
   readonly closed: string[] = [];
   startCalls = 0;
   stopCalls = 0;
@@ -89,6 +90,9 @@ class FakeAdapter implements HarnessAdapter {
 
   async resume(nativeId: string, cwd: string): Promise<void> {
     this.resumes.push({ nativeId, cwd });
+    if (this.resumeError !== undefined) {
+      throw this.resumeError;
+    }
   }
 
   async respondToApproval(decision: ApprovalDecision): Promise<void> {
@@ -689,3 +693,37 @@ test('workbench resumes a saved conversation when the spec carries a resume targ
   }
 });
 
+
+
+test('stops the adapter when resume fails during connection start', async () => {
+  const project: Project = {
+    id: 'g017-resume-fail',
+    directory: mkdtempSync(join(tmpdir(), 'uw-g017-fail-')),
+  };
+  const failing = new FakeAdapter('native-gone');
+  failing.resumeError = new Error('thread not found');
+  const healthy = new FakeAdapter('native-ok');
+  const workbench = new Workbench({
+    project,
+    connections: [
+      {
+        name: 'dsh',
+        adapter: failing,
+        resume: { conversationId: 'saved', nativeId: 'native-gone' },
+      },
+      { name: 'codex', adapter: healthy },
+    ],
+  });
+  try {
+    await workbench.start();
+    assert.equal(failing.stopCalls, 1);
+    assert.deepEqual(
+      workbench.connectionFailures.map((failure) => failure.name),
+      ['dsh'],
+    );
+    assert.equal(workbench.getConnection('dsh'), undefined);
+    assert.equal(workbench.getConnection('codex')?.status, 'ready');
+  } finally {
+    await workbench.stop();
+  }
+});

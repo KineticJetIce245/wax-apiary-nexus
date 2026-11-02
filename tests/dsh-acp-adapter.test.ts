@@ -48,7 +48,11 @@ rl.on('line', (line) => {
     send(message.id, { sessionId: 'recorded-session' });
     return;
   }
-  if (message.method === 'session/close') {
+  if (message.method === 'session/resume') {
+    fs.writeFileSync(recordPath, JSON.stringify(message.params));
+    send(message.id, { configOptions: [] });
+    return;
+  }  if (message.method === 'session/close') {
     send(message.id, {});
   }
 });
@@ -135,9 +139,10 @@ test('keeps an idle session non-submittable after a close timeout', async () => 
   }
 });
 
-test('does not advertise an unimplemented resume capability', () => {
+test('advertises its implemented resume capability', () => {
   const adapter = new DshAcpAdapter({ dshRoot: join(tmpdir(), 'unused-dsh-root') });
-  assert.equal(adapter.capabilities.resume, false);
+  assert.equal(adapter.capabilities.resume, true);
+  assert.equal(typeof adapter.resume, 'function');
 });
 
 test('turns a missing executable spawn error into a controlled rejection', async () => {
@@ -249,3 +254,23 @@ test('keeps the text fallback when the agent does not advertise image prompts', 
   const prompt = await capturePrompt(false);
   assert.deepEqual(prompt, [{ type: 'text', text: 'look' }]);
 });
+
+
+test('resumes a session with the project cwd and advertises resume capability', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_RECORDER);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-fake-resume-project-'));
+  const recordPath = join(projectDir, 'session-resume.json');
+  const adapter = new DshAcpAdapter({ dshRoot: root, dshArgs: [recordPath], sessionTimeoutMs: 2_000 });
+  await adapter.start();
+  try {
+    assert.equal(adapter.capabilities.resume, true);
+    await adapter.resume('session-old', projectDir);
+    assert.deepEqual(JSON.parse(readFileSync(recordPath, 'utf8')), {
+      sessionId: 'session-old',
+      cwd: projectDir,
+    });
+  } finally {
+    await adapter.stop();
+  }
+});
+

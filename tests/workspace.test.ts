@@ -43,6 +43,7 @@ class FakeAdapter implements HarnessAdapter {
     attachments?: readonly AttachmentDraft[];
   }> = [];
   readonly cancellations: string[] = [];
+  readonly resumes: Array<{ nativeId: string; cwd: string }> = [];
   readonly approvals: ApprovalDecision[] = [];
   readonly closed: string[] = [];
   closeError: Error | undefined;
@@ -88,6 +89,10 @@ class FakeAdapter implements HarnessAdapter {
     if (this.cancelError !== undefined) {
       throw this.cancelError;
     }
+  }
+
+  async resume(nativeId: string, cwd: string): Promise<void> {
+    this.resumes.push({ nativeId, cwd });
   }
 
   async respondToApproval(decision: ApprovalDecision): Promise<void> {
@@ -659,4 +664,36 @@ test('replace refuses when the execution becomes unknown while waiting for cance
     (error: Error) => error.name === 'ReplaceUnknownError',
   );
   assert.equal(adapter.submissions.length, 1);
+});
+
+
+test('resumeConversation reattaches with the preserved conversation id', async (t) => {
+  const { adapter, workspace, project } = await setup();
+  t.after(() => workspace.stop());
+  const resumed = await workspace.resumeConversation(project, 'native-old', 'resumed-id');
+  assert.equal(resumed.id, 'resumed-id');
+  assert.equal(resumed.nativeId, 'native-old');
+  assert.deepEqual(adapter.resumes, [{ nativeId: 'native-old', cwd: project.directory }]);
+  await workspace.submit(resumed.id, 'hello');
+  assert.equal(adapter.submissions.at(-1)?.nativeId, 'native-old');
+});
+
+test('resumeConversation rejects a duplicate conversation id', async (t) => {
+  const { workspace, project } = await setup();
+  t.after(() => workspace.stop());
+  await workspace.resumeConversation(project, 'native-old', 'resumed-id');
+  await assert.rejects(
+    () => workspace.resumeConversation(project, 'native-old', 'resumed-id'),
+    /already exists/,
+  );
+});
+
+test('resumeConversation requires the adapter to advertise resume', async (t) => {
+  const { adapter, workspace, project } = await setup();
+  t.after(() => workspace.stop());
+  adapter.capabilities = { ...adapter.capabilities, resume: false };
+  await assert.rejects(
+    () => workspace.resumeConversation(project, 'native-old'),
+    (error: Error) => error.name === 'ResumeNotSupportedError',
+  );
 });

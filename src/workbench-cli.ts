@@ -2,6 +2,12 @@ import { createInterface } from 'node:readline';
 import { statSync } from 'node:fs';
 import { basename, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import {
+  ConversationStore,
+  defaultConversationStorePath,
+  type ConversationRecord,
+} from './conversation-store.js';
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
 import type { ApprovalDecisionKind } from './adapters/harness.js';
@@ -15,11 +21,13 @@ import { WebServer } from './web-server.js';
 import { createRenderState, renderTaggedEvent } from './workbench-renderer.js';
 import { Workbench, type ConnectionSpec, type TaggedWorkspaceEvent } from './workbench.js';
 
-interface CliOptions {
+export interface CliOptions {
   readonly projectDir: string;
   readonly dshRoot?: string;
   readonly codexExe?: string;
   readonly approvalTimeoutMs: number;
+  readonly resume?: string;
+  readonly conversationStore?: string;
 }
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
@@ -32,6 +40,8 @@ function usage(): string {
     '  --dsh-root <path>            DSH checkout containing apps/cli/lib/bin.js (or DSH_ROOT)',
     '  --codex-exe <path>           Codex executable (or PATH)',
     '  --approval-timeout-ms <n>    Cancel an unanswered approval after n ms (default 120000)',
+    '  --resume <conversation-id>   Reattach to a saved conversation (see the id printed at start)',
+    '  --conversation-store <path>  Conversation mapping file (default ~/.unified-workspace/conversations.json)',
     '  -h, --help                   Show this help',
     '',
     'Commands:',
@@ -85,11 +95,13 @@ export function parseReplaceCommand(line: string): ReplaceCommand | undefined {
   return { connection, executionId, text: text.trim() };
 }
 
-function parseArgs(argv: readonly string[]): CliOptions | undefined {
+export function parseArgs(argv: readonly string[]): CliOptions | undefined {
   let projectDir: string | undefined;
   let dshRoot: string | undefined;
   let codexExe: string | undefined;
   let approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS;
+  let resume: string | undefined;
+  let conversationStore: string | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -120,6 +132,24 @@ function parseArgs(argv: readonly string[]): CliOptions | undefined {
       approvalTimeoutMs = parsed;
       continue;
     }
+    if (arg === '--resume') {
+      const raw = argv[index + 1];
+      index += 1;
+      if (raw === undefined || raw.trim() === '') {
+        throw new Error('Missing value for --resume');
+      }
+      resume = raw;
+      continue;
+    }
+    if (arg === '--conversation-store') {
+      const raw = argv[index + 1];
+      index += 1;
+      if (raw === undefined || raw.trim() === '') {
+        throw new Error('Missing value for --conversation-store');
+      }
+      conversationStore = raw;
+      continue;
+    }
     if (arg.startsWith('-')) {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -137,6 +167,8 @@ function parseArgs(argv: readonly string[]): CliOptions | undefined {
     approvalTimeoutMs,
     ...(dshRoot === undefined ? {} : { dshRoot }),
     ...(codexExe === undefined ? {} : { codexExe }),
+    ...(resume === undefined ? {} : { resume }),
+    ...(conversationStore === undefined ? {} : { conversationStore }),
   };
 }
 
@@ -146,14 +178,40 @@ async function main(): Promise<void> {
     return;
   }
 
+  const store = new ConversationStore(
+    options.conversationStore ?? defaultConversationStorePath(),
+  );
+  let resumeRecord: ConversationRecord | undefined;
+  if (options.resume !== undefined) {
+    resumeRecord = store.find(options.resume);
+    if (resumeRecord === undefined) {
+      throw new Error(`Unknown conversation to resume: ${options.resume}`);
+    }
+    if (resolve(resumeRecord.projectDirectory) !== resolve(options.projectDir)) {
+      throw new Error(
+        `Conversation ${options.resume} belongs to a different project: ${resumeRecord.projectDirectory}`,
+      );
+    }
+  }
   const kernel = createKernel();
-  const project = kernel.registerProject(options.projectDir);
+  const project = kernel.registerProject(options.projectDir, resumeRecord?.projectId);
   const connections: ConnectionSpec[] = [];
   const unavailable: string[] = [];
 
   const dshRoot = options.dshRoot ?? process.env.DSH_ROOT;
   if (dshRoot !== undefined && dshRoot.trim() !== '') {
-    connections.push({ name: 'dsh', adapter: new DshAcpAdapter({ dshRoot }) });
+    connections.push({
+      name: 'dsh',
+      adapter: new DshAcpAdapter({ dshRoot }),
+      ...(resumeRecord?.harness === 'dsh'
+        ? {
+            resume: {
+              conversationId: resumeRecord.conversationId,
+              nativeId: resumeRecord.nativeId,
+            },
+          }
+        : {}),
+    });
   } else {
     unavailable.push('dsh: set DSH_ROOT or --dsh-root');
   }
@@ -162,7 +220,18 @@ async function main(): Promise<void> {
     const codex = await createCodexConnection(
       options.codexExe === undefined ? {} : { executable: options.codexExe },
     );
-    connections.push({ name: 'codex', adapter: new CodexAppServerAdapter({ launch: codex.launch }) });
+    connections.push({
+      name: 'codex',
+      adapter: new CodexAppServerAdapter({ launch: codex.launch }),
+      ...(resumeRecord?.harness === 'codex'
+        ? {
+            resume: {
+              conversationId: resumeRecord.conversationId,
+              nativeId: resumeRecord.nativeId,
+            },
+          }
+        : {}),
+    });
     process.stdout.write(`codex: ${codex.version.version} (${codex.launch.file})\n`);
   } catch (error) {
     unavailable.push(`codex: ${messageOf(error)}`);
@@ -170,6 +239,14 @@ async function main(): Promise<void> {
 
   if (connections.length === 0) {
     throw new Error(`No harness connection is configured:\n  ${unavailable.join('\n  ')}`);
+  }
+  if (
+    resumeRecord !== undefined &&
+    !connections.some((connection) => connection.name === resumeRecord?.harness)
+  ) {
+    throw new Error(
+      `Cannot resume ${resumeRecord.harness}: that harness is not available in this run`,
+    );
   }
 
   const workbench = new Workbench({
@@ -286,6 +363,24 @@ async function main(): Promise<void> {
 
   try {
     await workbench.start();
+    for (const name of workbench.connectionNames) {
+      const connection = workbench.getConnection(name);
+      if (connection === undefined) {
+        continue;
+      }
+      store.upsert({
+        conversationId: connection.conversation.id,
+        harness: name,
+        nativeId: connection.conversation.nativeId,
+        projectId: project.id,
+        projectDirectory: project.directory,
+        updatedAt: new Date().toISOString(),
+      });
+      process.stdout.write(
+        `conversation ${name} ${connection.conversation.id} native=${connection.conversation.nativeId}` +
+          `${resumeRecord?.conversationId === connection.conversation.id ? ' (resumed)' : ''}\n`,
+      );
+    }
   } catch (error) {
     readline.close();
     await workbench.stop().catch(() => undefined);
@@ -696,3 +791,4 @@ if (invokedDirectly) {
     process.exitCode = 1;
   });
 }
+

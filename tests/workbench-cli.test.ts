@@ -26,3 +26,19 @@ test('rejects a missing instruction, missing arguments and empty text', () => {
   assert.equal(parseReplaceCommand('/replace codex exec-1    '), undefined);
   assert.equal(parseReplaceCommand('not a command'), undefined);
 });
+
+import { parseArgs } from '../src/workbench-cli.js';
+
+test('parses --resume and --conversation-store', () => {
+  const options = parseArgs(['C:/work', '--resume', 'conv-1', '--conversation-store', 'C:/state.json']);
+  assert.equal(options?.resume, 'conv-1');
+  assert.equal(options?.conversationStore, 'C:/state.json');
+});
+
+test('rejects --resume and --conversation-store without a value', () => {
+  assert.throws(() => parseArgs(['C:/work', '--resume']), /Missing value for --resume/);
+  assert.throws(
+    () => parseArgs(['C:/work', '--conversation-store']),
+    /Missing value for --conversation-store/,
+  );
+});

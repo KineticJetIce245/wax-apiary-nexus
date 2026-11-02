@@ -17,6 +17,11 @@ export const MAX_TRANSFER_INPUT_CHARS = 200_000;
 export interface ConnectionSpec {
   readonly name: string;
   readonly adapter: HarnessAdapter;
+  /** Reattach to this native conversation instead of creating a new one. */
+  readonly resume?: {
+    readonly conversationId: string;
+    readonly nativeId: string;
+  };
 }
 
 export interface ConnectionFailure {
@@ -439,7 +444,14 @@ export class Workbench {
         spec.adapter,
         this.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: this.approvalTimeoutMs },
       );
-      const conversation = await workspace.createConversation(this.project);
+      const conversation =
+        spec.resume === undefined
+          ? await workspace.createConversation(this.project)
+          : await workspace.resumeConversation(
+              this.project,
+              spec.resume.nativeId,
+              spec.resume.conversationId,
+            );
       const unsubscribe = workspace.onEvent((event) => {
         if (event.type === 'execution/state' && event.state !== 'running') {
           const execution = workspace.getExecution(event.executionId);

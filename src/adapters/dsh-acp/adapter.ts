@@ -57,9 +57,9 @@ export class DshAcpAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
-    // This adapter does not implement session/resume; DSH supporting it
-    // upstream is not enough to advertise it to consumers.
-    resume: false,
+    // G016 verified session/resume across a process restart; the ACP server has
+    // no session/load, and resume() below does not replay history.
+    resume: true,
   };
 
   private readonly dshRoot: string;
@@ -226,6 +226,17 @@ export class DshAcpAdapter implements HarnessAdapter {
     }
     this.cwdBySession.set(sessionId, project.directory);
     return sessionId;
+  }
+
+  /** Reattach to a session created by an earlier process (no history replay). */
+  async resume(nativeId: string, cwd: string): Promise<void> {
+    const client = this.requireClient();
+    await client.request(
+      'session/resume',
+      { sessionId: nativeId, cwd },
+      this.sessionTimeoutMs,
+    );
+    this.cwdBySession.set(nativeId, cwd);
   }
 
   async submit(

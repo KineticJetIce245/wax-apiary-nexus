@@ -137,6 +137,13 @@ export class CancelNotSupportedError extends Error {
   }
 }
 
+export class ResumeNotSupportedError extends Error {
+  constructor() {
+    super('The harness does not advertise resume support');
+    this.name = 'ResumeNotSupportedError';
+  }
+}
+
 /**
  * A definite refusal from the harness after an execution was created. The
  * execution is settled as `failed`; the id lets callers (e.g. the workbench
@@ -219,6 +226,35 @@ export class Workspace {
     const storedProject: Project = { id: project.id, directory: project.directory };
     const nativeId = await this.adapter.createConversation({ ...storedProject });
     const conversation: Conversation = { id: randomUUID(), project: storedProject, nativeId };
+    this.conversations.set(conversation.id, conversation);
+    return snapshotConversation(conversation);
+  }
+
+  /**
+   * Reattach to a native conversation created by an earlier process. The
+   * conversation id can be preserved by the caller (a persisted mapping);
+   * otherwise a new local id is assigned.
+   */
+  async resumeConversation(
+    project: Project,
+    nativeId: string,
+    conversationId?: string,
+  ): Promise<Conversation> {
+    this.assertRunning();
+    assertProjectDirectory(project.directory);
+    if (this.adapter.capabilities.resume !== true || this.adapter.resume === undefined) {
+      throw new ResumeNotSupportedError();
+    }
+    if (conversationId !== undefined && this.conversations.has(conversationId)) {
+      throw new Error(`Conversation already exists: ${conversationId}`);
+    }
+    const storedProject: Project = { id: project.id, directory: project.directory };
+    await this.adapter.resume(nativeId, storedProject.directory);
+    const conversation: Conversation = {
+      id: conversationId ?? randomUUID(),
+      project: storedProject,
+      nativeId,
+    };
     this.conversations.set(conversation.id, conversation);
     return snapshotConversation(conversation);
   }

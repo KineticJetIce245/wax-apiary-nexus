@@ -67,7 +67,13 @@ rl.on('line', (line) => {
     });
     return;
   }
-  if (message.method === 'turn/start') {
+  if (message.method === 'thread/resume') {
+    if (recordPath) {
+      require('node:fs').writeFileSync(recordPath, JSON.stringify(message.params));
+    }
+    respond(message.id, { thread: { id: message.params.threadId, cwd: '/resumed/cwd' } });
+    return;
+  }  if (message.method === 'turn/start') {
     turnSeq += 1;
     activeTurn = 'turn-' + turnSeq;
     if (mode === 'no-accept') {
@@ -516,9 +522,10 @@ test('rejects start when the executable does not exist', async () => {
   }
 });
 
-test('does not advertise an unimplemented resume capability', () => {
+test('advertises its implemented resume capability', () => {
   const adapter = new CodexAppServerAdapter({ launch: { file: 'unused', args: [] } });
-  assert.equal(adapter.capabilities.resume, false);
+  assert.equal(adapter.capabilities.resume, true);
+  assert.equal(typeof adapter.resume, 'function');
 });
 
 test('satisfies the harness adapter contract', async () => {
@@ -671,3 +678,22 @@ test('declines an approval request that belongs to a previous turn', async () =>
     await session.adapter.stop();
   }
 });
+
+
+test('resumes a thread and advertises resume capability', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-resume-'));
+  const recordPath = join(projectDir, 'resume.json');
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('ok', recordPath),
+    requestTimeoutMs: 2_000,
+  });
+  await adapter.start();
+  try {
+    assert.equal(adapter.capabilities.resume, true);
+    await adapter.resume('thr-old', 'C:/fallback');
+    assert.deepEqual(JSON.parse(readFileSync(recordPath, 'utf8')), { threadId: 'thr-old' });
+  } finally {
+    await adapter.stop();
+  }
+});
+

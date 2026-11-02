@@ -30,7 +30,7 @@ class FakeAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
-    resume: false,
+    resume: true,
   };
   readonly submissions: Array<{
     nativeId: string;
@@ -40,6 +40,7 @@ class FakeAdapter implements HarnessAdapter {
   }> = [];
   readonly approvals: ApprovalDecision[] = [];
   readonly cancellations: string[] = [];
+  readonly resumes: Array<{ nativeId: string; cwd: string }> = [];
   readonly closed: string[] = [];
   startCalls = 0;
   stopCalls = 0;
@@ -84,6 +85,10 @@ class FakeAdapter implements HarnessAdapter {
 
   async cancel(nativeId: string): Promise<void> {
     this.cancellations.push(nativeId);
+  }
+
+  async resume(nativeId: string, cwd: string): Promise<void> {
+    this.resumes.push({ nativeId, cwd });
   }
 
   async respondToApproval(decision: ApprovalDecision): Promise<void> {
@@ -655,3 +660,32 @@ test('workbench replace delegates to the workspace and returns the new execution
     await workbench.stop();
   }
 });
+
+
+test('workbench resumes a saved conversation when the spec carries a resume target', async () => {
+  const project: Project = {
+    id: 'g017-resume',
+    directory: mkdtempSync(join(tmpdir(), 'uw-g017-')),
+  };
+  const adapter = new FakeAdapter('native-resumed');
+  const workbench = new Workbench({
+    project,
+    connections: [
+      {
+        name: 'dsh',
+        adapter,
+        resume: { conversationId: 'saved-conversation', nativeId: 'native-resumed' },
+      },
+    ],
+  });
+  try {
+    await workbench.start();
+    const connection = workbench.getConnection('dsh');
+    assert.equal(connection?.conversation.id, 'saved-conversation');
+    assert.equal(connection?.conversation.nativeId, 'native-resumed');
+    assert.deepEqual(adapter.resumes, [{ nativeId: 'native-resumed', cwd: project.directory }]);
+  } finally {
+    await workbench.stop();
+  }
+});
+

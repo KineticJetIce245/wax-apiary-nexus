@@ -98,6 +98,12 @@ export interface HarnessAdapter {
   createConversation(project: Project): Promise<string>;
 
   /**
+   * Reattach to a native conversation created by an earlier process. Only
+   * implemented when `capabilities.resume` is true.
+   */
+  resume?(nativeId: string, cwd: string): Promise<void>;
+
+  /**
    * Start one prompt turn. The adapter must emit exactly one terminal event for
    * this execution; the Workspace enforces one active execution per conversation.
    * Optional attachments are local files already associated with a completed

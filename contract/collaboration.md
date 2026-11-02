@@ -117,7 +117,7 @@ Codex native turn
 - 原生 resume（G016 探针，跨进程验证）：
   - Codex：`thread/resume { threadId }` 在新 app-server 进程中被接受，返回旧 thread（含 turns 计数），随后 `turn/start` 能答出上一进程留下的口令。
   - DSH：`session/load` 不存在（`-32601`）；`session/resume { sessionId, cwd }` 被接受，新进程追问同样答出旧口令。
-  - 两个适配器目前仍声明 `resume: false`，Workspace 没有 conversationId ↔ nativeId 的持久映射，也没有恢复入口；产品化属于持久化语义变更，尚未立项。
+  - 产品化（G017）：两个适配器声明 `resume: true` 并实现 `resume(nativeId, cwd)`；`Workspace.resumeConversation(project, nativeId, conversationId?)` 接回旧会话；`ConversationStore` 把 `conversationId ↔ nativeId ↔ project` 落盘到 `~/.unified-workspace/conversations.json`（可 `--conversation-store` 覆盖）；`workbench-cli --resume <id>` 使用该映射恢复，启动时打印每个连接的 conversation id。恢复不重放历史，只接回 native 会话本体。
 
 ## 5. 验收证据
 

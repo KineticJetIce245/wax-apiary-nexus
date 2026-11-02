@@ -76,9 +76,9 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
-    // thread/resume exists upstream, but this adapter does not implement or
-    // test a resume operation, so it must not advertise one.
-    resume: false,
+    // G016 verified thread/resume across a process restart; resume() below
+    // reattaches without replaying history.
+    resume: true,
   };
 
   private readonly launch: CodexLaunch;
@@ -242,6 +242,19 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     }
     this.threads.set(threadId, { cwd: project.directory, active: undefined });
     return threadId;
+  }
+
+  /**
+   * Reattach to a thread created by an earlier process. The thread keeps its
+   * own cwd; the caller's cwd is only a fallback when the response omits it.
+   */
+  async resume(nativeId: string, cwd: string): Promise<void> {
+    const client = this.requireClient();
+    const result = asRecord(
+      await client.request('thread/resume', { threadId: nativeId }, this.requestTimeoutMs),
+    );
+    const resumedCwd = asString(asRecord(result?.thread)?.cwd) ?? cwd;
+    this.threads.set(nativeId, { cwd: resumedCwd, active: undefined });
   }
 
   async submit(

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { statSync } from 'node:fs';
 import { basename, extname, resolve } from 'node:path';
@@ -708,10 +709,14 @@ async function main(): Promise<void> {
     if (!Number.isInteger(port) || port < 0 || port > 65_535) {
       throw new Error(`Invalid web port: ${raw}`);
     }
-    const server = new WebServer(workbench, { port });
+    const controlToken = randomBytes(16).toString('hex');
+    const server = new WebServer(workbench, { port, controlToken });
     const info = await server.start();
     webServer = server;
-    process.stdout.write(`web: ${info.url}\n`);
+    const url = new URL(info.url);
+    url.searchParams.set('token', controlToken);
+    process.stdout.write(`web: ${url.toString()}\n`);
+    process.stdout.write('web: token is per-start; approvals stay in the CLI.\n');
   }
 
   async function stopWeb(): Promise<void> {
@@ -825,5 +830,6 @@ if (invokedDirectly) {
     process.exitCode = 1;
   });
 }
+
 
 

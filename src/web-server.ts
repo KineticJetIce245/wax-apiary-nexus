@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import type { AddressInfo, Socket } from 'node:net';
 
 import { ArtifactStore, type Artifact, type ArtifactStoreOptions } from './artifact-store.js';
@@ -14,6 +15,8 @@ export interface WebServerOptions {
   readonly port?: number;
   readonly maxArtifactBytes?: number;
   readonly artifactRoot?: string;
+  /** Enables POST /api/prompt; the value is required as a bearer token. */
+  readonly controlToken?: string;
 }
 
 export interface WebServerInfo {
@@ -64,6 +67,7 @@ export interface WebApproval {
 export interface WebConnection {
   readonly name: string;
   readonly status: string;
+  readonly conversationId?: string;
 }
 
 export interface WebState {
@@ -103,6 +107,7 @@ export class WebServer {
   private unsubscribe: (() => void) | undefined;
   private server: Server | undefined;
   private info: WebServerInfo | undefined;
+  private readonly controlToken: string | undefined;
 
   constructor(workbench: Workbench, options: WebServerOptions = {}) {
     this.workbench = workbench;
@@ -110,6 +115,10 @@ export class WebServer {
     if (!Number.isInteger(this.port) || this.port < 0 || this.port > 65_535) {
       throw new Error(`port must be an integer between 0 and 65535: ${String(options.port)}`);
     }
+    if (options.controlToken !== undefined && options.controlToken.trim() === '') {
+      throw new Error('controlToken must not be empty');
+    }
+    this.controlToken = options.controlToken;
     const artifactOptions: ArtifactStoreOptions = {
       ...(options.artifactRoot === undefined ? {} : { root: options.artifactRoot }),
       ...(options.maxArtifactBytes === undefined ? {} : { maxBytes: options.maxArtifactBytes }),
@@ -184,7 +193,15 @@ export class WebServer {
       generatedAt: new Date().toISOString(),
       connections: this.workbench.connectionNames.flatMap((name) => {
         const connection = this.workbench.getConnection(name);
-        return connection === undefined ? [] : [{ name, status: connection.status }];
+        return connection === undefined
+          ? []
+          : [
+              {
+                name,
+                status: connection.status,
+                conversationId: connection.conversation.id,
+              },
+            ];
       }),
       executions: [...this.executions.values()]
         .sort((left, right) => right.updatedAt - left.updatedAt)
@@ -341,12 +358,24 @@ export class WebServer {
         this.sendJson(response, 403, { error: 'Forbidden host' });
         return;
       }
+      const url = new URL(request.url ?? '/', `http://${this.host}`);
+      if (request.method === 'POST' && url.pathname === '/api/prompt') {
+        if (this.controlToken === undefined) {
+          response.writeHead(405, { Allow: 'GET', 'Content-Type': 'text/plain; charset=utf-8' });
+          response.end('Method not allowed\n');
+          return;
+        }
+        this.handlePrompt(request, response);
+        return;
+      }
       if (request.method !== 'GET') {
-        response.writeHead(405, { Allow: 'GET', 'Content-Type': 'text/plain; charset=utf-8' });
+        response.writeHead(405, {
+          Allow: this.controlToken === undefined ? 'GET' : 'GET, POST',
+          'Content-Type': 'text/plain; charset=utf-8',
+        });
         response.end('Method not allowed\n');
         return;
       }
-      const url = new URL(request.url ?? '/', `http://${this.host}`);
       if (url.pathname === '/') {
         this.sendHtml(response);
         return;
@@ -364,6 +393,88 @@ export class WebServer {
     } catch {
       this.sendJson(response, 500, { error: 'Internal error' });
     }
+  }
+
+  private authorized(request: IncomingMessage): boolean {
+    const token = this.controlToken;
+    if (token === undefined) {
+      return false;
+    }
+    const header = request.headers.authorization;
+    if (header === undefined || !header.startsWith('Bearer ')) {
+      return false;
+    }
+    const provided = Buffer.from(header.slice('Bearer '.length));
+    const expected = Buffer.from(token);
+    return provided.length === expected.length && timingSafeEqual(provided, expected);
+  }
+
+  private handlePrompt(request: IncomingMessage, response: ServerResponse): void {
+    if (!this.authorized(request)) {
+      this.sendJson(response, 401, { error: 'Unauthorized' });
+      return;
+    }
+    const limit = 64 * 1024;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let failed = false;
+    request.on('data', (chunk: Buffer) => {
+      if (failed) {
+        return;
+      }
+      total += chunk.length;
+      if (total > limit) {
+        failed = true;
+        this.sendJson(response, 413, { error: 'Payload too large' });
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => {
+      if (failed) {
+        return;
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch {
+        this.sendJson(response, 400, { error: 'Expected a JSON body' });
+        return;
+      }
+      if (typeof payload !== 'object' || payload === null) {
+        this.sendJson(response, 400, { error: 'Expected a JSON object' });
+        return;
+      }
+      const record = payload as Record<string, unknown>;
+      const connection = record.connection;
+      const text = record.text;
+      if (typeof connection !== 'string' || connection.trim() === '') {
+        this.sendJson(response, 400, { error: 'connection is required' });
+        return;
+      }
+      if (typeof text !== 'string' || text.trim() === '') {
+        this.sendJson(response, 400, { error: 'text is required' });
+        return;
+      }
+      if (text.length > 20_000) {
+        this.sendJson(response, 400, { error: 'text is too long' });
+        return;
+      }
+      void this.workbench
+        .submit(text, connection)
+        .then((execution) => {
+          this.sendJson(response, 202, {
+            connection: execution.connection,
+            executionId: execution.execution.id,
+          });
+        })
+        .catch((error: unknown) => {
+          this.sendJson(response, 409, {
+            error: error instanceof Error ? error.message : 'Submit failed',
+          });
+        });
+    });
   }
 
   private sendHtml(response: ServerResponse): void {
@@ -678,6 +789,25 @@ const PAGE = `<!doctype html>
   .empty strong { color: var(--label-secondary); font-weight: 500; font-size: 14px; }
   .empty span { font-size: 12px; }
   .footer-note { margin-top: 24px; color: var(--label-tertiary); font-size: 11px; text-align: center; }
+  .composer {
+    display: flex; gap: 8px; align-items: flex-end;
+    padding: 12px 16px; border-top: 0.5px solid var(--border-l1);
+    background: var(--bg-layer-1);
+  }
+  .composer[hidden] { display: none; }
+  .composer select, .composer textarea {
+    background: var(--bg-base); color: var(--label-primary);
+    border: 0.5px solid var(--border-l2); border-radius: 6px;
+    padding: 7px 9px; font: 13px system-ui, sans-serif;
+  }
+  .composer textarea { flex: 1; resize: vertical; min-height: 38px; max-height: 160px; }
+  .composer button {
+    padding: 8px 14px; border-radius: 6px; border: 0.5px solid var(--border-l3);
+    background: var(--bg-layer-3); color: var(--label-primary);
+    cursor: pointer; font: 600 13px system-ui, sans-serif;
+  }
+  .composer button:disabled { opacity: 0.5; cursor: default; }
+  .send-status { font-size: 11px; color: var(--label-tertiary); min-width: 90px; }
   @media (max-width: 760px) {
     .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: auto; min-height: 100%; }
     .sidebar { border-right: 0; border-bottom: 0.5px solid var(--border-l1); gap: 10px; }
@@ -697,7 +827,7 @@ const PAGE = `<!doctype html>
       <div class="brand-mark">U</div>
       <div>
         <div class="brand-name">Unified Workspace</div>
-        <div class="brand-sub">read-only view</div>
+        <div class="brand-sub">local view</div>
       </div>
     </div>
     <div>
@@ -705,7 +835,7 @@ const PAGE = `<!doctype html>
       <div id="connections" class="connections"></div>
     </div>
     <div class="sidebar-footer">
-      只读本地视图<br>每秒刷新；不能提交或审批。
+      本地视图 · 每秒刷新<br>提交需要页面 token；审批请在 CLI。
     </div>
   </aside>
   <main class="main">
@@ -721,8 +851,14 @@ const PAGE = `<!doctype html>
         <div id="approvals"></div>
         <div id="errors"></div>
         <div id="executions"></div>
-        <div class="footer-note">提交、审批和取消仍通过 CLI。</div>
+        <div class="footer-note">审批和取消仍通过 CLI；本页只提交文本。</div>
       </div>
+    </div>
+    <div id="composer" class="composer" hidden>
+      <select id="target" aria-label="连接"></select>
+      <textarea id="prompt" rows="2" placeholder="输入内容，Enter 发送，Shift+Enter 换行"></textarea>
+      <button id="send" type="button">发送</button>
+      <div id="send-status" class="send-status"></div>
     </div>
   </main>
 </div>
@@ -733,6 +869,15 @@ const connections = document.getElementById('connections');
 const approvals = document.getElementById('approvals');
 const errors = document.getElementById('errors');
 const count = document.getElementById('count');
+const composer = document.getElementById('composer');
+const target = document.getElementById('target');
+const promptInput = document.getElementById('prompt');
+const sendButton = document.getElementById('send');
+const sendStatus = document.getElementById('send-status');
+const controlToken = new URLSearchParams(location.search).get('token');
+if (controlToken) {
+  composer.hidden = false;
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -807,9 +952,28 @@ function renderExecution(execution) {
   return turn;
 }
 
+let targetInitialised = false;
+function renderTargets(list) {
+  const current = target.value;
+  target.replaceChildren(...list.map((connection) => {
+    const option = document.createElement('option');
+    option.value = connection.name;
+    option.textContent = connection.name +
+      (connection.conversationId ? ' · ' + connection.conversationId.slice(0, 8) : '');
+    return option;
+  }));
+  if (list.some((connection) => connection.name === current)) {
+    target.value = current;
+  } else if (!targetInitialised && list.length > 0) {
+    target.value = list[0].name;
+  }
+  targetInitialised = true;
+}
+
 function render(state) {
   count.textContent = String(state.executions.length);
   connections.replaceChildren(...state.connections.map(renderConnection));
+  renderTargets(state.connections);
   approvals.replaceChildren(...state.approvals.map((approval) => {
     const box = el('div', 'approval');
     box.append(el('strong', '', '审批等待（只读）'), el('span', '', approval.connection + ' · ' + approval.summary));
@@ -824,6 +988,48 @@ function render(state) {
   }
   executions.replaceChildren(...state.executions.map(renderExecution));
 }
+
+async function sendPrompt() {
+  const text = promptInput.value.trim();
+  if (!controlToken) {
+    sendStatus.textContent = '缺少 token';
+    return;
+  }
+  if (text === '') {
+    return;
+  }
+  sendButton.disabled = true;
+  sendStatus.textContent = '发送中…';
+  try {
+    const response = await fetch('/api/prompt', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + controlToken,
+      },
+      body: JSON.stringify({ connection: target.value, text }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      sendStatus.textContent = body.error || ('HTTP ' + response.status);
+      return;
+    }
+    promptInput.value = '';
+    sendStatus.textContent = '已提交 ' + String(body.executionId || '').slice(0, 8);
+    await refresh();
+  } catch (error) {
+    sendStatus.textContent = '发送失败';
+  } finally {
+    sendButton.disabled = false;
+  }
+}
+sendButton.addEventListener('click', () => { void sendPrompt(); });
+promptInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    void sendPrompt();
+  }
+});
 
 async function refresh() {
   try {

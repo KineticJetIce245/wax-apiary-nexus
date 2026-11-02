@@ -22,6 +22,7 @@ class FakeAdapter implements HarnessAdapter {
     streaming: true,
     resume: false,
   };
+  readonly submissions: Array<{ nativeId: string; executionId: string; text: string }> = [];
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
 
   async start(): Promise<void> {}
@@ -29,7 +30,9 @@ class FakeAdapter implements HarnessAdapter {
   async createConversation(): Promise<string> {
     return 'native-web-test';
   }
-  async submit(): Promise<void> {}
+  async submit(nativeId: string, executionId: string, text: string): Promise<void> {
+    this.submissions.push({ nativeId, executionId, text });
+  }
   async cancel(): Promise<void> {}
   async respondToApproval(_decision: ApprovalDecision): Promise<void> {}  async closeConversation(): Promise<void> {}
 
@@ -43,7 +46,7 @@ class FakeAdapter implements HarnessAdapter {
   }
 }
 
-async function setup() {
+async function setup(controlToken?: string) {
   const projectDir = mkdtempSync(join(tmpdir(), 'uw-web-project-'));
   const artifactDir = mkdtempSync(join(tmpdir(), 'uw-web-artifacts-'));
   const imagePath = join(projectDir, 'generated.png');
@@ -61,7 +64,10 @@ async function setup() {
     ],
   });
   await workbench.start();
-  const web = new WebServer(workbench, { artifactRoot: artifactDir });
+  const web = new WebServer(workbench, {
+    artifactRoot: artifactDir,
+    ...(controlToken === undefined ? {} : { controlToken }),
+  });
   const info = await web.start();
   return { adapter: codex, dsh, codex, workbench, web, info, imagePath, imageBytes };
 }
@@ -241,5 +247,87 @@ test('rejects non-GET requests and unknown or traversing artifact ids', async ()
   } finally {
     await web.stop();
     await workbench.stop();
+  }
+});
+
+
+function postPrompt(port: number, body: unknown, token?: string): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const request = httpRequest(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/api/prompt',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
+        },
+      },
+      (response) => {
+        let data = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          data += chunk;
+        });
+        response.on('end', () => {
+          let json: any;
+          try {
+            json = data === '' ? undefined : JSON.parse(data);
+          } catch {
+            json = undefined;
+          }
+          resolve({ status: response.statusCode ?? 0, json });
+        });
+      },
+    );
+    request.on('error', reject);
+    request.end(payload);
+  });
+}
+
+test('rejects prompt posts without a valid token', async () => {
+  const { web, info } = await setup('secret-token');
+  try {
+    assert.equal((await postPrompt(info.port, { connection: 'codex', text: 'hi' })).status, 401);
+    assert.equal((await postPrompt(info.port, { connection: 'codex', text: 'hi' }, 'wrong')).status, 401);
+  } finally {
+    await web.stop();
+  }
+});
+
+test('accepts an authorized prompt on the selected connection', async () => {
+  const { codex, web, info } = await setup('secret-token');
+  try {
+    const response = await postPrompt(info.port, { connection: 'codex', text: 'hello web' }, 'secret-token');
+    assert.equal(response.status, 202);
+    assert.equal(response.json.connection, 'codex');
+    assert.equal(codex.submissions.length, 1);
+    assert.equal(codex.submissions[0]?.text, 'hello web');
+  } finally {
+    await web.stop();
+  }
+});
+
+test('rejects unknown connections, empty text and invalid bodies', async () => {
+  const { web, info } = await setup('secret-token');
+  try {
+    assert.equal((await postPrompt(info.port, { connection: 'missing', text: 'hi' }, 'secret-token')).status, 409);
+    assert.equal((await postPrompt(info.port, { connection: 'codex', text: '   ' }, 'secret-token')).status, 400);
+    assert.equal((await postPrompt(info.port, { connection: 'codex' }, 'secret-token')).status, 400);
+    assert.equal((await postPrompt(info.port, { connection: 'codex', text: 'x'.repeat(20_001) }, 'secret-token')).status, 400);
+  } finally {
+    await web.stop();
+  }
+});
+
+test('keeps the prompt endpoint disabled without a control token', async () => {
+  const { web, info } = await setup();
+  try {
+    assert.equal((await postPrompt(info.port, { connection: 'codex', text: 'hi' })).status, 405);
+  } finally {
+    await web.stop();
   }
 });

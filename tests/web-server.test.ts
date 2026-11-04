@@ -120,11 +120,6 @@ test('serves a read-only state snapshot and artifact bytes without local paths',
     assert.equal(artifactResponse.headers.get('content-type'), 'image/png');
     assert.equal(artifactResponse.headers.get('x-content-type-options'), 'nosniff');
     assert.deepEqual(Buffer.from(await artifactResponse.arrayBuffer()), imageBytes);
-
-    const page = await fetch(info.url);
-    assert.equal(page.status, 200);
-    assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'none'/);
-    assert.match(await page.text(), /WAX HCS/);
   } finally {
     await web.stop();
     await workbench.stop();
@@ -417,15 +412,14 @@ test('accepts exactly 20000 characters and rejects 20001', async () => {
 
 
 
-test('serves a local-view title and composer in the page', async () => {
+test('serves no page: the local UI lives in the wax-web repository', async () => {
   const { web, info } = await setup('secret-token');
   try {
     const response = await fetch(new URL('/', info.url));
-    const html = await response.text();
-    assert.equal(response.status, 200);
-    assert.match(html, /local view/);
-    assert.doesNotMatch(html, /read only/);
-    assert.match(html, /send-status/);
+    assert.equal(response.status, 404);
+    assert.match(response.headers.get('content-type') ?? '', /application\/json/);
+    assert.match(await response.text(), /wax-web/);
+    assert.match(await (await fetch(new URL('/api/state', info.url))).text(), /connections/);
   } finally {
     await web.stop();
   }

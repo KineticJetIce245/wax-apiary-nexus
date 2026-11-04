@@ -35,7 +35,7 @@ node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-e
 
 命令：`/use` 切换输入目标，`/status` 查看连接，`/approvals` 与 `/approve` 处理审批，`/cancel` 取消执行，`/replace <connection> <execution-id> <instruction...>` 取消后重发，`/transfer <source> <execution-id> <target> [instruction...] [--attach <path>]...` 显式转交一次已完成的 assistant 结果（可补充源 Execution 未登记的附件），`/records` 查看内存转交记录，`/flow run|status|cancel` 运行声明式流程，`/web start [port]|stop|status` 打开本地视图，`/close` 关闭单个连接，`/quit` 全部退出。启动时会打印会话 id，可用 `--resume <id>` 在新进程接回（映射默认存于 `~/.unified-workspace/conversations.json`，可用 `--conversation-store` 覆盖）。缺少一侧时另一侧仍可单独使用。本实验只在 Windows 实测，没有连接配置持久化、自动多轮协作或共享文件并发写保证。
 
-Web 视图绑定 `127.0.0.1`，附件复制到受控临时目录，浏览器只拿 artifact id；`/web start` 每次生成一次性 token 并打印带 token 的 URL，带 token 的页面可以提交消息（`POST /api/prompt`），审批、取消与切换会话仍只在 CLI。页面视觉沿用 DSH 的深色主题 token 与布局语言，但没有加载 DSH/Cordis 运行时。`/flow` 的格式、校验与执行语义见 [声明式流程契约](contract/flow.md)；执行结果信封见 [结果内容契约](contract/result.md)。
+本地 API（`/web start`）绑定 `127.0.0.1`：`GET /api/state` 返回状态快照，`/artifacts/<id>` 返回受控附件（浏览器只拿 artifact id）；每次启动生成一次性 token 并打印带 token 的 URL，带 token 时可 `POST /api/prompt` 提交消息。**页面不在本仓库**：本地 UI 已拆到独立目录 `wax-web`，本仓库的 `/` 返回 404。审批、取消与切换会话仍只在 CLI。`/flow` 的格式、校验与执行语义见 [声明式流程契约](contract/flow.md)；执行结果信封见 [结果内容契约](contract/result.md)。
 
 声明式流程用 JSON 描述，不写 TypeScript：
 

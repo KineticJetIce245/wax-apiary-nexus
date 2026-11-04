@@ -189,11 +189,11 @@ await assertHarnessAdapterContract({
 | 审批 | `session/request_permission` 服务端请求 | `item/commandExecution/requestApproval`、`item/fileChange/requestApproval` |
 | 取消 | `session/cancel` 通知 | `turn/interrupt` 请求 |
 | 关闭 | `session/close` | `turn/interrupt`（若有活跃轮次）→ 等 `turn/completed` → `thread/unsubscribe` |
-| `resume` | false（未实现） | false（未实现） |
+| `resume` | `session/resume`（G017） | `thread/resume`（G017） |
 
 ## 14. 已知边界
 
-- 两个适配器都未实现原生恢复；`resume` 一律为 false。
+- 两个适配器已实现原生恢复（G017）：DSH 用 `session/resume`、Codex 用 `thread/resume`；恢复只接回原生会话，不重放历史；跨进程映射由 `ConversationStore` 负责。macOS/Linux 未实测。
 - 未验证单个适配器进程内多会话并发执行；当前 Workspace 是“单会话单执行”，但契约要求每个会话各自互斥。
 - 远端连接、受管引擎下载、插件动态加载不在本契约范围。
 - 提交结果不确定且连 turn id 都未知时，会话会保持 busy 且无法安全关闭；当前只能等待或 `stop()`。这是有意的保守行为，不是完整恢复方案。

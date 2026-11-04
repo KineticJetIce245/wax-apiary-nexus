@@ -92,8 +92,10 @@ interface MutableExecution {
 }
 
 /**
- * Read-only local web view over the same Workbench. It never accepts writes:
- * only GET /, GET /api/state and GET /artifacts/<id>. The browser gets artifact
+ * Local JSON API over the same Workbench. GET /api/state and
+ * GET /artifacts/<id> are always available; POST /api/prompt is enabled only
+ * when a controlToken is configured and requires a bearer token. GET / returns
+ * 404 because the UI lives outside this repository. The browser gets artifact
  * ids/URLs, never native file paths.
  */
 export class WebServer {

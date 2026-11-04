@@ -62,7 +62,7 @@ function usage(): string {
     '  /flow status                         Show the current or last flow',
     '  /flow cancel                         Cancel the running flow',
     '  /web start [port]                    Start the local API server and print a submit-token URL',
-    '  /web stop                            Stop the web view',
+    '  /web stop                            Stop the local API server',
     '  /web status                          Show the API URL',
     '  /close <connection>                  Close one connection',
     '  /quit                                Close and stop all connections',
@@ -703,7 +703,7 @@ async function main(): Promise<void> {
 
   async function startWeb(line: string): Promise<void> {
     if (webServer?.running === true) {
-      throw new Error('Web view is already running; use /web stop first');
+      throw new Error('Local API server is already running; use /web stop first');
     }
     const raw = line.slice('/web start'.length).trim();
     const port = raw === '' ? 0 : Number(raw);

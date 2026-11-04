@@ -1,6 +1,6 @@
 # Composition Runtime 契约（G007，v1）
 
-> **状态（2026-11-04）**：本文是 G007 原型契约；v3 单 cursor 模型未实现，v3 契约草案在本地 `docs/contracts/composition-runtime-v1.md`。不要按本文实现 v3。
+> **状态（2026-11-04）**：本文是 G007 原型契约；v3 模型未实现，v3 架构在本地 `docs/architecture-v3.md`。不要按本文实现 v3。
 
 本文描述最小 Composition Runtime：Composition 是结构，Strategy 是语义。实现以 [`src/composition.ts`](../src/composition.ts) 为准。
 

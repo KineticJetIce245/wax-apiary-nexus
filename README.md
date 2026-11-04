@@ -1,23 +1,24 @@
-# WAX HCS
+# WAX Apiary neXus
 
-**WAX Harnesses Coordination System**
+**WAX Apiary neXus** — 仓库目录仍是 `wax-hcs`；正式重命名为 `wax-apiary-nexus` 待定。
 
-> **愿景状态（2026-11-04）**：v2.1 愿景已归档到仓库外的 `../docs/archive/vision-v2.1.md`；v3 草案在 `../docs/vision-v3.md`。当前代码仍是 G001–G018 原型，v3 尚未实现；G019 已暂停。
+> **状态（2026-11-04）**：产品名 **WAX Apiary neXus**；v3 架构草案在仓库外 `../docs/architecture-v3.md`；当前代码仍是 G001–G018 原型，v3 尚未实现；G019 已暂停。
 
-以 Project 为中心，通过 Adapter 接入原生 AI Harness，并让持续存在的 Conversation 在不同协作结构之间组合和切换。
+以 **Apiary** 为中心，通过 Adapter 接入原生 AI Harness，并让持续存在的 Conversation 在不同 Composition 之间组合和切换。
 
-当前阶段：v3 愿景重写中；阶段待重新定义；G019 暂停。
+当前阶段：v3 架构重写中；契约待按 architecture-v3 重写；G019 暂停。
 
 ## v3 方向（草案）
 
-- Project 里保存多个 Composition（图）；一张图一个 cursor，daemon 用事件驱动状态机推进。
-- Composition 是 live graph：cursor 指向当前节点；每个 node 有 queue/pending/上次激活/等待；节点执行用启动快照；删活跃节点/边默认拒绝。
-- `end` 就是 idle；trigger 到 node 时，cursor 不在就排队，到 end 就重新开始；不设 start。
-- 节点统一 `WaitSpec`；user/agent/approval/delay 的等待都是状态，不占线程。
-- 同一节点两次激活只靠 min interval；循环上限用 counter 节点。
-- 审批绑定 requestId，不跨请求重放；用户输入可延后到下一个匹配 user 节点。
-- 每张 composition 一份 JSONL 历史日志，记时间/node/事件/program/pid；不是重放源。
-- 不做 UI/Cordis；节点 executor 编译期注册；大 daemon 持有 harness adapter。
+- Apiary 里保存多个 Composition（图）；`PheromoneField` 推进；没有 cursor 实例。
+- Composition 是 live graph：`Pheromone` 在 node 的 queue/pending/active/hover；节点执行用启动快照；删活跃节点/边默认拒绝。
+- **没有 End 节点**：任何没有出边的 Node 就是 terminal；没有 Pheromone 就是 **Rest**；`trigger` 创建 Pheromone；不设 start。
+- 任务节点是 **Bee**：`Forager`（harness 任务）、`Worker`（本地程序任务）、`user`；等待统一 `Hover`/`HoverSpec`。
+- `Fork` / `Merge` / `Branch` 显式；Merge 节点等 required；没有 child composition；没有 last-arrival 默认策略。
+- 同一节点两次激活只靠 min interval（>=1000ms）；queue FIFO，coalesce 可选；循环上限用 Counter。
+- `Guard` 绑定 requestId，不跨请求重放；默认 1h 超时，拒绝/取消，不自动 allow。
+- `Honey` 落盘（state/transcript/artifact）；`log` 单独；composition log 不存 prompt/output 正文。
+- 不做 UI/Cordis；custom node 和 adapter 一样外部化；大 daemon 持有 harness adapter。
 
 以下构建/测试、项目规范、CLI 工作台等描述的是 G001–G018 原型，不是 v3 实现。
 

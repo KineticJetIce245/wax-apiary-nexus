@@ -1,6 +1,6 @@
 # 声明式流程契约（G005，v1）
 
-> **状态（2026-11-04）**：本文是 G005 原型契约；v3 单 cursor 模型未实现，v3 契约草案在本地 `docs/contracts/composition-runtime-v1.md`。不要按本文实现 v3。
+> **状态（2026-11-04）**：本文是 G005 原型契约；v3 模型未实现，v3 架构在本地 `docs/architecture-v3.md`。不要按本文实现 v3。
 
 本文描述 `graph` 策略的流程文件格式、校验规则、执行语义和运行时 API。它是用户/工具生成流程 JSON 的依据；实现以 [`src/flow-definition.ts`](../src/flow-definition.ts) 与 [`src/flow-runtime.ts`](../src/flow-runtime.ts) 为准。
 

@@ -1,5 +1,7 @@
 # Harness Adapter 契约
 
+> **状态（2026-11-04）**：这些契约描述 G001–G018 原型；v3 单 cursor 模型尚未实现。v3 契约草案在本地 `docs/contracts/composition-runtime-v1.md`，尚未进入仓库。
+
 状态：草案（2026-10-30）。适用对象：为本项目实现 `HarnessAdapter` 的人，以及审阅适配器代码的人。
 
 本文描述 **Workspace 与一个原生 Harness 之间必须成立的行为**。它不描述 ACP、Codex app-server 等具体协议；协议细节属于各适配器内部。类型定义以 [`src/adapters/harness.ts`](../src/adapters/harness.ts) 为准，本文解释其语义。

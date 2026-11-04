@@ -1,6 +1,6 @@
 # Native Collaboration 契约（G009 基础 + G010 授权/工作项/恢复）
 
-> **状态（2026-11-04）**：本文是 G009–G013 原型契约；v3 模型未实现，v3 架构在本地 `docs/architecture-v3.md`。不要按本文实现 v3。
+> **状态（2026-11-04）**：本文是 G009–G013 原型契约；v3 模型未实现，v3 架构/契约在本地 `docs/architecture-v3.md` 与 `docs/contracts/composition-runtime-v1.md`。不要按本文实现 v3。
 
 本文描述最小 Native Harness Collaboration：Host 通过原生 MCP 工具调用把任务交给 Worker，拿回 Worker Result 后继续自己的原生会话。G010 在同一条路径上补了确定性授权、工作项记录与可靠投递。实现以 [`src/collaboration-gateway.ts`](../src/collaboration-gateway.ts)、[`src/mcp-delegate-bridge.ts`](../src/mcp-delegate-bridge.ts)、[`src/delegation-ledger.ts`](../src/delegation-ledger.ts) 与 [`src/delegation-policy.ts`](../src/delegation-policy.ts) 为准。
 

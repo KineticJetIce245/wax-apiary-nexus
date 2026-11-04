@@ -2,11 +2,11 @@
 
 **WAX Apiary neXus** — 仓库目录仍是 `wax-hcs`；正式重命名为 `wax-apiary-nexus` 待定。
 
-> **状态（2026-11-04）**：产品名 **WAX Apiary neXus**；v3 架构草案在仓库外 `../docs/architecture-v3.md`；当前代码仍是 G001–G018 原型，v3 尚未实现；G019 已暂停。
+> **状态（2026-11-04）**：产品名 **WAX Apiary neXus**；v3 架构/契约草案在仓库外 `../docs/architecture-v3.md` 与 `../docs/contracts/composition-runtime-v1.md`；当前代码仍是 G001–G018 原型，v3 尚未实现；G019 已暂停。
 
 以 **Apiary** 为中心，通过 Adapter 接入原生 AI Harness，并让持续存在的 Conversation 在不同 Composition 之间组合和切换。
 
-当前阶段：v3 架构重写中；契约待按 architecture-v3 重写；G019 暂停。
+当前阶段：v3 架构/契约草案完成；当前代码仍是 G001–G018 原型；G019 暂停。
 
 ## v3 方向（草案）
 

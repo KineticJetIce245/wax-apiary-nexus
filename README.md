@@ -20,7 +20,7 @@ G001 最小内存内核的登记与查询已通过独立复核。G002 单 Harnes
 
 ## 当前边界
 
-已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。当前内核采用 TypeScript + Node.js 26 LTS + npm，按独立内核（不 fork 现有项目）实现；Cordis 暂缓采用，数据库及前端框架仍待验证和决定。
+已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。当前内核采用 TypeScript + Node.js 26 LTS + npm，复用路线为独立内核（不 fork 现有项目）；Cordis 暂缓采用，数据库及前端框架仍待验证和决定。
 
 目前已有内存内核、DSH ACP 适配器、Codex app-server 适配器和双 Harness CLI 工作台，均在 Windows 范围完成实现与验收；真实原生集成只在 Windows 上运行过。先读官方源码，再用最小实验验证；不把项目宣传、接口声明或上游测试文件当成本地运行结果。
 

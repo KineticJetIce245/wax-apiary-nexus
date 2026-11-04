@@ -10,9 +10,11 @@
 
 ## v3 方向（草案）
 
-- Project 里保存多个 Composition（图）；Run 是图的一次执行，daemon 用事件驱动状态机推进。
-- Composition 是 live graph：Run 用 cursor 找当前节点；节点执行用启动快照；删活跃节点/边默认拒绝。
+- Project 里保存多个 Composition（图）；一张图一个 cursor，daemon 用事件驱动状态机推进。
+- Composition 是 live graph：cursor 指向当前节点；每个 node 有队列/上次激活/等待；节点执行用启动快照；删活跃节点/边默认拒绝。
+- `end` 就是 idle；trigger 到 node 时，cursor 不在就排队，到 end 就重新开始；不设 start。
 - 节点统一 `WaitSpec`；user/agent/approval/delay 的等待都是状态，不占线程。
+- 同一节点两次激活只靠 min interval；循环上限用 counter 节点。
 - 审批绑定 requestId，不跨请求重放；用户输入可延后到下一个匹配 user 节点。
 - 不做 UI/Cordis；节点 executor 编译期注册；大 daemon 持有 harness adapter。
 

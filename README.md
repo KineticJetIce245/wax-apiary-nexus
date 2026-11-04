@@ -1,6 +1,6 @@
-# Unified Workspace
+# WAX HCS
 
-**Composable Native AI Harness Workspace**
+**WAX Harnesses Coordination System**
 
 以 Project 为中心，通过插件接入原生 AI Harness，并让持续存在的 Conversation 在不同协作结构之间组合和切换。
 
@@ -12,7 +12,7 @@
 
 实现或审阅原生 Harness 适配器时，先读 [Harness Adapter 契约](contract/README.md)：能力声明、执行终态、并发与关闭、审批与取消的行为要求，以及可执行一致性检查的入口。
 
-愿景草稿、设计提案、研究笔记、实验报告保存在本地 `docs/`，工作记录保存在本地 `LOG.md`；这些文件可能包含私人上下文，不纳入后续 Git 跟踪。`doc/` 同样被忽略。仓库的新检出不包含这些本地文件。
+愿景草稿、设计提案、研究笔记、实验报告保存在仓库外的父目录 `docs/`，工作记录在父目录的 `LOG.md`；这些文件可能包含私人上下文，不在本仓库内，也不会进入 Git。仓库的新检出不包含这些本地文件。
 
 G001 最小内存内核的登记与查询已通过独立复核。G002 单 Harness 内核、G003 的 Codex app-server 驱动、G004 双 Harness 工作台均已通过独立复核并在 Windows 范围验收。Git 保存代码、测试、必要配置及经过检查的公开说明；本地记录补充详细过程。
 
@@ -53,4 +53,4 @@ Native Collaboration（API，G009）：Codex 通过原生 MCP 工具 `delegate_t
 
 ## 本地研究材料
 
-`.research-sources/` 保存官方源码参考材料，默认排除出未来的主项目版本控制；版本与路径见研究索引。研究材料不属于产品依赖，未安装这些项目的依赖，未启动其服务。
+`.research-sources/` 保存在仓库外的父目录，是官方源码参考材料；版本与路径见研究索引。研究材料不属于产品依赖，未安装这些项目的依赖，未启动其服务。

@@ -124,7 +124,7 @@ test('serves a read-only state snapshot and artifact bytes without local paths',
     const page = await fetch(info.url);
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-security-policy') ?? '', /default-src 'none'/);
-    assert.match(await page.text(), /Unified Workspace/);
+    assert.match(await page.text(), /WAX HCS/);
   } finally {
     await web.stop();
     await workbench.stop();

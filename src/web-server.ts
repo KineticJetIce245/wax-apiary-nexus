@@ -565,7 +565,7 @@ const PAGE = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Unified Workspace — local view</title>
+<title>WAX HCS — local view</title>
 <style>
   /* Visual language follows DSH ui-theme (MIT): dark semantic tokens,
      hairlines, 8/12/16px radii, system + code stacks. No DSH runtime is loaded. */
@@ -860,9 +860,9 @@ const PAGE = `<!doctype html>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">U</div>
+      <div class="brand-mark">W</div>
       <div>
-        <div class="brand-name">Unified Workspace</div>
+        <div class="brand-name">WAX HCS</div>
         <div class="brand-sub">local view</div>
       </div>
     </div>

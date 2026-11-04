@@ -1,14 +1,6 @@
-# Official upstream checkouts and selected source snapshots used for research.
-.research-sources/
-
 # Installed dependencies and compiled output.
 node_modules/
 dist/
-
-# Local planning, research and execution records may contain private context.
-/doc/
-/docs/
-/LOG.md
 
 # Credentials and private runtime material.
 .env

@@ -1,8 +1,8 @@
-# Unified Workspace — AI Engineering Contract
+# WAX HCS — AI Engineering Contract
 
 ## Mission
 
-Implement Unified Workspace incrementally, prioritizing evidence-based architecture validation over feature completeness.
+Implement WAX HCS incrementally, prioritizing evidence-based architecture validation over feature completeness.
 
 You are responsible for research, implementation, testing, documentation, and reporting.
 
@@ -86,7 +86,7 @@ A milestone is complete only when its stated acceptance criteria are demonstrate
 
 Code generation alone does not constitute completion.
 
-# Unified Workspace — Anti-Overengineering Rules
+# WAX HCS — Anti-Overengineering Rules
 
 You are developing a personal, experimental, open-source AI workspace.
 
@@ -123,7 +123,7 @@ Keep reports concise:
 # Sensitive Information and Git Tracking
 
 - Before writing any artifact, decide whether it is public project material or private local material. Do not place credentials, tokens, private keys, personal information, private conversations, machine-specific paths, or private environment details in files that Git tracks.
-- Keep local plans, proposals, research notes, execution reports, and work logs under the ignored `docs/` or `doc/` directories, or in the ignored root `LOG.md`. Maintain these records locally; do not stage them. This takes precedence over earlier instructions to commit those documents or logs.
+- Local plans, proposals, research notes, execution reports, and work logs live **outside this repository**, in the parent directory (`../docs/`, `../LOG.md`). Maintain them there; never stage them here. Do not create `docs/` or `LOG.md` inside the repo, and do not add ignore rules for them; the layout, not `.gitignore`, keeps them out of Git. This takes precedence over earlier instructions to commit those documents or logs.
 - Ignore files that may contain private data before writing them. Never use `git add -f` to bypass these rules. An ignored path is not sufficient protection if the file is already tracked; check `git ls-files` and remove it from the index with `git rm --cached` while preserving the local file when needed.
 - Stage explicit paths rather than using broad staging commands. Inspect the entire staged diff and new files for sensitive content before every commit. Sanitize any public examples and reports; do not echo detected secrets into tool output, commit messages, or review comments.
 - A pattern scan is supporting evidence, not a guarantee that a file contains no sensitive information. Report the scope and limitations of the check honestly.

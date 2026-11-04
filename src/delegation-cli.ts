@@ -40,6 +40,7 @@ const TERMINAL_TIMEOUT_MS = 10 * 60 * 1000;
 
 function usage(): string {
   return [
+    'WAX HCS (harnesses coordination system)',
     'Usage: node dist/src/delegation-cli.js <project-dir> [options]',
     '',
     'Starts a worker session and a gateway, then a host session that can call',

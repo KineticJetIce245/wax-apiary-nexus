@@ -4,7 +4,7 @@
 
 以 Project 为中心，通过插件接入原生 AI Harness，并让持续存在的 Conversation 在不同协作结构之间组合和切换。
 
-当前阶段：Phase 0 — Research & Architecture Validation。v2.0 是产品愿景与研究章程，技术选型仍待源码研究和 PoC 验证。
+当前阶段：Phase 0 — Research & Architecture Validation。v2.1 是产品愿景与研究章程，技术选型仍待源码研究和 PoC 验证。
 
 ## 项目规范与本地文档
 
@@ -20,7 +20,7 @@ G001 最小内存内核的登记与查询已通过独立复核。G002 单 Harnes
 
 ## 当前边界
 
-已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。当前内核采用 TypeScript + Node.js 26 LTS + npm。Cordis 选用、已有项目的复用路线、数据库及前端框架仍待验证和决定。
+已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。当前内核采用 TypeScript + Node.js 26 LTS + npm，按独立内核（不 fork 现有项目）实现；Cordis 暂缓采用，数据库及前端框架仍待验证和决定。
 
 目前已有内存内核、DSH ACP 适配器、Codex app-server 适配器和双 Harness CLI 工作台，均在 Windows 范围完成实现与验收；真实原生集成只在 Windows 上运行过。先读官方源码，再用最小实验验证；不把项目宣传、接口声明或上游测试文件当成本地运行结果。
 
@@ -33,9 +33,9 @@ npm run build
 node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-exe <codex-exe>
 ```
 
-命令：`/use` 切换输入目标，`/status` 查看连接，`/approvals` 与 `/approve` 处理审批，`/cancel` 取消执行，`/transfer <source> <execution-id> <target> [instruction...] [--attach <path>]...` 显式转交一次已完成的 assistant 结果（可补充源 Execution 未登记的附件），`/records` 查看内存转交记录，`/flow run|status|cancel` 运行声明式流程，`/web start [port]|stop|status` 打开只读本地视图，`/close` 关闭单个连接，`/quit` 全部退出。缺少一侧时另一侧仍可单独使用。本实验只在 Windows 实测，没有持久化、自动多轮协作或共享文件并发写保证。
+命令：`/use` 切换输入目标，`/status` 查看连接，`/approvals` 与 `/approve` 处理审批，`/cancel` 取消执行，`/replace <connection> <execution-id> <instruction...>` 取消后重发，`/transfer <source> <execution-id> <target> [instruction...] [--attach <path>]...` 显式转交一次已完成的 assistant 结果（可补充源 Execution 未登记的附件），`/records` 查看内存转交记录，`/flow run|status|cancel` 运行声明式流程，`/web start [port]|stop|status` 打开本地视图，`/close` 关闭单个连接，`/quit` 全部退出。启动时会打印会话 id，可用 `--resume <id>` 在新进程接回（映射默认存于 `~/.unified-workspace/conversations.json`，可用 `--conversation-store` 覆盖）。缺少一侧时另一侧仍可单独使用。本实验只在 Windows 实测，没有连接配置持久化、自动多轮协作或共享文件并发写保证。
 
-只读 Web 视图绑定 `127.0.0.1`，附件复制到受控临时目录，浏览器只拿 artifact id；不能提交、审批或取消。页面视觉沿用 DSH 的深色主题 token 与布局语言，但没有加载 DSH/Cordis 运行时。`/flow` 的格式、校验与执行语义见 [声明式流程契约](contract/flow.md)；执行结果信封见 [结果内容契约](contract/result.md)。
+Web 视图绑定 `127.0.0.1`，附件复制到受控临时目录，浏览器只拿 artifact id；`/web start` 每次生成一次性 token 并打印带 token 的 URL，带 token 的页面可以提交消息（`POST /api/prompt`），审批、取消与切换会话仍只在 CLI。页面视觉沿用 DSH 的深色主题 token 与布局语言，但没有加载 DSH/Cordis 运行时。`/flow` 的格式、校验与执行语义见 [声明式流程契约](contract/flow.md)；执行结果信封见 [结果内容契约](contract/result.md)。
 
 声明式流程用 JSON 描述，不写 TypeScript：
 
@@ -49,7 +49,7 @@ node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-e
 
 Composition Runtime（API，G007）：在既有 DSH/Codex 原生会话上运行 `single-chat` 或简单 `debate`，切换策略只增加 Composition 版本、不新建会话；当前没有 CLI/Web 入口，契约见 [composition.md](contract/composition.md)。
 
-Native Collaboration（API，G009）：Codex 通过原生 MCP 工具 `delegate_to_worker` 调用 localhost Gateway，把任务交给 DSH，拿回 Worker Result 后继续自己的原生 turn；当前没有 CLI/Web 配置入口，契约见 [collaboration.md](contract/collaboration.md)。
+Native Collaboration（API，G009）：Codex 通过原生 MCP 工具 `delegate_to_worker` 调用 localhost Gateway，把任务交给 DSH，拿回 Worker Result 后继续自己的原生 turn；另有委派 CLI 入口（G013）：`node dist/src/delegation-cli.js <project-dir>`，可指定 host/worker 方向；仍没有 Web 配置入口，契约见 [collaboration.md](contract/collaboration.md)。
 
 ## 本地研究材料
 

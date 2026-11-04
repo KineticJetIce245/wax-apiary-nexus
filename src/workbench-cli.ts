@@ -60,7 +60,7 @@ function usage(): string {
     '  /flow run <file>                     Start a declarative graph flow',
     '  /flow status                         Show the current or last flow',
     '  /flow cancel                         Cancel the running flow',
-    '  /web start [port]                    Start the read-only local web view',
+    '  /web start [port]                    Start the local web view and print a submit-token URL',
     '  /web stop                            Stop the web view',
     '  /web status                          Show the web view URL',
     '  /close <connection>                  Close one connection',

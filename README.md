@@ -2,9 +2,21 @@
 
 **WAX Harnesses Coordination System**
 
-以 Project 为中心，通过插件接入原生 AI Harness，并让持续存在的 Conversation 在不同协作结构之间组合和切换。
+> **愿景状态（2026-11-04）**：v2.1 愿景已归档到仓库外的 `../docs/archive/vision-v2.1.md`；v3 草案在 `../docs/vision-v3.md`。当前代码仍是 G001–G018 原型，v3 尚未实现；G019 已暂停。
 
-当前阶段：Phase 0 — 三个验收问题（Cordis、复用路线、首版接入）已答；Harness Capability Matrix、Cordis PoC、CAO/hcom/The Cog 研究仍未完成。技术选型已定：TypeScript + Node.js 26 LTS，独立内核；详见本地 ADR 0001–0003。
+以 Project 为中心，通过 Adapter 接入原生 AI Harness，并让持续存在的 Conversation 在不同协作结构之间组合和切换。
+
+当前阶段：v3 愿景重写中；阶段待重新定义；G019 暂停。
+
+## v3 方向（草案）
+
+- Project 里保存多个 Composition（图）；Run 是图的一次执行，daemon 用事件驱动状态机推进。
+- Composition 是 live graph：Run 用 cursor 找当前节点；节点执行用启动快照；删活跃节点/边默认拒绝。
+- 节点统一 `WaitSpec`；user/agent/approval/delay 的等待都是状态，不占线程。
+- 审批绑定 requestId，不跨请求重放；用户输入可延后到下一个匹配 user 节点。
+- 不做 UI/Cordis；节点 executor 编译期注册；大 daemon 持有 harness adapter。
+
+以下构建/测试、项目规范、CLI 工作台等描述的是 G001–G018 原型，不是 v3 实现。
 
 ## 构建与测试
 

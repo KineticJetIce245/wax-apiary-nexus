@@ -143,8 +143,8 @@ test('rejects a corrupt line in the middle and keeps the file intact', () => {
 });
 
 test('keeps project ids out of the state path unless they match the whitelist', () => {
-  const env = { UW_STATE_DIR: join(tmpdir(), 'uw-state-root') };
-  assert.equal(defaultDelegationStateDirectory('project-1', env), join(env.UW_STATE_DIR, 'project-1'));
+  const env = { WAX_STATE_DIR: join(tmpdir(), 'wax-state-root') };
+  assert.equal(defaultDelegationStateDirectory('project-1', env), join(env.WAX_STATE_DIR, 'project-1'));
   const escaped = defaultDelegationStateDirectory('../../evil', env);
   assert.match(escaped, /[\\/]id-[0-9a-f]{16}$/);
   assert.equal(escaped.includes('evil'), false);

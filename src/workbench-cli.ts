@@ -37,7 +37,7 @@ const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
 
 function usage(): string {
   return [
-    'WAX HCS (harnesses coordination system)',
+    'WAX Apiary Nexus (harness coordination)',
     'Usage: node dist/src/workbench-cli.js <project-dir> [options]',
     '',
     'Options:',
@@ -45,7 +45,7 @@ function usage(): string {
     '  --codex-exe <path>           Codex executable (or PATH)',
     '  --approval-timeout-ms <n>    Cancel an unanswered approval after n ms (default 120000)',
     '  --resume <conversation-id>   Reattach to a saved conversation (see the id printed at start)',
-    '  --conversation-store <path>  Conversation mapping file (default ~/.unified-workspace/conversations.json)',
+    '  --conversation-store <path>  Conversation mapping file (default ~/.wax/conversations.json)',
     '  -h, --help                   Show this help',
     '',
     'Commands:',

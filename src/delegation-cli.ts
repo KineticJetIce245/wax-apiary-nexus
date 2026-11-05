@@ -40,7 +40,7 @@ const TERMINAL_TIMEOUT_MS = 10 * 60 * 1000;
 
 function usage(): string {
   return [
-    'WAX HCS (harnesses coordination system)',
+    'WAX Apiary Nexus (harness coordination)',
     'Usage: node dist/src/delegation-cli.js <project-dir> [options]',
     '',
     'Starts a worker session and a gateway, then a host session that can call',
@@ -52,7 +52,7 @@ function usage(): string {
     '  --task <text>               Run one task, print the result, and exit',
     '  --dsh-root <path>           DSH checkout (or DSH_ROOT)',
     '  --codex-exe <path>          Codex executable (or CODEX_EXE, or PATH)',
-    '  --state-dir <path>          Delegation ledger directory (default under ~/.unified-workspace)',
+    '  --state-dir <path>          Delegation ledger directory (default under ~/.wax)',
     '  --max-task-chars <n>        Task size limit, 1..1000000 (default 20000)',
     '  --allow-host-permissions    Also approve Codex permission-profile requests (not command)',
     '  --trust-worker              Auto-approve every worker approval (trusted project only)',

@@ -202,7 +202,7 @@ async function handle(message: JsonRpcRequest): Promise<void> {
         protocolVersion:
           typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'unified-workspace-delegate', version: '0.1.0' },
+        serverInfo: { name: 'wax-apiary-nexus-delegate', version: '0.1.0' },
       });
       return;
     }

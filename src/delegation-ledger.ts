@@ -356,8 +356,8 @@ export function defaultDelegationStateDirectory(
   projectId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const override = env.UW_STATE_DIR?.trim();
-  const base = override !== undefined && override !== '' ? override : join(homedir(), '.unified-workspace');
+  const override = env.WAX_STATE_DIR?.trim();
+  const base = override !== undefined && override !== '' ? override : join(homedir(), '.wax');
   return join(base, sanitizeSegment(projectId));
 }
 

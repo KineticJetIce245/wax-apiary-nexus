@@ -1,8 +1,8 @@
 {
-  "name": "wax-hcs",
+  "name": "wax-apiary-nexus",
   "version": "0.0.0",
   "private": true,
-  "description": "Composable Native AI Harness Workspace",
+  "description": "WAX Apiary Nexus — composable native AI harness workspace",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",

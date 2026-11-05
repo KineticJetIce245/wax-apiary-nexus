@@ -160,7 +160,7 @@ export class DshAcpAdapter implements HarnessAdapter {
               fs: { readTextFile: false, writeTextFile: false },
               terminal: false,
             },
-            clientInfo: { name: 'unified-workspace', version: '0.0.0' },
+            clientInfo: { name: 'wax-apiary-nexus', version: '0.0.0' },
           },
           this.initializeTimeoutMs,
         ),

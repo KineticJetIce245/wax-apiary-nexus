@@ -183,7 +183,7 @@ test('MCP bridge initializes, lists the tool and forwards a call to the gateway'
 
     assert.equal(messages.length, 3);
     const initialize = messages[0]?.result as Record<string, unknown> | undefined;
-    assert.equal((initialize?.serverInfo as Record<string, unknown> | undefined)?.name, 'unified-workspace-delegate');
+    assert.equal((initialize?.serverInfo as Record<string, unknown> | undefined)?.name, 'wax-apiary-nexus-delegate');
     const tools = (messages[1]?.result as { tools?: Array<{ name?: string }> } | undefined)?.tools;
     assert.equal(tools?.[0]?.name, 'delegate_to_worker');
     const result = messages[2]?.result as {

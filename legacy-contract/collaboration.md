@@ -1,6 +1,6 @@
-# Native Collaboration 契约（G009 基础 + G010 授权/工作项/恢复）
+# Native Collaboration 契约（Legacy prototype）
 
-> **状态（2026-11-04）**：本文是 G009–G013 原型契约；v3 模型未实现，v3 架构/契约在本地 `docs/architecture-v3.md` 与 `docs/contracts/composition-runtime-v1.md`。不要按本文实现 v3。
+> **Status**: legacy prototype contract. Current design: [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../CONTRACT.md`](../CONTRACT.md).
 
 本文描述最小 Native Harness Collaboration：Host 通过原生 MCP 工具调用把任务交给 Worker，拿回 Worker Result 后继续自己的原生会话。G010 在同一条路径上补了确定性授权、工作项记录与可靠投递。实现以 [`src/collaboration-gateway.ts`](../src/collaboration-gateway.ts)、[`src/mcp-delegate-bridge.ts`](../src/mcp-delegate-bridge.ts)、[`src/delegation-ledger.ts`](../src/delegation-ledger.ts) 与 [`src/delegation-policy.ts`](../src/delegation-policy.ts) 为准。
 
@@ -31,7 +31,7 @@ Codex native turn
 - 只绑定 `127.0.0.1`，端口默认 `0`（系统分配）。
 - `start()` 返回 `{url, token, workerConnection, mandate}`；token 与 mandate 每次实例生成一次。
 - `policy` 必须是 [`delegation-policy.ts`](../src/delegation-policy.ts) 定义的对象；未知字段拒绝。缺省策略只允许 `workerConnection` 一个 worker，`maxConcurrent` 为 1。
-- `stateDirectory` 缺省为 `~/.unified-workspace/<projectId>/`（`UW_STATE_DIR` 可覆盖根目录；projectId 不匹配白名单时改用哈希目录）。
+- `stateDirectory` 缺省为 `~/.wax/<projectId>/`（`WAX_STATE_DIR` 可覆盖根目录；projectId 不匹配白名单时改用哈希目录）。
 - 端点：
   - `POST /delegate`：同步委派，等到 Worker 终态才响应；
   - `POST /delegations`：异步委派，提交成功后立即返回 202；
@@ -119,7 +119,7 @@ Codex native turn
 - 原生 resume（G016 探针，跨进程验证）：
   - Codex：`thread/resume { threadId }` 在新 app-server 进程中被接受，返回旧 thread（含 turns 计数），随后 `turn/start` 能答出上一进程留下的口令。
   - DSH：`session/load` 不存在（`-32601`）；`session/resume { sessionId, cwd }` 被接受，新进程追问同样答出旧口令。
-  - 产品化（G017）：两个适配器声明 `resume: true` 并实现 `resume(nativeId, cwd)`；`Workspace.resumeConversation(project, nativeId, conversationId?)` 接回旧会话；`ConversationStore` 把 `conversationId ↔ nativeId ↔ project` 落盘到 `~/.unified-workspace/conversations.json`（可 `--conversation-store` 覆盖）；`workbench-cli --resume <id>` 使用该映射恢复，启动时打印每个连接的 conversation id。恢复不重放历史，只接回 native 会话本体。
+  - 产品化（G017）：两个适配器声明 `resume: true` 并实现 `resume(nativeId, cwd)`；`Workspace.resumeConversation(project, nativeId, conversationId?)` 接回旧会话；`ConversationStore` 把 `conversationId ↔ nativeId ↔ project` 落盘到 `~/.wax/conversations.json`（可 `--conversation-store` 覆盖）；`workbench-cli --resume <id>` 使用该映射恢复，启动时打印每个连接的 conversation id。恢复不重放历史，只接回 native 会话本体。
 - 本地 API（G018、2026-11-04 拆出 UI）：`/web start` 启动的 HTTP 服务只提供 `GET /api/state`、`/artifacts/<id>` 与可选的 `POST /api/prompt`；`/` 返回 404 并提示 UI 在 `wax-web` 目录（未入库）。默认只读，仅当启动时提供 `controlToken` 才开放写接口，要求 `Authorization: Bearer <token>`。只监听 `127.0.0.1` 并校验 Host；审批和取消仍只在 CLI。每次 `/web start` 生成新 token，打印 API 基址和 token；页面快照在 `wax-web` 目录（仓库外，未入库，不能独立运行）。
 
 ## 5. 验收证据

@@ -1,81 +1,83 @@
-# WAX Apiary neXus
+# WAX Apiary Nexus
 
-**WAX Apiary neXus** — 仓库目录仍是 `wax-hcs`；正式重命名为 `wax-apiary-nexus` 待定。
+**WAX Apiary Nexus** is a lightweight coordination runtime for composing native AI harnesses — Codex app-server, DeepSeek Harness/ACP, and future harnesses — into live, editable flowgraphs.
 
-> **状态（2026-11-04）**：产品名 **WAX Apiary neXus**；v3 架构/契约草案在仓库外 `../docs/architecture-v3.md` 与 `../docs/contracts/composition-runtime-v1.md`；当前代码仍是 G001–G018 原型，v3 尚未实现；G019 已暂停。
+It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-以 **Apiary** 为中心，通过 Adapter 接入原生 AI Harness，并让持续存在的 Conversation 在不同 Composition 之间组合和切换。
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The current `src/` is an earlier prototype; the PheromoneField runtime is not implemented yet.
 
-当前阶段：v3 架构/契约草案完成；当前代码仍是 G001–G018 原型；G019 暂停。
+## Vision
 
-## v3 方向（草案）
+- **Apiary**: a project/workspace with one or more compositions.
+- **Composition**: a live graph of nodes and edges.
+- **PheromoneField**: the runtime state — short-lived values ("Pheromones") moving through the graph, plus node queues and waits.
+- **Bee task nodes**: `Forager` for harness work, `Worker` for local work; `user` for human input.
+- **Fork / Merge / Branch**: explicit control nodes, not implicit fan-out.
+- **No End node**: any node with no outgoing edge is terminal. No Pheromones = `Rest`.
+- **Guard**: native tool approvals and graph-level human review.
+- **Honey**: durable state, transcripts, and artifacts. **log** is the separate append-only history.
 
-- Apiary 里保存多个 Composition（图）；`PheromoneField` 推进；没有 cursor 实例。
-- Composition 是 live graph：`Pheromone` 在 node 的 queue/pending/active/hover；节点执行用启动快照；删活跃节点/边默认拒绝。
-- **没有 End 节点**：任何没有出边的 Node 就是 terminal；没有 Pheromone 就是 **Rest**；`trigger` 创建 Pheromone；不设 start。
-- 任务节点是 **Bee**：`Forager`（harness 任务）、`Worker`（本地程序任务）、`user`；等待统一 `Hover`/`HoverSpec`。
-- `Fork` / `Merge` / `Branch` 显式；Merge 节点等 required；没有 child composition；没有 last-arrival 默认策略。
-- 同一节点两次激活只靠 min interval（>=1000ms）；queue FIFO，coalesce 可选；循环上限用 Counter。
-- `Guard` 绑定 requestId，不跨请求重放；默认 1h 超时，拒绝/取消，不自动 allow。
-- `Honey` 落盘（state/transcript/artifact）；`log` 单独；composition log 不存 prompt/output 正文。
-- 不做 UI/Cordis；custom node 和 adapter 一样外部化；大 daemon 持有 harness adapter。
+## Core ideas
 
-以下构建/测试、项目规范、CLI 工作台等描述的是 G001–G018 原型，不是 v3 实现。
+1. **Native harness first.** Do not simulate what Codex or DSH already does.
+2. **The graph is live.** Edit compositions while they run; active Pheromones and waits are protected.
+3. **Values are short-lived.** A Pheromone is consumed by a node; the node produces new Pheromones. There is no persistent cursor object and no Run instance.
+4. **Terminal is implicit.** A node without an outgoing edge simply stops. There is no special terminal node.
+5. **Forking is explicit.** A Fork node emits one Pheromone per branch; a Merge node waits for required branches and continues once.
+6. **Durable data is Honey.** State snapshots, transcripts, and artifacts are Honey. Operational history is `log`; it never stores prompt/output bodies by default.
+7. **One big daemon.** It owns adapters and the event loop. No per-agent daemon.
+8. **Custom nodes are external.** Like adapters, new node executors live outside the core. No runtime hot-plug.
 
-## 构建与测试
+## Current state
 
-Node.js 26 LTS + npm：
+- The target architecture and contract are written.
+- The repository still contains an earlier prototype (workbench, adapters, flow/delegation experiments). It is useful as protocol evidence, but it is not the target runtime.
+- The new runtime starts from a single-Pheromone vertical slice: trigger → node → terminal/Rest, with queue, pending, min interval, log, and tests.
+- `Fork`, `Merge`, `Worker`, schedules, and the richer input modalities come after the single-Pheromone core is solid.
+
+## Repository layout
+
+```text
+README.md            you are here
+ARCHITECTURE.md      target runtime model
+CONTRACT.md          composition file, runtime state, validation, CLI
+src/                 earlier prototype (adapters, workbench, flow/delegation)
+tests/               prototype tests
+legacy-contract/     earlier adapter/flow/composition/collaboration contracts
+```
+
+`legacy-contract/` is historical. The current design lives at the root in `ARCHITECTURE.md` and `CONTRACT.md`.
+
+## Roadmap
+
+1. **Single-Pheromone core** — PheromoneField, trigger, node consumption/production, terminal/Rest, queue, pending, min interval, logs.
+2. **Durability** — Honey snapshots, transcripts, crash/unknown recovery, live-edit protection.
+3. **Multi-Pheromone** — Fork/Merge/Branch, Worker, schedules, richer user modalities.
+4. **AI editing** — composition edit tools, schema checks, active-reference guards, revision audit.
+5. **Hardening** — observability, session naming, optional UI, performance.
+
+## Build and test the current prototype
+
+Node.js 26 LTS + npm:
 
 ```bash
 npm ci
 npm test
 ```
 
-## 项目规范与本地文档
-
-[AI 工程契约与反过度工程规则](AGENTS.md)规定项目内 AI 工作方式及敏感信息检查要求。
-
-实现或审阅原生 Harness 适配器时，先读 [Harness Adapter 契约](contract/README.md)：能力声明、执行终态、并发与关闭、审批与取消的行为要求，以及可执行一致性检查的入口。
-
-愿景草稿、设计提案、研究笔记、实验报告保存在仓库外的父目录 `docs/`，工作记录在父目录的 `LOG.md`；这些文件可能包含私人上下文，不在本仓库内，也不会进入 Git。仓库的新检出不包含这些本地文件。
-
-G001–G018 已合并并在 Windows 范围完成实现或探针验证；G014（steer/输入队列）与 G016（跨进程 resume）是先探针后决策。复核与限制记录在仓库外的本地 `docs/`；Git 保存代码、测试、必要配置及经过检查的公开说明。
-
-核心研究命题：能否在保留不同 AI Harness 原生 Agent Loop 和 Conversation 的前提下，通过插件化 Adapter 与可组合的协作运行时，实现跨 Harness 的统一管理、动态协作及运行时重组？
-
-## 当前边界
-
-已确定 Project-first、Native Harness First、Conversation 与协作角色解耦，以及安全执行边界上的动态重组方向。当前内核采用 TypeScript + Node.js 26 LTS + npm，复用路线为独立内核（不 fork 现有项目）；Cordis 暂缓采用，数据库及前端框架仍待验证和决定。
-
-目前已有内存内核、DSH ACP / Codex app-server 适配器、双 Harness CLI，以及声明式流程、Composition、委派与本地 JSON API；均在 Windows 范围完成实现与验收，真实原生集成只在 Windows 上运行过。先读官方源码，再用最小实验验证；不把项目宣传、接口声明或上游测试文件当成本地运行结果。
-
-## CLI 工作台（G004）
-
-一个进程内同时保留 DSH 与 Codex 两个命名连接，各自维持自己的原生 Conversation：
+The prototype CLI:
 
 ```bash
-npm run build
-node dist/src/workbench-cli.js <project-dir> --dsh-root <dsh-checkout> --codex-exe <codex-exe>
+npm run demo
+npm run workbench
 ```
 
-命令：`/use` 切换输入目标，`/status` 查看连接，`/approvals` 与 `/approve` 处理审批，`/cancel` 取消执行，`/replace <connection> <execution-id> <instruction...>` 取消后重发，`/transfer <source> <execution-id> <target> [instruction...] [--attach <path>]...` 显式转交一次已完成的 assistant 结果（可补充源 Execution 未登记的附件），`/records` 查看内存转交记录，`/flow run|status|cancel` 运行声明式流程，`/web start [port]|stop|status` 启动/停止/查看本地 JSON API，`/close` 关闭单个连接，`/quit` 全部退出。启动时会打印会话 id，可用 `--resume <id>` 在新进程接回（映射默认存于 `~/.unified-workspace/conversations.json`，可用 `--conversation-store` 覆盖）。缺少一侧时另一侧仍可单独使用。本实验只在 Windows 实测，没有连接配置持久化、通用自动多轮调度或共享文件并发写保证。
+The new runtime will get its own entry point when the single-Pheromone slice lands.
 
-本地 API（`/web start`）绑定 `127.0.0.1`：`GET /api/state` 返回状态快照，`/artifacts/<id>` 返回受控附件（浏览器只拿 artifact id）；每次启动生成一次性 token，打印基址与 token。**页面不在本仓库**：本地 UI 快照在独立目录 `wax-web`（未入库，不能独立运行），本仓库的 `/` 返回 404；带 token 时可 `POST /api/prompt` 提交消息。审批、取消与切换会话仍只在 CLI。`/flow` 的格式、校验与执行语义见 [声明式流程契约](contract/flow.md)；执行结果信封见 [结果内容契约](contract/result.md)。
+## Design principles
 
-声明式流程用 JSON 描述，不写 TypeScript：
-
-```bash
-/flow run examples/flows/review-chain.json
-/flow status
-/flow cancel
-```
-
-支持顺序、条件分叉和跨连接的单层并行汇合；流程数据校验会拒绝环、未知引用、同连接并行分支等。没有循环、嵌套并行、运行中改图或跨重启恢复。示例见 `examples/flows/`，格式、校验与执行语义见 [声明式流程契约](contract/flow.md)。执行结果可通过 `Workbench.getResultEnvelope` 取得文本与本地附件；CLI 会打印附件，但当前没有 Web 展示或附件托管，见 [结果内容契约](contract/result.md)。手动 transfer 会携带源 Execution 的附件；Codex 图片走 `localImage`，DSH 在声明图片能力时走 ACP image，否则保留文本路径清单；Flow 节点可用 `attachments` 引用上游附件。
-
-Composition Runtime（API，G007）：在既有 DSH/Codex 原生会话上运行 `single-chat` 或简单 `debate`，切换策略只增加 Composition 版本、不新建会话；当前没有 CLI/Web 入口，契约见 [composition.md](contract/composition.md)。
-
-Native Collaboration（API，G009）：Codex 通过原生 MCP 工具 `delegate_to_worker` 调用 localhost Gateway，把任务交给 DSH，拿回 Worker Result 后继续自己的原生 turn；另有委派 CLI 入口（G013）：`node dist/src/delegation-cli.js <project-dir>`，可指定 host/worker 方向；仍没有 Web 配置入口，契约见 [collaboration.md](contract/collaboration.md)。
-
-## 本地研究材料
-
-`.research-sources/` 保存在仓库外的父目录，是官方源码参考材料；版本与路径见研究索引。研究材料不属于产品依赖，未安装这些项目的依赖，未启动其服务。
+- Preserve native harness semantics.
+- Prefer a small, boring, recoverable implementation.
+- Do not auto-replay side-effecting operations after uncertain failure.
+- Keep the graph editable, but never silently reroute active work.
+- Separate runtime state (`PheromoneField`) from durable data (`Honey`) and history (`log`).

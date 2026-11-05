@@ -1,6 +1,6 @@
-# Harness Adapter 契约
+# Legacy prototype contracts
 
-> **状态（2026-11-04）**：这些契约描述 G001–G018 原型；v3 模型尚未实现。v3 架构/契约在本地 `docs/architecture-v3.md` 与 `docs/contracts/composition-runtime-v1.md`；尚未进入仓库。
+> **Status**: these documents describe the earlier prototype. The current design is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../CONTRACT.md`](../CONTRACT.md). Do not implement the current target from this folder.
 
 状态：草案（2026-10-30）。适用对象：为本项目实现 `HarnessAdapter` 的人，以及审阅适配器代码的人。
 

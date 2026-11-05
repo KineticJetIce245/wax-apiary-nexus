@@ -7,7 +7,7 @@ import test from 'node:test';
 import { createKernel } from '../src/kernel.js';
 
 function createProjectDirectory(): string {
-  return mkdtempSync(join(tmpdir(), 'unified-workspace-g001-'));
+  return mkdtempSync(join(tmpdir(), 'wax-apiary-nexus-test-'));
 }
 
 test('registers an existing directory and finds it by ID', () => {

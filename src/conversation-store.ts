@@ -30,7 +30,7 @@ const STALE_LOCK_MS = 30_000;
 const heldLocks = new Map<string, { depth: number; token: string }>();
 
 export function defaultConversationStorePath(): string {
-  return join(homedir(), '.unified-workspace', 'conversations.json');
+  return join(homedir(), '.wax', 'conversations.json');
 }
 
 /** Expand a leading `~` or `~/` to the user's home directory. */

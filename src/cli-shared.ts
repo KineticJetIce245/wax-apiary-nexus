@@ -17,6 +17,26 @@ export class CliUsageError extends Error {
   }
 }
 
+/**
+ * The composition file could not be read from disk. It stays a
+ * `CliUsageError` so the human CLI keeps its existing exit-2 behavior; the
+ * typed JSON layer classifies it as an IO failure.
+ */
+export class CompositionReadError extends CliUsageError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CompositionReadError';
+  }
+}
+
+/** The composition file is not JSON or does not satisfy `parseComposition`. */
+export class CompositionParseError extends CliUsageError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CompositionParseError';
+  }
+}
+
 export interface AdapterRequest {
   readonly harness: HarnessKind;
   readonly executable?: string;
@@ -43,21 +63,23 @@ export function readCompositionFile(path: string): LoadedCompositionFile {
   try {
     text = readFileSync(path, 'utf8');
   } catch (error) {
-    throw new CliUsageError(`cannot read composition file ${path}: ${messageOf(error)}`);
+    throw new CompositionReadError(`cannot read composition file ${path}: ${messageOf(error)}`);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    throw new CliUsageError(`composition file ${path} is not valid JSON: ${messageOf(error)}`);
+    throw new CompositionParseError(
+      `composition file ${path} is not valid JSON: ${messageOf(error)}`,
+    );
   }
 
   try {
     return { definition: parseComposition(parsed), text };
   } catch (error) {
     if (error instanceof CompositionValidationError) {
-      throw new CliUsageError(error.message);
+      throw new CompositionParseError(error.message);
     }
     throw error;
   }

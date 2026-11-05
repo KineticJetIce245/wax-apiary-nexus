@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Composition Contract
 
-> **Status**: target contract. The runtime described here is not implemented yet. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, and Stage 3B Worker/Condition worker; the rest of this contract is still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 1. Scope
 
@@ -112,8 +112,14 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 }
 ```
 
-- Local task node; planned after the single-Pheromone core.
-- argv only; no shell string; bounded output; sandbox policy separate.
+- Local task node; implemented in Stage 3B.
+- `command` is a non-empty string; `args` is an array of strings. The process is spawned with `shell: false`; argv is never joined into a shell string.
+- `cwd` defaults to `.` and resolves against the registered project directory. `..` segments are rejected, and the resolved real path (after symlink resolution) must stay inside the project directory.
+- `timeoutMs` is a positive integer, default `60000`. Timeout kills the process tree and fails the activation.
+- stdout and stderr are each capped at 64 KiB. Exceeding either cap terminates the process tree and fails; output is never buffered without a bound.
+- stdout becomes `{ "kind": "text", "text": <stdout> }`. stderr is error metadata, not part of the Value.
+- Non-zero exit is a failed activation; there is no automatic retry. A failure on a Fork branch cancels siblings through the existing fork-failure semantics.
+- Recovery never replays an active worker: it becomes stuck/needs-attention like another non-Forager active node.
 
 ### user
 
@@ -137,7 +143,7 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 - Text mode uses exactly one of `contains` / `equals`.
 - Boolean mode reads `Value.value`.
 - Choice mode compares the selected choice.
-- Worker mode runs argv and branches on the exit code; planned after the core.
+- Worker mode runs the same argv config as a Worker node and branches on the exit code: `0` is `true`, non-zero is `false`. A non-zero exit is not a runtime error. Timeout, spawn failure, cwd rejection and output-cap overflow do fail the activation.
 - Exactly one `true` edge and one `false` edge.
 
 ### Counter
@@ -210,7 +216,7 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 
 - Manual: CLI/API; not stored in the file.
 - Scheduled: `id`, `target`, and schedule config; planned later.
-- Target must be `forager`, `worker`, or `user`; not Condition/Counter/Fork/Merge.
+- Target must be a task node; not Condition/Counter/Fork/Merge. Stage 3B accepts `forager` and `user` trigger targets and defers `worker` triggers rather than adding an untested entry path.
 - A trigger creates a Pheromone at the target node. There is no `start`.
 - Node activations are rate-limited by `lastActivatedAt + minInterval`.
 
@@ -343,6 +349,7 @@ Before running:
 - Merge required branches are unique; combine is valid.
 - Trigger targets are task nodes.
 - Forager connection/prompt are non-empty; user modality is valid; Condition mode is valid; Counter max/step are positive.
+- Worker `command` is non-empty; `args` is a string array; `cwd` is a non-empty string without `..`; `timeoutMs` is a positive integer. Absolute cwd containment and symlink escapes are enforced at activation, when the project directory is known.
 - `minIntervalMs` is at least `1000`.
 - `queueMax` / `queueTtlMs` are positive.
 - Cycles are allowed; terminal nodes are valid.
@@ -364,4 +371,4 @@ wax honey <conversationId> [--json]
 
 ## 13. Implementation status
 
-`src/runtime/` implements the single-Pheromone slice plus Stage 3A Fork/Merge/Branch: composition parse/validation, `PheromoneField` state, `trigger`, consumption/production, terminal/Rest, FIFO queue with pending and `minIntervalMs`, `condition`/`counter`, `user` nodes with `HoverSpec` (answers arriving before the hover are queued, not dropped), Guard hovers for native approvals, and field export/restore. A Fork emits one tagged copy per branch; branch tags survive normal nodes; a Merge groups by `forkId`, waits for its `required` branches, consumes them atomically, and emits one newline-joined text value (`combine: "text"` only in 3A). Joins persist in Honey and count as live references; duplicate, unknown, failed or missing required branches fail the merge and cancel siblings. Optional branches, object/array combine, and merge timeouts are not implemented in 3A and are rejected by validation. Guards are bound to a `requestId`, cancelled after one hour, rejected by default, and refused when a decision arrives early, late or for another request. `src/forager.ts` bridges a Workspace conversation; `src/honey.ts` writes `honey/field.json` atomically, appends a metadata `log.jsonl`, and keeps per-conversation transcripts that the log only references; both rotate. `wax run --resume` restores a field. An `active` Pheromone cannot be reattached: a Forager becomes unknown, other nodes become stuck, and nothing is replayed. `src/revision.ts` refuses edits that orphan live node state. Worker, schedules and richer value modalities are still open.
+`src/runtime/` implements the single-Pheromone slice plus Stage 3A Fork/Merge/Branch and Stage 3B Worker: composition parse/validation, `PheromoneField` state, `trigger`, consumption/production, terminal/Rest, FIFO queue with pending and `minIntervalMs`, `condition`/`counter`, `user` nodes with `HoverSpec` (answers arriving before the hover are queued, not dropped), Guard hovers for native approvals, and field export/restore. A Fork emits one tagged copy per branch; branch tags survive normal nodes; a Merge groups by `forkId`, waits for its `required` branches, consumes them atomically, and emits one newline-joined text value (`combine: "text"` only in 3A). Joins persist in Honey and count as live references; duplicate, unknown, failed or missing required branches fail the merge and cancel siblings. Optional branches, object/array combine, and merge timeouts are not implemented in 3A and are rejected by validation. Guards are bound to a `requestId`, cancelled after one hour, rejected by default, and refused when a decision arrives early, late or for another request. `src/forager.ts` bridges a Workspace conversation; `src/honey.ts` writes `honey/field.json` atomically, appends a metadata `log.jsonl`, and keeps per-conversation transcripts that the log only references; both rotate. `wax run --resume` restores a field. An `active` Pheromone cannot be reattached: a Forager becomes unknown, other nodes (including an active Worker) become stuck, and nothing is replayed. `src/revision.ts` refuses edits that orphan live node state. `src/runtime/worker.ts` runs argv-only Workers with project-contained cwd, a default 60s timeout, 64 KiB caps per stream and process-tree kill; the composition log records program/pid/byte counts but not output bodies. Condition `mode: "worker"` branches on the exit code. Worker triggers, schedules and richer value modalities are still open.

@@ -458,6 +458,7 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 
     const options = {
       executeForager: forager,
+      projectDirectory: project.directory,
       onLog: log.sink,
       onGuard: deps.askApproval ?? askApprovalInteractively,
     };

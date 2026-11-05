@@ -9,6 +9,12 @@ import {
 } from './executor.js';
 import { clonePheromone, createNodeState, isFieldResting, snapshotField } from './field.js';
 import type { RuntimeLogEntry, RuntimeLogSink } from './log.js';
+import {
+  runWorker,
+  workerExitError,
+  WorkerExecutionError,
+  type WorkerResult,
+} from './worker.js';
 import type {
   CompositionDefinition,
   ConditionConfig,
@@ -33,6 +39,11 @@ import type {
 
 export interface RuntimeOptions {
   executeForager: NodeExecutor;
+  /**
+   * The registered project directory. Worker cwd values resolve against it;
+   * without one, a worker activation fails instead of running somewhere else.
+   */
+  projectDirectory?: string;
   /** Injectable clock for tests; defaults to Date.now. */
   now?: () => number;
   onLog?: RuntimeLogSink;
@@ -56,6 +67,8 @@ interface NodeResult {
   value: Value;
   outcome: string;
   branch?: 'true' | 'false' | 'continue' | 'done';
+  /** Extra metadata (program/pid/byte counts) for the completion log. */
+  log?: Partial<RuntimeLogEntry>;
 }
 
 /** The persisted field cannot be applied to this composition. */
@@ -97,6 +110,7 @@ function newTraceId(): string {
 export class PheromoneRuntime {
   private readonly definition: CompositionDefinition;
   private readonly executor: NodeExecutor;
+  private readonly projectDirectory: string | undefined;
   private readonly now: () => number;
   private readonly onLog: RuntimeLogSink | undefined;
   private readonly guardTimeoutMs: number;
@@ -114,6 +128,7 @@ export class PheromoneRuntime {
 
     this.definition = definition;
     this.executor = options.executeForager;
+    this.projectDirectory = options.projectDirectory;
     this.now = options.now ?? Date.now;
     this.onLog = options.onLog;
     this.guardTimeoutMs = options.guardTimeoutMs ?? DEFAULT_GUARD_TIMEOUT_MS;
@@ -493,7 +508,7 @@ export class PheromoneRuntime {
         this.logCompleted(node, pheromone, startedAt, outcome);
       } else {
         const result = await this.runNode(node, pheromone, state);
-        this.logCompleted(node, pheromone, startedAt, result.outcome);
+        this.logCompleted(node, pheromone, startedAt, result.outcome, result.log);
         this.emit(node, pheromone, result);
       }
     } catch (error) {
@@ -528,6 +543,7 @@ export class PheromoneRuntime {
     pheromone: Pheromone,
     startedAt: number,
     outcome: string,
+    extra?: Partial<RuntimeLogEntry>,
   ): void {
     this.log({
       event: 'node.completed',
@@ -537,6 +553,7 @@ export class PheromoneRuntime {
       traceId: pheromone.traceId,
       outcome,
       durationMs: this.now() - startedAt,
+      ...(extra ?? {}),
     });
   }
 
@@ -555,6 +572,7 @@ export class PheromoneRuntime {
       outcome: 'failed',
       durationMs: this.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof WorkerExecutionError ? workerLogFields(error) : {}),
     });
   }
 
@@ -572,7 +590,30 @@ export class PheromoneRuntime {
       return { value: output, outcome: 'ok' };
     }
 
+    if (node.kind === 'worker') {
+      const result = await runWorker(node.config, this.requireProjectDirectory(node));
+      if (result.exitCode !== 0) {
+        throw workerExitError(result);
+      }
+      return {
+        value: { kind: 'text', text: result.stdout },
+        outcome: 'ok',
+        log: workerLogFields(result),
+      };
+    }
+
     if (node.kind === 'condition') {
+      if (node.config.mode === 'worker') {
+        // Non-zero is a false branch here, not a runtime failure.
+        const result = await runWorker(node.config, this.requireProjectDirectory(node));
+        const branch = result.exitCode === 0 ? 'true' : 'false';
+        return {
+          value: pheromone.value,
+          outcome: branch,
+          branch,
+          log: workerLogFields(result),
+        };
+      }
       const branch = evaluateCondition(node.config, pheromone.value);
       return { value: pheromone.value, outcome: branch, branch };
     }
@@ -590,6 +631,15 @@ export class PheromoneRuntime {
     state.state = { ...(state.state ?? {}), count };
     const branch = count >= node.config.max ? 'done' : 'continue';
     return { value: pheromone.value, outcome: branch, branch };
+  }
+
+  private requireProjectDirectory(node: NodeDefinition): string {
+    if (this.projectDirectory === undefined || this.projectDirectory.trim() === '') {
+      throw new Error(
+        `node '${node.id}' is a worker but no project directory is registered`,
+      );
+    }
+    return this.projectDirectory;
   }
 
   private openHover(node: UserNode, pheromone: Pheromone): void {
@@ -1153,7 +1203,27 @@ function branchTags(
   return { forkId: pheromone.forkId, branchId: pheromone.branchId };
 }
 
-function evaluateCondition(config: ConditionConfig, value: Value): 'true' | 'false' {
+/**
+ * Worker metadata safe for the composition log: the program name, pid and byte
+ * counts only. The output bodies stay in the Value (stdout) or the error
+ * (stderr), never in the log.
+ */
+function workerLogFields(
+  worker: WorkerResult | WorkerExecutionError,
+): Partial<RuntimeLogEntry> {
+  return {
+    program: worker.program,
+    ...(worker.pid === undefined ? {} : { pid: worker.pid }),
+    stdoutBytes: worker.stdoutBytes,
+    stderrBytes: worker.stderrBytes,
+    ...(worker.exitCode === undefined ? {} : { exitCode: worker.exitCode }),
+  };
+}
+
+function evaluateCondition(
+  config: Exclude<ConditionConfig, { mode: 'worker' }>,
+  value: Value,
+): 'true' | 'false' {
   if (config.mode === 'boolean') {
     if (value.kind !== 'boolean') {
       throw new Error(`condition 'boolean' expects a boolean value, got '${value.kind}'`);

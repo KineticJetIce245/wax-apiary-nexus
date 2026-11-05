@@ -38,6 +38,18 @@ export interface ForagerConfig {
   prompt: string;
 }
 
+/**
+ * A local task run as an argv array, never a shell string. `cwd` is resolved
+ * against the registered project directory at activation; the default `.`
+ * means the project directory itself.
+ */
+export interface WorkerConfig {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+}
+
 export interface ConditionTextConfig {
   mode: 'text';
   contains?: string;
@@ -53,10 +65,16 @@ export interface ConditionChoiceConfig {
   choice: string;
 }
 
+/** Runs an argv worker and branches on its exit code; non-zero is `false`. */
+export interface ConditionWorkerConfig extends WorkerConfig {
+  mode: 'worker';
+}
+
 export type ConditionConfig =
   | ConditionTextConfig
   | ConditionBooleanConfig
-  | ConditionChoiceConfig;
+  | ConditionChoiceConfig
+  | ConditionWorkerConfig;
 
 export interface CounterConfig {
   max: number;
@@ -67,6 +85,13 @@ export interface ForagerNode {
   id: NodeId;
   kind: 'forager';
   config: ForagerConfig;
+  minIntervalMs: number;
+}
+
+export interface WorkerNode {
+  id: NodeId;
+  kind: 'worker';
+  config: WorkerConfig;
   minIntervalMs: number;
 }
 
@@ -135,6 +160,7 @@ export interface MergeNode {
 
 export type NodeDefinition =
   | ForagerNode
+  | WorkerNode
   | ConditionNode
   | CounterNode
   | UserNode

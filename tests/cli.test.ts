@@ -188,6 +188,54 @@ test('runs a composition to Rest through the fake adapter', async () => {
   assert.equal(adapter.stopCalls, 1);
 });
 
+test('runs a worker through the registered project directory', async () => {
+  const adapter = new FakeAdapter({ output: 'FORAGER' });
+  const captureResult = capture();
+  const state = stateDirectory();
+  const project = projectDirectory();
+  const composition = {
+    schemaVersion: 1,
+    id: 'cli-worker',
+    nodes: {
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start' } },
+      work: {
+        kind: 'worker',
+        config: {
+          command: process.execPath,
+          args: ['-e', 'process.stdout.write("WORKER-CLI-BODY")'],
+        },
+      },
+      done: { kind: 'forager', config: { connection: 'codex', prompt: 'finish {{input}}' } },
+    },
+    edges: [
+      { id: 'e1', from: 'start', to: 'work' },
+      { id: 'e2', from: 'work', to: 'done' },
+    ],
+  };
+
+  const code = await runCli(
+    [...baseArgs(compositionFile(composition), project, state), '--trigger', 'start'],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 0);
+  assert.deepEqual(adapter.prompts, ['start', 'finish WORKER-CLI-BODY']);
+
+  const paths = honeyPaths(state, apiaryForProject(project), 'cli-worker');
+  const entries = readFileSync(paths.log, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const completed = entries.find(
+    (entry) => entry['event'] === 'node.completed' && entry['nodeId'] === 'work',
+  );
+  assert.ok(completed !== undefined);
+  assert.equal(completed['nodeKind'], 'worker');
+  assert.equal(completed['program'], process.execPath);
+  assert.equal(completed['stdoutBytes'], Buffer.byteLength('WORKER-CLI-BODY'));
+  assert.equal(readFileSync(paths.log, 'utf8').includes('WORKER-CLI-BODY'), false);
+});
+
 test('persists honey/field.json and log.jsonl', async () => {
   const adapter = new FakeAdapter({ output: 'OK' });
   const captureResult = capture();

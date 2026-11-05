@@ -34,6 +34,12 @@ export interface RuntimeLogEntry {
   branchId?: string;
   queueDepth?: number;
   durationMs?: number;
+  /** Worker program name only; never the full output body. */
+  program?: string;
+  pid?: number;
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  exitCode?: number;
   outcome?: string;
   error?: string;
   /** The composition log stores only this reference, never transcript bodies. */

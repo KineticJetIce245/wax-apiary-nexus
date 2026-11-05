@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-> **Status**: target design. The PheromoneField single-Pheromone slice and Stage 3A Fork/Merge/Branch are implemented in `src/runtime/`; Worker, schedules and richer value modalities are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
+> **Status**: target design. The PheromoneField single-Pheromone slice, Stage 3A Fork/Merge/Branch, and Stage 3B Worker/Condition worker are implemented in `src/runtime/`; schedules and richer value modalities are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
 
 ## 1. One sentence
 
@@ -91,6 +91,8 @@ A node can enter a **Hover**, represented by a `HoverSpec`:
 
 Only an event matching the hover token can complete it. A native Guard stays at the Forager node and is displayed as a virtual card; it does not move the Pheromone. A graph-level review is a `user` node with a yes/no question, followed by a Condition.
 
+Stage 3B does not open a `worker` hover: a Worker is an awaited child process with a timeout, so there is no durable cross-process wait to represent. The `worker` hover kind remains reserved rather than used speculatively.
+
 Guard decisions are bound to `requestId` and `executionId`. A decision for one request is never replayed onto another. Guard has a timeout (default one hour); timeout rejects or cancels, never auto-allows.
 
 ## 7. Fork, Merge, Branch
@@ -142,4 +144,4 @@ The composition log is separate:
 
 ## 11. Implementation status
 
-The single-Pheromone core and the Stage 3A parallel slice are implemented: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, Fork/Merge/Branch, persisted joins and merge-waiting edit references. Worker, schedules, richer user modalities, optional branches (including object/array combine) and merge timeouts are still open. See [`CONTRACT.md`](CONTRACT.md).
+The single-Pheromone core, the Stage 3A parallel slice, and Stage 3B Worker are implemented: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, Fork/Merge/Branch, persisted joins and merge-waiting edit references, argv-only Worker with bounded output and process-tree kill, and Condition worker mode. Schedules, richer user modalities, optional branches (including object/array combine) and merge timeouts are still open. See [`CONTRACT.md`](CONTRACT.md).

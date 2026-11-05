@@ -14,7 +14,9 @@ import type {
   NodeDefinition,
   NodeId,
   UserConfig,
+  WorkerConfig,
 } from './types.js';
+import { DEFAULT_WORKER_TIMEOUT_MS } from './worker.js';
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -23,8 +25,6 @@ const DEFAULT_QUEUE_MAX = 1024;
 const DEFAULT_QUEUE_TTL_MS = 604_800_000;
 
 const WHEN_VALUES: readonly EdgeWhen[] = ['true', 'false', 'continue', 'done'];
-
-const UNSUPPORTED_NODE_KINDS = ['worker'] as const;
 
 export class CompositionValidationError extends Error {
   readonly issues: readonly string[];
@@ -103,6 +103,95 @@ function parseForagerConfig(
   };
 }
 
+function parseWorkerConfig(
+  config: Record<string, unknown>,
+  path: string,
+  issues: string[],
+  extraFields: readonly string[] = [],
+): WorkerConfig | null {
+  // A Condition uses the same fields plus `mode`; a Worker node does not.
+  pushUnknownFields(
+    config,
+    [...extraFields, 'command', 'args', 'cwd', 'timeoutMs'],
+    path,
+    issues,
+  );
+
+  let valid = true;
+  const command = config['command'];
+  if (!isNonEmptyString(command)) {
+    issues.push(`${path}.command: expected a non-empty string`);
+    valid = false;
+  } else if (command.includes('\0')) {
+    issues.push(`${path}.command: must not contain a NUL character`);
+    valid = false;
+  }
+
+  const rawArgs = config['args'];
+  const args: string[] = [];
+  if (rawArgs !== undefined) {
+    if (!Array.isArray(rawArgs)) {
+      issues.push(`${path}.args: expected an array of strings`);
+      valid = false;
+    } else {
+      rawArgs.forEach((arg, index) => {
+        if (typeof arg !== 'string') {
+          issues.push(`${path}.args[${index}]: expected a string`);
+          valid = false;
+        } else if (arg.includes('\0')) {
+          issues.push(`${path}.args[${index}]: must not contain a NUL character`);
+          valid = false;
+        } else {
+          args.push(arg);
+        }
+      });
+    }
+  }
+
+  const rawCwd = config['cwd'];
+  let cwd = '.';
+  if (rawCwd !== undefined) {
+    if (!isNonEmptyString(rawCwd)) {
+      issues.push(`${path}.cwd: expected a non-empty string`);
+      valid = false;
+    } else if (rawCwd.includes('\0')) {
+      issues.push(`${path}.cwd: must not contain a NUL character`);
+      valid = false;
+    } else if (hasParentSegment(rawCwd)) {
+      issues.push(`${path}.cwd: must not contain '..'`);
+      valid = false;
+    } else {
+      cwd = rawCwd;
+    }
+  }
+
+  const rawTimeout = config['timeoutMs'];
+  let timeoutMs = DEFAULT_WORKER_TIMEOUT_MS;
+  if (rawTimeout !== undefined) {
+    if (!isPositiveInteger(rawTimeout)) {
+      issues.push(`${path}.timeoutMs: expected a positive integer`);
+      valid = false;
+    } else {
+      timeoutMs = rawTimeout;
+    }
+  }
+
+  if (!valid) {
+    return null;
+  }
+  return {
+    command: command as string,
+    args,
+    cwd,
+    timeoutMs,
+  };
+}
+
+function hasParentSegment(value: string): boolean {
+  const segments = process.platform === 'win32' ? value.split(/[\\/]+/) : value.split('/');
+  return segments.includes('..');
+}
+
 function parseConditionConfig(
   config: Record<string, unknown>,
   path: string,
@@ -141,7 +230,15 @@ function parseConditionConfig(
     return { mode: 'choice', choice: config['choice'] as string };
   }
 
-  issues.push(`${path}.mode: expected 'text', 'boolean' or 'choice'`);
+  if (mode === 'worker') {
+    const worker = parseWorkerConfig(config, path, issues, ['mode']);
+    if (worker === null) {
+      return null;
+    }
+    return { mode: 'worker', ...worker };
+  }
+
+  issues.push(`${path}.mode: expected 'text', 'boolean', 'choice' or 'worker'`);
   return null;
 }
 
@@ -398,12 +495,9 @@ function parseNodes(
       issues.push(`${path}.kind: expected a string`);
       continue;
     }
-    if ((UNSUPPORTED_NODE_KINDS as readonly string[]).includes(kind)) {
-      issues.push(`${path}: node kind '${kind}' is not supported yet`);
-      continue;
-    }
     if (
       kind !== 'forager' &&
+      kind !== 'worker' &&
       kind !== 'condition' &&
       kind !== 'counter' &&
       kind !== 'user' &&
@@ -429,6 +523,11 @@ function parseNodes(
     const configPath = `${path}.config`;
     if (kind === 'forager') {
       const parsed = parseForagerConfig(config, configPath, issues);
+      if (parsed !== null) {
+        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
+      }
+    } else if (kind === 'worker') {
+      const parsed = parseWorkerConfig(config, configPath, issues);
       if (parsed !== null) {
         nodes.set(id, { id, kind, config: parsed, minIntervalMs });
       }
@@ -572,7 +671,7 @@ function validateEdgeShape(
       continue;
     }
 
-    if (node.kind === 'forager' || node.kind === 'user') {
+    if (node.kind === 'forager' || node.kind === 'worker' || node.kind === 'user') {
       for (const edge of outgoing) {
         if (edge.when !== undefined) {
           issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);

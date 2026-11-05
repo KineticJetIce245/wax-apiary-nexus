@@ -2,13 +2,24 @@ export { parseComposition, CompositionValidationError } from './definition.js';
 export { createMemoryLog } from './log.js';
 export { renderPrompt, serializeValue } from './executor.js';
 export { FieldRestoreError, GuardDecisionError, PheromoneRuntime } from './runtime.js';
+export {
+  DEFAULT_WORKER_TIMEOUT_MS,
+  MAX_WORKER_OUTPUT_BYTES,
+  resolveWorkerCwd,
+  runWorker,
+  WorkerCwdError,
+  WorkerExecutionError,
+  workerExitError,
+} from './worker.js';
 export type { ExecutionContext, GuardDecision, GuardRequest, NodeExecutor } from './executor.js';
 export type { RuntimeOptions } from './runtime.js';
+export type { WorkerCwdErrorCode, WorkerFailureCode, WorkerResult } from './worker.js';
 export type {
   Attachment,
   CompositionDefaults,
   CompositionDefinition,
   ConditionConfig,
+  ConditionWorkerConfig,
   CounterConfig,
   EdgeDefinition,
   EdgeWhen,
@@ -37,5 +48,7 @@ export type {
   UserModality,
   UserNode,
   Value,
+  WorkerConfig,
+  WorkerNode,
 } from './types.js';
 export type { RuntimeEvent, RuntimeLogEntry, RuntimeLogSink } from './log.js';

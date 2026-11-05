@@ -59,12 +59,12 @@ test('keeps a stable graph revision and changes it when the graph changes', () =
   assert.notEqual(first.graphRevision, changed.graphRevision);
 });
 
-test('rejects unsupported node kinds instead of silently ignoring them', () => {
+test('rejects unknown node kinds instead of silently ignoring them', () => {
   const issues = issuesOf(
-    minimal({ nodes: { run: { kind: 'worker', config: { command: 'node' } } } }),
+    minimal({ nodes: { run: { kind: 'scheduler', config: {} } } }),
   );
 
-  assert.ok(issues.some((issue) => issue.includes("'worker' is not supported")));
+  assert.ok(issues.some((issue) => issue.includes("unknown node kind 'scheduler'")));
 });
 
 test('rejects unknown node kinds, unknown fields and malformed ids', () => {

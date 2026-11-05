@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Composition Contract
 
-> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches, Stage 5B Merge timeout, Stage 5C structured Value and object/array Merge combine, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring; scheduled `user` triggers and the rest of this contract are still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches, Stage 5B Merge timeout, Stage 5C structured Value and object/array Merge combine, Stage 5D nested Fork/Merge lineage, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring; scheduled `user` triggers and the rest of this contract are still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 1. Scope
 
@@ -179,7 +179,7 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 ```
 
 - Consumes one Pheromone, emits one per branch.
-- Each emitted Pheromone copies the Value and gets `forkId` + `branchId`.
+- Each emitted Pheromone copies the Value. It carries the incoming `lineage` plus a new `{forkId, branchId}` tag; `forkId`/`branchId` stay present and point at the last tag. A top-level Fork's lineage has one tag.
 - Branches have unique ids; `to` must exist.
 - Fork has no normal default edge.
 
@@ -197,12 +197,14 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 }
 ```
 
-- Waits for the required branch Pheromones, grouped by `forkId`.
+- Waits for the required branch Pheromones, grouped by the current top `forkId`.
+- All arrivals for one `forkId` must agree on the parent lineage (the incoming lineage without its last tag). A disagreement fails that fork; the enclosing lineage is not cancelled.
 - Consumes all required Pheromones atomically and emits one combined Pheromone as soon as the required set is complete; it never waits for an optional branch.
+- The output pops the current tag: a nested Merge restores the parent lineage (outer tags), while a top-level Merge emits with no `forkId`/`branchId`/`lineage`.
 - `optional` defaults to `[]`. Required and optional branch ids must each be unique and must not overlap.
 - `timeoutMs` defaults to `600000` and is a positive integer no larger than `2147483647`. The deadline starts on the first branch arrival for one `forkId` and is persisted as an absolute `deadlineAt`.
 - Required branches that arrive before the deadline emit normally; the timeout no longer applies to that join. When the deadline is reached with required branches missing, the fork fails: queue/pending/hover siblings are cancelled, active work is not, nothing is emitted, and `merge.timed-out` / `merge.failed` are logged.
-- `combine`: `text` (default), `object`, or `array`. `text` joins the required branches in `required` order, then the optional branches that already arrived in `optional` config order, with newlines. `object` emits `{kind:"structured", value:{[branchId]: Value}}` and `array` emits `{kind:"structured", value: Value[]}`, both in the same required-then-arrived-optional order. The Merge output drops the `forkId`/`branchId` tags; nested lineage is deferred. Attachment semantics inside `structured` are not defined.
+- `combine`: `text` (default), `object`, or `array`. `text` joins the required branches in `required` order, then the optional branches that already arrived in `optional` config order, with newlines. `object` emits `{kind:"structured", value:{[branchId]: Value}}` and `array` emits `{kind:"structured", value: Value[]}`, both in the same required-then-arrived-optional order. Attachment semantics inside `structured` are not defined.
 - An optional branch that fails or becomes unknown is logged (`merge.optional-failed`) and dropped; it never fails the required set.
 - A completed join is kept as a persisted tombstone with `completedAt`. A timed-out join is kept as a persisted tombstone with an empty `arrived` list and `timedOutAt`. A late optional arrival is dropped and logged as `merge.optional-dropped`; a late required arrival is logged as `merge.failed` / `late-required` and never emits a second Pheromone. Completed and timed-out tombstones do not count as Merge-waiting references or as Rest blockers, and are bounded to one hour and 64 per merge node.
 - `failMissingJoins` never fails an incomplete join before its deadline; the field stays non-Rest while the join waits.
@@ -266,11 +268,14 @@ type Value =
 ## 7. PheromoneField
 
 ```ts
+type BranchTag = { forkId: string; branchId: string };
+
 type Pheromone = {
   id: string;
   traceId: string;
-  forkId?: string;
-  branchId?: string;
+  forkId?: string;      // compatibility: last lineage tag
+  branchId?: string;    // compatibility: last lineage tag
+  lineage?: BranchTag[]; // outer-to-inner, last = current
   value: Value;
   at: string;
 };
@@ -294,7 +299,7 @@ type NodeState = {
 };
 ```
 
-`JoinState` holds the branch arrivals for one `forkId`: `arrived`, an optional absolute epoch-ms `deadlineAt` for an incomplete join, and an optional `completedAt` or `timedOutAt` when the join is closed. A closed join holds no Pheromones; closed joins are tombstones, not live work.
+`JoinState` holds the branch arrivals for one `forkId`: `lineage` (the shared parent lineage, absent at top level), `arrived`, an optional absolute epoch-ms `deadlineAt` for an incomplete join, and an optional `completedAt` or `timedOutAt` when the join is closed. A closed join holds no Pheromones; closed joins are tombstones, not live work, and keep their parent lineage in Honey so a restored tombstone still drops a late branch for that fork. A Pheromone with a lineage always has `forkId`/`branchId` equal to its last tag; a pre-5D flat tag is read as a one-element lineage.
 
 There is no cursor object and no activation count.
 
@@ -455,4 +460,6 @@ Stage 5A adds optional Merge branches with the existing text combine. `MergeConf
 
 Stage 5B adds Merge `timeoutMs` and its persistence/wake plumbing. `MergeConfig.timeoutMs` defaults to `600000` and must be a positive integer no larger than `2147483647`; the parsed config always carries it, so every merge composition gets a new graph revision and a pre-5B merge field needs a fresh run instead of `--resume` (5A completed tombstones still parse and restore). The first branch arrival for a `forkId` records an absolute `deadlineAt`; an arrival that would complete the required set after that instant is timed out instead of emitted. `pump()` calls `expireDueJoins`, which turns a due incomplete join into a persisted tombstone (`timedOutAt`, empty `arrived`, no `deadlineAt`), logs `merge.timed-out`, and fails its fork with `merge.failed` / `timed-out`; queue/pending/hover siblings are cancelled, active siblings are left to finish, and nothing is emitted. `failMissingJoins` skips an incomplete join until its deadline, so a quiet field with no in-flight branch stays non-Rest instead of failing early. `failFork` removes incomplete joins but keeps closed tombstones, so a late active sibling cannot reopen a completed or timed-out join. Completed and timed-out tombstones share the 5A one-hour/64 bound and are ignored by `isFieldResting` and `findActiveReferences`. `PheromoneRuntime.nextWakeAt()` returns the earliest incomplete-join deadline; `wax run` sleeps until it (or an earlier rate-limited pending branch) when no hover is left, while the daemon keeps its 500 ms heartbeat. Restoring an unexpired join resumes with its original deadline; restoring an expired one fails it immediately.
 
-Stage 5C adds the `structured` Value and Merge `combine: "object" | "array"`. `Value` gains `{kind:"structured", value: JsonValue}`, where `JsonValue` is JSON-safe only: null, boolean, finite number, string, array, or plain object. `src/runtime/json-value.ts` rejects undefined, functions, BigInt, Symbol, cycles and non-finite numbers; the runtime applies it to `trigger` and executor output, and `src/honey.ts` revalidates it on load. Existing Value objects are accepted inside a structured payload because they are JSON-safe. `serializeValue` emits `JSON.stringify`, so the Forager prompt, Condition text mode and text Merge combine share one rendering. A Merge with `combine:"object"` emits `{kind:"structured", value:{[branchId]: Value}}`; `"array"` emits `{kind:"structured", value: Value[]}`. Both use required order followed by the optional branches that already arrived in optional config order, and the Merge output still drops the fork/branch tags. `text` is unchanged, required/optional/timeout semantics are unchanged, and nested lineage and attachment semantics inside `structured` are deferred.
+Stage 5C adds the `structured` Value and Merge `combine: "object" | "array"`. `Value` gains `{kind:"structured", value: JsonValue}`, where `JsonValue` is JSON-safe only: null, boolean, finite number, string, array, or plain object. `src/runtime/json-value.ts` rejects undefined, functions, BigInt, Symbol, cycles and non-finite numbers; the runtime applies it to `trigger` and executor output, and `src/honey.ts` revalidates it on load. Existing Value objects are accepted inside a structured payload because they are JSON-safe. `serializeValue` emits `JSON.stringify`, so the Forager prompt, Condition text mode and text Merge combine share one rendering. A Merge with `combine:"object"` emits `{kind:"structured", value:{[branchId]: Value}}`; `"array"` emits `{kind:"structured", value: Value[]}`. Both use required order followed by the optional branches that already arrived in optional config order. `text` is unchanged, required/optional/timeout semantics are unchanged, and attachment semantics inside `structured` are deferred.
+
+Stage 5D adds nested Fork/Merge lineage without changing combine, optional or timeout semantics. `Pheromone` gains `lineage?: BranchTag[]` (`BranchTag = {forkId, branchId}`), outer-to-inner with the last tag as the current fork; `forkId`/`branchId` remain and are kept equal to it. A Fork appends a tag to the incoming lineage, a normal node reproduces it, and a Merge keys `NodeState.joins` by the current top `forkId`. Every arrival for a join must share the same parent lineage (the incoming lineage minus its last tag); a mismatch fails that `forkId` only. `JoinState` and `PersistedJoinState` carry the parent `lineage`, and `finishMerge` emits with it: nested output restores the outer tags, top-level output is untagged. `failFork` continues to match only the current `forkId`, so an inner failure or timeout cannot cancel an outer branch. Completed and timed-out tombstones retain their parent lineage and still block late reopens for their fork, including after restore. `src/honey.ts` parses and validates tag shape, the flat/last-tag agreement, and join-lineage agreement; a pre-5D flat tag is promoted to a one-element lineage. `src/composition-edit.ts` carries join lineage into the active-reference snapshot; no new dependency, node kind or Value kind was introduced.

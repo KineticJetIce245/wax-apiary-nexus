@@ -40,11 +40,24 @@ export type Value =
   | { kind: 'attachments'; attachments: Attachment[] }
   | { kind: 'structured'; value: JsonValue };
 
+/**
+ * One Fork branch a Pheromone belongs to. A nested Fork appends its tag to the
+ * incoming lineage, so the array is ordered outer-to-inner and the last tag is
+ * the current fork. Stage 5D adds the lineage; `forkId`/`branchId` stay on the
+ * Pheromone for compatibility and always point at the last tag.
+ */
+export interface BranchTag {
+  forkId: string;
+  branchId: string;
+}
+
 export interface Pheromone {
   id: string;
   traceId: string;
   forkId?: string;
   branchId?: string;
+  /** Fork ancestry, outer-to-inner; absent for an untagged Pheromone. */
+  lineage?: readonly BranchTag[];
   value: Value;
   at: string;
 }
@@ -264,9 +277,15 @@ export interface CompositionDefinition {
  * dropped rather than reopening the join. Stage 5B adds the same tombstone for a
  * deadline failure (`timedOutAt`). `deadlineAt` is an absolute epoch-ms time set
  * when the first branch of the fork arrives; it is cleared when the join closes.
+ *
+ * Stage 5D adds `lineage`: the parent lineage shared by every arrival, i.e. the
+ * arrived Pheromones' lineage with their current (last) tag removed. A nested
+ * Merge emits with this lineage restored; a top-level join has none.
  */
 export interface JoinState {
   forkId: string;
+  /** Parent lineage; absent when the joined fork is top-level. */
+  lineage?: readonly BranchTag[];
   arrived: Map<string, Pheromone>;
   completedAt?: string;
   deadlineAt?: number;
@@ -275,6 +294,7 @@ export interface JoinState {
 
 export interface JoinStateSnapshot {
   forkId: string;
+  lineage?: readonly BranchTag[];
   arrived: readonly Pheromone[];
   completedAt?: string;
   deadlineAt?: number;
@@ -317,6 +337,8 @@ export interface PheromoneFieldSnapshot {
 
 /** JSON shape of `honey/field.json`. */
 export interface PersistedJoinState {
+  /** Parent lineage restored by this join's Merge; absent at top level. */
+  lineage?: BranchTag[];
   arrived: Pheromone[];
   /** Set on a completed tombstone; its `arrived` list is empty. */
   completedAt?: string;

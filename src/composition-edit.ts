@@ -292,6 +292,7 @@ function snapshotFromPersisted(field: PersistedField): PheromoneFieldSnapshot {
         joins[forkId] = {
           forkId,
           arrived: join.arrived,
+          ...(join.lineage === undefined ? {} : { lineage: join.lineage }),
           ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
           ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
           ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),

@@ -17,6 +17,7 @@ import {
   type WorkerResult,
 } from './worker.js';
 import type {
+  BranchTag,
   CompositionDefinition,
   ConditionConfig,
   EdgeDefinition,
@@ -328,6 +329,7 @@ export class PheromoneRuntime {
             forkId,
             {
               arrived: [...join.arrived.values()].map(clonePheromone),
+              ...(join.lineage === undefined ? {} : { lineage: copyLineage(join.lineage) }),
               ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
               ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
               ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),
@@ -421,9 +423,9 @@ export class PheromoneRuntime {
         continue;
       }
       const state = this.stateOf(id);
-      state.queue = saved.queue.map(clonePheromone);
+      state.queue = saved.queue.map(normalizePheromone);
       if (saved.pending !== undefined) {
-        state.pending = clonePheromone(saved.pending);
+        state.pending = normalizePheromone(saved.pending);
       }
       if (saved.lastActivatedAt !== undefined) {
         state.lastActivatedAt = saved.lastActivatedAt;
@@ -455,7 +457,7 @@ export class PheromoneRuntime {
         saved.hoverPheromone !== undefined
       ) {
         state.hover = structuredClone(saved.hover);
-        state.hoverPheromone = clonePheromone(saved.hoverPheromone);
+        state.hoverPheromone = normalizePheromone(saved.hoverPheromone);
         resumedHovers.push(id);
       } else if (saved.hover !== undefined) {
         // A Guard cannot be answered after the native request is gone: it is
@@ -967,19 +969,28 @@ export class PheromoneRuntime {
       return;
     }
 
-    // A branch keeps its forkId/branchId through normal nodes so a downstream
-    // Merge can still group it. A Merge output deliberately drops both tags.
-    this.pushPheromone(edge.to, pheromone.traceId, result.value, branchTags(pheromone));
+    // A branch keeps its full lineage through normal nodes so a downstream
+    // Merge can still group it and restore the enclosing tags on output.
+    const lineage = currentLineage(pheromone);
+    this.pushPheromone(
+      edge.to,
+      pheromone.traceId,
+      result.value,
+      lineage.length === 0 ? undefined : lineage,
+    );
   }
 
   /** Fork consumes one Pheromone and emits one tagged copy per branch. */
   private emitFork(node: ForkNode, pheromone: Pheromone): void {
     const forkId = `fk_${randomUUID()}`;
+    // Stage 5D: a nested Fork appends its tag to the incoming lineage instead
+    // of overwriting the enclosing fork/branch tags.
+    const parentLineage = currentLineage(pheromone);
     for (const branch of node.config.branches) {
-      this.pushPheromone(branch.to, pheromone.traceId, pheromone.value, {
-        forkId,
-        branchId: branch.id,
-      });
+      this.pushPheromone(branch.to, pheromone.traceId, pheromone.value, [
+        ...parentLineage,
+        { forkId, branchId: branch.id },
+      ]);
     }
   }
 
@@ -987,7 +998,7 @@ export class PheromoneRuntime {
     targetId: NodeId,
     traceId: string,
     value: Value,
-    tags?: { forkId: string; branchId: string },
+    lineage?: readonly BranchTag[],
   ): void {
     const targetNode = this.definition.nodes.get(targetId);
     if (targetNode === undefined) {
@@ -995,12 +1006,18 @@ export class PheromoneRuntime {
     }
 
     const targetState = this.stateOf(targetId);
+    const current = lineage === undefined ? undefined : currentTag(lineage);
     const emitted: Pheromone = {
       id: newPheromoneId(),
       traceId,
       value: structuredClone(value),
       at: this.iso(),
-      ...(tags ?? {}),
+      ...(current === undefined
+        ? {}
+        : { forkId: current.forkId, branchId: current.branchId }),
+      ...(lineage === undefined || lineage.length === 0
+        ? {}
+        : { lineage: copyLineage(lineage) }),
     };
     targetState.queue.push(emitted);
     this.resting = false;
@@ -1011,14 +1028,20 @@ export class PheromoneRuntime {
       nodeKind: targetNode.kind,
       pheromoneId: emitted.id,
       traceId: emitted.traceId,
-      ...(tags ?? {}),
+      ...(current === undefined
+        ? {}
+        : { forkId: current.forkId, branchId: current.branchId }),
       queueDepth: targetState.queue.length,
     });
   }
 
   private arriveAtMerge(node: MergeNode, pheromone: Pheromone): string {
-    const forkId = pheromone.forkId;
-    const branchId = pheromone.branchId;
+    // Stage 5D: the current fork is the last lineage tag. The parent lineage is
+    // shared by every branch of that fork and becomes the Merge output lineage.
+    const lineage = currentLineage(pheromone);
+    const current = currentTag(lineage);
+    const forkId = current?.forkId;
+    const branchId = current?.branchId;
     if (forkId === undefined || branchId === undefined) {
       this.log({
         event: 'merge.failed',
@@ -1030,6 +1053,7 @@ export class PheromoneRuntime {
       });
       return 'failed';
     }
+    const parentLineage = lineage.slice(0, -1);
 
     const isRequired = node.config.required.includes(branchId);
     const isOptional = node.config.optional.includes(branchId);
@@ -1098,16 +1122,23 @@ export class PheromoneRuntime {
       // is stored as an absolute instant so it survives a restart unchanged.
       join = {
         forkId,
+        ...(parentLineage.length === 0 ? {} : { lineage: copyLineage(parentLineage) }),
         arrived: new Map<string, Pheromone>(),
         deadlineAt: this.now() + node.config.timeoutMs,
       };
       joins.set(forkId, join);
+    } else if (!sameLineage(join.lineage ?? [], parentLineage)) {
+      // Every branch of one joined fork must come from the same enclosing
+      // lineage. A mismatch is corruption, not a new join: fail only this
+      // fork and leave the enclosing lineage untouched.
+      this.failFork(forkId, 'lineage-mismatch', node);
+      return 'failed';
     }
     if (join.arrived.has(branchId)) {
       this.failFork(forkId, 'duplicate-branch', node);
       return 'failed';
     }
-    join.arrived.set(branchId, clonePheromone(pheromone));
+    join.arrived.set(branchId, normalizePheromone(pheromone));
 
     const missing = node.config.required.filter((required) => !join.arrived.has(required));
     if (missing.length > 0) {
@@ -1148,7 +1179,7 @@ export class PheromoneRuntime {
     join.completedAt = this.iso();
     this.pruneJoinTombstones(node);
 
-    this.finishMerge(node, ordered, pheromone.traceId);
+    this.finishMerge(node, ordered, pheromone.traceId, parentLineage);
     return 'merged';
   }
 
@@ -1197,7 +1228,7 @@ export class PheromoneRuntime {
         this.pruneJoinTombstones(node);
         const first = ordered[0];
         if (first !== undefined) {
-          this.finishMerge(node, ordered, first.traceId);
+          this.finishMerge(node, ordered, first.traceId, join.lineage ?? []);
         }
         return true;
       }
@@ -1339,7 +1370,12 @@ export class PheromoneRuntime {
     return false;
   }
 
-  private finishMerge(node: MergeNode, arrived: readonly Pheromone[], traceId: string): void {
+  private finishMerge(
+    node: MergeNode,
+    arrived: readonly Pheromone[],
+    traceId: string,
+    parentLineage: readonly BranchTag[],
+  ): void {
     const value = combineMergeValues(node.config.combine, arrived);
     const first = arrived[0];
     this.log({
@@ -1357,7 +1393,14 @@ export class PheromoneRuntime {
     if (edge === undefined) {
       return;
     }
-    this.pushPheromone(edge.to, traceId, value);
+    // Stage 5D: a top-level Merge emits no tags; a nested Merge restores the
+    // parent lineage so the enclosing Merge can still group its branch.
+    this.pushPheromone(
+      edge.to,
+      traceId,
+      value,
+      parentLineage.length === 0 ? undefined : parentLineage,
+    );
   }
 
   /**
@@ -1528,23 +1571,52 @@ export class PheromoneRuntime {
     }
   }
 
+  private restoreJoinLineage(input: unknown, path: string): BranchTag[] | undefined {
+    if (input === undefined) {
+      return undefined;
+    }
+    if (!Array.isArray(input) || input.length === 0) {
+      throw new FieldRestoreError(`${path} lineage: expected a non-empty array`);
+    }
+    return input.map((entry, index) => {
+      if (typeof entry !== 'object' || entry === null) {
+        throw new FieldRestoreError(`${path} lineage[${String(index)}]: expected a branch tag`);
+      }
+      const forkId = (entry as { forkId?: unknown }).forkId;
+      const branchId = (entry as { branchId?: unknown }).branchId;
+      if (typeof forkId !== 'string' || forkId === '') {
+        throw new FieldRestoreError(
+          `${path} lineage[${String(index)}].forkId: expected a non-empty string`,
+        );
+      }
+      if (typeof branchId !== 'string' || branchId === '') {
+        throw new FieldRestoreError(
+          `${path} lineage[${String(index)}].branchId: expected a non-empty string`,
+        );
+      }
+      return { forkId, branchId };
+    });
+  }
+
   private restoreJoins(
     node: MergeNode,
     saved: Record<string, PersistedJoinState>,
   ): Map<string, JoinState> {
     const joins = new Map<string, JoinState>();
     for (const [forkId, entry] of Object.entries(saved)) {
+      const joinPath = `persisted join '${forkId}' on node '${node.id}'`;
       if (forkId === '') {
         throw new FieldRestoreError(`persisted join on node '${node.id}' has an empty forkId`);
       }
       if (!Array.isArray(entry.arrived)) {
         throw new FieldRestoreError(
-          `persisted join '${forkId}' on node '${node.id}' has no branch Pheromones`,
+          `${joinPath} has no branch Pheromones`,
         );
       }
+      const parentLineage = this.restoreJoinLineage(entry.lineage, joinPath);
       if (entry.completedAt !== undefined && entry.timedOutAt !== undefined) {
         throw new FieldRestoreError(
-          `persisted join '${forkId}' on node '${node.id}' is both completed and timed out`,
+          `${joinPath} is both completed and timed out`,
         );
       }
       if (entry.completedAt !== undefined) {
@@ -1554,9 +1626,7 @@ export class PheromoneRuntime {
           typeof entry.completedAt !== 'string' ||
           !Number.isFinite(Date.parse(entry.completedAt))
         ) {
-          throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' has an invalid completedAt`,
-          );
+          throw new FieldRestoreError(`${joinPath} has an invalid completedAt`);
         }
         if (entry.arrived.length > 0) {
           throw new FieldRestoreError(
@@ -1565,6 +1635,7 @@ export class PheromoneRuntime {
         }
         joins.set(forkId, {
           forkId,
+          ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
           arrived: new Map<string, Pheromone>(),
           completedAt: entry.completedAt,
         });
@@ -1577,9 +1648,7 @@ export class PheromoneRuntime {
           typeof entry.timedOutAt !== 'string' ||
           !Number.isFinite(Date.parse(entry.timedOutAt))
         ) {
-          throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' has an invalid timedOutAt`,
-          );
+          throw new FieldRestoreError(`${joinPath} has an invalid timedOutAt`);
         }
         if (entry.arrived.length > 0) {
           throw new FieldRestoreError(
@@ -1588,6 +1657,7 @@ export class PheromoneRuntime {
         }
         joins.set(forkId, {
           forkId,
+          ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
           arrived: new Map<string, Pheromone>(),
           timedOutAt: entry.timedOutAt,
         });
@@ -1595,23 +1665,23 @@ export class PheromoneRuntime {
       }
       if (entry.arrived.length === 0) {
         throw new FieldRestoreError(
-          `persisted join '${forkId}' on node '${node.id}' has no branch Pheromones`,
+          `${joinPath} has no branch Pheromones`,
         );
       }
       if (entry.deadlineAt === undefined || !Number.isSafeInteger(entry.deadlineAt)) {
-        throw new FieldRestoreError(
-          `persisted join '${forkId}' on node '${node.id}' has no valid deadlineAt`,
-        );
+        throw new FieldRestoreError(`${joinPath} has no valid deadlineAt`);
       }
 
       const arrived = new Map<string, Pheromone>();
+      let derivedParent: BranchTag[] | undefined;
       for (const pheromone of entry.arrived) {
-        if (pheromone.forkId !== forkId) {
+        const normalized = normalizePheromone(pheromone);
+        if (normalized.forkId !== forkId) {
           throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' holds a Pheromone for '${String(pheromone.forkId)}'`,
+            `persisted join '${forkId}' on node '${node.id}' holds a Pheromone for '${String(normalized.forkId)}'`,
           );
         }
-        const branchId = pheromone.branchId;
+        const branchId = normalized.branchId;
         if (branchId === undefined) {
           throw new FieldRestoreError(
             `persisted join '${forkId}' on node '${node.id}' holds an untagged Pheromone`,
@@ -1630,9 +1700,31 @@ export class PheromoneRuntime {
             `persisted join '${forkId}' on node '${node.id}' repeats branch '${branchId}'`,
           );
         }
-        arrived.set(branchId, clonePheromone(pheromone));
+        const lineage = currentLineage(normalized);
+        const parent = copyLineage(lineage.slice(0, -1));
+        if (derivedParent === undefined) {
+          derivedParent = parent;
+        } else if (!sameLineage(derivedParent, parent)) {
+          throw new FieldRestoreError(
+            `persisted join '${forkId}' on node '${node.id}' mixes parent lineages`,
+          );
+        }
+        arrived.set(branchId, normalized);
       }
-      joins.set(forkId, { forkId, arrived, deadlineAt: entry.deadlineAt });
+      const effectiveParent = derivedParent ?? [];
+      if (parentLineage !== undefined && !sameLineage(parentLineage, effectiveParent)) {
+        throw new FieldRestoreError(
+          `${joinPath} lineage does not match its branch Pheromones`,
+        );
+      }
+      joins.set(forkId, {
+        forkId,
+        ...(effectiveParent.length === 0
+          ? {}
+          : { lineage: copyLineage(effectiveParent) }),
+        arrived,
+        deadlineAt: entry.deadlineAt,
+      });
     }
     return joins;
   }
@@ -1672,13 +1764,62 @@ export class PheromoneRuntime {
   }
 }
 
-function branchTags(
-  pheromone: Pheromone,
-): { forkId: string; branchId: string } | undefined {
-  if (pheromone.forkId === undefined || pheromone.branchId === undefined) {
-    return undefined;
+/**
+ * The full lineage of a Pheromone, outer-to-inner. A field restored from an
+ * older Honey may carry only the flat forkId/branchId tags; those are one
+ * top-level tag and are promoted here.
+ */
+function currentLineage(pheromone: Pheromone): readonly BranchTag[] {
+  if (pheromone.lineage !== undefined && pheromone.lineage.length > 0) {
+    return pheromone.lineage;
   }
-  return { forkId: pheromone.forkId, branchId: pheromone.branchId };
+  if (pheromone.forkId !== undefined && pheromone.branchId !== undefined) {
+    return [{ forkId: pheromone.forkId, branchId: pheromone.branchId }];
+  }
+  return [];
+}
+
+function currentTag(lineage: readonly BranchTag[]): BranchTag | undefined {
+  return lineage.at(-1);
+}
+
+function sameLineage(left: readonly BranchTag[], right: readonly BranchTag[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (a?.forkId !== b?.forkId || a?.branchId !== b?.branchId) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function copyLineage(lineage: readonly BranchTag[]): BranchTag[] {
+  return lineage.map((tag) => ({ forkId: tag.forkId, branchId: tag.branchId }));
+}
+
+/**
+ * Keeps the flat compatibility tags pointing at the last lineage tag and
+ * promotes a legacy flat tag into a one-element lineage. The input is cloned.
+ */
+function normalizePheromone(pheromone: Pheromone): Pheromone {
+  const lineage = currentLineage(pheromone);
+  const normalized = clonePheromone(pheromone);
+  delete normalized.lineage;
+  if (lineage.length === 0) {
+    return normalized;
+  }
+  const tag = currentTag(lineage);
+  if (tag === undefined) {
+    return normalized;
+  }
+  normalized.lineage = copyLineage(lineage);
+  normalized.forkId = tag.forkId;
+  normalized.branchId = tag.branchId;
+  return normalized;
 }
 
 /**

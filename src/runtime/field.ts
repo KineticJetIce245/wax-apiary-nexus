@@ -118,6 +118,9 @@ export function snapshotField(
           {
             forkId,
             arrived: [...join.arrived.values()].map(clonePheromone),
+            ...(join.lineage === undefined
+              ? {}
+              : { lineage: join.lineage.map((tag) => ({ ...tag })) }),
             ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
             ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
             ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),

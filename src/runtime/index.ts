@@ -27,6 +27,7 @@ export type { RuntimeOptions } from './runtime.js';
 export type { WorkerCwdErrorCode, WorkerFailureCode, WorkerResult } from './worker.js';
 export type {
   Attachment,
+  BranchTag,
   CompositionDefaults,
   CompositionDefinition,
   ConditionConfig,

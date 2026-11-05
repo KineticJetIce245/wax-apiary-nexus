@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { expandHomePath } from './conversation-store.js';
 import { assertJsonValue } from './runtime/json-value.js';
 import type {
+  BranchTag,
   HoverSpec,
   PersistedField,
   PersistedJoinState,
@@ -73,6 +74,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function parseBranchTag(input: unknown, path: string): BranchTag {
+  if (!isRecord(input)) {
+    throw new Error(`${path}: expected a branch tag object`);
+  }
+  const forkId = input['forkId'];
+  const branchId = input['branchId'];
+  if (typeof forkId !== 'string' || forkId === '') {
+    throw new Error(`${path}.forkId: expected a non-empty string`);
+  }
+  if (typeof branchId !== 'string' || branchId === '') {
+    throw new Error(`${path}.branchId: expected a non-empty string`);
+  }
+  return { forkId, branchId };
+}
+
+/**
+ * A lineage is outer-to-inner. An empty array is rejected: an untagged
+ * Pheromone omits `lineage` entirely, so there is only one representation for
+ * "no enclosing fork".
+ */
+function parseLineage(input: unknown, path: string): BranchTag[] | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new Error(`${path}: expected a non-empty array of branch tags`);
+  }
+  return input.map((entry, index) => parseBranchTag(entry as unknown, `${path}[${String(index)}]`));
+}
+
+function sameLineage(left: readonly BranchTag[], right: readonly BranchTag[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (a?.forkId !== b?.forkId || a?.branchId !== b?.branchId) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function assertValueShape(value: unknown, path: string): asserts value is Value {
   if (!isRecord(value)) {
     throw new Error(`${path}: expected a value object`);
@@ -126,13 +171,55 @@ function parsePheromone(input: unknown, path: string): Pheromone {
   }
   assertValueShape(input['value'], `${path}.value`);
 
+  const rawForkId = input['forkId'];
+  const rawBranchId = input['branchId'];
+  if (rawForkId !== undefined && (typeof rawForkId !== 'string' || rawForkId === '')) {
+    throw new Error(`${path}.forkId: expected a non-empty string`);
+  }
+  if (rawBranchId !== undefined && (typeof rawBranchId !== 'string' || rawBranchId === '')) {
+    throw new Error(`${path}.branchId: expected a non-empty string`);
+  }
+  const flatForkId = rawForkId as string | undefined;
+  const flatBranchId = rawBranchId as string | undefined;
+
+  let lineage = parseLineage(input['lineage'], `${path}.lineage`);
+  if (lineage === undefined) {
+    // Stage 5D reads a pre-5D flat tag as a one-level lineage. The flat tag
+    // remains the compatibility handle and still points at the last tag.
+    if (flatForkId !== undefined && flatBranchId !== undefined) {
+      lineage = [{ forkId: flatForkId, branchId: flatBranchId }];
+    } else if (flatForkId !== undefined || flatBranchId !== undefined) {
+      throw new Error(
+        `${path}: expected both forkId and branchId, or a lineage, for a tagged Pheromone`,
+      );
+    }
+  } else {
+    const current = lineage.at(-1);
+    if (current === undefined) {
+      throw new Error(`${path}.lineage: expected at least one tag`);
+    }
+    if (flatForkId !== undefined && flatForkId !== current.forkId) {
+      throw new Error(
+        `${path}.forkId: expected '${current.forkId}' to match the last lineage tag`,
+      );
+    }
+    if (flatBranchId !== undefined && flatBranchId !== current.branchId) {
+      throw new Error(
+        `${path}.branchId: expected '${current.branchId}' to match the last lineage tag`,
+      );
+    }
+  }
+  const current = lineage?.at(-1);
+
   return {
     id,
     traceId,
     value: input['value'],
     at,
-    ...(typeof input['forkId'] === 'string' ? { forkId: input['forkId'] } : {}),
-    ...(typeof input['branchId'] === 'string' ? { branchId: input['branchId'] } : {}),
+    ...(current === undefined
+      ? {}
+      : { forkId: current.forkId, branchId: current.branchId }),
+    ...(lineage === undefined ? {} : { lineage }),
   };
 }
 
@@ -185,6 +272,7 @@ function parseJoins(
 
     const rawCompletedAt = raw['completedAt'];
     const rawTimedOutAt = raw['timedOutAt'];
+    const parentLineage = parseLineage(raw['lineage'], `${joinPath}.lineage`);
     if (rawCompletedAt !== undefined && rawTimedOutAt !== undefined) {
       throw new Error(`${joinPath}: a join cannot be both completed and timed out`);
     }
@@ -200,7 +288,14 @@ function parseJoins(
       if (rawArrived.length !== 0) {
         throw new Error(`${joinPath}.arrived: a completed join holds no Pheromones`);
       }
-      entries.push([forkId, { arrived: [], completedAt: rawCompletedAt }]);
+      entries.push([
+        forkId,
+        {
+          arrived: [],
+          ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
+          completedAt: rawCompletedAt,
+        },
+      ]);
       continue;
     }
     if (rawTimedOutAt !== undefined) {
@@ -215,7 +310,14 @@ function parseJoins(
       if (rawArrived.length !== 0) {
         throw new Error(`${joinPath}.arrived: a timed-out join holds no Pheromones`);
       }
-      entries.push([forkId, { arrived: [], timedOutAt: rawTimedOutAt }]);
+      entries.push([
+        forkId,
+        {
+          arrived: [],
+          ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
+          timedOutAt: rawTimedOutAt,
+        },
+      ]);
       continue;
     }
 
@@ -228,6 +330,7 @@ function parseJoins(
     }
 
     const seen = new Set<string>();
+    let derivedParent: BranchTag[] | undefined;
     const arrived = rawArrived.map((entry, index) => {
       const pheromone = parsePheromone(entry as unknown, `${joinPath}.arrived[${String(index)}]`);
       if (pheromone.forkId !== forkId) {
@@ -244,10 +347,31 @@ function parseJoins(
         );
       }
       seen.add(pheromone.branchId);
+      const parent = (pheromone.lineage ?? []).slice(0, -1);
+      if (derivedParent === undefined) {
+        derivedParent = parent;
+      } else if (!sameLineage(derivedParent, parent)) {
+        throw new Error(
+          `${joinPath}.arrived[${String(index)}]: branch lineages disagree on the parent`,
+        );
+      }
       return pheromone;
     });
 
-    entries.push([forkId, { arrived, deadlineAt: rawDeadlineAt }]);
+    const effectiveParent = derivedParent ?? [];
+    if (parentLineage !== undefined && !sameLineage(parentLineage, effectiveParent)) {
+      throw new Error(`${joinPath}.lineage: does not match its branch Pheromones`);
+    }
+    entries.push([
+      forkId,
+      {
+        arrived,
+        ...(effectiveParent.length === 0
+          ? {}
+          : { lineage: effectiveParent.map((tag) => ({ ...tag })) }),
+        deadlineAt: rawDeadlineAt,
+      },
+    ]);
   }
   return Object.fromEntries(entries);
 }

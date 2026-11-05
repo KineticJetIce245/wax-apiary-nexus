@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The single-Pheromone runtime, the Workspace Forager bridge, and the one-shot Codex CLI are implemented; `npm test` passes 178/0. `--harness dsh` is not wired, and a real Codex smoke test is still pending in an environment where `codex` is available.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, and live-edit reference checks are implemented; `npm test` passes 224/0. `--harness dsh` is not wired, and a real Codex smoke test is still pending in an environment where `codex` is available.
 
 ## Vision
 
@@ -31,7 +31,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 ## Current state
 
 - The target architecture and contract are written.
-- The single-Pheromone runtime lives in `src/runtime/`: trigger, terminal/Rest, queue/pending, condition/counter, and `user` nodes that park a Pheromone in a Hover until the answer arrives.
+- The single-Pheromone runtime lives in `src/runtime/`: trigger, terminal/Rest, queue/pending, condition/counter, and `user` nodes that park a Pheromone in a Hover until the answer arrives. Early answers are persisted with the field.
 - The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`.
 - Honey lives in `src/honey.ts`: an atomically replaced `field.json` under `~/.wax/apiaries/<apiary>/compositions/<id>/honey/`, plus a metadata `log.jsonl` that never stores prompt or output bodies. Transcripts keep the event bodies; the log only references them. Both rotate at a byte limit.
 - Native approvals become **Guard** hovers: bound to their `requestId`, cancelled after one hour, persisted like any other hover. An early, late or mismatched decision is rejected, and nothing is ever auto-allowed.
@@ -39,7 +39,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - `src/revision.ts` refuses a graph edit that removes or renames a node still holding queue, pending, active or hover state; a forced edit returns the nodes that must be marked as needing attention.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
 - `--harness dsh` is not wired yet; the real Codex smoke test still needs a machine with Codex available.
-- The next step is Guard/transcript and crash/live-edit semantics, then the richer graph features.
+- The next step is a real Codex smoke test (and then the Stage 3 graph features); no additional Stage 2 code slice is pending.
 
 ## Repository layout
 

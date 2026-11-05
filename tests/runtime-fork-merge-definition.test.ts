@@ -174,18 +174,44 @@ test('rejects duplicate, overlapping or malformed optional branches', () => {
   assert.ok(issuesOf(emptyId).some((issue) => issue.includes('expected a non-empty branch id')));
 });
 
-test('rejects object/array combine and merge timeouts in 5A', () => {
+test('parses merge timeoutMs with the 600000 default and its 32-bit bound', () => {
   const object = structuredClone(validComposition());
   mergeOf(object)['config'] = { required: ['a', 'b'], combine: 'object' };
   assert.ok(issuesOf(object).some((issue) => issue.includes("only 'text' is supported in Stage 5A")));
 
-  const timeout = structuredClone(validComposition());
-  mergeOf(timeout)['config'] = {
+  const defaulted = parseComposition(validComposition());
+  const defaultedMerge = defaulted.nodes.get('merge');
+  assert.ok(defaultedMerge !== undefined);
+  if (defaultedMerge.kind !== 'merge') {
+    assert.fail('expected a merge node');
+  }
+  assert.equal(defaultedMerge.config.timeoutMs, 600_000);
+
+  const explicitInput = structuredClone(validComposition());
+  mergeOf(explicitInput)['config'] = {
     required: ['a', 'b'],
     combine: 'text',
-    timeoutMs: 1000,
+    timeoutMs: 1500,
   };
-  assert.ok(issuesOf(timeout).some((issue) => issue.includes('merge timeouts are not supported')));
+  const explicit = parseComposition(explicitInput);
+  const explicitMerge = explicit.nodes.get('merge');
+  assert.ok(explicitMerge !== undefined);
+  if (explicitMerge.kind !== 'merge') {
+    assert.fail('expected a merge node');
+  }
+  assert.equal(explicitMerge.config.timeoutMs, 1500);
+  assert.notEqual(explicit.graphRevision, defaulted.graphRevision);
+
+  for (const timeoutMs of [0, -1, 1.5, '1000', 2_147_483_648]) {
+    const invalid = structuredClone(validComposition());
+    mergeOf(invalid)['config'] = { required: ['a', 'b'], combine: 'text', timeoutMs };
+    assert.ok(
+      issuesOf(invalid).some((issue) =>
+        issue.includes('timeoutMs: expected a positive integer <= 2147483647'),
+      ),
+      `expected timeoutMs ${String(timeoutMs)} to be rejected`,
+    );
+  }
 });
 
 test('rejects more than one merge outgoing edge and a when on a merge edge', () => {

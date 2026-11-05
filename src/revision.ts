@@ -1,3 +1,4 @@
+import { isJoinClosed } from './runtime/field.js';
 import type { CompositionDefinition, NodeId, PheromoneFieldSnapshot } from './runtime/index.js';
 
 export type ReferenceReason = 'queue' | 'pending' | 'active' | 'hover' | 'merge-waiting';
@@ -39,10 +40,10 @@ export function findActiveReferences(snapshot: PheromoneFieldSnapshot): ActiveRe
       references.push({ nodeId, reason: 'hover' });
     }
     if (state.joins !== undefined) {
-      // A completed join is a tombstone for late optional branches, not live
-      // merge-waiting work, so it never blocks an edit.
+      // A closed join (completed in 5A, timed out in 5B) is a tombstone for
+      // late branches, not live merge-waiting work, so it never blocks an edit.
       for (const join of Object.values(state.joins)) {
-        if (join.completedAt === undefined) {
+        if (!isJoinClosed(join)) {
           references.push({ nodeId, reason: 'merge-waiting' });
           break;
         }

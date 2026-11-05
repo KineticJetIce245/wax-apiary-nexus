@@ -359,7 +359,8 @@ test('two forkIds interleave at one merge without mixing groups', async () => {
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('a missing required branch fails the merge instead of leaving a dead join', async () => {
+test('a missing required branch waits for the merge deadline, then times out', async () => {
+  let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
   const definition = parseComposition({
@@ -387,20 +388,40 @@ test('a missing required branch fails the merge instead of leaving a dead join',
   });
   const runtime = new PheromoneRuntime(definition, {
     executeForager: executor,
-    now: () => START,
+    now: () => clock,
     onLog: log.sink,
   });
 
   runtime.trigger('start', text('seed'));
   await runtime.pump();
 
-  const snapshot = runtime.snapshot();
-  assert.equal(snapshot.nodes['merge']?.joins, undefined);
-  assert.equal(snapshot.rest, true);
+  const waiting = runtime.snapshot();
+  assert.equal(waiting.rest, false, 'the join waits instead of failing early');
+  assert.equal(Object.keys(waiting.nodes['merge']?.joins ?? {}).length, 1);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
+  assert.equal(log.entries.filter((entry) => entry.event === 'merge.failed').length, 0);
+  const waitingJoin = Object.values(waiting.nodes['merge']?.joins ?? {})[0];
+  const deadline = waitingJoin?.deadlineAt;
+  assert.ok(deadline !== undefined);
+
+  clock = deadline - 1;
+  await runtime.pump();
+  assert.equal(runtime.snapshot().rest, false, 'still waiting just before the deadline');
+
+  clock = deadline;
+  await runtime.pump();
+
+  const timedOut = runtime.snapshot();
+  assert.equal(timedOut.rest, true);
+  const join = Object.values(timedOut.nodes['merge']?.joins ?? {})[0];
+  assert.ok(join !== undefined);
+  assert.ok(join.timedOutAt !== undefined);
+  assert.deepEqual(join.arrived, []);
+  assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
+  assert.ok(log.entries.some((entry) => entry.event === 'merge.timed-out'));
   const failure = log.entries.find((entry) => entry.event === 'merge.failed');
   assert.ok(failure !== undefined);
-  assert.equal(failure.outcome, 'missing-branch');
+  assert.equal(failure.outcome, 'timed-out');
 });
 
 test('a failed branch fails the merge, cancels siblings and is never replayed', async () => {
@@ -466,7 +487,12 @@ test('an unknown active branch found on restore fails its join', () => {
   }).exportField();
   field.nodes['merge'] = {
     queue: [],
-    joins: { fk_restore: { arrived: [branchPheromone('fk_restore', 'a')] } },
+    joins: {
+      fk_restore: {
+        arrived: [branchPheromone('fk_restore', 'a')],
+        deadlineAt: START + 3_600_000,
+      },
+    },
   };
   field.nodes['make-b'] = {
     queue: [],
@@ -497,7 +523,12 @@ test('a duplicate branch arrival is rejected and fails the join', async () => {
   }).exportField();
   field.nodes['merge'] = {
     queue: [branchPheromone('fk_duplicate', 'a')],
-    joins: { fk_duplicate: { arrived: [branchPheromone('fk_duplicate', 'a')] } },
+    joins: {
+      fk_duplicate: {
+        arrived: [branchPheromone('fk_duplicate', 'a')],
+        deadlineAt: START + 3_600_000,
+      },
+    },
   };
 
   const { runtime } = PheromoneRuntime.restore(definition, field, {
@@ -524,7 +555,12 @@ test('Rest stays false while a restored join is incomplete', () => {
   }).exportField();
   field.nodes['merge'] = {
     queue: [],
-    joins: { fk_wait: { arrived: [branchPheromone('fk_wait', 'a')] } },
+    joins: {
+      fk_wait: {
+        arrived: [branchPheromone('fk_wait', 'a')],
+        deadlineAt: START + 3_600_000,
+      },
+    },
   };
 
   const { runtime } = PheromoneRuntime.restore(definition, field, {
@@ -559,6 +595,7 @@ test('a restored complete join settles once without replaying its branches', asy
           branchPheromone('fk_complete', 'a', text('A')),
           branchPheromone('fk_complete', 'b', text('B')),
         ],
+        deadlineAt: START + 3_600_000,
       },
     },
   };

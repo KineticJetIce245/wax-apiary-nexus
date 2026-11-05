@@ -7,7 +7,8 @@ import test from 'node:test';
 import { DshAcpAdapter } from '../src/adapters/dsh-acp/adapter.js';
 import { apiaryForProject, CliUsageError, parseRunArgs, runCli, type CliDependencies } from '../src/cli.js';
 import { createDefaultAdapter, type AdapterRequest } from '../src/cli-shared.js';
-import { honeyPaths } from '../src/honey.js';
+import { HoneyStore, honeyPaths } from '../src/honey.js';
+import { parseComposition, PheromoneRuntime } from '../src/runtime/index.js';
 import type { HoverSpec, UserNode, Value } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 
@@ -45,6 +46,32 @@ const ASK_COMPOSITION = {
   edges: [
     { id: 'e1', from: 'start', to: 'ask' },
     { id: 'e2', from: 'ask', to: 'done' },
+  ],
+};
+
+const MERGE_TIMEOUT_COMPOSITION = {
+  schemaVersion: 1,
+  id: 'cli-merge-timeout',
+  nodes: {
+    start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
+    fork: {
+      kind: 'fork',
+      config: {
+        branches: [
+          { id: 'a', to: 'merge' },
+          { id: 'b', to: 'merge' },
+        ],
+      },
+    },
+    merge: {
+      kind: 'merge',
+      config: { required: ['a', 'b'], combine: 'text', timeoutMs: 5000 },
+    },
+    done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
+  },
+  edges: [
+    { id: 'e1', from: 'start', to: 'fork' },
+    { id: 'e2', from: 'merge', to: 'done' },
   ],
 };
 
@@ -670,4 +697,114 @@ test('resume without a persisted field is a usage error', async () => {
 
   assert.equal(code, 2);
   assert.match(captureResult.stderr.join('\n'), /nothing to resume/);
+});
+
+test('run wakes for a pending rate-limited branch before a later merge deadline', async () => {
+  const START = Date.parse('2026-06-01T00:00:00.000Z');
+  const adapter = new FakeAdapter({ output: 'DONE-OUT' });
+  const captureResult = capture();
+  const state = stateDirectory();
+  const project = projectDirectory();
+  const compositionPath = compositionFile(MERGE_TIMEOUT_COMPOSITION);
+
+  let clock = START;
+  const sleeps: number[] = [];
+  const code = await runCli(
+    [...baseArgs(compositionPath, project, state), '--trigger', 'start'],
+    withAdapter(adapter, captureResult, {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+    }),
+  );
+
+  assert.equal(code, 0);
+  // The second required branch is pending for minIntervalMs (1000), which is
+  // earlier than the 5000 ms merge deadline.
+  assert.deepEqual(sleeps, [1000]);
+  assert.deepEqual(adapter.prompts, ['start ', 'done'], 'the merge emitted before the deadline');
+  assert.ok(captureResult.stdout.includes('rest         true'));
+
+  const store = HoneyStore.forComposition(state, apiaryForProject(project), 'cli-merge-timeout');
+  const saved = store.load();
+  assert.ok(saved !== undefined);
+  const join = Object.values(saved.nodes['merge']?.joins ?? {})[0];
+  assert.ok(join !== undefined);
+  assert.ok(join.completedAt !== undefined);
+  assert.equal(join.timedOutAt, undefined);
+});
+
+test('run waits for nextWakeAt when no hover is left, then expires the join', async () => {
+  const START = Date.parse('2026-06-01T00:00:00.000Z');
+  const deadline = START + 5000;
+  const adapter = new FakeAdapter({ output: 'UNUSED' });
+  const captureResult = capture();
+  const state = stateDirectory();
+  const project = projectDirectory();
+  const compositionPath = compositionFile(MERGE_TIMEOUT_COMPOSITION);
+  const definition = parseComposition(MERGE_TIMEOUT_COMPOSITION);
+  const apiary = apiaryForProject(project);
+  const store = HoneyStore.forComposition(state, apiary, definition.id);
+
+  const field = new PheromoneRuntime(definition, {
+    executeForager: {
+      async execute(_node, input) {
+        return input;
+      },
+    },
+    now: () => START,
+  }).exportField();
+  field.rest = false;
+  field.nodes['merge'] = {
+    queue: [],
+    joins: {
+      fk_wait: {
+        arrived: [
+          {
+            id: 'ph_wait_a',
+            traceId: 'tr_wait',
+            forkId: 'fk_wait',
+            branchId: 'a',
+            value: { kind: 'text' as const, text: 'A' },
+            at: new Date(START).toISOString(),
+          },
+        ],
+        deadlineAt: deadline,
+      },
+    },
+  };
+  store.save(field);
+
+  let clock = START;
+  const sleeps: number[] = [];
+  const code = await runCli(
+    ['run', compositionPath, '--project', project, '--harness', 'codex', '--state-dir', state, '--resume'],
+    withAdapter(adapter, captureResult, {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+    }),
+  );
+
+  assert.equal(code, 0);
+  assert.deepEqual(sleeps, [5000], 'the CLI slept exactly until the persisted deadline');
+  assert.deepEqual(adapter.prompts, [], 'the timed-out join never emitted');
+  assert.ok(captureResult.stdout.includes('rest         true'));
+
+  const saved = store.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, true);
+  const join = Object.values(saved.nodes['merge']?.joins ?? {})[0];
+  assert.ok(join !== undefined);
+  assert.ok(join.timedOutAt !== undefined);
+  assert.equal(join.deadlineAt, undefined);
+  assert.deepEqual(join.arrived, []);
+
+  const log = readFileSync(honeyPaths(state, apiary, definition.id).log, 'utf8');
+  assert.match(log, /merge\.timed-out/);
+  assert.match(log, /merge\.failed/);
 });

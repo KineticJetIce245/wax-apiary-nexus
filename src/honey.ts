@@ -177,9 +177,13 @@ function parseJoins(
     }
 
     const rawCompletedAt = raw['completedAt'];
+    const rawTimedOutAt = raw['timedOutAt'];
+    if (rawCompletedAt !== undefined && rawTimedOutAt !== undefined) {
+      throw new Error(`${joinPath}: a join cannot be both completed and timed out`);
+    }
     if (rawCompletedAt !== undefined) {
       // Stage 5A completed tombstone: it remembers the forkId but holds no
-      // Pheromones, so a late optional branch can still be dropped on restore.
+      // Pheromones, so a late branch can still be dropped on restore.
       if (
         typeof rawCompletedAt !== 'string' ||
         !Number.isFinite(Date.parse(rawCompletedAt))
@@ -192,9 +196,28 @@ function parseJoins(
       entries.push([forkId, { arrived: [], completedAt: rawCompletedAt }]);
       continue;
     }
+    if (rawTimedOutAt !== undefined) {
+      // Stage 5B timed-out tombstone: the fork failed, so a late branch is
+      // dropped instead of reopening the join.
+      if (
+        typeof rawTimedOutAt !== 'string' ||
+        !Number.isFinite(Date.parse(rawTimedOutAt))
+      ) {
+        throw new Error(`${joinPath}.timedOutAt: expected an ISO timestamp`);
+      }
+      if (rawArrived.length !== 0) {
+        throw new Error(`${joinPath}.arrived: a timed-out join holds no Pheromones`);
+      }
+      entries.push([forkId, { arrived: [], timedOutAt: rawTimedOutAt }]);
+      continue;
+    }
 
     if (rawArrived.length === 0) {
       throw new Error(`${joinPath}.arrived: expected at least one Pheromone`);
+    }
+    const rawDeadlineAt = raw['deadlineAt'];
+    if (typeof rawDeadlineAt !== 'number' || !Number.isSafeInteger(rawDeadlineAt)) {
+      throw new Error(`${joinPath}.deadlineAt: expected an absolute epoch-ms deadline`);
     }
 
     const seen = new Set<string>();
@@ -217,7 +240,7 @@ function parseJoins(
       return pheromone;
     });
 
-    entries.push([forkId, { arrived }]);
+    entries.push([forkId, { arrived, deadlineAt: rawDeadlineAt }]);
   }
   return Object.fromEntries(entries);
 }

@@ -33,6 +33,14 @@ const DEFAULT_MIN_INTERVAL_MS = 1000;
 const DEFAULT_QUEUE_MAX = 1024;
 const DEFAULT_QUEUE_TTL_MS = 604_800_000;
 
+/**
+ * Stage 5B: how long a Merge waits for its required branches, measured from the
+ * first branch arrival for one forkId. The upper bound keeps the persisted
+ * deadline (epoch ms plus this value) a safe 32-bit timer delay.
+ */
+export const DEFAULT_MERGE_TIMEOUT_MS = 600_000;
+export const MAX_MERGE_TIMEOUT_MS = 2_147_483_647;
+
 const WHEN_VALUES: readonly EdgeWhen[] = ['true', 'false', 'continue', 'done'];
 
 export class CompositionValidationError extends Error {
@@ -444,12 +452,27 @@ function parseMergeConfig(
     valid = false;
   }
 
-  if (config['timeoutMs'] !== undefined) {
-    issues.push(`${path}.timeoutMs: merge timeouts are not supported in Stage 5A`);
-    valid = false;
+  // Stage 5B: the deadline starts on the first branch arrival for a forkId, so
+  // the config value is a duration and the persisted join stores an absolute
+  // instant. The 2^31-1 cap keeps the deadline inside a safe 32-bit timer range.
+  let timeoutMs = DEFAULT_MERGE_TIMEOUT_MS;
+  const rawTimeoutMs = config['timeoutMs'];
+  if (rawTimeoutMs !== undefined) {
+    if (
+      !isPositiveInteger(rawTimeoutMs) ||
+      !Number.isSafeInteger(rawTimeoutMs) ||
+      rawTimeoutMs > MAX_MERGE_TIMEOUT_MS
+    ) {
+      issues.push(
+        `${path}.timeoutMs: expected a positive integer <= ${String(MAX_MERGE_TIMEOUT_MS)}`,
+      );
+      valid = false;
+    } else {
+      timeoutMs = rawTimeoutMs;
+    }
   }
 
-  return valid ? { required, optional, combine: 'text' } : null;
+  return valid ? { required, optional, combine: 'text', timeoutMs } : null;
 }
 
 function parseDefaults(value: unknown, issues: string[]): CompositionDefaults {

@@ -384,7 +384,12 @@ test('an unknown optional branch on restore is logged and does not fail the join
   }).exportField();
   field.nodes['merge'] = {
     queue: [branchPheromone('fk_unknown_optional', 'c', text('C'))],
-    joins: { fk_unknown_optional: { arrived: [branchPheromone('fk_unknown_optional', 'a', text('A'))] } },
+    joins: {
+      fk_unknown_optional: {
+        arrived: [branchPheromone('fk_unknown_optional', 'a', text('A'))],
+        deadlineAt: START + 3_600_000,
+      },
+    },
   };
   field.nodes['make-b'] = { queue: [], active: branchPheromone('fk_unknown_optional', 'b') };
 

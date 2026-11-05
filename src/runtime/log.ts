@@ -16,6 +16,7 @@ export type RuntimeEvent =
   | 'input.queued'
   | 'merge.waiting'
   | 'merge.completed'
+  | 'merge.timed-out'
   | 'merge.failed'
   | 'merge.optional-failed'
   | 'merge.optional-dropped'

@@ -7,7 +7,7 @@ import {
   type GuardRequest,
   type NodeExecutor,
 } from './executor.js';
-import { clonePheromone, createNodeState, isFieldResting, snapshotField } from './field.js';
+import { clonePheromone, createNodeState, isFieldResting, isJoinClosed, snapshotField } from './field.js';
 import type { RuntimeLogEntry, RuntimeLogSink } from './log.js';
 import {
   runWorker,
@@ -56,12 +56,13 @@ export interface RuntimeOptions {
 const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
 
 /**
- * How long a completed join is remembered so a late optional branch can still
- * be dropped. A marker older than this is forgotten when the merge next runs.
+ * How long a closed join is remembered so a late branch can still be dropped.
+ * A marker older than this is forgotten when the merge next runs. Stage 5B
+ * reuses the bound for both completed and timed-out tombstones.
  */
 export const COMPLETED_JOIN_TTL_MS = 3_600_000;
 
-/** Hard cap on completed join markers per merge node; oldest are evicted. */
+/** Hard cap on closed join markers per merge node; oldest are evicted. */
 export const MAX_COMPLETED_JOINS_PER_MERGE = 64;
 
 /** A Guard decision that does not belong to the current request. */
@@ -198,9 +199,16 @@ export class PheromoneRuntime {
           if (this.settleCompleteJoins()) {
             continue;
           }
+          // A merge deadline that passed while the field was quiet fails its
+          // fork here. This is the only way a waiting join makes progress
+          // without a new branch arrival.
+          if (this.expireDueJoins()) {
+            continue;
+          }
           // Quiet and still waiting for a branch that is nowhere in the field:
           // that branch can never arrive, so the merge fails instead of
-          // leaving the field permanently non-Rest.
+          // leaving the field permanently non-Rest. A join that still has time
+          // left is never failed early; its fork waits for the deadline.
           this.failMissingJoins();
           break;
         }
@@ -211,6 +219,33 @@ export class PheromoneRuntime {
       // Rest must be recomputed before the error leaves pump().
       this.refreshRest();
     }
+  }
+
+  /**
+   * The earliest deadline of an incomplete Merge join, or undefined when none
+   * is waiting. A caller that has no hover to service can sleep until this
+   * instant and pump again; it is the runtime's only timed wake signal.
+   */
+  nextWakeAt(): number | undefined {
+    let next: number | undefined;
+    for (const node of this.definition.nodes.values()) {
+      if (node.kind !== 'merge') {
+        continue;
+      }
+      const joins = this.stateOf(node.id).joins;
+      if (joins === undefined) {
+        continue;
+      }
+      for (const join of joins.values()) {
+        if (isJoinClosed(join) || join.deadlineAt === undefined) {
+          continue;
+        }
+        if (next === undefined || join.deadlineAt < next) {
+          next = join.deadlineAt;
+        }
+      }
+    }
+    return next;
   }
 
   /** Immutable view of the PheromoneField. */
@@ -288,6 +323,8 @@ export class PheromoneRuntime {
             {
               arrived: [...join.arrived.values()].map(clonePheromone),
               ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
+              ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
+              ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),
             },
           ]);
         }
@@ -400,9 +437,9 @@ export class PheromoneRuntime {
         const joins = this.restoreJoins(node, saved.joins);
         if (joins.size > 0) {
           state.joins = joins;
-          // Age out stale completed markers that outlived their retention while
+          // Age out stale closed markers that outlived their retention while
           // the process was down.
-          this.pruneCompletedJoins(node);
+          this.pruneJoinTombstones(node);
         }
       }
 
@@ -440,6 +477,10 @@ export class PheromoneRuntime {
     for (const failed of failedBranches) {
       this.handleBranchFailure(failed.forkId, failed.branchId, 'unknown-active');
     }
+
+    // A deadline that passed while the process was down fails immediately on
+    // restore: the join must never resume waiting past its absolute deadline.
+    this.expireDueJoins();
 
     this.resting = isFieldResting(this.states.values());
     this.log({
@@ -992,8 +1033,8 @@ export class PheromoneRuntime {
     }
 
     const state = this.stateOf(node.id);
-    // Completed markers are read below; expire the old ones first.
-    this.pruneCompletedJoins(node);
+    // Closed markers are read below; expire the old ones first.
+    this.pruneJoinTombstones(node);
 
     let joins = state.joins;
     if (joins === undefined) {
@@ -1002,10 +1043,21 @@ export class PheromoneRuntime {
     }
 
     const existing = joins.get(forkId);
-    if (existing?.completedAt !== undefined) {
+    if (
+      existing !== undefined &&
+      !isJoinClosed(existing) &&
+      !this.requiredComplete(node, existing) &&
+      this.isJoinDue(existing)
+    ) {
+      // The deadline had already passed before this branch could complete the
+      // required set. The join times out instead of emitting; the arrival is
+      // then dropped by the closed-tombstone check below.
+      this.timeOutJoin(node, forkId);
+    }
+    if (existing !== undefined && isJoinClosed(existing)) {
       if (isOptional) {
-        // Stage 5A: an optional branch that arrives after completion is
-        // dropped; the completed join is never reopened.
+        // Stage 5A/5B: an optional branch that arrives after completion or
+        // timeout is dropped; the closed join is never reopened.
         this.log({
           event: 'merge.optional-dropped',
           nodeId: node.id,
@@ -1019,7 +1071,8 @@ export class PheromoneRuntime {
         return 'dropped-optional';
       }
       // A required branch cannot legally arrive twice. The join already
-      // emitted once, so this is logged and dropped without a second emit.
+      // emitted (or timed out), so this is logged and dropped without a
+      // second emit.
       this.log({
         event: 'merge.failed',
         nodeId: node.id,
@@ -1035,7 +1088,13 @@ export class PheromoneRuntime {
 
     let join = existing;
     if (join === undefined) {
-      join = { forkId, arrived: new Map<string, Pheromone>() };
+      // Stage 5B: the deadline starts on the first arrival for this forkId and
+      // is stored as an absolute instant so it survives a restart unchanged.
+      join = {
+        forkId,
+        arrived: new Map<string, Pheromone>(),
+        deadlineAt: this.now() + node.config.timeoutMs,
+      };
       joins.set(forkId, join);
     }
     if (join.arrived.has(branchId)) {
@@ -1077,10 +1136,11 @@ export class PheromoneRuntime {
     }
 
     // The consumed Pheromones are released, and the join becomes a persisted
-    // tombstone so a later optional arrival can be dropped.
+    // tombstone so a later branch arrival can be dropped.
     join.arrived.clear();
+    delete join.deadlineAt;
     join.completedAt = this.iso();
-    this.pruneCompletedJoins(node);
+    this.pruneJoinTombstones(node);
 
     this.finishMerge(node, ordered, pheromone.traceId);
     return 'merged';
@@ -1103,7 +1163,7 @@ export class PheromoneRuntime {
 
       for (const forkId of [...joins.keys()]) {
         const join = joins.get(forkId);
-        if (join === undefined || join.completedAt !== undefined) {
+        if (join === undefined || isJoinClosed(join)) {
           continue;
         }
         const ordered: Pheromone[] = [];
@@ -1126,8 +1186,9 @@ export class PheromoneRuntime {
           }
         }
         join.arrived.clear();
+        delete join.deadlineAt;
         join.completedAt = this.iso();
-        this.pruneCompletedJoins(node);
+        this.pruneJoinTombstones(node);
         const first = ordered[0];
         if (first !== undefined) {
           this.finishMerge(node, ordered, first.traceId);
@@ -1136,6 +1197,83 @@ export class PheromoneRuntime {
       }
     }
     return false;
+  }
+
+  /** True when every required branch of this join has already arrived. */
+  private requiredComplete(node: MergeNode, join: JoinState): boolean {
+    return node.config.required.every((required) => join.arrived.has(required));
+  }
+
+  /** True when an incomplete join's absolute deadline has been reached. */
+  private isJoinDue(join: JoinState): boolean {
+    return join.deadlineAt !== undefined && this.now() >= join.deadlineAt;
+  }
+
+  /**
+   * Closes one incomplete join as timed out and fails its fork.
+   *
+   * The tombstone is written before `failFork` so the fork keeps a reason not
+   * to reopen: a late branch is dropped instead of arming a new deadline, and
+   * a second emit is impossible. Queue/pending/hover siblings are cancelled;
+   * an active sibling cannot be cancelled and is left to finish.
+   */
+  private timeOutJoin(node: MergeNode, forkId: string): void {
+    const join = this.stateOf(node.id).joins?.get(forkId);
+    if (join === undefined || isJoinClosed(join)) {
+      return;
+    }
+    this.closeJoinAsTimedOut(node, join);
+    this.failFork(forkId, 'timed-out', node);
+  }
+
+  /** Writes the timed-out tombstone shape for one incomplete join. */
+  private closeJoinAsTimedOut(node: MergeNode, join: JoinState): void {
+    join.arrived.clear();
+    delete join.deadlineAt;
+    join.timedOutAt = this.iso();
+    this.pruneJoinTombstones(node);
+    this.log({
+      event: 'merge.timed-out',
+      nodeId: node.id,
+      nodeKind: 'merge',
+      forkId: join.forkId,
+      outcome: 'timed-out',
+    });
+  }
+
+  /**
+   * Fails every incomplete join whose deadline has been reached. A join whose
+   * required set is already complete is left for `settleCompleteJoins`: the
+   * branches had arrived, so there is nothing left to time out.
+   */
+  private expireDueJoins(): boolean {
+    const dueForks = new Set<string>();
+    for (const node of this.definition.nodes.values()) {
+      if (node.kind !== 'merge') {
+        continue;
+      }
+      const joins = this.stateOf(node.id).joins;
+      if (joins === undefined) {
+        continue;
+      }
+      for (const [forkId, join] of joins) {
+        if (isJoinClosed(join) || !this.isJoinDue(join)) {
+          continue;
+        }
+        if (this.requiredComplete(node, join)) {
+          continue;
+        }
+        this.closeJoinAsTimedOut(node, join);
+        dueForks.add(forkId);
+      }
+    }
+
+    // Fail each fork once, after every affected merge has its tombstone, so a
+    // second join on another merge node is not removed before it is recorded.
+    for (const forkId of dueForks) {
+      this.failFork(forkId, 'timed-out');
+    }
+    return dueForks.size > 0;
   }
 
   /** Fail joins whose remaining required branches are nowhere in the field. */
@@ -1150,10 +1288,18 @@ export class PheromoneRuntime {
         continue;
       }
       for (const [forkId, join] of state.joins) {
-        // Completed tombstones are not waiting on anything.
-        if (join.completedAt === undefined) {
-          waiting.push({ node, forkId });
+        // Closed tombstones are not waiting on anything.
+        if (isJoinClosed(join)) {
+          continue;
         }
+        // Stage 5B: a join with time left is never failed early, even when the
+        // missing branch is nowhere in the field. It fails only once its
+        // deadline is reached (handled above) or when a legacy incomplete join
+        // has no deadline at all.
+        if (join.deadlineAt !== undefined && this.now() < join.deadlineAt) {
+          continue;
+        }
+        waiting.push({ node, forkId });
       }
     }
 
@@ -1210,8 +1356,10 @@ export class PheromoneRuntime {
 
   /**
    * A branch failure makes its fork unable to complete. Cancel siblings in
-   * queues, pending slots and hovers, drop every join for that forkId, and log
-   * the affected merges. Running side effects are never cancelled or replayed.
+   * queues, pending slots and hovers, drop every incomplete join for that
+   * forkId, and log the affected merges. Closed tombstones are kept so a late
+   * branch can never reopen a join that already finished or timed out. Running
+   * side effects are never cancelled or replayed.
    */
   private failFork(forkId: string, reason: string, source?: NodeDefinition): void {
     const affected = new Set<NodeId>();
@@ -1243,9 +1391,15 @@ export class PheromoneRuntime {
       }
       const joins = state.joins;
       if (joins?.has(forkId) === true) {
-        joins.delete(forkId);
-        if (joins.size === 0) {
-          delete state.joins;
+        const join = joins.get(forkId);
+        // A closed tombstone is the only record that this forkId already
+        // emitted (or timed out). Keep it: deleting it would let a late active
+        // sibling reopen the join and emit a second time.
+        if (join === undefined || !isJoinClosed(join)) {
+          joins.delete(forkId);
+          if (joins.size === 0) {
+            delete state.joins;
+          }
         }
         affected.add(id);
       }
@@ -1324,12 +1478,13 @@ export class PheromoneRuntime {
   }
 
   /**
-   * Bounds the completed-join tombstones so they cannot grow forever: a marker
-   * older than COMPLETED_JOIN_TTL_MS is forgotten, and only the newest
-   * MAX_COMPLETED_JOINS_PER_MERGE markers are kept. After that bound a branch
+   * Bounds closed-join tombstones so they cannot grow forever: a marker older
+   * than COMPLETED_JOIN_TTL_MS is forgotten, and only the newest
+   * MAX_COMPLETED_JOINS_PER_MERGE markers are kept. Completed (5A) and
+   * timed-out (5B) tombstones share the same bound. After that bound a branch
    * that is extremely late is no longer distinguishable from a fresh join.
    */
-  private pruneCompletedJoins(node: MergeNode): void {
+  private pruneJoinTombstones(node: MergeNode): void {
     const state = this.stateOf(node.id);
     const joins = state.joins;
     if (joins === undefined) {
@@ -1337,23 +1492,27 @@ export class PheromoneRuntime {
     }
 
     const now = this.now();
-    const completed: { forkId: string; completedAt: string }[] = [];
+    const closed: { forkId: string; closedAt: string }[] = [];
     for (const [forkId, join] of joins) {
-      if (join.completedAt === undefined) {
+      if (!isJoinClosed(join)) {
         continue;
       }
-      const at = Date.parse(join.completedAt);
+      const closedAt = join.completedAt ?? join.timedOutAt;
+      if (closedAt === undefined) {
+        continue;
+      }
+      const at = Date.parse(closedAt);
       if (!Number.isFinite(at) || now - at > COMPLETED_JOIN_TTL_MS) {
         joins.delete(forkId);
       } else {
-        completed.push({ forkId, completedAt: join.completedAt });
+        closed.push({ forkId, closedAt });
       }
     }
 
-    const excess = completed.length - MAX_COMPLETED_JOINS_PER_MERGE;
+    const excess = closed.length - MAX_COMPLETED_JOINS_PER_MERGE;
     if (excess > 0) {
-      completed.sort((left, right) => left.completedAt.localeCompare(right.completedAt));
-      for (const entry of completed.slice(0, excess)) {
+      closed.sort((left, right) => left.closedAt.localeCompare(right.closedAt));
+      for (const entry of closed.slice(0, excess)) {
         joins.delete(entry.forkId);
       }
     }
@@ -1377,9 +1536,14 @@ export class PheromoneRuntime {
           `persisted join '${forkId}' on node '${node.id}' has no branch Pheromones`,
         );
       }
+      if (entry.completedAt !== undefined && entry.timedOutAt !== undefined) {
+        throw new FieldRestoreError(
+          `persisted join '${forkId}' on node '${node.id}' is both completed and timed out`,
+        );
+      }
       if (entry.completedAt !== undefined) {
         // A completed tombstone holds no Pheromones; it only remembers that the
-        // join already emitted so a later optional branch can be dropped.
+        // join already emitted so a later branch can be dropped.
         if (
           typeof entry.completedAt !== 'string' ||
           !Number.isFinite(Date.parse(entry.completedAt))
@@ -1393,12 +1557,44 @@ export class PheromoneRuntime {
             `persisted completed join '${forkId}' on node '${node.id}' still holds branch Pheromones`,
           );
         }
-        joins.set(forkId, { forkId, arrived: new Map<string, Pheromone>(), completedAt: entry.completedAt });
+        joins.set(forkId, {
+          forkId,
+          arrived: new Map<string, Pheromone>(),
+          completedAt: entry.completedAt,
+        });
+        continue;
+      }
+      if (entry.timedOutAt !== undefined) {
+        // A timed-out tombstone holds no Pheromones: the fork is failed and
+        // late branches must be dropped instead of reopening the join.
+        if (
+          typeof entry.timedOutAt !== 'string' ||
+          !Number.isFinite(Date.parse(entry.timedOutAt))
+        ) {
+          throw new FieldRestoreError(
+            `persisted join '${forkId}' on node '${node.id}' has an invalid timedOutAt`,
+          );
+        }
+        if (entry.arrived.length > 0) {
+          throw new FieldRestoreError(
+            `persisted timed-out join '${forkId}' on node '${node.id}' still holds branch Pheromones`,
+          );
+        }
+        joins.set(forkId, {
+          forkId,
+          arrived: new Map<string, Pheromone>(),
+          timedOutAt: entry.timedOutAt,
+        });
         continue;
       }
       if (entry.arrived.length === 0) {
         throw new FieldRestoreError(
           `persisted join '${forkId}' on node '${node.id}' has no branch Pheromones`,
+        );
+      }
+      if (entry.deadlineAt === undefined || !Number.isSafeInteger(entry.deadlineAt)) {
+        throw new FieldRestoreError(
+          `persisted join '${forkId}' on node '${node.id}' has no valid deadlineAt`,
         );
       }
 
@@ -1430,7 +1626,7 @@ export class PheromoneRuntime {
         }
         arrived.set(branchId, clonePheromone(pheromone));
       }
-      joins.set(forkId, { forkId, arrived });
+      joins.set(forkId, { forkId, arrived, deadlineAt: entry.deadlineAt });
     }
     return joins;
   }

@@ -14,7 +14,7 @@ import { runCli } from '../src/cli.js';
 import { apiaryForProject, type AdapterRequest } from '../src/cli-shared.js';
 import { parseDaemonArgs, runDaemon } from '../src/daemon.js';
 import { HoneyStore, honeyPaths } from '../src/honey.js';
-import { parseComposition } from '../src/runtime/index.js';
+import { parseComposition, PheromoneRuntime } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 
 interface Capture {
@@ -686,6 +686,103 @@ test('a malformed lock is not stolen', async () => {
   assert.match(captureResult.stderr.join('\n'), /malformed|refusing to steal/);
   assert.equal(adapter.startCalls, 0);
   assert.equal(existsSync(lockPath), true, 'the unreadable lock is left in place');
+});
+
+test('the daemon heartbeat expires a merge deadline without new IPC', async () => {
+  const START = Date.parse('2026-06-01T00:00:00.000Z');
+  const deadline = START + 1000;
+  const adapter = new FakeAdapter();
+  const captureResult = capture();
+  const controller = new AbortController();
+  const project = tempDirectory('wax-daemon-project-');
+  const state = tempDirectory('wax-daemon-state-');
+  const raw = {
+    schemaVersion: 1,
+    id: 'daemon-merge-timeout',
+    nodes: {
+      plan: { kind: 'forager', config: { connection: 'codex', prompt: 'plan' } },
+      merge: {
+        kind: 'merge',
+        config: { required: ['a', 'b'], combine: 'text', timeoutMs: 600_000 },
+      },
+      done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
+    },
+    edges: [{ id: 'e1', from: 'merge', to: 'done' }],
+    triggers: [
+      {
+        id: 'later',
+        target: 'plan',
+        schedule: { kind: 'at', at: new Date(START + 3_600_000).toISOString() },
+      },
+    ],
+  };
+  const compositionPath = compositionFile(raw);
+  const definition = parseComposition(raw);
+  const apiary = apiaryForProject(project);
+  const paths = honeyPaths(state, apiary, 'daemon-merge-timeout');
+  const store = HoneyStore.forComposition(state, apiary, 'daemon-merge-timeout');
+
+  const field = new PheromoneRuntime(definition, {
+    executeForager: {
+      async execute(_node, input) {
+        return input;
+      },
+    },
+    now: () => START,
+  }).exportField();
+  field.rest = false;
+  field.nodes['merge'] = {
+    queue: [],
+    joins: {
+      fk_wait: {
+        arrived: [
+          {
+            id: 'ph_wait_a',
+            traceId: 'tr_wait',
+            forkId: 'fk_wait',
+            branchId: 'a',
+            value: { kind: 'text' as const, text: 'A' },
+            at: new Date(START).toISOString(),
+          },
+        ],
+        deadlineAt: deadline,
+      },
+    },
+  };
+  store.save(field);
+
+  let clock = START;
+  const running = runDaemon(baseArgs(compositionPath, project, state), {
+    ...captureResult.deps,
+    createAdapter: async () => adapter,
+    signal: controller.signal,
+    now: () => clock,
+  });
+
+  let code = -1;
+  try {
+    await waitFor(() => hasLogEvent(paths.log, 'runtime.restored'), 'the restored field');
+    // Move the runtime clock past the deadline; the existing 500 ms heartbeat
+    // is the only wake the daemon needs.
+    clock = deadline + 1000;
+    await waitFor(() => hasLogEvent(paths.log, 'merge.timed-out'), 'the merge timeout');
+  } finally {
+    controller.abort();
+    code = await running;
+  }
+
+  assert.equal(code, 0);
+  assert.deepEqual(adapter.prompts, [], 'the timed-out join never emitted');
+  const saved = JSON.parse(readFileSync(paths.field, 'utf8')) as {
+    rest: boolean;
+    nodes: Record<string, { joins?: Record<string, Record<string, unknown>> }>;
+  };
+  assert.equal(saved.rest, true);
+  const join = Object.values(saved.nodes['merge']?.joins ?? {})[0];
+  assert.ok(join !== undefined);
+  assert.ok(typeof join['timedOutAt'] === 'string');
+  assert.equal(join['deadlineAt'], undefined);
+  assert.deepEqual(join['arrived'], []);
 });
 
 test('an early abort stops the daemon before a future trigger fires', async () => {

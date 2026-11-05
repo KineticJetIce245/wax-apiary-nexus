@@ -213,6 +213,7 @@ const ACTIVE_REFERENCE_CASES: ReadonlyArray<{
         joins: {
           fk_1: {
             arrived: [pheromone({ forkId: 'fk_1', branchId: 'a' })],
+            deadlineAt: Date.parse('2026-03-02T00:00:00.000Z'),
           },
         },
       },
@@ -519,6 +520,47 @@ test('replace allows a Honey field whose only join is a completed tombstone', ()
           fk_done: {
             arrived: [],
             completedAt: '2026-03-01T00:00:00.000Z',
+          },
+        },
+      },
+    },
+    { rest: true },
+  );
+  const result = capture();
+
+  const code = runCompositionCli(
+    [
+      'composition',
+      'replace',
+      files.currentPath,
+      '--with',
+      files.nextPath,
+      '--state-dir',
+      state,
+      '--apiary',
+      'demo',
+    ],
+    result.deps,
+  );
+
+  assert.equal(code, 0, result.stderr.join('\n'));
+  assert.equal(readFileSync(files.currentPath, 'utf8'), files.nextText);
+});
+
+test('replace allows a Honey field whose only join is a timed-out tombstone', () => {
+  const files = writeCompositionPair();
+  const state = stateDirectory();
+  writeField(
+    state,
+    'demo',
+    'edit-demo',
+    {
+      start: {
+        queue: [],
+        joins: {
+          fk_timed_out: {
+            arrived: [],
+            timedOutAt: '2026-03-01T00:00:00.000Z',
           },
         },
       },

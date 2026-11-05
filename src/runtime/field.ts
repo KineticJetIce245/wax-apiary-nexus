@@ -36,15 +36,27 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
 }
 
 /**
- * A completed join is a tombstone for late optional branches, not live work:
- * it never keeps the field out of Rest.
+ * A closed join is a tombstone for late branches. Stage 5A closed joins with
+ * `completedAt`; Stage 5B closes a timed-out join with `timedOutAt`. Neither is
+ * live work, so neither keeps the field out of Rest nor blocks an edit.
+ */
+export function isJoinClosed(join: {
+  readonly completedAt?: string;
+  readonly timedOutAt?: string;
+}): boolean {
+  return join.completedAt !== undefined || join.timedOutAt !== undefined;
+}
+
+/**
+ * A closed join is a tombstone for late branches, not live work: it never keeps
+ * the field out of Rest.
  */
 function hasIncompleteJoin(node: NodeState): boolean {
   if (node.joins === undefined) {
     return false;
   }
   for (const join of node.joins.values()) {
-    if (join.completedAt === undefined) {
+    if (!isJoinClosed(join)) {
       return true;
     }
   }
@@ -107,6 +119,8 @@ export function snapshotField(
             forkId,
             arrived: [...join.arrived.values()].map(clonePheromone),
             ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
+            ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
+            ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),
           },
         ]);
       }

@@ -1,4 +1,8 @@
 export { parseComposition, CompositionValidationError } from './definition.js';
+export {
+  DEFAULT_MERGE_TIMEOUT_MS,
+  MAX_MERGE_TIMEOUT_MS,
+} from './definition.js';
 export { createMemoryLog } from './log.js';
 export { renderPrompt, serializeValue } from './executor.js';
 export {

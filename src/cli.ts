@@ -66,6 +66,10 @@ export interface CliDependencies {
   readonly stderr?: (line: string) => void;
   readonly askApproval?: (request: GuardRequest) => Promise<GuardDecision>;
   readonly askUser?: UserAnswerHandler;
+  /** Test seam: clock for runtime deadlines and the nextWakeAt wait. */
+  readonly now?: () => number;
+  /** Test seam: replaces the setTimeout wait for the next Merge deadline. */
+  readonly sleep?: (ms: number) => Promise<void>;
   /** Set by the foreground process to stop a daemon on SIGINT/SIGTERM. */
   readonly signal?: AbortSignal;
 }
@@ -83,6 +87,16 @@ const VALUE_FLAGS = new Set([
 const BOOLEAN_FLAGS = new Set(['--resume', '--composition-tools']);
 
 const DEFAULT_STATE_DIR = '~/.wax';
+
+/**
+ * Waits for one Merge deadline. A pending timer intentionally keeps the
+ * process alive: `wax run` must not exit while a join is still waiting.
+ */
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 export function parseRunArgs(
   argv: readonly string[],
@@ -349,6 +363,35 @@ function firstHover(
   return undefined;
 }
 
+/**
+ * The earliest instant a rate-limited `pending` Pheromone becomes runnable.
+ *
+ * A Merge deadline is not the only timed wake: a branch already queued at a
+ * node is held by `minIntervalMs`. Sleeping only to `nextWakeAt()` would miss
+ * that activation and could time out a branch that arrived before the deadline.
+ */
+function nextPendingAt(
+  definition: CompositionDefinition,
+  snapshot: PheromoneFieldSnapshot,
+): number | undefined {
+  let next: number | undefined;
+  for (const [id, node] of definition.nodes) {
+    const state = snapshot.nodes[id];
+    if (state?.pending === undefined) {
+      continue;
+    }
+    const last = state.lastActivatedAt;
+    const due = last === undefined ? 0 : Date.parse(last) + node.minIntervalMs;
+    if (!Number.isFinite(due)) {
+      continue;
+    }
+    if (next === undefined || due < next) {
+      next = due;
+    }
+  }
+  return next;
+}
+
 export async function runCli(argv: readonly string[], deps: CliDependencies = {}): Promise<number> {
   if (argv[0] === 'mcp') {
     return runMcpCommand(argv);
@@ -362,6 +405,8 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? defaultSleep;
 
   let command: RunCommand;
   let definition: CompositionDefinition;
@@ -485,6 +530,7 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       projectDirectory: project.directory,
       onLog: log.sink,
       onGuard: deps.askApproval ?? askApprovalInteractively,
+      now,
     };
 
     if (persisted !== undefined) {
@@ -503,12 +549,28 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       await runtime.pump();
       flush();
       const hovered = firstHover(definition, runtime.snapshot());
-      if (hovered === undefined) {
+      if (hovered !== undefined) {
+        const value = await askUser(hovered.node, hovered.hover);
+        runtime.answerHover(hovered.node.id, value, hovered.hover.token);
+        flush();
+        continue;
+      }
+      // No hover to service. A Merge that is waiting out its deadline is not
+      // Rest, but pump has nothing to activate: sleep until the earliest
+      // deadline (or a pending rate-limited branch), then check the field
+      // again. A field with neither a hover nor a timed wake cannot make
+      // progress on its own, so it ends the run.
+      if (runtime.snapshot().rest) {
         break;
       }
-      const value = await askUser(hovered.node, hovered.hover);
-      runtime.answerHover(hovered.node.id, value, hovered.hover.token);
-      flush();
+      const times = [
+        runtime.nextWakeAt(),
+        nextPendingAt(definition, runtime.snapshot()),
+      ].filter((value): value is number => value !== undefined);
+      if (times.length === 0) {
+        break;
+      }
+      await sleep(Math.max(0, Math.min(...times) - now()));
     }
   } catch (error) {
     code = 1;

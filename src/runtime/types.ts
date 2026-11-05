@@ -149,13 +149,15 @@ export interface ForkNode {
 /**
  * Stage 5A adds optional branches to the Stage 3A text combine. `optional` is
  * best effort: the required set completes the join immediately and an optional
- * branch only contributes when it has already arrived. The object/array combine
- * shapes still have no approved Value.
+ * branch only contributes when it has already arrived. Stage 5B adds
+ * `timeoutMs`, measured from the first branch arrival for one forkId. The
+ * object/array combine shapes still have no approved Value.
  */
 export interface MergeConfig {
   required: readonly string[];
   optional: readonly string[];
   combine: 'text';
+  timeoutMs: number;
 }
 
 export interface MergeNode {
@@ -241,18 +243,24 @@ export interface CompositionDefinition {
  *
  * Stage 5A keeps a completed join as a tombstone: `completedAt` is set and the
  * consumed `arrived` entries are cleared, so a late optional branch can still be
- * dropped rather than reopening the join.
+ * dropped rather than reopening the join. Stage 5B adds the same tombstone for a
+ * deadline failure (`timedOutAt`). `deadlineAt` is an absolute epoch-ms time set
+ * when the first branch of the fork arrives; it is cleared when the join closes.
  */
 export interface JoinState {
   forkId: string;
   arrived: Map<string, Pheromone>;
   completedAt?: string;
+  deadlineAt?: number;
+  timedOutAt?: string;
 }
 
 export interface JoinStateSnapshot {
   forkId: string;
   arrived: readonly Pheromone[];
   completedAt?: string;
+  deadlineAt?: number;
+  timedOutAt?: string;
 }
 
 /** Mutable per-node runtime state. Never handed out directly. */
@@ -294,6 +302,10 @@ export interface PersistedJoinState {
   arrived: Pheromone[];
   /** Set on a completed tombstone; its `arrived` list is empty. */
   completedAt?: string;
+  /** Absolute epoch-ms deadline for an incomplete join. */
+  deadlineAt?: number;
+  /** Set on a timed-out tombstone; its `arrived` list is empty. */
+  timedOutAt?: string;
 }
 
 export interface PersistedNodeState {

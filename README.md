@@ -68,7 +68,14 @@ npm ci
 npm test
 ```
 
-The runtime has no CLI entry point yet; the next slice adds the Forager bridge and a runtime CLI.
+The one-shot CLI runs one composition through a real Codex app-server:
+
+```bash
+npm run wax -- run composition.json --project . --harness codex --trigger plan --input "why is the sky blue"
+```
+
+It triggers one node, pumps the graph to Rest, and prints the node states, a log
+summary, and the final output. `--harness dsh` is not wired yet.
 
 ## Design principles
 

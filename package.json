@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "wax": "node dist/src/cli.js",
     "test": "node scripts/test.mjs",
     "test:integration": "npm run build && node --test \"dist/tests/integration/**/*.test.js\""
   },

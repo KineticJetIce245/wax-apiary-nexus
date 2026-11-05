@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, and the Stage 4B-A JSON CLI contract for that editor are implemented; `npm test` passes 369/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `--harness dsh` is not wired yet.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, and the Stage 4C read-only revision audit and orphan-temp inspection are implemented; `npm test` passes 385/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `--harness dsh` is not wired yet.
 
 ## Vision
 
@@ -46,6 +46,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - `src/revision.ts` refuses a graph edit that removes or renames a node still holding queue, pending, active, hover, or merge-waiting state; a forced edit returns the nodes that must be marked as needing attention.
 - Stage 4A adds offline `wax composition validate <file>` and `wax composition replace <file> --with <new-file> [--state-dir <dir>] [--apiary <id>]`. `validate` only reads and parses. `replace` parses both files, refuses a different composition id, any queue/pending/active/hover/merge-waiting reference (when `--apiary` resolves a Honey field), and a live or uncertain daemon lock; it writes through a same-directory temp file plus rename and appends one metadata-only revision audit line to `<state-dir>/revisions.jsonl` (default `~/.wax/revisions.jsonl`). There is no `--force`, no `needsAttention` write, and a stale lock is left in place. Without `--apiary`, replace still runs but prints that active references were not checked.
 - Stage 4B-A adds `--json` to both composition commands. JSON mode writes exactly one object to stdout and nothing to stderr: `{ok:true,...}` for success, `{ok:false,command,code,error}` for failure with `code` one of `usage`, `parse`, `refused`, `io`, `internal`. Exit codes remain `0` success, `2` usage/parse/refusal, `1` IO. `src/composition-tool.ts` is the transport-neutral result layer; it calls the same guarded editing service as the human CLI, so active-reference, daemon-lock and audit policy is never reimplemented in JSON formatting. Results never contain composition bodies, prompts or outputs.
+- Stage 4C adds read-only inspection. `wax composition revisions` reads `<state-dir>/revisions.jsonl` (default `~/.wax`), filters by `--composition`, keeps the newest `--limit` matches (default 50, max 1000) and fails on any malformed line instead of skipping it. The reader whitelists the six audit fields, so a corrupt line can never leak a composition body. `wax composition recover <file>` scans the same directory for `.<basename>.tmp-*` candidates and reports each as valid or invalid; it never renames, deletes or overwrites anything, and has no `--apply`.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
 - `--harness dsh` is not wired yet; Codex is the only wired native harness.
 - Scheduled `user` triggers remain deferred. Optional branches, object/array combine, and merge timeouts remain open; the next step is an owner review of the Stage 3C work.
@@ -62,6 +63,7 @@ src/cli.ts           `wax run` / `wax daemon` / `wax composition` CLI entry
 src/composition-cli.ts  `wax composition validate|replace` argument parsing and exit codes
 src/composition-tool.ts transport-neutral typed result layer behind `--json`
 src/composition-edit.ts atomic composition replace, Honey/lock checks, revision audit
+src/composition-audit.ts read-only revision audit and orphan-temp inspection
 src/daemon.ts        foreground daemon for one composition's schedule
 src/scheduler.ts     durable at/every occurrence scheduler
 src/daemon-lock.ts   per-composition daemon lock
@@ -118,6 +120,8 @@ The offline composition editor never starts a daemon or a harness:
 ```bash
 npm run wax -- composition validate composition.json
 npm run wax -- composition replace composition.json --with next.json --state-dir ~/.wax --apiary demo
+npm run wax -- composition revisions --state-dir ~/.wax --composition demo --limit 20
+npm run wax -- composition recover composition.json --json
 npm run wax -- composition validate --json composition.json
 npm run wax -- composition replace --json composition.json --with next.json --apiary demo
 ```
@@ -128,10 +132,17 @@ lock; it writes through a same-directory temp file plus rename and appends one
 metadata-only revision audit line. A stale lock is left in place. Without
 `--apiary`, `replace` reports that active references were not checked.
 
+`revisions` reads the same audit read-only. A missing audit file is an empty
+list, and any malformed line is a parse failure with exit 1 instead of a silent
+skip. `recover` scans only the composition's directory for
+`.<basename>.tmp-*` files and parses each one; it never renames, deletes,
+overwrites or applies a recovery.
+
 `--json` keeps the same semantics for an AI caller: stdout is exactly one JSON
 object, failures are also printed to stdout as
 `{"ok":false,"command":...,"code":...,"error":...}`, and stderr stays empty.
-Exit codes are unchanged (`0` success, `2` usage/parse/refusal, `1` IO).
+Exit codes remain `0` success, `2` usage/parse-or-refusal, `1` IO, except that a
+malformed revision audit line is `parse` with exit 1.
 
 ## Design principles
 

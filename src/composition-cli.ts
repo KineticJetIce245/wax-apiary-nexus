@@ -1,15 +1,25 @@
 import { CliUsageError, loadCompositionFile, messageOf } from './cli-shared.js';
 import {
+  CompositionAuditIoError,
+  CompositionAuditParseError,
+  inspectCompositionRecovery,
+  parseRevisionLimit,
+  readCompositionRevisions,
+} from './composition-audit.js';
+import {
   CompositionEditRefusedError,
   CompositionIoError,
   DEFAULT_COMPOSITION_STATE_DIR,
+  compositionAuditPath,
   replaceComposition,
   type CompositionEditDependencies,
 } from './composition-edit.js';
 import {
   compositionToolExitCode,
   compositionToolFailure,
+  recoverCompositionTool,
   replaceCompositionTool,
+  revisionsCompositionTool,
   validateCompositionTool,
   type CompositionToolCommand,
   type CompositionToolResult,
@@ -23,7 +33,14 @@ export type CompositionCommand =
       readonly withFile: string;
       readonly stateDir?: string;
       readonly apiary?: string;
-    };
+    }
+  | {
+      readonly kind: 'revisions';
+      readonly compositionId?: string;
+      readonly limit?: number;
+      readonly stateDir?: string;
+    }
+  | { readonly kind: 'recover'; readonly file: string };
 
 export interface ParsedCompositionCommand {
   readonly command: CompositionCommand;
@@ -43,9 +60,13 @@ export interface CompositionCliDependencies {
 const COMPOSITION_USAGE =
   'usage: wax composition validate [--json] <file>\n' +
   '       wax composition replace [--json] <file> --with <new-file> ' +
-  '[--state-dir <dir>] [--apiary <id>]';
+  '[--state-dir <dir>] [--apiary <id>]\n' +
+  '       wax composition revisions [--json] [--composition <id>] ' +
+  '[--limit <n>] [--state-dir <dir>]\n' +
+  '       wax composition recover [--json] <file>';
 
 const REPLACE_VALUE_FLAGS = new Set(['--with', '--state-dir', '--apiary']);
+const REVISIONS_VALUE_FLAGS = new Set(['--composition', '--limit', '--state-dir']);
 
 export function parseCompositionArgs(
   argv: readonly string[],
@@ -143,13 +164,125 @@ export function parseCompositionArgs(
     };
   }
 
+  if (subcommand === 'revisions') {
+    const positionals: string[] = [];
+    const flags = new Map<string, string>();
+    let json = false;
+
+    for (let index = 0; index < rest.length; index += 1) {
+      const token = rest[index];
+      if (token === undefined) {
+        continue;
+      }
+      if (token === '--json') {
+        if (json) {
+          throw new CliUsageError("option '--json' was given more than once");
+        }
+        json = true;
+        continue;
+      }
+      if (token.startsWith('--')) {
+        if (!REVISIONS_VALUE_FLAGS.has(token)) {
+          throw new CliUsageError(`unknown option '${token}'`);
+        }
+        const value = rest[index + 1];
+        if (value === undefined || value.startsWith('--') || value.trim() === '') {
+          throw new CliUsageError(`option '${token}' needs a value`);
+        }
+        if (flags.has(token)) {
+          throw new CliUsageError(`option '${token}' was given more than once`);
+        }
+        flags.set(token, value);
+        index += 1;
+        continue;
+      }
+      positionals.push(token);
+    }
+
+    if (positionals.length !== 0) {
+      throw new CliUsageError(
+        '"wax composition revisions" takes no file; filter with --composition <id>',
+      );
+    }
+
+    const compositionId = flags.get('--composition');
+    const limitRaw = flags.get('--limit');
+    const stateDir = flags.get('--state-dir');
+    return {
+      command: {
+        kind: 'revisions',
+        ...(compositionId === undefined ? {} : { compositionId }),
+        ...(limitRaw === undefined ? {} : { limit: parseRevisionLimit(limitRaw) }),
+        ...(stateDir === undefined ? {} : { stateDir }),
+      },
+      json,
+    };
+  }
+
+  if (subcommand === 'recover') {
+    const positionals: string[] = [];
+    let json = false;
+    for (const token of rest) {
+      if (token === '--json') {
+        if (json) {
+          throw new CliUsageError("option '--json' was given more than once");
+        }
+        json = true;
+        continue;
+      }
+      if (token.startsWith('--')) {
+        throw new CliUsageError(
+          `unknown option '${token}' for "wax composition recover"`,
+        );
+      }
+      positionals.push(token);
+    }
+    if (positionals.length !== 1) {
+      throw new CliUsageError(
+        'expected exactly one composition file after "wax composition recover"',
+      );
+    }
+    return {
+      command: { kind: 'recover', file: positionals[0] as string },
+      json,
+    };
+  }
+
   throw new CliUsageError(COMPOSITION_USAGE);
 }
 
 /** The subcommand named by argv, if it is one of the tool commands. */
 function attemptedCommand(argv: readonly string[]): CompositionToolCommand | undefined {
   const subcommand = argv[0] === 'composition' ? argv[1] : undefined;
-  return subcommand === 'validate' || subcommand === 'replace' ? subcommand : undefined;
+  if (
+    subcommand === 'validate' ||
+    subcommand === 'replace' ||
+    subcommand === 'revisions' ||
+    subcommand === 'recover'
+  ) {
+    return subcommand;
+  }
+  return undefined;
+}
+
+function revisionStateDir(
+  command: Extract<CompositionCommand, { kind: 'revisions' }>,
+  deps: CompositionCliDependencies,
+): string {
+  return command.stateDir ?? deps.defaultStateDir ?? DEFAULT_COMPOSITION_STATE_DIR;
+}
+
+function runRevisionsTool(
+  command: Extract<CompositionCommand, { kind: 'revisions' }>,
+  deps: CompositionCliDependencies,
+): CompositionToolResult {
+  return revisionsCompositionTool({
+    stateDir: revisionStateDir(command, deps),
+    ...(command.compositionId === undefined
+      ? {}
+      : { compositionId: command.compositionId }),
+    ...(command.limit === undefined ? {} : { limit: command.limit }),
+  });
 }
 
 function runReplaceTool(
@@ -169,15 +302,17 @@ function runReplaceTool(
 }
 
 /**
- * `wax composition validate` and `wax composition replace`.
+ * `wax composition validate|replace|revisions|recover`.
  *
- * Exit codes: 0 success, 2 usage/parse/refusal, 1 IO failure. Validation never
- * writes; a replace is refused before any write when an active reference or a
- * live daemon lock is found.
+ * Exit codes: 0 success; usage is 2; validate/replace parse and refusal are 2;
+ * a malformed revision audit line is a parse failure with exit 1; IO failure is
+ * 1. Validation never writes; a replace is refused before any write when an
+ * active reference or a live daemon lock is found. Revisions and recover are
+ * read-only.
  *
  * With `--json`, stdout carries exactly one JSON object and stderr stays empty.
  * The JSON branch delegates to `composition-tool.ts`, which calls the same
- * guarded editing service as the human branch.
+ * service as the human branch.
  */
 export function runCompositionCli(
   argv: readonly string[],
@@ -203,10 +338,21 @@ export function runCompositionCli(
   }
 
   if (parsed.json) {
-    const result =
-      parsed.command.kind === 'validate'
-        ? validateCompositionTool(parsed.command.file)
-        : runReplaceTool(parsed.command, deps);
+    let result: CompositionToolResult;
+    switch (parsed.command.kind) {
+      case 'validate':
+        result = validateCompositionTool(parsed.command.file);
+        break;
+      case 'replace':
+        result = runReplaceTool(parsed.command, deps);
+        break;
+      case 'revisions':
+        result = runRevisionsTool(parsed.command, deps);
+        break;
+      case 'recover':
+        result = recoverCompositionTool(parsed.command.file);
+        break;
+    }
     out(JSON.stringify(result));
     return compositionToolExitCode(result);
   }
@@ -225,6 +371,74 @@ export function runCompositionCli(
       }
       err(`error: ${messageOf(error)}`);
       return 2;
+    }
+  }
+
+  if (parsed.command.kind === 'revisions') {
+    const stateDir = revisionStateDir(parsed.command, deps);
+    try {
+      const entries = readCompositionRevisions({
+        stateDir,
+        ...(parsed.command.compositionId === undefined
+          ? {}
+          : { compositionId: parsed.command.compositionId }),
+        ...(parsed.command.limit === undefined ? {} : { limit: parsed.command.limit }),
+      });
+      out(`audit        ${compositionAuditPath(stateDir)}`);
+      out(`revisions    ${String(entries.length)}`);
+      for (const entry of entries) {
+        out(
+          `${entry.at}  ${entry.compositionId}  ` +
+            `${entry.oldRevision} -> ${entry.newRevision}  ${entry.mode}  ${entry.file}`,
+        );
+      }
+      return 0;
+    } catch (error) {
+      if (error instanceof CompositionAuditParseError) {
+        err(error.message);
+        return 1;
+      }
+      if (error instanceof CompositionAuditIoError) {
+        err(`error: ${error.message}`);
+        return 1;
+      }
+      if (error instanceof CliUsageError) {
+        err(error.message);
+        return 2;
+      }
+      err(`error: ${messageOf(error)}`);
+      return 1;
+    }
+  }
+
+  if (parsed.command.kind === 'recover') {
+    try {
+      const inspection = inspectCompositionRecovery(parsed.command.file);
+      out(`file         ${inspection.file}`);
+      out(`candidates   ${String(inspection.candidates.length)}`);
+      for (const candidate of inspection.candidates) {
+        if (candidate.valid) {
+          out(
+            `candidate    valid    ${candidate.path}  ` +
+              `composition=${candidate.compositionId} revision=${candidate.graphRevision}`,
+          );
+        } else {
+          out(`candidate    invalid  ${candidate.path}  ${candidate.error}`);
+        }
+      }
+      out('mutations    none (read-only inspection)');
+      return 0;
+    } catch (error) {
+      if (error instanceof CompositionAuditIoError) {
+        err(`error: ${error.message}`);
+        return 1;
+      }
+      if (error instanceof CliUsageError) {
+        err(error.message);
+        return 2;
+      }
+      err(`error: ${messageOf(error)}`);
+      return 1;
     }
   }
 

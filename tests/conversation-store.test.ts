@@ -72,17 +72,28 @@ test('throws on a file that is not a JSON array', () => {
 test('blocks a second writer until the lock file is removed', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'uw-conv-lock-'));
   const filePath = join(dir, 'conversations.json');
+  const startedPath = join(dir, 'writer.started');
   const storePath = fileURLToPath(new URL('../src/conversation-store.js', import.meta.url));
   writeFileSync(`${filePath}.lock`, JSON.stringify({ pid: process.pid }), 'utf8');
 
   const storeUrl = pathToFileURL(storePath).href;
-  const script = `import { ConversationStore } from ${JSON.stringify(storeUrl)};\nnew ConversationStore(process.argv[1]).upsert(JSON.parse(process.argv[2]));`;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script, filePath, JSON.stringify(record())], {
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
+  const script =
+    `import { writeFileSync } from 'node:fs';\n` +
+    `import { ConversationStore } from ${JSON.stringify(storeUrl)};\n` +
+    `writeFileSync(process.argv[3], 'started');\n` +
+    `new ConversationStore(process.argv[1], { lockTimeoutMs: 10_000 }).upsert(JSON.parse(process.argv[2]));`;
+  const child = spawn(
+    process.execPath,
+    ['--input-type=module', '-e', script, filePath, JSON.stringify(record()), startedPath],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
   let exited = false;
   let exitCode: number | null = null;
   let stderr = '';
+  let spawnError: Error | undefined;
+  child.once('error', (error) => {
+    spawnError = error;
+  });
   child.stderr.on('data', (chunk: Buffer) => {
     stderr += chunk.toString('utf8');
   });
@@ -93,7 +104,25 @@ test('blocks a second writer until the lock file is removed', async () => {
       resolveExit();
     });
   });
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, 800));
+
+  const waitFor = async (predicate: () => boolean, timeoutMs: number, label: string): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+      if (spawnError !== undefined) {
+        assert.fail(`${label}: child failed to start: ${spawnError.message}`);
+      }
+      if (Date.now() >= deadline) {
+        assert.fail(`${label}: timed out; exit=${String(exitCode)}, stderr=${stderr}`);
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    }
+  };
+
+  // Wait until the child has definitely started, then give it time to hit the
+  // held lock. The previous fixed 800ms wait could race the child's 2s lock
+  // timeout when the test runner was slow.
+  await waitFor(() => existsSync(startedPath), 5_000, 'writer start');
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
   assert.equal(
     exited,
     false,
@@ -101,7 +130,28 @@ test('blocks a second writer until the lock file is removed', async () => {
   );
   unlinkSync(`${filePath}.lock`);
   await exitPromise;
-  assert.equal(new ConversationStore(filePath).load().length, 1);
+  assert.equal(
+    exitCode,
+    0,
+    `writer should exit cleanly after the lock is released (stderr=${stderr})`,
+  );
+  // The child exiting does not necessarily mean the file is immediately
+  // visible to this process, especially on Windows. Poll for the record rather
+  // than racing a single read.
+  await waitFor(
+    () => new ConversationStore(filePath).load().length === 1,
+    3_000,
+    'writer record visible',
+  );
+});
+
+test('honors a configurable lock timeout', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uw-conv-lock-timeout-'));
+  const filePath = join(dir, 'conversations.json');
+  writeFileSync(`${filePath}.lock`, JSON.stringify({ pid: process.pid }), 'utf8');
+
+  const strict = new ConversationStore(filePath, { lockTimeoutMs: 50 });
+  assert.throws(() => strict.upsert(record()), /Conversation store is locked/);
 });
 
 test('recovers a stale lock file', () => {

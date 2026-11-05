@@ -29,6 +29,11 @@ const STALE_LOCK_MS = 30_000;
 /** Per-process lock depth so nested writers in one process do not self-deadlock. */
 const heldLocks = new Map<string, { depth: number; token: string }>();
 
+export interface ConversationStoreOptions {
+  /** How long an exclusive lock may be held before the writer fails. */
+  readonly lockTimeoutMs?: number;
+}
+
 export function defaultConversationStorePath(): string {
   return join(homedir(), '.wax', 'conversations.json');
 }
@@ -78,7 +83,17 @@ function sleepSync(ms: number): void {
  * through a temp file plus rename so a crash cannot leave a half-written file.
  */
 export class ConversationStore {
-  constructor(readonly filePath: string = defaultConversationStorePath()) {}
+  private readonly lockTimeoutMs: number;
+
+  constructor(
+    readonly filePath: string = defaultConversationStorePath(),
+    options: ConversationStoreOptions = {},
+  ) {
+    this.lockTimeoutMs = options.lockTimeoutMs ?? LOCK_TIMEOUT_MS;
+    if (!Number.isFinite(this.lockTimeoutMs) || this.lockTimeoutMs <= 0) {
+      throw new TypeError('lockTimeoutMs must be a positive number');
+    }
+  }
 
   load(): ConversationRecord[] {
     let raw: string;
@@ -230,7 +245,7 @@ export class ConversationStore {
       return () => this.releaseLock(lockPath);
     }
     mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = Date.now() + this.lockTimeoutMs;
     const token = `${String(process.pid)}-${randomUUID()}`;
     while (true) {
       try {
@@ -246,7 +261,12 @@ export class ConversationStore {
         heldLocks.set(lockPath, { depth: 1, token });
         return () => this.releaseLock(lockPath);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        const code = (error as NodeJS.ErrnoException).code;
+        // Windows can return EPERM/EBUSY while another process is unlinking a
+        // lock file (delete-pending), even though the lock is no longer
+        // permanently held. Treat those as transient contention just like
+        // EEXIST and retry until the deadline.
+        if (code !== 'EEXIST' && code !== 'EPERM' && code !== 'EBUSY') {
           throw error;
         }
         try {

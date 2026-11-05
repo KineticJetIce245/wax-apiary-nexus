@@ -89,6 +89,22 @@ test('parses a full run command', () => {
   assert.equal(command.input, 'hello world');
 });
 
+test('parses an explicit codex executable', () => {
+  const command = parseRunArgs([
+    'run',
+    'c.json',
+    '--project',
+    'p',
+    '--harness',
+    'codex',
+    '--trigger',
+    'start',
+    '--codex-exe',
+    'C:/tools/codex.exe',
+  ]);
+  assert.equal(command.codexExe, 'C:/tools/codex.exe');
+});
+
 test('input defaults to an empty string', () => {
   const command = parseRunArgs(['run', 'c.json', '--project', 'p', '--harness', 'codex', '--trigger', 'start']);
   assert.equal(command.input, '');
@@ -208,6 +224,31 @@ test('the dsh harness is rejected until its bridge exists', async () => {
   assert.match(withoutRoot.stderr.join('\n'), /requires --dsh-root/);
   assert.equal(second, 2);
   assert.match(withRoot.stderr.join('\n'), /not wired in Stage 2A/);
+});
+
+test('--codex-exe is rejected for the dsh harness', async () => {
+  const captureResult = capture();
+
+  const code = await runCli(
+    [
+      'run',
+      compositionFile(),
+      '--project',
+      projectDirectory(),
+      '--harness',
+      'dsh',
+      '--dsh-root',
+      projectDirectory(),
+      '--codex-exe',
+      'C:/tools/codex.exe',
+      '--trigger',
+      'start',
+    ],
+    captureResult.deps,
+  );
+
+  assert.equal(code, 2);
+  assert.match(captureResult.stderr.join('\n'), /only applies to --harness codex/);
 });
 
 test('a failed execution exits non-zero and still reports the field state', async () => {

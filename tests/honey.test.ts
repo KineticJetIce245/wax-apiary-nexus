@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -246,6 +246,101 @@ test('a hover without its Pheromone is treated as stuck', () => {
   assert.deepEqual(report.stuckActive, ['ask']);
   assert.equal(runtime.snapshot().nodes['ask']?.hover, undefined);
   assert.equal(runtime.snapshot().nodes['ask']?.state['needsAttention'], true);
+});
+
+test('restore keeps a pending slot and a queue', () => {
+  const definition = askComposition();
+  const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
+  field.nodes['start'] = { queue: [pheromone('ph_queue')], pending: pheromone('ph_pending') };
+
+  const { runtime, report } = PheromoneRuntime.restore(definition, field, {
+    executeForager: executor(),
+    now: () => START,
+  });
+
+  assert.deepEqual(report, { resumedHovers: [], unknownActive: [], stuckActive: [] });
+  const start = runtime.snapshot().nodes['start'];
+  assert.ok(start !== undefined);
+  assert.equal(start.queue.length, 1);
+  assert.equal(start.pending?.id, 'ph_pending');
+  assert.equal(runtime.snapshot().rest, false);
+});
+
+test('a guard hover cannot be resumed and is marked stuck', () => {
+  const definition = askComposition();
+  const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
+  field.nodes['start'] = {
+    queue: [],
+    active: pheromone('ph_active'),
+    hover: {
+      token: 'gd_1',
+      kind: 'guard',
+      compositionId: 'ask',
+      nodeId: 'start',
+      pheromoneId: 'ph_active',
+      meta: { requestId: 'r1', executionId: 'e1' },
+    },
+  };
+
+  const { runtime, report } = PheromoneRuntime.restore(definition, field, {
+    executeForager: executor(),
+    now: () => START,
+  });
+
+  assert.deepEqual(report.resumedHovers, []);
+  assert.ok(report.stuckActive.includes('start'));
+  assert.ok(report.unknownActive.includes('start'));
+  const start = runtime.snapshot().nodes['start'];
+  assert.ok(start !== undefined);
+  assert.equal(start.hover, undefined);
+  assert.equal(start.state['needsAttention'], true);
+});
+
+test('transcripts keep bodies that the metadata log does not', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+
+  store.appendTranscript('conv-1', [
+    { at: new Date(START).toISOString(), type: 'output', text: 'SECRET-BODY' },
+  ]);
+  store.appendLog([
+    {
+      at: new Date(START).toISOString(),
+      event: 'node.completed',
+      compositionId: 'ask',
+      graphRevision: 'rev',
+      transcriptRef: 'conv-1',
+    },
+  ]);
+
+  const transcript = readFileSync(store.transcriptPath('conv-1'), 'utf8');
+  const log = readFileSync(store.paths.log, 'utf8');
+  assert.match(transcript, /SECRET-BODY/);
+  assert.ok(!log.includes('SECRET-BODY'));
+  assert.match(log, /transcriptRef/);
+});
+
+test('the log and transcripts rotate when they grow past the limit', () => {
+  const root = tempRoot();
+  const store = new HoneyStore(honeyPaths(root, 'apiary', 'ask'), {
+    maxLogBytes: 160,
+    maxTranscriptBytes: 160,
+    keepSegments: 2,
+  });
+  const entry = {
+    at: new Date(START).toISOString(),
+    event: 'runtime.rest' as const,
+    compositionId: 'ask',
+    graphRevision: 'rev',
+  };
+
+  for (let index = 0; index < 6; index += 1) {
+    store.appendLog([entry]);
+    store.appendTranscript('conv-1', [{ at: new Date(START).toISOString(), type: 'output', text: 'x'.repeat(40) }]);
+  }
+
+  assert.ok(existsSync(`${store.paths.log}.1`));
+  assert.ok(existsSync(`${store.transcriptPath('conv-1')}.1`));
+  assert.ok(!existsSync(`${store.paths.log}.3`), 'only keepSegments segments are kept');
 });
 
 test('restore refuses a different graph revision or an unknown node', () => {

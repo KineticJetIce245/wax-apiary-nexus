@@ -5,6 +5,8 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -214,15 +216,38 @@ function parsePersistedField(input: unknown): PersistedField {
  * an append-only metadata `log.jsonl`. Log entries never carry prompt or
  * output bodies; they are the same runtime metadata events that `onLog` emits.
  */
+export interface HoneyStoreOptions {
+  /** Rotate the metadata log once it would exceed this size. */
+  readonly maxLogBytes?: number;
+  /** Rotate each conversation transcript once it would exceed this size. */
+  readonly maxTranscriptBytes?: number;
+  /** How many rotated segments to keep (`log.jsonl.1` …). */
+  readonly keepSegments?: number;
+}
+
+const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+const DEFAULT_KEEP_SEGMENTS = 3;
+
 export class HoneyStore {
   readonly paths: HoneyPaths;
+  private readonly maxLogBytes: number;
+  private readonly maxTranscriptBytes: number;
+  private readonly keepSegments: number;
 
-  constructor(paths: HoneyPaths) {
+  constructor(paths: HoneyPaths, options: HoneyStoreOptions = {}) {
     this.paths = paths;
+    this.maxLogBytes = positive(options.maxLogBytes, DEFAULT_MAX_BYTES, 'maxLogBytes');
+    this.maxTranscriptBytes = positive(options.maxTranscriptBytes, DEFAULT_MAX_BYTES, 'maxTranscriptBytes');
+    this.keepSegments = positive(options.keepSegments, DEFAULT_KEEP_SEGMENTS, 'keepSegments');
   }
 
-  static forComposition(stateRoot: string, apiaryId: string, compositionId: string): HoneyStore {
-    return new HoneyStore(honeyPaths(stateRoot, apiaryId, compositionId));
+  static forComposition(
+    stateRoot: string,
+    apiaryId: string,
+    compositionId: string,
+    options: HoneyStoreOptions = {},
+  ): HoneyStore {
+    return new HoneyStore(honeyPaths(stateRoot, apiaryId, compositionId), options);
   }
 
   save(field: PersistedField): void {
@@ -252,13 +277,57 @@ export class HoneyStore {
     if (entries.length === 0) {
       return;
     }
-    mkdirSync(dirname(this.paths.log), { recursive: true });
     const lines = `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`;
-    appendFileSync(this.paths.log, lines, { encoding: 'utf8', mode: 0o600 });
+    this.appendWithRotation(this.paths.log, lines, this.maxLogBytes);
   }
 
-  /** Reserved hook for 2C transcripts; the path is fixed by the contract now. */
+  /**
+   * Honey transcript for one conversation. Unlike the metadata log this keeps
+   * the actual event bodies, which is why the composition log only ever stores
+   * a reference to this file.
+   */
+  appendTranscript(conversationId: string, events: readonly Record<string, unknown>[]): void {
+    if (events.length === 0) {
+      return;
+    }
+    const lines = `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+    this.appendWithRotation(this.transcriptPath(conversationId), lines, this.maxTranscriptBytes);
+  }
+
+  /** `<honey>/transcripts/<conversation>.jsonl` */
   transcriptPath(conversationId: string): string {
     return join(this.paths.transcripts, `${safeSegment(conversationId, 'conversation id')}.jsonl`);
   }
+
+  private appendWithRotation(path: string, lines: string, maxBytes: number): void {
+    mkdirSync(dirname(path), { recursive: true });
+    if (existsSync(path) && statSync(path).size + Buffer.byteLength(lines, 'utf8') > maxBytes) {
+      this.rotate(path);
+    }
+    appendFileSync(path, lines, { encoding: 'utf8', mode: 0o600 });
+  }
+
+  private rotate(path: string): void {
+    rmSync(`${path}.${String(this.keepSegments)}`, { force: true });
+    for (let index = this.keepSegments - 1; index >= 1; index -= 1) {
+      const from = `${path}.${String(index)}`;
+      const to = `${path}.${String(index + 1)}`;
+      if (existsSync(from)) {
+        rmSync(to, { force: true });
+        renameSync(from, to);
+      }
+    }
+    rmSync(`${path}.1`, { force: true });
+    renameSync(path, `${path}.1`);
+  }
+}
+
+function positive(value: number | undefined, fallback: number, label: string): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive number`);
+  }
+  return Math.floor(value);
 }

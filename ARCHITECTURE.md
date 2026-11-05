@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-> **Status**: target design. The PheromoneField single-Pheromone slice, Stage 3A Fork/Merge/Branch, and Stage 3B Worker/Condition worker are implemented in `src/runtime/`; schedules and richer value modalities are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
+> **Status**: target design. The PheromoneField single-Pheromone slice, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, and the Stage 3C-1 foreground daemon scheduler are implemented; richer value modalities are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
 
 ## 1. One sentence
 
@@ -68,7 +68,7 @@ type Value =
 
 ## 5. Runtime
 
-A trigger creates a Pheromone at a task node. A node consumes a Pheromone, runs, and emits new Pheromones on its outgoing edges.
+A trigger — manual or scheduled — creates a Pheromone at a task node. A node consumes a Pheromone, runs, and emits new Pheromones on its outgoing edges. Stage 3C-1 adds a single-composition foreground daemon that schedules `at`/`every` triggers; it records an occurrence before enqueueing it, so recovery is at-most-once.
 
 - A normal node emits one Pheromone.
 - **Fork** consumes one and emits N, one per branch.
@@ -93,7 +93,7 @@ Only an event matching the hover token can complete it. A native Guard stays at 
 
 Stage 3B does not open a `worker` hover: a Worker is an awaited child process with a timeout, so there is no durable cross-process wait to represent. The `worker` hover kind remains reserved rather than used speculatively.
 
-Guard decisions are bound to `requestId` and `executionId`. A decision for one request is never replayed onto another. Guard has a timeout (default one hour); timeout rejects or cancels, never auto-allows.
+Guard decisions are bound to `requestId` and `executionId`. A decision for one request is never replayed onto another. Guard has a timeout (default one hour); timeout rejects or cancels, never auto-allows. The Stage 3C-1 daemon has no interactive TTY and rejects Guard requests by default; there is no Guard inbox.
 
 ## 7. Fork, Merge, Branch
 
@@ -144,4 +144,4 @@ The composition log is separate:
 
 ## 11. Implementation status
 
-The single-Pheromone core, the Stage 3A parallel slice, and Stage 3B Worker are implemented: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, Fork/Merge/Branch, persisted joins and merge-waiting edit references, argv-only Worker with bounded output and process-tree kill, and Condition worker mode. Schedules, richer user modalities, optional branches (including object/array combine) and merge timeouts are still open. See [`CONTRACT.md`](CONTRACT.md).
+The single-Pheromone core, the Stage 3A parallel slice, Stage 3B Worker, and the Stage 3C-1 foreground daemon scheduler are implemented: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, Fork/Merge/Branch, persisted joins and merge-waiting edit references, argv-only Worker with bounded output and process-tree kill, Condition worker mode, scheduled `at`/`every` triggers, durable occurrence state, and a per-composition daemon lock. Richer user modalities, scheduled `user` triggers, optional branches (including object/array combine) and merge timeouts are still open. See [`CONTRACT.md`](CONTRACT.md).

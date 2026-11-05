@@ -186,8 +186,8 @@ test('rejects edges that point at unknown nodes', () => {
   assert.ok(issues.some((issue) => issue.includes("unknown node 'ghost'")));
 });
 
-test('rejects scheduled triggers, empty node sets and bad schema versions', () => {
-  assert.ok(issuesOf(minimal({ triggers: [{ id: 't1' }] })).some((issue) => issue.includes('not supported')));
+test('rejects a non-array triggers value, empty node sets and bad schema versions', () => {
+  assert.ok(issuesOf(minimal({ triggers: {} })).some((issue) => issue.includes('expected an array')));
   assert.ok(issuesOf(minimal({ nodes: {} })).some((issue) => issue.includes('at least one node')));
   assert.ok(issuesOf(minimal({ schemaVersion: 2 })).some((issue) => issue.includes('schemaVersion')));
 });

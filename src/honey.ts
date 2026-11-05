@@ -21,6 +21,7 @@ import type {
   RuntimeLogEntry,
   Value,
 } from './runtime/index.js';
+import { parseSchedulerState, type SchedulerState } from './scheduler.js';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -29,6 +30,8 @@ export interface HoneyPaths {
   readonly directory: string;
   /** Durable field snapshot: `<directory>/honey/field.json` */
   readonly field: string;
+  /** Scheduler occurrence bookkeeping: `<directory>/honey/scheduler.json` */
+  readonly scheduler: string;
   /** Append-only metadata history: `<directory>/log.jsonl` */
   readonly log: string;
   /** Reserved for 2C transcripts: `<directory>/honey/transcripts/` */
@@ -52,6 +55,7 @@ export function honeyPaths(stateRoot: string, apiaryId: string, compositionId: s
   return {
     directory,
     field: join(directory, 'honey', 'field.json'),
+    scheduler: join(directory, 'honey', 'scheduler.json'),
     log: join(directory, 'log.jsonl'),
     transcripts: join(directory, 'honey', 'transcripts'),
   };
@@ -314,11 +318,40 @@ export class HoneyStore {
   }
 
   save(field: PersistedField): void {
-    mkdirSync(dirname(this.paths.field), { recursive: true });
-    const temp = `${this.paths.field}.tmp-${String(process.pid)}-${randomUUID()}`;
-    writeFileSync(temp, `${JSON.stringify(field, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    this.writeJsonAtomic(this.paths.field, field);
+  }
+
+  saveScheduler(state: SchedulerState): void {
+    this.writeJsonAtomic(this.paths.scheduler, state);
+  }
+
+  loadScheduler(): SchedulerState | undefined {
+    if (!existsSync(this.paths.scheduler)) {
+      return undefined;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(this.paths.scheduler, 'utf8'));
+    } catch (error) {
+      throw new Error(
+        `scheduler state is not valid JSON: ${this.paths.scheduler} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    try {
+      return parseSchedulerState(parsed);
+    } catch (error) {
+      throw new Error(
+        `scheduler state is invalid: ${this.paths.scheduler} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+  }
+
+  private writeJsonAtomic(path: string, value: unknown): void {
+    mkdirSync(dirname(path), { recursive: true });
+    const temp = `${path}.tmp-${String(process.pid)}-${randomUUID()}`;
+    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     // Same-directory rename is atomic on both NTFS and POSIX filesystems.
-    renameSync(temp, this.paths.field);
+    renameSync(temp, path);
   }
 
   load(): PersistedField | undefined {

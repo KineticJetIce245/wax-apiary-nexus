@@ -222,7 +222,7 @@ test('trigger rejects unknown and non-forager targets', async () => {
   });
 
   assert.throws(() => runtime.trigger('ghost'), /unknown node 'ghost'/);
-  assert.throws(() => runtime.trigger('check'), /must be a forager or user node/);
+  assert.throws(() => runtime.trigger('check'), /must be a forager, worker or user node/);
 });
 
 test('snapshot is immutable and does not leak internal state', async () => {

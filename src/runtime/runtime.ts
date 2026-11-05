@@ -149,9 +149,9 @@ export class PheromoneRuntime {
     if (node === undefined) {
       throw new Error(`unknown node '${nodeId}'`);
     }
-    if (node.kind !== 'forager' && node.kind !== 'user') {
+    if (node.kind !== 'forager' && node.kind !== 'worker' && node.kind !== 'user') {
       throw new Error(
-        `trigger target '${nodeId}' must be a forager or user node, got '${node.kind}'`,
+        `trigger target '${nodeId}' must be a forager, worker or user node, got '${node.kind}'`,
       );
     }
     assertValue(value);

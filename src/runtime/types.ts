@@ -198,6 +198,25 @@ export interface CompositionDefaults {
   queueTtlMs: number;
 }
 
+/**
+ * A scheduled trigger. Stage 3C-1 supports one-shot `at` and fixed-interval
+ * `every`; a manual trigger is a CLI action and is never stored in the file.
+ * `at` must carry `Z` or an explicit offset, so it names one instant.
+ */
+export type TriggerSchedule =
+  | { kind: 'at'; at: string }
+  | { kind: 'every'; everyMs: number };
+
+/**
+ * A scheduled trigger names a forager or worker task node. Control nodes and
+ * scheduled `user` targets are not valid in 3C-1.
+ */
+export interface TriggerDefinition {
+  id: string;
+  target: NodeId;
+  schedule: TriggerSchedule;
+}
+
 export interface CompositionDefinition {
   schemaVersion: 1;
   id: string;
@@ -205,6 +224,8 @@ export interface CompositionDefinition {
   nodes: ReadonlyMap<NodeId, NodeDefinition>;
   edges: readonly EdgeDefinition[];
   defaults: CompositionDefaults;
+  /** Scheduled triggers; empty when the composition has none. */
+  triggers: readonly TriggerDefinition[];
 }
 
 /**

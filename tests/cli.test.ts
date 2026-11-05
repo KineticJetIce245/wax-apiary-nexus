@@ -403,7 +403,7 @@ test('unknown trigger and non-forager trigger exit with a usage code', async () 
   assert.equal(unknown, 2);
   assert.match(first.stderr.join('\n'), /unknown trigger node 'ghost'/);
   assert.equal(nonForager, 2);
-  assert.match(second.stderr.join('\n'), /must be a forager or user node/);
+  assert.match(second.stderr.join('\n'), /must be a forager, worker or user node/);
 });
 
 test('the dsh harness is rejected until its bridge exists', async () => {

@@ -687,7 +687,7 @@ test('worker logs carry metadata but not stdout or stderr bodies', async () => {
   assert.equal(serialized.includes(stderrMarker), false);
 });
 
-test('worker is not a trigger target in Stage 3B', () => {
+test('worker is a trigger target in Stage 3C', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(workerChain(nodeConfig('process.exit(0)')), {
     executeForager: executor,
@@ -695,11 +695,13 @@ test('worker is not a trigger target in Stage 3B', () => {
     now: () => START,
   });
 
-  assert.throws(
-    () => runtime.trigger('work'),
-    /must be a forager or user node/,
-    'worker triggers are deferred to a later stage',
-  );
+  const pheromoneId = runtime.trigger('work');
+  assert.match(pheromoneId, /^ph_/);
+  assert.equal(runtime.snapshot().nodes['work']?.queue.length, 1);
+
+  await runtime.pump();
+  assert.equal(runtime.snapshot().nodes['work']?.queue.length, 0);
+  assert.equal(runtime.snapshot().rest, true);
 });
 
 test('an active worker on restore is stuck and never replayed', () => {

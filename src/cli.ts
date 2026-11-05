@@ -1,18 +1,22 @@
-import { readFileSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
-import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
+import { runDaemon } from './daemon.js';
 import type { HarnessAdapter } from './adapters/harness.js';
-import { createCodexConnection, type HarnessKind } from './connection.js';
+import {
+  CliUsageError,
+  apiaryForProject,
+  createDefaultAdapter,
+  loadCompositionFile,
+  messageOf,
+  type AdapterRequest,
+} from './cli-shared.js';
+import type { HarnessKind } from './connection.js';
 import { WorkspaceForagerExecutor } from './forager.js';
 import { HoneyStore } from './honey.js';
 import { createKernel } from './kernel.js';
 import {
-  CompositionValidationError,
   createMemoryLog,
-  parseComposition,
   PheromoneRuntime,
   type CompositionDefinition,
   type GuardDecision,
@@ -27,12 +31,7 @@ import {
 } from './runtime/index.js';
 import { Workspace } from './workspace.js';
 
-export class CliUsageError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CliUsageError';
-  }
-}
+export { CliUsageError, apiaryForProject };
 
 export interface RunCommand {
   readonly compositionPath: string;
@@ -47,11 +46,6 @@ export interface RunCommand {
   readonly resume: boolean;
 }
 
-export interface AdapterRequest {
-  readonly harness: HarnessKind;
-  readonly executable?: string;
-}
-
 /** Interactive answer for a hovering user node. */
 export type UserAnswerHandler = (node: UserNode, hover: HoverSpec) => Promise<Value>;
 
@@ -62,6 +56,8 @@ export interface CliDependencies {
   readonly stderr?: (line: string) => void;
   readonly askApproval?: (request: GuardRequest) => Promise<GuardDecision>;
   readonly askUser?: UserAnswerHandler;
+  /** Set by the foreground process to stop a daemon on SIGINT/SIGTERM. */
+  readonly signal?: AbortSignal;
 }
 
 const VALUE_FLAGS = new Set([
@@ -161,50 +157,16 @@ export function parseRunArgs(argv: readonly string[]): RunCommand {
   };
 }
 
-function loadComposition(path: string): CompositionDefinition {
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch (error) {
-    throw new CliUsageError(`cannot read composition file ${path}: ${messageOf(error)}`);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new CliUsageError(`composition file ${path} is not valid JSON: ${messageOf(error)}`);
-  }
-
-  try {
-    return parseComposition(parsed);
-  } catch (error) {
-    if (error instanceof CompositionValidationError) {
-      throw new CliUsageError(error.message);
-    }
-    throw error;
-  }
-}
-
 function validateTrigger(definition: CompositionDefinition, trigger: string): void {
   const node = definition.nodes.get(trigger);
   if (node === undefined) {
     throw new CliUsageError(`unknown trigger node '${trigger}'`);
   }
-  if (node.kind !== 'forager' && node.kind !== 'user') {
+  if (node.kind !== 'forager' && node.kind !== 'worker' && node.kind !== 'user') {
     throw new CliUsageError(
-      `trigger target '${trigger}' must be a forager or user node, got '${node.kind}'`,
+      `trigger target '${trigger}' must be a forager, worker or user node, got '${node.kind}'`,
     );
   }
-}
-
-/** Default apiary id: a filesystem-safe slug of the project directory name. */
-export function apiaryForProject(projectDirectory: string): string {
-  const slug = basename(resolve(projectDirectory))
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug === '' ? 'apiary' : slug.slice(0, 64);
 }
 
 function fallbackDecision(request: GuardRequest): GuardDecision {
@@ -297,16 +259,6 @@ async function askUserInteractively(node: UserNode, hover: HoverSpec): Promise<V
   }
 }
 
-async function createDefaultAdapter(request: AdapterRequest): Promise<HarnessAdapter> {
-  if (request.harness === 'dsh') {
-    throw new CliUsageError('the dsh bridge is not wired in Stage 2A; run with --harness codex');
-  }
-  const connection = await createCodexConnection(
-    request.executable === undefined ? {} : { executable: request.executable },
-  );
-  return new CodexAppServerAdapter({ launch: connection.launch });
-}
-
 interface Hovered {
   readonly node: UserNode;
   readonly hover: HoverSpec;
@@ -329,6 +281,10 @@ function firstHover(
 }
 
 export async function runCli(argv: readonly string[], deps: CliDependencies = {}): Promise<number> {
+  if (argv[0] === 'daemon') {
+    return runDaemon(argv, deps);
+  }
+
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
 
@@ -345,7 +301,7 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
     if (command.harness === 'dsh' && command.codexExe !== undefined) {
       throw new CliUsageError('--codex-exe only applies to --harness codex');
     }
-    definition = loadComposition(command.compositionPath);
+    definition = loadCompositionFile(command.compositionPath);
     if (command.trigger !== undefined) {
       validateTrigger(definition, command.trigger);
     }
@@ -541,13 +497,26 @@ function printSummary(
   out(`output       ${output?.kind === 'text' ? (output.text ?? '') : ''}`);
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
-  void runCli(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
-  });
+  const argv = process.argv.slice(2);
+  const isDaemon = argv[0] === 'daemon';
+  const controller = new AbortController();
+  const onSignal = (): void => {
+    controller.abort();
+  };
+  if (isDaemon) {
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
+  }
+  void runCli(argv, isDaemon ? { signal: controller.signal } : {})
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .finally(() => {
+      if (isDaemon) {
+        process.removeListener('SIGINT', onSignal);
+        process.removeListener('SIGTERM', onSignal);
+      }
+    });
 }

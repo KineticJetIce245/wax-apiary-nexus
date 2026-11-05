@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, and Stage 3B Worker/Condition worker are implemented; `npm test` passes 269/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe`; `--harness dsh` is not wired yet.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, and the Stage 3C-1 foreground daemon scheduler are implemented; `npm test` passes 306/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `--harness dsh` is not wired yet.
 
 ## Vision
 
@@ -35,7 +35,10 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - Stage 3A adds Fork/Merge/Branch. A Fork consumes one Pheromone and emits one tagged copy per branch (`forkId` + `branchId`); a branch keeps its tags through normal nodes. A Merge groups arrivals by `forkId`, waits for its required branches, consumes them atomically, combines them as newline-joined text, and emits once. Duplicate, unknown, failed or missing required branches fail the merge and cancel siblings; a Merge with no outgoing edge is terminal.
 - Joins persist in `honey/field.json` and count as live references for edit protection. A restored join is not replayed: arrived branches stay arrived and an already-complete join settles once.
 - Stage 3B adds the `worker` node and `Condition` `mode: "worker"`. A worker runs an argv-only process (`shell: false`) with `cwd` contained to the registered project, a 60s default timeout, and a 64 KiB cap per output stream; timeout or cap overflow kills the process tree. stdout becomes the text Value, stderr stays error metadata, and non-zero exit fails the activation without retry. A Condition worker branches on the exit code instead: 0 is `true`, non-zero is `false`.
-- The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`.
+- Stage 3C-1 adds scheduled triggers. A composition may declare `triggers` with an `at` instant (ISO-8601 with `Z` or an offset) or a fixed `everyMs` interval (>= 1000). Only `forager` and `worker` targets are accepted; scheduled `user` triggers and control nodes are rejected. Trigger ids are unique.
+- `wax daemon` runs one composition's schedule in the foreground. A per-composition lock refuses a second daemon, `honey/scheduler.json` records occurrences atomically before the runtime enqueues them (at-most-once: a crash can lose an occurrence, never duplicate one), and a past `at`/missed `every` fires once on start without a missed-interval storm. Active restored Foragers stay unknown and active Workers stay stuck; nothing is replayed.
+- The daemon has no TTY: Guard requests are rejected by default and logged; there is no Guard inbox. Shutdown on SIGINT/SIGTERM (or the injected abort signal in tests) stops scheduling, stops the workspace, and releases the lock.
+- The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`; the daemon and scheduler live in `src/daemon.ts`, `src/scheduler.ts` and `src/daemon-lock.ts`.
 - Honey lives in `src/honey.ts`: an atomically replaced `field.json` under `~/.wax/apiaries/<apiary>/compositions/<id>/honey/`, plus a metadata `log.jsonl` that never stores prompt or output bodies. Transcripts keep the event bodies; the log only references them. Both rotate at a byte limit.
 - Native approvals become **Guard** hovers: bound to their `requestId`, cancelled after one hour, persisted like any other hover. An early, late or mismatched decision is rejected, and nothing is ever auto-allowed.
 - `--resume` rebuilds a field; an interrupted Forager becomes unknown and is never replayed, and a persisted Guard cannot be resumed.
@@ -52,7 +55,10 @@ ARCHITECTURE.md      target runtime model
 CONTRACT.md          composition file, runtime state, validation, CLI
 src/runtime/         the implemented single-Pheromone runtime
 src/forager.ts       Workspace -> NodeExecutor bridge
-src/cli.ts           one-shot `wax run` CLI
+src/cli.ts           `wax run` / `wax daemon` CLI entry
+src/daemon.ts        foreground daemon for one composition's schedule
+src/scheduler.ts     durable at/every occurrence scheduler
+src/daemon-lock.ts   per-composition daemon lock
 src/adapters/        native harness adapters
 src/workspace.ts     native session lifecycle used by the Forager bridge
 src/                 session/infrastructure modules
@@ -90,6 +96,16 @@ summary, and the final output. `user` nodes prompt on stdin; a non-interactive
 stdin is refused instead of answered. The run persists Honey and can be
 continued with `--resume` (`--state-dir` and `--apiary` override the location).
 `--harness dsh` is not wired yet.
+
+The daemon runs one composition's `triggers` until interrupted:
+
+```bash
+npm run wax -- daemon composition.json --project . --harness codex
+```
+
+`--state-dir`, `--apiary` and `--codex-exe` have the same meanings as for
+`wax run`. A second daemon for the same composition is refused while the lock
+is live. The process serves no HTTP API and has no UI.
 
 ## Design principles
 

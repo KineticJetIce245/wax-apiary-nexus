@@ -44,6 +44,8 @@ export type {
   Pheromone,
   PheromoneFieldSnapshot,
   RecoveryReport,
+  TriggerDefinition,
+  TriggerSchedule,
   UserConfig,
   UserModality,
   UserNode,

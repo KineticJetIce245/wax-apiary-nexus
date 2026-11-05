@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Composition Contract
 
-> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, and Stage 3B Worker/Condition worker; the rest of this contract is still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, and the Stage 3C-1 foreground daemon scheduler; richer user modalities and the rest of this contract are still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 1. Scope
 
@@ -73,7 +73,7 @@ It does not define Harness Adapter protocols, a UI, remote/multi-tenant behavior
 - `id` is the composition id, unique within an Apiary.
 - Node ids are stable; pattern `[a-z0-9][a-z0-9._-]{0,63}`.
 - Edge ids are stable and unique within the composition.
-- `triggers` is optional; manual triggers are not stored in the file; schedule triggers are a later feature.
+- `triggers` is optional; manual triggers are not stored in the file. Stage 3C-1 supports scheduled `at` and `every` triggers (Section 5).
 - `defaults` is optional.
 
 ## 3. Node types
@@ -215,10 +215,16 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 ## 5. Triggers
 
 - Manual: CLI/API; not stored in the file.
-- Scheduled: `id`, `target`, and schedule config; planned later.
-- Target must be a task node; not Condition/Counter/Fork/Merge. Stage 3B accepts `forager` and `user` trigger targets and defers `worker` triggers rather than adding an untested entry path.
+- Scheduled: `{ "id", "target", "schedule" }`, implemented in Stage 3C-1.
+  - `schedule.kind: "at"` carries an ISO-8601 `at` timestamp with `Z` or an explicit offset. A timezone-less local time is rejected.
+  - `schedule.kind: "every"` carries an integer `everyMs >= 1000`.
+  - Trigger ids are unique and use the node-id pattern.
+  - The target must be a `forager` or `worker` node. Control nodes are rejected; scheduled `user` targets are deferred to Stage 3C-2.
 - A trigger creates a Pheromone at the target node. There is no `start`.
 - Node activations are rate-limited by `lastActivatedAt + minInterval`.
+- Serialized manual CLI triggers accept `forager`, `worker` and `user` targets.
+- The daemon is one composition per process. Occurrences are recorded before the Pheromone is enqueued, so delivery is at-most-once: an occurrence may be lost in a crash, never duplicated. A past `at` and a missed `every` fire at most once on start; `every` then reschedules from the start time and never storms skipped intervals.
+- The daemon restores Honey before scheduling. A restored active Forager remains unknown, other active nodes (including a Worker) remain stuck, and nothing is replayed.
 
 ## 6. Values and templates
 
@@ -321,9 +327,14 @@ Durable data:
 
 ```text
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/field.json
+~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/scheduler.json
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/transcripts/<conversationId>.jsonl
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/artifacts/
 ```
+
+The daemon lock is `<composition directory>/daemon.lock`. It names the owning
+PID and is removed on normal shutdown. A dead PID makes the lock stale; an
+unreadable, malformed, or uncertain lock is never stolen.
 
 History:
 
@@ -347,7 +358,8 @@ Before running:
 - Edge endpoints exist; `when` only appears on Condition/Counter edges.
 - Fork branches are unique and targets exist.
 - Merge required branches are unique; combine is valid.
-- Trigger targets are task nodes.
+- Trigger targets are task nodes; scheduled triggers accept only `forager` or `worker`.
+- `at` carries `Z` or an explicit offset; `everyMs` is an integer >= 1000.
 - Forager connection/prompt are non-empty; user modality is valid; Condition mode is valid; Counter max/step are positive.
 - Worker `command` is non-empty; `args` is a string array; `cwd` is a non-empty string without `..`; `timeoutMs` is a positive integer. Absolute cwd containment and symlink escapes are enforced at activation, when the project directory is known.
 - `minIntervalMs` is at least `1000`.
@@ -358,6 +370,8 @@ Before running:
 ## 12. CLI
 
 ```bash
+wax run <composition.json> --project <dir> --harness codex [--trigger <node>] [--input <text>] [--resume]
+wax daemon <composition.json> --project <dir> --harness codex [--state-dir <dir>] [--apiary <id>] [--codex-exe <path>]
 wax composition validate <file>
 wax trigger <composition> <node> [--text "..."]
 wax status [<composition>] [--json]
@@ -371,4 +385,6 @@ wax honey <conversationId> [--json]
 
 ## 13. Implementation status
 
-`src/runtime/` implements the single-Pheromone slice plus Stage 3A Fork/Merge/Branch and Stage 3B Worker: composition parse/validation, `PheromoneField` state, `trigger`, consumption/production, terminal/Rest, FIFO queue with pending and `minIntervalMs`, `condition`/`counter`, `user` nodes with `HoverSpec` (answers arriving before the hover are queued, not dropped), Guard hovers for native approvals, and field export/restore. A Fork emits one tagged copy per branch; branch tags survive normal nodes; a Merge groups by `forkId`, waits for its `required` branches, consumes them atomically, and emits one newline-joined text value (`combine: "text"` only in 3A). Joins persist in Honey and count as live references; duplicate, unknown, failed or missing required branches fail the merge and cancel siblings. Optional branches, object/array combine, and merge timeouts are not implemented in 3A and are rejected by validation. Guards are bound to a `requestId`, cancelled after one hour, rejected by default, and refused when a decision arrives early, late or for another request. `src/forager.ts` bridges a Workspace conversation; `src/honey.ts` writes `honey/field.json` atomically, appends a metadata `log.jsonl`, and keeps per-conversation transcripts that the log only references; both rotate. `wax run --resume` restores a field. An `active` Pheromone cannot be reattached: a Forager becomes unknown, other nodes (including an active Worker) become stuck, and nothing is replayed. `src/revision.ts` refuses edits that orphan live node state. `src/runtime/worker.ts` runs argv-only Workers with project-contained cwd, a default 60s timeout, 64 KiB caps per stream and process-tree kill; the composition log records program/pid/byte counts but not output bodies. Condition `mode: "worker"` branches on the exit code. Worker triggers, schedules and richer value modalities are still open.
+`src/runtime/` implements the single-Pheromone slice plus Stage 3A Fork/Merge/Branch and Stage 3B Worker: composition parse/validation, `PheromoneField` state, `trigger`, consumption/production, terminal/Rest, FIFO queue with pending and `minIntervalMs`, `condition`/`counter`, `user` nodes with `HoverSpec` (answers arriving before the hover are queued, not dropped), Guard hovers for native approvals, and field export/restore. A Fork emits one tagged copy per branch; branch tags survive normal nodes; a Merge groups by `forkId`, waits for its `required` branches, consumes them atomically, and emits one newline-joined text value (`combine: "text"` only in 3A). Joins persist in Honey and count as live references; duplicate, unknown, failed or missing required branches fail the merge and cancel siblings. Optional branches, object/array combine, and merge timeouts are not implemented in 3A and are rejected by validation. Guards are bound to a `requestId`, cancelled after one hour, rejected by default, and refused when a decision arrives early, late or for another request. `src/forager.ts` bridges a Workspace conversation; `src/honey.ts` writes `honey/field.json` atomically, appends a metadata `log.jsonl`, and keeps per-conversation transcripts that the log only references; both rotate. `wax run --resume` restores a field. An `active` Pheromone cannot be reattached: a Forager becomes unknown, other nodes (including an active Worker) become stuck, and nothing is replayed. `src/revision.ts` refuses edits that orphan live node state. `src/runtime/worker.ts` runs argv-only Workers with project-contained cwd, a default 60s timeout, 64 KiB caps per stream and process-tree kill; the composition log records program/pid/byte counts but not output bodies. Condition `mode: "worker"` branches on the exit code.
+
+Stage 3C-1 adds scheduled composition triggers and `wax daemon`. `parseComposition` accepts unique `at`/`every` triggers targeting `forager` or `worker`; `PheromoneRuntime.trigger` now also accepts a Worker target. `src/scheduler.ts` records each occurrence in `honey/scheduler.json` before enqueueing it, fires a past `at`/missed `every` once on start, and reschedules `every` from the start time without a missed-interval storm. `src/daemon-lock.ts` provides the per-composition PID lock. The daemon restores Honey, rejects Guard requests without a TTY, pumps restored queued Pheromones, and stops scheduling on SIGINT/SIGTERM. Scheduled `user` triggers and richer user modalities remain for Stage 3C-2.

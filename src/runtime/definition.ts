@@ -13,12 +13,21 @@ import type {
   MergeConfig,
   NodeDefinition,
   NodeId,
+  TriggerDefinition,
+  TriggerSchedule,
   UserConfig,
   WorkerConfig,
 } from './types.js';
 import { DEFAULT_WORKER_TIMEOUT_MS } from './worker.js';
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/**
+ * An `at` schedule must name one instant. A date without `Z` or an offset is
+ * rejected instead of being interpreted in the host's local timezone.
+ */
+const ISO_INSTANT_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 const DEFAULT_MIN_INTERVAL_MS = 1000;
 const DEFAULT_QUEUE_MAX = 1024;
@@ -704,6 +713,124 @@ function validateEdgeShape(
   }
 }
 
+function parseTriggerSchedule(
+  value: unknown,
+  path: string,
+  issues: string[],
+): TriggerSchedule | null {
+  if (!isRecord(value)) {
+    issues.push(`${path}: expected an object`);
+    return null;
+  }
+
+  const kind = value['kind'];
+  if (kind === 'at') {
+    pushUnknownFields(value, ['kind', 'at'], path, issues);
+    const at = value['at'];
+    if (!isNonEmptyString(at)) {
+      issues.push(`${path}.at: expected an ISO-8601 timestamp with 'Z' or an explicit offset`);
+      return null;
+    }
+    if (!ISO_INSTANT_PATTERN.test(at)) {
+      issues.push(
+        `${path}.at: expected an ISO-8601 timestamp with 'Z' or an explicit offset (timezone-less times are rejected)`,
+      );
+      return null;
+    }
+    if (!Number.isFinite(Date.parse(at))) {
+      issues.push(`${path}.at: expected a valid ISO-8601 timestamp`);
+      return null;
+    }
+    return { kind: 'at', at };
+  }
+
+  if (kind === 'every') {
+    pushUnknownFields(value, ['kind', 'everyMs'], path, issues);
+    const everyMs = value['everyMs'];
+    if (!isPositiveInteger(everyMs) || everyMs < 1000) {
+      issues.push(`${path}.everyMs: expected an integer >= 1000`);
+      return null;
+    }
+    return { kind: 'every', everyMs };
+  }
+
+  issues.push(`${path}.kind: expected 'at' or 'every'`);
+  return null;
+}
+
+function parseTriggers(
+  value: unknown,
+  nodes: ReadonlyMap<NodeId, NodeDefinition>,
+  issues: string[],
+): TriggerDefinition[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    issues.push('triggers: expected an array');
+    return [];
+  }
+
+  const triggers: TriggerDefinition[] = [];
+  const seen = new Set<string>();
+
+  value.forEach((raw, index) => {
+    const path = `triggers[${index}]`;
+    if (!isRecord(raw)) {
+      issues.push(`${path}: expected an object`);
+      return;
+    }
+    pushUnknownFields(raw, ['id', 'target', 'schedule'], path, issues);
+
+    let valid = true;
+    const id = raw['id'];
+    if (!isNonEmptyString(id) || !ID_PATTERN.test(id)) {
+      issues.push(`${path}.id: expected an id matching ${ID_PATTERN.source}`);
+      valid = false;
+    } else if (seen.has(id)) {
+      issues.push(`${path}.id: duplicate trigger id '${id}'`);
+      valid = false;
+    } else {
+      seen.add(id);
+    }
+
+    const target = raw['target'];
+    if (!isNonEmptyString(target)) {
+      issues.push(`${path}.target: expected a node id`);
+      valid = false;
+    } else {
+      const node = nodes.get(target);
+      if (node === undefined) {
+        issues.push(`${path}.target: unknown node '${target}'`);
+        valid = false;
+      } else if (node.kind === 'user') {
+        issues.push(`${path}.target: scheduled user triggers are deferred to Stage 3C-2`);
+        valid = false;
+      } else if (node.kind !== 'forager' && node.kind !== 'worker') {
+        issues.push(
+          `${path}.target: scheduled trigger target '${target}' must be a forager or worker node, got '${node.kind}'`,
+        );
+        valid = false;
+      }
+    }
+
+    const schedule = parseTriggerSchedule(raw['schedule'], `${path}.schedule`, issues);
+    if (schedule === null) {
+      valid = false;
+    }
+
+    if (valid) {
+      triggers.push({
+        id: id as string,
+        target: target as string,
+        schedule: schedule as TriggerSchedule,
+      });
+    }
+  });
+
+  return triggers;
+}
+
 export function parseComposition(input: unknown): CompositionDefinition {
   const issues: string[] = [];
 
@@ -727,18 +854,11 @@ export function parseComposition(input: unknown): CompositionDefinition {
     issues.push('id: expected a non-empty string');
   }
 
-  if (input['triggers'] !== undefined) {
-    if (!Array.isArray(input['triggers'])) {
-      issues.push('triggers: expected an array');
-    } else if (input['triggers'].length > 0) {
-      issues.push('triggers: scheduled triggers are not supported in this slice');
-    }
-  }
-
   const defaults = parseDefaults(input['defaults'], issues);
   const nodes = parseNodes(input['nodes'], defaults, issues);
   const edges = parseEdges(input['edges'], nodes, issues);
   validateEdgeShape(nodes, edges, issues);
+  const triggers = parseTriggers(input['triggers'], nodes, issues);
 
   if (issues.length > 0) {
     throw new CompositionValidationError(issues);
@@ -751,6 +871,7 @@ export function parseComposition(input: unknown): CompositionDefinition {
     nodes,
     edges,
     defaults,
+    triggers,
   };
 
   return composition;

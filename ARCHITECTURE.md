@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-> **Status**: target design. The PheromoneField single-Pheromone slice, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, and the Stage 3C-1 foreground daemon scheduler are implemented; richer value modalities are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
+> **Status**: target design. The PheromoneField single-Pheromone slice, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, and the Stage 3C-2 rich manual user input are implemented; scheduled `user` triggers, optional branches and merge timeouts are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
 
 ## 1. One sentence
 
@@ -144,4 +144,4 @@ The composition log is separate:
 
 ## 11. Implementation status
 
-The single-Pheromone core, the Stage 3A parallel slice, Stage 3B Worker, and the Stage 3C-1 foreground daemon scheduler are implemented: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, Fork/Merge/Branch, persisted joins and merge-waiting edit references, argv-only Worker with bounded output and process-tree kill, Condition worker mode, scheduled `at`/`every` triggers, durable occurrence state, and a per-composition daemon lock. Richer user modalities, scheduled `user` triggers, optional branches (including object/array combine) and merge timeouts are still open. See [`CONTRACT.md`](CONTRACT.md).
+The single-Pheromone core, the Stage 3A parallel slice, Stage 3B Worker, and the Stage 3C-1 foreground daemon scheduler are implemented: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, Fork/Merge/Branch, persisted joins and merge-waiting edit references, argv-only Worker with bounded output and process-tree kill, Condition worker mode, scheduled `at`/`every` triggers, durable occurrence state, and a per-composition daemon lock. Stage 3C-2 adds manual `message`, `image` and `file` user answers: the parser accepts the three modalities, the runtime validates the Value shape and modality without filesystem access, and the interactive CLI prompts for a message or one local attachment path (expanded `~`, existing regular file, absolute path, no copy or preview). Scheduled `user` triggers, optional branches (including object/array combine) and merge timeouts are still open. See [`CONTRACT.md`](CONTRACT.md).

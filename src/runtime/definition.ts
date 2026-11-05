@@ -259,8 +259,17 @@ function parseUserConfig(
   pushUnknownFields(config, ['modality', 'prompt', 'choices'], path, issues);
 
   const modality = config['modality'];
-  if (modality !== 'text' && modality !== 'choice' && modality !== 'yes-no') {
-    issues.push(`${path}.modality: expected 'text', 'choice' or 'yes-no'`);
+  if (
+    modality !== 'text' &&
+    modality !== 'choice' &&
+    modality !== 'yes-no' &&
+    modality !== 'message' &&
+    modality !== 'image' &&
+    modality !== 'file'
+  ) {
+    issues.push(
+      `${path}.modality: expected 'text', 'choice', 'yes-no', 'message', 'image' or 'file'`,
+    );
     return null;
   }
   if (!isNonEmptyString(config['prompt'])) {

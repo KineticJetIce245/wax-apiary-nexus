@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, and the Stage 3C-1 foreground daemon scheduler are implemented; `npm test` passes 306/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `--harness dsh` is not wired yet.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, and the Stage 3C-2 rich manual user input are implemented; `npm test` passes 325/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `--harness dsh` is not wired yet.
 
 ## Vision
 
@@ -38,6 +38,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - Stage 3C-1 adds scheduled triggers. A composition may declare `triggers` with an `at` instant (ISO-8601 with `Z` or an offset) or a fixed `everyMs` interval (>= 1000). Only `forager` and `worker` targets are accepted; scheduled `user` triggers and control nodes are rejected. Trigger ids are unique.
 - `wax daemon` runs one composition's schedule in the foreground. A per-composition lock refuses a second daemon, `honey/scheduler.json` records occurrences atomically before the runtime enqueues them (at-most-once: a crash can lose an occurrence, never duplicate one), and a past `at`/missed `every` fires once on start without a missed-interval storm. Active restored Foragers stay unknown and active Workers stay stuck; nothing is replayed.
 - The daemon has no TTY: Guard requests are rejected by default and logged; there is no Guard inbox. Shutdown on SIGINT/SIGTERM (or the injected abort signal in tests) stops scheduling, stops the workspace, and releases the lock.
+- Stage 3C-2 adds manual `message`, `image`, and `file` user answers. The parser accepts the three modalities; the runtime validates the Value shape and modality without touching the filesystem; the interactive CLI prompts for a message or one local path, expands `~`, requires an existing regular file, and stores the absolute path. Nothing is copied, previewed, or inferred; scheduled `user` triggers remain deferred.
 - The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`; the daemon and scheduler live in `src/daemon.ts`, `src/scheduler.ts` and `src/daemon-lock.ts`.
 - Honey lives in `src/honey.ts`: an atomically replaced `field.json` under `~/.wax/apiaries/<apiary>/compositions/<id>/honey/`, plus a metadata `log.jsonl` that never stores prompt or output bodies. Transcripts keep the event bodies; the log only references them. Both rotate at a byte limit.
 - Native approvals become **Guard** hovers: bound to their `requestId`, cancelled after one hour, persisted like any other hover. An early, late or mismatched decision is rejected, and nothing is ever auto-allowed.
@@ -45,7 +46,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - `src/revision.ts` refuses a graph edit that removes or renames a node still holding queue, pending, active, hover, or merge-waiting state; a forced edit returns the nodes that must be marked as needing attention.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
 - `--harness dsh` is not wired yet; Codex is the only wired native harness.
-- The next step is Stage 3C (scheduled triggers and richer user input) or an owner review of the Stage 3A/3B decisions; optional branches and object/array combine remain open.
+- Scheduled `user` triggers remain deferred. Optional branches, object/array combine, and merge timeouts remain open; the next step is an owner review of the Stage 3C work.
 
 ## Repository layout
 

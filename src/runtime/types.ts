@@ -109,7 +109,11 @@ export interface CounterNode {
   minIntervalMs: number;
 }
 
-export type UserModality = 'text' | 'choice' | 'yes-no';
+/**
+ * Stage 3C-2 adds the rich manual modalities. `message` answers carry text
+ * only; `image` and `file` answers carry one local path as an attachment.
+ */
+export type UserModality = 'text' | 'choice' | 'yes-no' | 'message' | 'image' | 'file';
 
 export interface UserConfig {
   modality: UserModality;

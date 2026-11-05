@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Composition Contract
 
-> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, and Stage 3C-2 rich manual user input; scheduled `user` triggers and the rest of this contract are still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, Stage 3C-2 rich manual user input, and the Stage 4A offline composition editor; scheduled `user` triggers and the rest of this contract are still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 1. Scope
 
@@ -352,6 +352,14 @@ History:
 - The log does not store prompt/output bodies by default.
 - The log is not a replay source. Recovery reads Honey; side effects are never auto-replayed.
 
+Offline edits append a revision audit, separate from the runtime log:
+
+```text
+<state-dir>/revisions.jsonl
+```
+
+Each successful `wax composition replace` appends one JSON line with `at`, `compositionId`, `oldRevision`, `newRevision`, `file`, and `mode: "replace"`. It never stores the composition body. The state dir defaults to `~/.wax`.
+
 ## 11. Validation
 
 Before running:
@@ -378,6 +386,7 @@ Before running:
 wax run <composition.json> --project <dir> --harness codex [--trigger <node>] [--input <text>] [--resume]
 wax daemon <composition.json> --project <dir> --harness codex [--state-dir <dir>] [--apiary <id>] [--codex-exe <path>]
 wax composition validate <file>
+wax composition replace <file> --with <new-file> [--state-dir <dir>] [--apiary <id>]
 wax trigger <composition> <node> [--text "..."]
 wax status [<composition>] [--json]
 wax log <composition> [--tail N] [--json]
@@ -385,6 +394,9 @@ wax honey <conversationId> [--json]
 ```
 
 - No `run start`; a trigger creates a Pheromone.
+- `wax composition validate` parses and validates only; it does not write runtime state.
+- `wax composition replace` parses both files and refuses a different composition id. When `--apiary` resolves a Honey field (the state root defaults to `~/.wax`), any queue, pending, active, hover, or merge-waiting reference refuses the edit. A live or uncertain daemon lock also refuses. The write is a same-directory temp file plus rename, followed by one revision audit line. Stage 4A has no `--force` and never writes `needsAttention`; a stale lock is left in place. Without `--apiary`, replace runs but reports that active references were not checked.
+- Composition command exit codes: `0` success, `2` usage/parse/refusal, `1` write or audit IO failure.
 - `wax status --json` reports composition, Pheromones at nodes, node queue/pending/active/hover state, log path, and Honey path. It does not print prompt/output bodies by default.
 - `wax honey` reads durable transcripts/artifacts.
 
@@ -392,4 +404,4 @@ wax honey <conversationId> [--json]
 
 `src/runtime/` implements the single-Pheromone slice plus Stage 3A Fork/Merge/Branch and Stage 3B Worker: composition parse/validation, `PheromoneField` state, `trigger`, consumption/production, terminal/Rest, FIFO queue with pending and `minIntervalMs`, `condition`/`counter`, `user` nodes with `HoverSpec` (answers arriving before the hover are queued, not dropped), Guard hovers for native approvals, and field export/restore. A Fork emits one tagged copy per branch; branch tags survive normal nodes; a Merge groups by `forkId`, waits for its `required` branches, consumes them atomically, and emits one newline-joined text value (`combine: "text"` only in 3A). Joins persist in Honey and count as live references; duplicate, unknown, failed or missing required branches fail the merge and cancel siblings. Optional branches, object/array combine, and merge timeouts are not implemented in 3A and are rejected by validation. Guards are bound to a `requestId`, cancelled after one hour, rejected by default, and refused when a decision arrives early, late or for another request. `src/forager.ts` bridges a Workspace conversation; `src/honey.ts` writes `honey/field.json` atomically, appends a metadata `log.jsonl`, and keeps per-conversation transcripts that the log only references; both rotate. `wax run --resume` restores a field. An `active` Pheromone cannot be reattached: a Forager becomes unknown, other nodes (including an active Worker) become stuck, and nothing is replayed. `src/revision.ts` refuses edits that orphan live node state. `src/runtime/worker.ts` runs argv-only Workers with project-contained cwd, a default 60s timeout, 64 KiB caps per stream and process-tree kill; the composition log records program/pid/byte counts but not output bodies. Condition `mode: "worker"` branches on the exit code.
 
-Stage 3C-1 adds scheduled composition triggers and `wax daemon`. `parseComposition` accepts unique `at`/`every` triggers targeting `forager` or `worker`; `PheromoneRuntime.trigger` now also accepts a Worker target. `src/scheduler.ts` records each occurrence in `honey/scheduler.json` before enqueueing it, fires a past `at`/missed `every` once on start, and reschedules `every` from the start time without a missed-interval storm. `src/daemon-lock.ts` provides the per-composition PID lock. The daemon restores Honey, rejects Guard requests without a TTY, pumps restored queued Pheromones, and stops scheduling on SIGINT/SIGTERM. Stage 3C-2 adds manual `message`, `image` and `file` user answers. `parseComposition` accepts the three modalities and still rejects `choices` outside `choice` mode. `PheromoneRuntime.answerHover` validates the answer against the node modality: a message must carry text and an empty attachment list, and an image/file answer must carry exactly one attachment of the matching kind with a non-empty path and an optional string `mediaType`; the runtime never touches the filesystem. The interactive CLI prompts for a message (empty is rejected) or one local path (leading `~` expanded, missing/non-regular file rejected, absolute path returned), and a non-interactive stdin is still refused. `src/forager.ts` forwards attachments from a `message`/`attachments` Value to the adapter as `AttachmentDraft`s with an extension-inferred `mimeType`, and substitutes `See attached input.` when the rendered prompt is empty. Scheduled `user` triggers remain deferred.
+Stage 3C-1 adds scheduled composition triggers and `wax daemon`. `parseComposition` accepts unique `at`/`every` triggers targeting `forager` or `worker`; `PheromoneRuntime.trigger` now also accepts a Worker target. `src/scheduler.ts` records each occurrence in `honey/scheduler.json` before enqueueing it, fires a past `at`/missed `every` once on start, and reschedules `every` from the start time without a missed-interval storm. `src/daemon-lock.ts` provides the per-composition PID lock. The daemon restores Honey, rejects Guard requests without a TTY, pumps restored queued Pheromones, and stops scheduling on SIGINT/SIGTERM. Stage 3C-2 adds manual `message`, `image` and `file` user answers. `parseComposition` accepts the three modalities and still rejects `choices` outside `choice` mode. `PheromoneRuntime.answerHover` validates the answer against the node modality: a message must carry text and an empty attachment list, and an image/file answer must carry exactly one attachment of the matching kind with a non-empty path and an optional string `mediaType`; the runtime never touches the filesystem. The interactive CLI prompts for a message (empty is rejected) or one local path (leading `~` expanded, missing/non-regular file rejected, absolute path returned), and a non-interactive stdin is still refused. `src/forager.ts` forwards attachments from a `message`/`attachments` Value to the adapter as `AttachmentDraft`s with an extension-inferred `mimeType`, and substitutes `See attached input.` when the rendered prompt is empty. Scheduled `user` triggers remain deferred. Stage 4A adds `wax composition validate` and `wax composition replace`: both files are parsed with `parseComposition`; a replace refuses a different composition id, any active reference from the Honey field, and a live or uncertain daemon lock; the write uses a same-directory temp file plus rename and appends one metadata-only `revisions.jsonl` line. Without `--apiary`, the field check is skipped and the CLI says so. There is no `--force` or `needsAttention` write in 4A.

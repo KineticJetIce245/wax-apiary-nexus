@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -213,6 +213,53 @@ test('persists honey/field.json and log.jsonl', async () => {
   const first = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>;
   assert.equal(first['compositionId'], 'cli-demo');
   assert.ok(!('prompt' in first));
+});
+
+test('writes a transcript while the log keeps only a reference', async () => {
+  const adapter = new FakeAdapter({ output: 'TRANSCRIPT-BODY' });
+  const captureResult = capture();
+  const state = stateDirectory();
+  const project = projectDirectory();
+
+  const code = await runCli(
+    [...baseArgs(compositionFile(), project, state), '--trigger', 'start'],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 0);
+  const paths = honeyPaths(state, apiaryForProject(project), 'cli-demo');
+  const files = readdirSync(paths.transcripts);
+  assert.equal(files.length, 1);
+  const transcriptFile = files[0];
+  assert.ok(transcriptFile !== undefined);
+  const transcript = readFileSync(join(paths.transcripts, transcriptFile), 'utf8');
+  assert.match(transcript, /TRANSCRIPT-BODY/);
+
+  const log = readFileSync(paths.log, 'utf8');
+  assert.ok(!log.includes('TRANSCRIPT-BODY'), 'the metadata log never carries bodies');
+  assert.match(log, /transcriptRef/);
+});
+
+test('a native approval is parked as a guard hover', async () => {
+  const adapter = new FakeAdapter({ askApproval: true, output: 'GUARDED' });
+  const captureResult = capture();
+  const seen: string[] = [];
+
+  const code = await runCli(
+    [...baseArgs(compositionFile(), projectDirectory(), stateDirectory()), '--trigger', 'start'],
+    withAdapter(adapter, captureResult, {
+      askApproval: async (request) => {
+        seen.push(request.requestId);
+        return 'allow_once';
+      },
+    }),
+  );
+
+  assert.equal(code, 0);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(adapter.approvals.map((decision) => decision.kind), ['allow_once']);
+  assert.ok(captureResult.stdout.some((line) => line.includes('guard.opened')));
+  assert.ok(captureResult.stdout.some((line) => line.includes('guard.resolved')));
 });
 
 test('a user node asks through the injected handler and resumes the graph', async () => {

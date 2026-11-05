@@ -4,9 +4,9 @@ import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
-import type { ApprovalDecisionKind, ApprovalRequest, HarnessAdapter } from './adapters/harness.js';
+import type { HarnessAdapter } from './adapters/harness.js';
 import { createCodexConnection, type HarnessKind } from './connection.js';
-import { WorkspaceForagerExecutor, type ApprovalHandler } from './forager.js';
+import { WorkspaceForagerExecutor } from './forager.js';
 import { HoneyStore } from './honey.js';
 import { createKernel } from './kernel.js';
 import {
@@ -15,6 +15,8 @@ import {
   parseComposition,
   PheromoneRuntime,
   type CompositionDefinition,
+  type GuardDecision,
+  type GuardRequest,
   type HoverSpec,
   type PersistedField,
   type PheromoneFieldSnapshot,
@@ -58,7 +60,7 @@ export interface CliDependencies {
   readonly createAdapter?: (request: AdapterRequest) => Promise<HarnessAdapter>;
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
-  readonly askApproval?: ApprovalHandler;
+  readonly askApproval?: (request: GuardRequest) => Promise<GuardDecision>;
   readonly askUser?: UserAnswerHandler;
 }
 
@@ -205,9 +207,8 @@ export function apiaryForProject(projectDirectory: string): string {
   return slug === '' ? 'apiary' : slug.slice(0, 64);
 }
 
-function fallbackDecision(request: ApprovalRequest): ApprovalDecisionKind {
-  const offered = new Set(request.options.map((option) => option.kind));
-  return offered.has('reject_once') ? 'reject_once' : 'cancelled';
+function fallbackDecision(request: GuardRequest): GuardDecision {
+  return request.options.includes('reject_once') ? 'reject_once' : 'cancelled';
 }
 
 /**
@@ -215,26 +216,26 @@ function fallbackDecision(request: ApprovalRequest): ApprovalDecisionKind {
  * allows: it falls back to rejecting (or cancelling) so a piped run cannot
  * grant permissions by accident.
  */
-async function askApprovalInteractively(request: ApprovalRequest): Promise<ApprovalDecisionKind> {
+async function askApprovalInteractively(request: GuardRequest): Promise<GuardDecision> {
   if (process.stdin.isTTY !== true) {
     return fallbackDecision(request);
   }
 
   const offered = request.options.filter(
-    (option) => option.kind === 'allow_once' || option.kind === 'reject_once',
+    (option) => option === 'allow_once' || option === 'reject_once',
   );
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     process.stderr.write(`approval required: ${request.summary}\n`);
     offered.forEach((option, index) => {
-      process.stderr.write(`  ${String(index + 1)}. ${option.label}\n`);
+      process.stderr.write(`  ${String(index + 1)}. ${option}\n`);
     });
     process.stderr.write(`  ${String(offered.length + 1)}. cancel\n`);
     const answer = (await rl.question(`choose [1-${String(offered.length + 1)}]: `)).trim();
     const index = Number(answer) - 1;
     const chosen = Number.isInteger(index) ? offered[index] : undefined;
-    if (chosen?.kind === 'allow_once' || chosen?.kind === 'reject_once') {
-      return chosen.kind;
+    if (chosen === 'allow_once' || chosen === 'reject_once') {
+      return chosen;
     }
     return 'cancelled';
   } catch {
@@ -388,34 +389,77 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 
   const workspace = new Workspace(adapter);
   const log = createMemoryLog();
+  const transcript: Record<string, unknown>[] = [];
   const askUser = deps.askUser ?? askUserInteractively;
+  let conversationId: string | undefined;
   let forager: WorkspaceForagerExecutor | undefined;
   let runtime: PheromoneRuntime | undefined;
   let report: RecoveryReport | undefined;
   let code = 0;
   let flushedCount = 0;
 
+  const unsubscribeTranscript = workspace.onEvent((event) => {
+    const at = new Date().toISOString();
+    if (event.type === 'execution/output') {
+      if (event.channel === 'assistant') {
+        transcript.push({ at, type: 'output', executionId: event.executionId, text: event.text });
+      }
+      return;
+    }
+    if (event.type === 'execution/tool') {
+      transcript.push({
+        at,
+        type: 'tool',
+        executionId: event.executionId,
+        toolCallId: event.toolCallId,
+        title: event.title,
+        status: event.status,
+      });
+      return;
+    }
+    if (event.type === 'execution/approval-requested') {
+      transcript.push({
+        at,
+        type: 'approval-requested',
+        executionId: event.executionId,
+        requestId: event.request.requestId,
+        summary: event.request.summary,
+      });
+      return;
+    }
+    if (event.type === 'execution/state') {
+      transcript.push({ at, type: 'state', executionId: event.executionId, state: event.state });
+    }
+  });
+
   const flush = (): void => {
     if (runtime === undefined) {
       return;
     }
     store.save(runtime.exportField());
-    store.appendLog(log.entries.slice(flushedCount));
+    const transcriptRef =
+      conversationId === undefined ? undefined : store.transcriptPath(conversationId);
+    store.appendLog(
+      log.entries
+        .slice(flushedCount)
+        .map((entry) => (transcriptRef === undefined ? entry : { ...entry, transcriptRef })),
+    );
     flushedCount = log.entries.length;
+    if (conversationId !== undefined) {
+      store.appendTranscript(conversationId, transcript.splice(0));
+    }
   };
 
   try {
     const project = createKernel().registerProject(command.projectDirectory);
     const conversation = await workspace.createConversation(project);
-    forager = new WorkspaceForagerExecutor({
-      workspace,
-      conversation,
-      onApproval: deps.askApproval ?? askApprovalInteractively,
-    });
+    conversationId = conversation.id;
+    forager = new WorkspaceForagerExecutor({ workspace, conversation });
 
     const options = {
       executeForager: forager,
       onLog: log.sink,
+      onGuard: deps.askApproval ?? askApprovalInteractively,
     };
 
     if (persisted !== undefined) {
@@ -452,6 +496,7 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       code = 1;
     }
     printSummary(out, definition, runtime?.snapshot(), log.entries, forager?.lastOutput, report);
+    unsubscribeTranscript();
     forager?.dispose();
     await workspace.stop().catch(() => undefined);
   }

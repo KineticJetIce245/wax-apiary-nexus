@@ -5,6 +5,7 @@ import { assertProjectDirectory } from './project-directory.js';
 import type {
   ApprovalDecisionKind,
   ApprovalRequest,
+  ConversationOptions,
   ExecutionState,
   HarnessAdapter,
   HarnessEvent,
@@ -16,6 +17,8 @@ export interface Conversation {
   readonly id: string;
   readonly project: Project;
   readonly nativeId: string;
+  /** WAX display alias; falls back to the native id when none was requested. */
+  readonly displayName: string;
 }
 
 export interface Execution {
@@ -222,11 +225,22 @@ export class Workspace {
     };
   }
 
-  async createConversation(project: Project): Promise<Conversation> {
+  async createConversation(
+    project: Project,
+    options: ConversationOptions = {},
+  ): Promise<Conversation> {
     assertProjectDirectory(project.directory);
     const storedProject: Project = { id: project.id, directory: project.directory };
-    const nativeId = await this.adapter.createConversation({ ...storedProject });
-    const conversation: Conversation = { id: randomUUID(), project: storedProject, nativeId };
+    const nativeId = await this.adapter.createConversation(
+      { ...storedProject },
+      options.displayName === undefined ? undefined : { displayName: options.displayName },
+    );
+    const conversation: Conversation = {
+      id: randomUUID(),
+      project: storedProject,
+      nativeId,
+      displayName: options.displayName ?? nativeId,
+    };
     this.conversations.set(conversation.id, conversation);
     return snapshotConversation(conversation);
   }
@@ -270,6 +284,7 @@ export class Workspace {
       id: conversationId ?? randomUUID(),
       project: storedProject,
       nativeId,
+      displayName: nativeId,
     };
     this.conversations.set(conversation.id, conversation);
     if (conversationId !== undefined) {
@@ -753,6 +768,7 @@ function snapshotConversation(conversation: Conversation): Conversation {
   return {
     id: conversation.id,
     nativeId: conversation.nativeId,
+    displayName: conversation.displayName,
     project: { ...conversation.project },
   };
 }

@@ -139,9 +139,10 @@ test('keeps an idle session non-submittable after a close timeout', async () => 
   }
 });
 
-test('advertises its implemented resume capability', () => {
+test('advertises its implemented resume capability and no native rename', () => {
   const adapter = new DshAcpAdapter({ dshRoot: join(tmpdir(), 'unused-dsh-root') });
   assert.equal(adapter.capabilities.resume, true);
+  assert.equal(adapter.capabilities.rename, false);
   assert.equal(typeof adapter.resume, 'function');
 });
 

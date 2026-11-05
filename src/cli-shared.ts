@@ -157,6 +157,21 @@ export function loadCompositionFile(path: string): CompositionDefinition {
   return readCompositionFile(path).definition;
 }
 
+/**
+ * Stable native-session alias. The format is deliberately ASCII and shared by
+ * every harness; adapters that support native renaming project it, the rest
+ * keep it in WAX's own conversation record.
+ */
+export function sessionDisplayName(apiary: string, compositionId: string): string {
+  const raw = `wax-apiary-nexus-session-${apiary}-${compositionId}`;
+  const sanitized = raw
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+  const name = sanitized.slice(0, 100).replace(/[-.]+$/g, '');
+  return name === '' ? 'wax-apiary-nexus-session' : name;
+}
+
 /** Default apiary id: a filesystem-safe slug of the project directory name. */
 export function apiaryForProject(projectDirectory: string): string {
   const slug = basename(resolve(projectDirectory))

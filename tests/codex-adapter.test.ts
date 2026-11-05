@@ -13,8 +13,12 @@ import { assertHarnessAdapterContract } from './support/harness-adapter-contract
 
 const FAKE_SERVER = String.raw`
 const readline = require('node:readline');
+const path = require('node:path');
+const fs = require('node:fs');
 const mode = process.argv[2];
 const recordPath = process.argv[3];
+const recordDir = process.argv[4] || '';
+const projectRoot = process.argv[5] || '';
 const rl = readline.createInterface({ input: process.stdin });
 let turnSeq = 0;
 let threadSeq = 0;
@@ -43,6 +47,13 @@ function finish(status, error) {
 rl.on('line', (line) => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') {
+    if (mode === 'init-reject' && message.params?.capabilities?.experimentalApi === true) {
+      send({ id: message.id, error: { code: -32602, message: 'experimentalApi is not supported' } });
+      return;
+    }
+    if (recordDir) {
+      fs.writeFileSync(path.join(recordDir, 'initialize.json'), JSON.stringify(message.params));
+    }
     respond(message.id, { userAgent: 'codex-cli 0.166.0 (fake)' });
     return;
   }
@@ -51,6 +62,29 @@ rl.on('line', (line) => {
   }
   if (message.method === 'account/read') {
     respond(message.id, { account: { type: 'chatgpt' }, requiresOpenaiAuth: true });
+    return;
+  }
+  if (message.method === 'project/list') {
+    if (mode === 'project') {
+      respond(message.id, {
+        data: [
+          { id: 'proj-outer', roots: [{ path: path.dirname(projectRoot) }] },
+          { id: 'proj-inner', roots: [{ path: projectRoot }] },
+        ],
+        nextCursor: null,
+      });
+    } else if (mode === 'project-error') {
+      send({ id: message.id, error: { code: -32601, message: 'Method not found' } });
+    } else {
+      respond(message.id, { data: [], nextCursor: null });
+    }
+    return;
+  }
+  if (message.method === 'thread/name/set') {
+    if (recordDir) {
+      fs.writeFileSync(path.join(recordDir, 'thread-name.json'), JSON.stringify(message.params));
+    }
+    respond(message.id, {});
     return;
   }
   if (message.method === 'thread/start') {
@@ -208,11 +242,31 @@ rl.on('line', (line) => {
 });
 `;
 
-function makeFakeServer(mode: string, recordPath?: string): CodexLaunch {
+interface FakeServerOptions {
+  /** Directory where initialize and thread-name request params are recorded. */
+  readonly recordDir?: string;
+  /** Root returned by a `project/list` response in the project modes. */
+  readonly projectRoot?: string;
+}
+
+function makeFakeServer(
+  mode: string,
+  recordPath?: string,
+  options: FakeServerOptions = {},
+): CodexLaunch {
   const dir = mkdtempSync(join(tmpdir(), 'uw-fake-codex-'));
   const script = join(dir, 'fake-app-server.cjs');
   writeFileSync(script, FAKE_SERVER, 'utf8');
-  return { file: process.execPath, args: [script, mode, recordPath ?? ''] };
+  return {
+    file: process.execPath,
+    args: [
+      script,
+      mode,
+      recordPath ?? '',
+      options.recordDir ?? '',
+      options.projectRoot ?? '',
+    ],
+  };
 }
 
 async function open(mode: string): Promise<{ adapter: CodexAppServerAdapter; events: HarnessEvent[]; projectDir: string }> {
@@ -522,9 +576,10 @@ test('rejects start when the executable does not exist', async () => {
   }
 });
 
-test('advertises its implemented resume capability', () => {
+test('advertises its implemented resume and rename capabilities', () => {
   const adapter = new CodexAppServerAdapter({ launch: { file: 'unused', args: [] } });
   assert.equal(adapter.capabilities.resume, true);
+  assert.equal(adapter.capabilities.rename, true);
   assert.equal(typeof adapter.resume, 'function');
 });
 
@@ -697,3 +752,119 @@ test('resumes a thread and advertises resume capability', async () => {
   }
 });
 
+test('declares experimentalApi when initializing Codex', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-init-project-'));
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('happy', undefined, { recordDir: projectDir }),
+    requestTimeoutMs: 2_000,
+  });
+  try {
+    await adapter.start();
+    const recorded = JSON.parse(readFileSync(join(projectDir, 'initialize.json'), 'utf8')) as {
+      capabilities?: { experimentalApi?: boolean };
+    };
+    assert.equal(recorded.capabilities?.experimentalApi, true);
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('assigns the longest project root that contains the project directory', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-project-assign-'));
+  const recordPath = join(projectDir, 'thread-start.json');
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('project', recordPath, { projectRoot: projectDir }),
+    requestTimeoutMs: 2_000,
+  });
+  try {
+    await adapter.start();
+    await adapter.createConversation({ id: 'p', directory: projectDir });
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as { projectId?: string };
+    assert.equal(recorded.projectId, 'proj-inner');
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('does not send projectId when project/list is empty', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-no-project-'));
+  const recordPath = join(projectDir, 'thread-start.json');
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('project-empty', recordPath),
+    requestTimeoutMs: 2_000,
+  });
+  try {
+    await adapter.start();
+    await adapter.createConversation({ id: 'p', directory: projectDir });
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as Record<string, unknown>;
+    assert.equal('projectId' in recorded, false);
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('sets the native thread name from the WAX display alias', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-name-'));
+  const recordPath = join(projectDir, 'thread-start.json');
+  const name = 'wax-apiary-nexus-session-demo-composition';
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('happy', recordPath, { recordDir: projectDir }),
+    requestTimeoutMs: 2_000,
+  });
+  try {
+    await adapter.start();
+    const nativeId = await adapter.createConversation(
+      { id: 'p', directory: projectDir },
+      { displayName: name },
+    );
+    const recorded = JSON.parse(readFileSync(join(projectDir, 'thread-name.json'), 'utf8')) as {
+      threadId?: string;
+      name?: string;
+    };
+    assert.deepEqual(recorded, { threadId: nativeId, name });
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('reports a project lookup failure and keeps the session usable', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-project-error-'));
+  const recordPath = join(projectDir, 'thread-start.json');
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('project-error', recordPath),
+    requestTimeoutMs: 2_000,
+  });
+  const events: HarnessEvent[] = [];
+  adapter.onEvent((event) => events.push(event));
+  try {
+    await adapter.start();
+    await adapter.createConversation({ id: 'p', directory: projectDir });
+    const error = await waitForEvent(events, (event) => event.type === 'adapter/error');
+    assert.match(error.type === 'adapter/error' ? error.message : '', /project lookup/);
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as Record<string, unknown>;
+    assert.equal('projectId' in recorded, false);
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('falls back to initialize without experimental capabilities when rejected', async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-codex-init-fallback-'));
+  const recordPath = join(projectDir, 'thread-start.json');
+  const adapter = new CodexAppServerAdapter({
+    launch: makeFakeServer('init-reject', recordPath, { recordDir: projectDir }),
+    requestTimeoutMs: 2_000,
+  });
+  const events: HarnessEvent[] = [];
+  adapter.onEvent((event) => events.push(event));
+  try {
+    await adapter.start();
+    const error = await waitForEvent(events, (event) => event.type === 'adapter/error');
+    assert.match(error.type === 'adapter/error' ? error.message : '', /experimental API capabilities/);
+    await adapter.createConversation({ id: 'p', directory: projectDir });
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as Record<string, unknown>;
+    assert.equal('projectId' in recorded, false);
+  } finally {
+    await adapter.stop();
+  }
+});

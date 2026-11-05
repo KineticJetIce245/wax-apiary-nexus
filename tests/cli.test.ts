@@ -252,6 +252,23 @@ test('runs a composition to Rest through the fake adapter', async () => {
   assert.equal(adapter.stopCalls, 1);
 });
 
+test('passes the stable WAX session display name to the adapter', async () => {
+  const adapter = new FakeAdapter({ output: 'NAMED' });
+  const captureResult = capture();
+  const state = stateDirectory();
+  const project = projectDirectory();
+
+  const code = await runCli(
+    [...baseArgs(compositionFile(), project, state), '--trigger', 'start'],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 0);
+  assert.deepEqual(adapter.displayNames, [
+    `wax-apiary-nexus-session-${apiaryForProject(project)}-cli-demo`,
+  ]);
+});
+
 test('runs a worker through the registered project directory', async () => {
   const adapter = new FakeAdapter({ output: 'FORAGER' });
   const captureResult = capture();

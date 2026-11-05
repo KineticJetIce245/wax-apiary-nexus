@@ -16,6 +16,7 @@ import {
   loadCompositionFile,
   messageOf,
   selectHarness,
+  sessionDisplayName,
   type AdapterRequest,
 } from './cli-shared.js';
 import type { HarnessKind } from './connection.js';
@@ -326,7 +327,9 @@ export async function runDaemon(
     await adapter.start();
 
     workspace = new Workspace(adapter);
-    const conversation = await workspace.createConversation(project);
+    const conversation = await workspace.createConversation(project, {
+      displayName: sessionDisplayName(apiary, definition.id),
+    });
     conversationId = conversation.id;
     forager = new WorkspaceForagerExecutor({ workspace, conversation });
     unsubscribeTranscript = workspace.onEvent((event) => {

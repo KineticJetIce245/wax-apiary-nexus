@@ -89,7 +89,7 @@ function assertCapabilities(adapter: HarnessAdapter): void {
       capabilities.approval === 'none',
     `invalid approval capability: ${String(capabilities.approval)}`,
   );
-  for (const key of ['cancel', 'streaming', 'resume'] as const) {
+  for (const key of ['cancel', 'streaming', 'rename', 'resume'] as const) {
     assert.equal(typeof capabilities[key], 'boolean', `${key} capability must be a boolean`);
   }
 }

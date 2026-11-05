@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AttachmentDraft } from '../../content.js';
 import type { Project } from '../../kernel.js';
 import { assertProjectDirectory } from '../../project-directory.js';
@@ -9,6 +10,7 @@ import type {
   ApprovalDecision,
   ApprovalOption,
   ApprovalRequest,
+  ConversationOptions,
   HarnessAdapter,
   HarnessCapabilities,
   HarnessEvent,
@@ -49,6 +51,12 @@ interface ThreadState {
   active: ActiveExecution | undefined;
 }
 
+/** One entry returned by the experimental Codex `project/list` API. */
+interface CodexProject {
+  readonly id: string;
+  readonly roots: readonly string[];
+}
+
 interface PendingApproval {
   readonly resolve: (result: unknown) => void;
   readonly threadId: string;
@@ -76,6 +84,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
+    rename: true,
     // G016 verified thread/resume across a process restart; resume() below
     // reattaches without replaying history.
     resume: true,
@@ -93,6 +102,8 @@ export class CodexAppServerAdapter implements HarnessAdapter {
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly deltaItems = new Set<string>();
   private readonly stderrLines: string[] = [];
+  private readonly projectIdByDirectory = new Map<string, string | null>();
+  private projectsUnavailable = false;
   private child: ChildProcessWithoutNullStreams | undefined;
   private client: CodexRpcClient | undefined;
   private started = false;
@@ -162,16 +173,30 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     this.client.onExit((code, signal) => this.handleExit(code, signal));
 
     try {
-      await Promise.race([
-        this.client.request(
-          'initialize',
-          {
-            clientInfo: { name: 'wax-apiary-nexus', title: 'WAX Apiary neXus', version: '0.0.0' },
-          },
-          this.initializeTimeoutMs,
-        ),
-        spawnFailure,
-      ]);
+      try {
+        await Promise.race([
+          this.initializeRequest(this.client, true),
+          spawnFailure,
+        ]);
+      } catch (error) {
+        // Project APIs and thread/start.projectId are experimental. A server
+        // that rejects the capability still gets a usable name-only session;
+        // surface the downgrade instead of silently dropping it.
+        if (!(error instanceof CodexRpcError)) {
+          throw error;
+        }
+        this.projectsUnavailable = true;
+        this.emit({
+          type: 'adapter/error',
+          message:
+            'Codex app-server rejected experimental API capabilities; ' +
+            `native project assignment is disabled: ${messageOf(error)}`,
+        });
+        await Promise.race([
+          this.initializeRequest(this.client, false),
+          spawnFailure,
+        ]);
+      }
       this.client.notify('initialized', {});
       const account = asRecord(
         await this.client.request('account/read', { refreshToken: false }, this.initializeTimeoutMs),
@@ -190,6 +215,17 @@ export class CodexAppServerAdapter implements HarnessAdapter {
       this.child = undefined;
       throw error;
     }
+  }
+
+  private initializeRequest(client: CodexRpcClient, experimental: boolean): Promise<unknown> {
+    return client.request(
+      'initialize',
+      {
+        clientInfo: { name: 'wax-apiary-nexus', title: 'WAX Apiary neXus', version: '0.0.0' },
+        ...(experimental ? { capabilities: { experimentalApi: true } } : {}),
+      },
+      this.initializeTimeoutMs,
+    );
   }
 
   async stop(): Promise<void> {
@@ -216,6 +252,8 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     this.threads.clear();
     this.closing.clear();
     this.deltaItems.clear();
+    this.projectIdByDirectory.clear();
+    this.projectsUnavailable = false;
     this.client?.close();
     this.client = undefined;
     this.child = undefined;
@@ -223,14 +261,19 @@ export class CodexAppServerAdapter implements HarnessAdapter {
     this.stopping = false;
   }
 
-  async createConversation(project: Project): Promise<string> {
+  async createConversation(
+    project: Project,
+    options?: ConversationOptions,
+  ): Promise<string> {
     assertProjectDirectory(project.directory);
     const client = this.requireClient();
+    const projectId = await this.resolveProjectId(project.directory);
     const result = asRecord(
       await client.request(
         'thread/start',
         {
           cwd: project.directory,
+          ...(projectId === undefined ? {} : { projectId }),
           ...(this.config === undefined ? {} : { config: this.config }),
         },
         this.requestTimeoutMs,
@@ -241,7 +284,98 @@ export class CodexAppServerAdapter implements HarnessAdapter {
       throw new Error('Codex app-server thread/start did not return a thread id');
     }
     this.threads.set(threadId, { cwd: project.directory, active: undefined });
+
+    const displayName = options?.displayName?.trim();
+    if (displayName !== undefined && displayName !== '') {
+      await this.setThreadName(client, threadId, displayName);
+    }
     return threadId;
+  }
+
+  /**
+   * Resolve the Codex project whose root encloses this directory, if any. The
+   * lookup is best-effort: project APIs are experimental, so an older or
+   * restricted app-server leaves the thread unprojected instead of failing the
+   * run. Results are cached per canonical directory for the adapter lifetime.
+   */
+  private async resolveProjectId(directory: string): Promise<string | undefined> {
+    const key = canonicalDirectory(directory);
+    const cached = this.projectIdByDirectory.get(key);
+    if (cached !== undefined) {
+      return cached ?? undefined;
+    }
+    if (this.projectsUnavailable) {
+      return undefined;
+    }
+
+    let projectId: string | undefined;
+    try {
+      projectId = closestProject(await this.listProjects(), key);
+    } catch (error) {
+      this.projectsUnavailable = true;
+      this.emit({
+        type: 'adapter/error',
+        message:
+          `Codex project lookup is unavailable; sessions stay unprojected: ${messageOf(error)}`,
+      });
+    }
+    this.projectIdByDirectory.set(key, projectId ?? null);
+    return projectId;
+  }
+
+  private async listProjects(): Promise<readonly CodexProject[]> {
+    const client = this.requireClient();
+    const projects: CodexProject[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const result = asRecord(
+        await client.request(
+          'project/list',
+          {
+            limit: 100,
+            ...(cursor === undefined ? {} : { cursor }),
+          },
+          this.requestTimeoutMs,
+        ),
+      );
+      const data = Array.isArray(result?.data) ? result.data : [];
+      for (const entry of data) {
+        const record = asRecord(entry);
+        const id = asString(record?.id);
+        if (id === undefined) {
+          continue;
+        }
+        const roots = Array.isArray(record?.roots)
+          ? record.roots
+              .map((root) => asString(asRecord(root)?.path))
+              .filter((path): path is string => path !== undefined)
+          : [];
+        projects.push({ id, roots });
+      }
+      const next = asString(result?.nextCursor);
+      if (next === undefined || next === '') {
+        break;
+      }
+      cursor = next;
+    }
+    return projects;
+  }
+
+  private async setThreadName(
+    client: CodexRpcClient,
+    threadId: string,
+    name: string,
+  ): Promise<void> {
+    try {
+      await client.request('thread/name/set', { threadId, name }, this.requestTimeoutMs);
+    } catch (error) {
+      // The thread exists and is usable; surface the naming gap instead of
+      // silently claiming a native name that was never applied.
+      this.emit({
+        type: 'adapter/error',
+        message: `Codex thread ${threadId} was created but naming failed: ${messageOf(error)}`,
+      });
+    }
   }
 
   /**
@@ -821,6 +955,50 @@ function toolTitle(type: string, item: Record<string, unknown>): string | undefi
 
 function truncate(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}...`;
+}
+
+/**
+ * Longest catalog root that encloses the directory. Projects with several
+ * roots are compared root by root, so a nested root wins over its parent.
+ */
+function closestProject(
+  projects: readonly CodexProject[],
+  directory: string,
+): string | undefined {
+  let bestId: string | undefined;
+  let bestLength = -1;
+  for (const project of projects) {
+    for (const root of project.roots) {
+      const canonicalRoot = canonicalDirectory(root);
+      if (!containsDirectory(canonicalRoot, directory)) {
+        continue;
+      }
+      if (canonicalRoot.length > bestLength) {
+        bestId = project.id;
+        bestLength = canonicalRoot.length;
+      }
+    }
+  }
+  return bestId;
+}
+
+/**
+ * Resolve symlinks when the path exists and fold case on Windows so catalog
+ * roots compare reliably. A stale root that no longer exists stays lexical.
+ */
+function canonicalDirectory(directory: string): string {
+  let canonical = resolve(directory);
+  try {
+    canonical = realpathSync(canonical);
+  } catch {
+    // Missing roots are still comparable as absolute paths.
+  }
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+function containsDirectory(root: string, directory: string): boolean {
+  const rel = relative(root, directory);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

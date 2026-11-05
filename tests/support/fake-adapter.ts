@@ -2,6 +2,7 @@ import type {
   ApprovalDecision,
   ApprovalOption,
   ApprovalRequest,
+  ConversationOptions,
   HarnessAdapter,
   HarnessCapabilities,
   HarnessEvent,
@@ -33,10 +34,12 @@ export class FakeAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
+    rename: false,
     resume: false,
   };
 
   readonly prompts: string[] = [];
+  readonly displayNames: (string | undefined)[] = [];
   readonly submittedAttachments: (readonly AttachmentDraft[])[] = [];
   readonly approvals: ApprovalDecision[] = [];
   startCalls = 0;
@@ -59,8 +62,12 @@ export class FakeAdapter implements HarnessAdapter {
     this.stopCalls += 1;
   }
 
-  async createConversation(_project: Project): Promise<string> {
+  async createConversation(
+    _project: Project,
+    options?: ConversationOptions,
+  ): Promise<string> {
     this.conversationSeq += 1;
+    this.displayNames.push(options?.displayName);
     return `native-${String(this.conversationSeq)}`;
   }
 

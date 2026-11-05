@@ -12,6 +12,7 @@ import {
   loadCompositionFile,
   messageOf,
   selectHarness,
+  sessionDisplayName,
   type AdapterRequest,
 } from './cli-shared.js';
 import type { HarnessKind } from './connection.js';
@@ -334,6 +335,7 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
   let command: RunCommand;
   let definition: CompositionDefinition;
   let store: HoneyStore;
+  let apiary = '';
   let persisted: PersistedField | undefined;
 
   try {
@@ -343,7 +345,7 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       validateTrigger(definition, command.trigger);
     }
 
-    const apiary = command.apiary ?? apiaryForProject(command.projectDirectory);
+    apiary = command.apiary ?? apiaryForProject(command.projectDirectory);
     try {
       store = HoneyStore.forComposition(command.stateDir, apiary, definition.id);
     } catch (error) {
@@ -444,7 +446,9 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 
   try {
     const project = createKernel().registerProject(command.projectDirectory);
-    const conversation = await workspace.createConversation(project);
+    const conversation = await workspace.createConversation(project, {
+      displayName: sessionDisplayName(apiary, definition.id),
+    });
     conversationId = conversation.id;
     forager = new WorkspaceForagerExecutor({ workspace, conversation });
 

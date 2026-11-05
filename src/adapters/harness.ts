@@ -47,10 +47,25 @@ export interface HarnessCapabilities {
   readonly cancel: boolean;
   readonly streaming: boolean;
   /**
+   * True only when this adapter can set a native session title. WAX always
+   * keeps its own display alias; native names are a best-effort projection.
+   */
+  readonly rename: boolean;
+  /**
    * True only when this adapter implements and has tested a resume operation.
    * An upstream harness supporting resume is not sufficient to advertise it.
    */
   readonly resume: boolean;
+}
+
+/** WAX-owned identity attached to a native conversation at creation time. */
+export interface ConversationOptions {
+  /**
+   * Stable display alias, for example
+   * `wax-apiary-nexus-session-<apiary>-<composition>`. Adapters that support
+   * native naming project it; the rest keep it as the WAX-side alias.
+   */
+  readonly displayName?: string;
 }
 
 export type HarnessEvent =
@@ -95,7 +110,7 @@ export interface HarnessAdapter {
   stop(): Promise<void>;
 
   /** Create a native conversation for the project and return its native id. */
-  createConversation(project: Project): Promise<string>;
+  createConversation(project: Project, options?: ConversationOptions): Promise<string>;
 
   /**
    * Reattach to a native conversation created by an earlier process. Only

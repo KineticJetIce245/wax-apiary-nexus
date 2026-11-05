@@ -10,6 +10,7 @@ import type {
   ApprovalOption,
   ApprovalOptionKind,
   ApprovalRequest,
+  ConversationOptions,
   HarnessAdapter,
   HarnessCapabilities,
   HarnessEvent,
@@ -57,6 +58,9 @@ export class DshAcpAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
+    // ACP session/new carries no title, and DSH rejects non-empty
+    // additionalDirectories, so WAX keeps the display alias on its own side.
+    rename: false,
     // G016 verified session/resume across a process restart; the ACP server has
     // no session/load, and resume() below does not replay history.
     resume: true,
@@ -212,9 +216,14 @@ export class DshAcpAdapter implements HarnessAdapter {
     this.stopping = false;
   }
 
-  async createConversation(project: Project): Promise<string> {
+  async createConversation(
+    project: Project,
+    _options?: ConversationOptions,
+  ): Promise<string> {
     assertProjectDirectory(project.directory);
     const client = this.requireClient();
+    // ACP session/new has no title and DSH rejects additionalDirectories, so
+    // the WAX display alias stays on the Workspace side.
     const result = await client.request(
       'session/new',
       { cwd: project.directory, mcpServers: this.mcpServers },

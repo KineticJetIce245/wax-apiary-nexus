@@ -8,6 +8,7 @@ import type {
   ApprovalDecision,
   ApprovalOption,
   ApprovalRequest,
+  ConversationOptions,
   HarnessAdapter,
   HarnessCapabilities,
   HarnessEvent,
@@ -32,10 +33,12 @@ class FakeAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
+    rename: false,
     resume: true,
   };
   readonly nativeId = 'native-1';
   readonly projects: Project[] = [];
+  readonly displayNames: (string | undefined)[] = [];
   readonly submissions: Array<{
     nativeId: string;
     executionId: string;
@@ -63,8 +66,12 @@ class FakeAdapter implements HarnessAdapter {
     this.stopCalls += 1;
   }
 
-  async createConversation(project: Project): Promise<string> {
+  async createConversation(
+    project: Project,
+    options?: ConversationOptions,
+  ): Promise<string> {
     this.projects.push(project);
+    this.displayNames.push(options?.displayName);
     return this.nativeId;
   }
 
@@ -159,6 +166,21 @@ function delay(ms: number): Promise<void> {
     setTimeout(resolve, ms);
   });
 }
+
+test('keeps a WAX display alias and forwards it when creating the conversation', async (t) => {
+  const { adapter, workspace, project } = await setup();
+  t.after(() => workspace.stop());
+
+  const name = 'wax-apiary-nexus-session-apiary-composition';
+  const conversation = await workspace.createConversation(project, { displayName: name });
+  assert.equal(conversation.displayName, name);
+  assert.equal(workspace.getConversation(conversation.id)?.displayName, name);
+  assert.equal(adapter.displayNames.at(-1), name);
+
+  const unnamed = await workspace.createConversation(project);
+  assert.equal(unnamed.displayName, adapter.nativeId);
+  assert.equal(adapter.displayNames.at(-1), undefined);
+});
 
 test('rejects a second submission while the first execution is running', async (t) => {
   const { adapter, workspace, conversation } = await setup();

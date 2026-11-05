@@ -1,8 +1,8 @@
 export { parseComposition, CompositionValidationError } from './definition.js';
 export { createMemoryLog } from './log.js';
 export { renderPrompt, serializeValue } from './executor.js';
-export { FieldRestoreError, PheromoneRuntime } from './runtime.js';
-export type { NodeExecutor } from './executor.js';
+export { FieldRestoreError, GuardDecisionError, PheromoneRuntime } from './runtime.js';
+export type { ExecutionContext, GuardDecision, GuardRequest, NodeExecutor } from './executor.js';
 export type { RuntimeOptions } from './runtime.js';
 export type {
   Attachment,

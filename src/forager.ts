@@ -1,7 +1,10 @@
 import type { ApprovalDecisionKind, ApprovalRequest } from './adapters/harness.js';
 import {
   renderPrompt,
+  type ExecutionContext,
   type ForagerNode,
+  type GuardDecision,
+  type GuardRequest,
   type NodeExecutor,
   type Value,
 } from './runtime/index.js';
@@ -53,6 +56,7 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   private readonly waiters = new Map<string, (execution: Execution) => void>();
   private readonly unsubscribe: () => void;
   private lastProduced: Value | undefined;
+  private activeContext: ExecutionContext | undefined;
   private disposed = false;
 
   constructor(options: WorkspaceForagerOptions) {
@@ -78,17 +82,24 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     this.waiters.clear();
   }
 
-  async execute(node: ForagerNode, input: Value): Promise<Value> {
+  async execute(node: ForagerNode, input: Value, context?: ExecutionContext): Promise<Value> {
     const prompt = renderPrompt(node.config.prompt, input);
 
+    this.activeContext = context;
     let submitted: Execution;
     try {
       submitted = await this.workspace.submit(this.conversation.id, prompt);
     } catch (error) {
+      this.activeContext = undefined;
       throw new ForagerExecutionError(node.id, 'failed', messageOf(error), { cause: error });
     }
 
-    const settled = await this.waitForTerminal(submitted.id);
+    let settled: Execution;
+    try {
+      settled = await this.waitForTerminal(submitted.id);
+    } finally {
+      this.activeContext = undefined;
+    }
     if (settled.state === 'completed') {
       const output: Value = { kind: 'text', text: settled.output };
       this.lastProduced = output;
@@ -135,9 +146,28 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   }
 
   private async settleApproval(executionId: string, request: ApprovalRequest): Promise<void> {
-    let decision: ApprovalDecisionKind;
+    const guard: GuardRequest = {
+      requestId: request.requestId,
+      executionId,
+      summary: request.summary,
+      options: request.options.map((option) => option.kind),
+    };
+    const handler = this.onApproval;
+    const decide =
+      handler === undefined ? undefined : async (): Promise<GuardDecision> => handler(request);
+
+    let decision: GuardDecision;
     try {
-      decision = this.onApproval === undefined ? defaultDecision(request) : await this.onApproval(request);
+      // The runtime parks the approval as a Guard hover (persisted, bounded by
+      // its timeout) and only then returns the decision to the harness. When
+      // the bridge is driven without a runtime context (direct executor use),
+      // the local handler still owns the decision.
+      decision =
+        this.activeContext === undefined
+          ? handler === undefined
+            ? defaultDecision(request)
+            : await handler(request)
+          : await this.activeContext.requestGuard(guard, decide);
     } catch {
       decision = defaultDecision(request);
     }

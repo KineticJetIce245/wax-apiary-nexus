@@ -9,8 +9,12 @@ export type RuntimeEvent =
   | 'node.failed'
   | 'hover.opened'
   | 'hover.resolved'
+  | 'guard.opened'
+  | 'guard.resolved'
+  | 'guard.timeout'
   | 'input.queued'
   | 'runtime.restored'
+  | 'runtime.attention'
   | 'runtime.rest';
 
 export interface RuntimeLogEntry {
@@ -26,6 +30,8 @@ export interface RuntimeLogEntry {
   durationMs?: number;
   outcome?: string;
   error?: string;
+  /** The composition log stores only this reference, never transcript bodies. */
+  transcriptRef?: string;
 }
 
 export type RuntimeLogSink = (entry: RuntimeLogEntry) => void;

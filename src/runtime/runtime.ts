@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import { serializeValue, type NodeExecutor } from './executor.js';
+import {
+  serializeValue,
+  type ExecutionContext,
+  type GuardDecision,
+  type GuardRequest,
+  type NodeExecutor,
+} from './executor.js';
 import { clonePheromone, createNodeState, isFieldResting, snapshotField } from './field.js';
 import type { RuntimeLogEntry, RuntimeLogSink } from './log.js';
 import type {
@@ -26,6 +32,20 @@ export interface RuntimeOptions {
   /** Injectable clock for tests; defaults to Date.now. */
   now?: () => number;
   onLog?: RuntimeLogSink;
+  /** How long a Guard waits before it is cancelled; contract default is 1h. */
+  guardTimeoutMs?: number;
+  /** Asks a human for a Guard decision. Without one, every Guard is rejected. */
+  onGuard?: (request: GuardRequest) => Promise<GuardDecision>;
+}
+
+const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
+
+/** A Guard decision that does not belong to the current request. */
+export class GuardDecisionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GuardDecisionError';
+  }
 }
 
 interface NodeResult {
@@ -74,6 +94,9 @@ export class PheromoneRuntime {
   private readonly executor: NodeExecutor;
   private readonly now: () => number;
   private readonly onLog: RuntimeLogSink | undefined;
+  private readonly guardTimeoutMs: number;
+  private readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
+  private readonly guardWaiters = new Map<string, { readonly requestId: string; resolve: (decision: GuardDecision) => void }>();
   private readonly states: Map<NodeId, NodeState> = new Map();
   /** Answers that arrived before their user node hovered; preserved, not dropped. */
   private readonly preAnswers = new Map<NodeId, Value[]>();
@@ -88,6 +111,11 @@ export class PheromoneRuntime {
     this.executor = options.executeForager;
     this.now = options.now ?? Date.now;
     this.onLog = options.onLog;
+    this.guardTimeoutMs = options.guardTimeoutMs ?? DEFAULT_GUARD_TIMEOUT_MS;
+    if (!Number.isFinite(this.guardTimeoutMs) || this.guardTimeoutMs <= 0) {
+      throw new TypeError('options.guardTimeoutMs must be a positive number');
+    }
+    this.onGuard = options.onGuard;
 
     for (const id of definition.nodes.keys()) {
       this.states.set(id, createNodeState());
@@ -285,11 +313,17 @@ export class PheromoneRuntime {
         state.state = structuredClone(saved.state);
       }
 
-      if (saved.hover !== undefined && saved.hoverPheromone !== undefined) {
+      if (
+        saved.hover !== undefined &&
+        saved.hover.kind === 'user' &&
+        saved.hoverPheromone !== undefined
+      ) {
         state.hover = structuredClone(saved.hover);
         state.hoverPheromone = clonePheromone(saved.hoverPheromone);
         resumedHovers.push(id);
       } else if (saved.hover !== undefined) {
+        // A Guard cannot be answered after the native request is gone: it is
+        // cancelled, never resumed and never auto-allowed.
         stuckActive.push(id);
         state.state = { ...(state.state ?? {}), needsAttention: true };
       }
@@ -313,6 +347,22 @@ export class PheromoneRuntime {
     });
 
     return { resumedHovers, unknownActive, stuckActive };
+  }
+
+  /**
+   * Marks nodes as needing a human after a forced edit or a guard that cannot
+   * be resumed. State is kept; nothing is replayed.
+   */
+  markNeedsAttention(nodeIds: readonly NodeId[]): void {
+    for (const id of nodeIds) {
+      const node = this.definition.nodes.get(id);
+      if (node === undefined) {
+        throw new Error(`unknown node '${id}'`);
+      }
+      const state = this.stateOf(id);
+      state.state = { ...(state.state ?? {}), needsAttention: true };
+      this.log({ event: 'runtime.attention', nodeId: id, nodeKind: node.kind });
+    }
   }
 
   private stateOf(nodeId: NodeId): NodeState {
@@ -433,7 +483,10 @@ export class PheromoneRuntime {
     state: NodeState,
   ): Promise<NodeResult> {
     if (node.kind === 'forager') {
-      const output = await this.executor.execute(node, pheromone.value);
+      const context: ExecutionContext = {
+        requestGuard: (request, decide) => this.requestGuard(node, pheromone, request, decide),
+      };
+      const output = await this.executor.execute(node, pheromone.value, context);
       assertValue(output);
       return { value: output, outcome: 'ok' };
     }
@@ -498,6 +551,106 @@ export class PheromoneRuntime {
       outcome,
     });
     this.emit(node, pheromone, { value: structuredClone(value), outcome });
+  }
+
+  /**
+   * Opens a Guard hover for one native approval request and resolves with the
+   * decision. A timeout cancels the request; nothing auto-allows.
+   */
+  private async requestGuard(
+    node: NodeDefinition,
+    pheromone: Pheromone,
+    request: GuardRequest,
+    decide?: (request: GuardRequest) => Promise<GuardDecision>,
+  ): Promise<GuardDecision> {
+    const state = this.stateOf(node.id);
+    if (state.hover !== undefined) {
+      throw new GuardDecisionError(`node '${node.id}' already has an open hover`);
+    }
+
+    const token = `gd_${randomUUID()}`;
+    const hover: HoverSpec = {
+      token,
+      kind: 'guard',
+      compositionId: this.definition.id,
+      nodeId: node.id,
+      pheromoneId: pheromone.id,
+      meta: {
+        requestId: request.requestId,
+        executionId: request.executionId,
+        summary: request.summary,
+      },
+    };
+    state.hover = hover;
+    this.log({
+      event: 'guard.opened',
+      nodeId: node.id,
+      nodeKind: node.kind,
+      pheromoneId: pheromone.id,
+      traceId: pheromone.traceId,
+      outcome: request.requestId,
+    });
+
+    let resolveWaiter: (decision: GuardDecision) => void = () => undefined;
+    const waiter = new Promise<GuardDecision>((resolve) => {
+      resolveWaiter = resolve;
+    });
+    this.guardWaiters.set(token, { requestId: request.requestId, resolve: resolveWaiter });
+
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+      resolveWaiter('cancelled');
+    }, this.guardTimeoutMs);
+    timer.unref();
+
+    const handler = decide ?? this.onGuard;
+    const decisionPromise =
+      handler === undefined
+        ? Promise.resolve<GuardDecision>('reject_once')
+        : Promise.resolve()
+            .then(() => handler(request))
+            .catch(() => 'reject_once' as GuardDecision);
+
+    let decision: GuardDecision;
+    try {
+      decision = await Promise.race([decisionPromise, waiter]);
+    } finally {
+      clearTimeout(timer);
+      this.guardWaiters.delete(token);
+      if (state.hover?.token === token) {
+        delete state.hover;
+      }
+    }
+
+    this.log({
+      event: expired ? 'guard.timeout' : 'guard.resolved',
+      nodeId: node.id,
+      nodeKind: node.kind,
+      pheromoneId: pheromone.id,
+      traceId: pheromone.traceId,
+      outcome: expired ? 'cancelled' : decision,
+    });
+
+    return decision;
+  }
+
+  /**
+   * Settles the open Guard for `requestId`. An early, late or mismatched
+   * decision is rejected so it can never land on a different request.
+   */
+  settleGuard(nodeId: NodeId, requestId: string, decision: GuardDecision): void {
+    const state = this.states.get(nodeId);
+    const hover = state?.hover;
+    if (hover === undefined || hover.kind !== 'guard' || hover.meta?.['requestId'] !== requestId) {
+      throw new GuardDecisionError(`no open guard for request '${requestId}' on node '${nodeId}'`);
+    }
+    const waiter = this.guardWaiters.get(hover.token);
+    if (waiter === undefined || waiter.requestId !== requestId) {
+      throw new GuardDecisionError(`guard for request '${requestId}' is not waiting`);
+    }
+    this.guardWaiters.delete(hover.token);
+    waiter.resolve(decision);
   }
 
   private assertUserValue(node: UserNode, value: Value): void {

@@ -31,9 +31,9 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 ## Current state
 
 - The target architecture and contract are written.
-- The repository still contains an earlier prototype (workbench, adapters, flow/delegation experiments). It is useful as protocol evidence, but it is not the target runtime.
 - The first runtime slice lives in `src/runtime/`: single-Pheromone trigger → node → terminal/Rest, with FIFO queue, pending, min interval, condition/counter, an in-memory log, and an injected executor for `forager`.
-- `Fork`, `Merge`, `Worker`, schedules, and the richer input modalities come after the single-Pheromone core is solid.
+- The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` now keeps the runtime plus the adapter and session infrastructure it will use; no new CLI is wired yet.
+- The next steps are the Forager adapter bridge, a runtime CLI, durability, and then the richer graph features.
 
 ## Repository layout
 
@@ -41,8 +41,11 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 README.md            you are here
 ARCHITECTURE.md      target runtime model
 CONTRACT.md          composition file, runtime state, validation, CLI
-src/                 earlier prototype (adapters, workbench, flow/delegation)
-tests/               prototype tests
+src/runtime/         the implemented single-Pheromone runtime
+src/adapters/        native harness adapters
+src/workspace.ts     native session lifecycle used by the future Forager bridge
+src/                 session/infrastructure modules
+tests/               runtime, adapter and infrastructure tests
 legacy-contract/     earlier adapter/flow/composition/collaboration contracts
 ```
 
@@ -65,14 +68,7 @@ npm ci
 npm test
 ```
 
-The prototype CLI:
-
-```bash
-npm run demo
-npm run workbench
-```
-
-The new runtime will get its own entry point when the single-Pheromone slice lands.
+The runtime has no CLI entry point yet; the next slice adds the Forager bridge and a runtime CLI.
 
 ## Design principles
 

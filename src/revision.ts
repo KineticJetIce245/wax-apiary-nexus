@@ -1,6 +1,6 @@
 import type { CompositionDefinition, NodeId, PheromoneFieldSnapshot } from './runtime/index.js';
 
-export type ReferenceReason = 'queue' | 'pending' | 'active' | 'hover';
+export type ReferenceReason = 'queue' | 'pending' | 'active' | 'hover' | 'merge-waiting';
 
 export interface ActiveReference {
   readonly nodeId: NodeId;
@@ -22,7 +22,7 @@ export class GraphEditBlockedError extends Error {
   }
 }
 
-/** Every node that still holds queue, pending, active or hover state. */
+/** Every node that still holds queue, pending, active, hover or merge-waiting state. */
 export function findActiveReferences(snapshot: PheromoneFieldSnapshot): ActiveReference[] {
   const references: ActiveReference[] = [];
   for (const [nodeId, state] of Object.entries(snapshot.nodes)) {
@@ -38,6 +38,9 @@ export function findActiveReferences(snapshot: PheromoneFieldSnapshot): ActiveRe
     if (state.hover !== undefined) {
       references.push({ nodeId, reason: 'hover' });
     }
+    if (state.joins !== undefined && Object.keys(state.joins).length > 0) {
+      references.push({ nodeId, reason: 'merge-waiting' });
+    }
   }
   return references;
 }
@@ -46,9 +49,9 @@ export function findActiveReferences(snapshot: PheromoneFieldSnapshot): ActiveRe
  * Checks a proposed composition against the live field before it replaces the
  * current definition.
  *
- * Removing (or renaming) a node that still owns queue/pending/active/hover
- * state is refused by default. With `force`, the caller gets the node ids back
- * and must mark them stuck; the work is never silently migrated.
+ * Removing (or renaming) a node that still owns queue/pending/active/hover or
+ * merge-waiting state is refused by default. With `force`, the caller gets the
+ * node ids back and must mark them stuck; the work is never silently migrated.
  */
 export function assertEditKeepsReferences(
   current: CompositionDefinition,

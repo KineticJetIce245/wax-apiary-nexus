@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-> **Status**: target design. The PheromoneField runtime is not implemented yet; `src/` is an earlier prototype. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
+> **Status**: target design. The PheromoneField single-Pheromone slice and Stage 3A Fork/Merge/Branch are implemented in `src/runtime/`; Worker, schedules and richer value modalities are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
 
 ## 1. One sentence
 
@@ -99,7 +99,7 @@ Guard decisions are bound to `requestId` and `executionId`. A decision for one r
 - A **Merge** node has `required: [branchId]`. It groups arrivals by `forkId`; when all required branches have arrived, it consumes them atomically and emits one Pheromone.
 - A required branch that fails or becomes unknown fails the Merge; siblings are cancelled. Optional branches follow explicit policy.
 - A Merge with no outgoing edge is terminal.
-- Fork/Merge/Branch are parallel-runtime features; the first runtime slice is single-Pheromone.
+- Stage 3A implements required branches, text combine, and sibling cancellation. Optional branches, object/array combine, and merge timeouts remain open.
 
 ## 8. Live editing
 
@@ -142,4 +142,4 @@ The composition log is separate:
 
 ## 11. Implementation status
 
-The target runtime is not implemented. The repository's `src/` is an earlier prototype and serves as adapter/protocol evidence. The next implementation slice is a single-Pheromone core: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, and tests. See [`CONTRACT.md`](CONTRACT.md).
+The single-Pheromone core and the Stage 3A parallel slice are implemented: trigger, node consumption/production, terminal/Rest, queue, pending, minimum interval, log, Fork/Merge/Branch, persisted joins and merge-waiting edit references. Worker, schedules, richer user modalities, optional branches (including object/array combine) and merge timeouts are still open. See [`CONTRACT.md`](CONTRACT.md).

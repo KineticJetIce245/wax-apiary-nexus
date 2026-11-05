@@ -15,6 +15,7 @@ import { expandHomePath } from './conversation-store.js';
 import type {
   HoverSpec,
   PersistedField,
+  PersistedJoinState,
   PersistedNodeState,
   Pheromone,
   RuntimeLogEntry,
@@ -149,6 +150,56 @@ function parseHover(input: unknown, path: string): HoverSpec {
   };
 }
 
+function parseJoins(
+  input: unknown,
+  path: string,
+): Record<string, PersistedJoinState> {
+  if (!isRecord(input)) {
+    throw new Error(`${path}: expected an object keyed by forkId`);
+  }
+
+  const entries: [string, PersistedJoinState][] = [];
+  for (const [forkId, raw] of Object.entries(input)) {
+    if (forkId === '') {
+      throw new Error(`${path}: join forkId must be non-empty`);
+    }
+    const joinPath = `${path}.${forkId}`;
+    if (!isRecord(raw)) {
+      throw new Error(`${joinPath}: expected an object`);
+    }
+    const rawArrived = raw['arrived'];
+    if (!Array.isArray(rawArrived)) {
+      throw new Error(`${joinPath}: expected an arrived Pheromone array`);
+    }
+    if (rawArrived.length === 0) {
+      throw new Error(`${joinPath}.arrived: expected at least one Pheromone`);
+    }
+
+    const seen = new Set<string>();
+    const arrived = rawArrived.map((entry, index) => {
+      const pheromone = parsePheromone(entry as unknown, `${joinPath}.arrived[${String(index)}]`);
+      if (pheromone.forkId !== forkId) {
+        throw new Error(
+          `${joinPath}.arrived[${String(index)}].forkId: expected '${forkId}'`,
+        );
+      }
+      if (pheromone.branchId === undefined || pheromone.branchId === '') {
+        throw new Error(`${joinPath}.arrived[${String(index)}].branchId: expected a branch id`);
+      }
+      if (seen.has(pheromone.branchId)) {
+        throw new Error(
+          `${joinPath}.arrived[${String(index)}].branchId: duplicate branch '${pheromone.branchId}'`,
+        );
+      }
+      seen.add(pheromone.branchId);
+      return pheromone;
+    });
+
+    entries.push([forkId, { arrived }]);
+  }
+  return Object.fromEntries(entries);
+}
+
 function parseNodeState(input: unknown, path: string): PersistedNodeState {
   if (!isRecord(input) || !Array.isArray(input['queue'])) {
     throw new Error(`${path}: expected a node state with a queue array`);
@@ -183,6 +234,9 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
       assertValueShape(entry, `${path}.inputs[${String(index)}]`);
       return structuredClone(entry);
     });
+  }
+  if (input['joins'] !== undefined) {
+    state.joins = parseJoins(input['joins'], `${path}.joins`);
   }
   return state;
 }

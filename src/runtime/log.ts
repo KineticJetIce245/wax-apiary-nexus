@@ -9,10 +9,14 @@ export type RuntimeEvent =
   | 'node.failed'
   | 'hover.opened'
   | 'hover.resolved'
+  | 'hover.cancelled'
   | 'guard.opened'
   | 'guard.resolved'
   | 'guard.timeout'
   | 'input.queued'
+  | 'merge.waiting'
+  | 'merge.completed'
+  | 'merge.failed'
   | 'runtime.restored'
   | 'runtime.attention'
   | 'runtime.rest';
@@ -26,6 +30,8 @@ export interface RuntimeLogEntry {
   nodeKind?: NodeKind;
   pheromoneId?: string;
   traceId?: string;
+  forkId?: string;
+  branchId?: string;
   queueDepth?: number;
   durationMs?: number;
   outcome?: string;

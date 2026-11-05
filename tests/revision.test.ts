@@ -144,3 +144,50 @@ test('a runtime can mark forced nodes as needing attention', () => {
   assert.equal(runtime.snapshot().nodes['start']?.state['needsAttention'], true);
   assert.equal(runtime.snapshot().nodes['keep']?.state['needsAttention'], undefined);
 });
+
+test('a merge-waiting join is an active reference and blocks removing the merge', () => {
+  const current = parseComposition({
+    schemaVersion: 1,
+    id: 'edit',
+    nodes: {
+      keep: { kind: 'forager', config: { connection: 'codex', prompt: 'keep' } },
+      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+    },
+    edges: [],
+  });
+  const next = parseComposition({
+    schemaVersion: 1,
+    id: 'edit',
+    nodes: {
+      keep: { kind: 'forager', config: { connection: 'codex', prompt: 'keep' } },
+    },
+    edges: [],
+  });
+  const snapshot = snapshotWith({
+    merge: {
+      joins: {
+        fk_1: {
+          forkId: 'fk_1',
+          arrived: [
+            {
+              id: 'ph_1',
+              traceId: 'tr_1',
+              forkId: 'fk_1',
+              branchId: 'a',
+              value: { kind: 'text', text: 'x' },
+              at: '2026-03-01T00:00:00.000Z',
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(findActiveReferences(snapshot), [
+    { nodeId: 'merge', reason: 'merge-waiting' },
+  ]);
+  assert.throws(() => assertEditKeepsReferences(current, next, snapshot), GraphEditBlockedError);
+  assert.deepEqual(assertEditKeepsReferences(current, next, snapshot, { force: true }), {
+    forced: ['merge'],
+  });
+});

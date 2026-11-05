@@ -14,11 +14,15 @@ import type {
   ConditionConfig,
   EdgeDefinition,
   EdgeWhen,
+  ForkNode,
   HoverSpec,
+  JoinState,
+  MergeNode,
   NodeDefinition,
   NodeId,
   NodeState,
   PersistedField,
+  PersistedJoinState,
   PersistedNodeState,
   Pheromone,
   PheromoneFieldSnapshot,
@@ -83,11 +87,12 @@ function newTraceId(): string {
 }
 
 /**
- * Single-Pheromone runtime slice.
+ * PheromoneField runtime.
  *
- * One Pheromone is consumed by one node; the node produces at most one
- * Pheromone on its single outgoing edge; a node without an outgoing edge is
- * terminal. No cursor, no Run, no fork/merge.
+ * A normal node consumes one Pheromone and emits at most one; a node without
+ * an outgoing edge is terminal. A Fork consumes one and emits one tagged copy
+ * per branch. A Merge groups branch Pheromones by forkId, consumes the required
+ * set atomically and emits one combined Pheromone. No cursor, no Run.
  */
 export class PheromoneRuntime {
   private readonly definition: CompositionDefinition;
@@ -164,6 +169,15 @@ export class PheromoneRuntime {
       for (;;) {
         const next = this.takeRunnable();
         if (next === null) {
+          // A restored join can already hold every required branch; finish it
+          // without replaying any of those branches.
+          if (this.settleCompleteJoins()) {
+            continue;
+          }
+          // Quiet and still waiting for a branch that is nowhere in the field:
+          // that branch can never arrive, so the merge fails instead of
+          // leaving the field permanently non-Rest.
+          this.failMissingJoins();
           break;
         }
         await this.activate(next.node, next.pheromone);
@@ -242,6 +256,16 @@ export class PheromoneRuntime {
       if (state.state !== undefined) {
         persisted.state = structuredClone(state.state);
       }
+      if (state.joins !== undefined && state.joins.size > 0) {
+        const entries: [string, PersistedJoinState][] = [];
+        for (const [forkId, join] of state.joins) {
+          entries.push([
+            forkId,
+            { arrived: [...join.arrived.values()].map(clonePheromone) },
+          ]);
+        }
+        persisted.joins = Object.fromEntries(entries);
+      }
       const earlyInputs = this.preAnswers.get(id);
       if (earlyInputs !== undefined && earlyInputs.length > 0) {
         persisted.inputs = structuredClone(earlyInputs);
@@ -299,6 +323,8 @@ export class PheromoneRuntime {
     const resumedHovers: NodeId[] = [];
     const unknownActive: NodeId[] = [];
     const stuckActive: NodeId[] = [];
+    /** A branch whose process is gone can never reach its Merge; fail the fork. */
+    const failedForkIds = new Set<string>();
 
     for (const [id, node] of this.definition.nodes) {
       const saved = field.nodes[id];
@@ -319,6 +345,17 @@ export class PheromoneRuntime {
       if (saved.inputs !== undefined && saved.inputs.length > 0) {
         this.preAnswers.set(id, structuredClone(saved.inputs));
       }
+      if (saved.joins !== undefined) {
+        if (node.kind !== 'merge') {
+          throw new FieldRestoreError(
+            `persisted field has merge joins on non-merge node '${id}'`,
+          );
+        }
+        const joins = this.restoreJoins(node, saved.joins);
+        if (joins.size > 0) {
+          state.joins = joins;
+        }
+      }
 
       if (
         saved.hover !== undefined &&
@@ -333,6 +370,9 @@ export class PheromoneRuntime {
         // cancelled, never resumed and never auto-allowed.
         stuckActive.push(id);
         state.state = { ...(state.state ?? {}), needsAttention: true };
+        if (saved.hoverPheromone?.forkId !== undefined) {
+          failedForkIds.add(saved.hoverPheromone.forkId);
+        }
       }
 
       if (saved.active !== undefined) {
@@ -344,7 +384,14 @@ export class PheromoneRuntime {
           stuckActive.push(id);
         }
         state.state = { ...(state.state ?? {}), needsAttention: true };
+        if (saved.active.forkId !== undefined) {
+          failedForkIds.add(saved.active.forkId);
+        }
       }
+    }
+
+    for (const forkId of failedForkIds) {
+      this.failFork(forkId, 'unknown-active');
     }
 
     this.resting = isFieldResting(this.states.values());
@@ -428,21 +475,42 @@ export class PheromoneRuntime {
     this.resting = false;
 
     if (node.kind === 'user') {
-      this.log({
-        event: 'node.activated',
-        nodeId: node.id,
-        nodeKind: node.kind,
-        pheromoneId: pheromone.id,
-        traceId: pheromone.traceId,
-        queueDepth: state.queue.length,
-      });
+      this.logActivated(node, pheromone, state);
       this.openHover(node, pheromone);
       return;
     }
 
     state.active = pheromone;
     const startedAt = this.now();
+    this.logActivated(node, pheromone, state);
 
+    try {
+      if (node.kind === 'fork') {
+        this.emitFork(node, pheromone);
+        this.logCompleted(node, pheromone, startedAt, 'forked');
+      } else if (node.kind === 'merge') {
+        const outcome = this.arriveAtMerge(node, pheromone);
+        this.logCompleted(node, pheromone, startedAt, outcome);
+      } else {
+        const result = await this.runNode(node, pheromone, state);
+        this.logCompleted(node, pheromone, startedAt, result.outcome);
+        this.emit(node, pheromone, result);
+      }
+    } catch (error) {
+      delete state.active;
+      this.logFailed(node, pheromone, startedAt, error);
+      if (pheromone.forkId !== undefined) {
+        // A branch that failed can never reach its Merge. Cancel its siblings
+        // so no join waits forever.
+        this.failFork(pheromone.forkId, 'failed-branch');
+      }
+      throw error;
+    }
+
+    delete state.active;
+  }
+
+  private logActivated(node: NodeDefinition, pheromone: Pheromone, state: NodeState): void {
     this.log({
       event: 'node.activated',
       nodeId: node.id,
@@ -450,38 +518,44 @@ export class PheromoneRuntime {
       pheromoneId: pheromone.id,
       traceId: pheromone.traceId,
       queueDepth: state.queue.length,
+      ...(pheromone.forkId === undefined ? {} : { forkId: pheromone.forkId }),
+      ...(pheromone.branchId === undefined ? {} : { branchId: pheromone.branchId }),
     });
+  }
 
-    let result: NodeResult;
-    try {
-      result = await this.runNode(node, pheromone, state);
-    } catch (error) {
-      delete state.active;
-      this.log({
-        event: 'node.failed',
-        nodeId: node.id,
-        nodeKind: node.kind,
-        pheromoneId: pheromone.id,
-        traceId: pheromone.traceId,
-        outcome: 'failed',
-        durationMs: this.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-
-    delete state.active;
+  private logCompleted(
+    node: NodeDefinition,
+    pheromone: Pheromone,
+    startedAt: number,
+    outcome: string,
+  ): void {
     this.log({
       event: 'node.completed',
       nodeId: node.id,
       nodeKind: node.kind,
       pheromoneId: pheromone.id,
       traceId: pheromone.traceId,
-      outcome: result.outcome,
+      outcome,
       durationMs: this.now() - startedAt,
     });
+  }
 
-    this.emit(node, pheromone, result);
+  private logFailed(
+    node: NodeDefinition,
+    pheromone: Pheromone,
+    startedAt: number,
+    error: unknown,
+  ): void {
+    this.log({
+      event: 'node.failed',
+      nodeId: node.id,
+      nodeKind: node.kind,
+      pheromoneId: pheromone.id,
+      traceId: pheromone.traceId,
+      outcome: 'failed',
+      durationMs: this.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   private async runNode(
@@ -505,6 +579,10 @@ export class PheromoneRuntime {
 
     if (node.kind === 'user') {
       throw new Error(`user node '${node.id}' waits for input instead of running`);
+    }
+
+    if (node.kind !== 'counter') {
+      throw new Error(`node '${node.id}' (${node.kind}) cannot run as a task`);
     }
 
     const previous = state.state?.['count'];
@@ -691,17 +769,40 @@ export class PheromoneRuntime {
       return;
     }
 
-    const targetNode = this.definition.nodes.get(edge.to);
+    // A branch keeps its forkId/branchId through normal nodes so a downstream
+    // Merge can still group it. A Merge output deliberately drops both tags.
+    this.pushPheromone(edge.to, pheromone.traceId, result.value, branchTags(pheromone));
+  }
+
+  /** Fork consumes one Pheromone and emits one tagged copy per branch. */
+  private emitFork(node: ForkNode, pheromone: Pheromone): void {
+    const forkId = `fk_${randomUUID()}`;
+    for (const branch of node.config.branches) {
+      this.pushPheromone(branch.to, pheromone.traceId, pheromone.value, {
+        forkId,
+        branchId: branch.id,
+      });
+    }
+  }
+
+  private pushPheromone(
+    targetId: NodeId,
+    traceId: string,
+    value: Value,
+    tags?: { forkId: string; branchId: string },
+  ): void {
+    const targetNode = this.definition.nodes.get(targetId);
     if (targetNode === undefined) {
-      throw new Error(`unknown edge target '${edge.to}'`);
+      throw new Error(`unknown edge target '${targetId}'`);
     }
 
-    const targetState = this.stateOf(edge.to);
+    const targetState = this.stateOf(targetId);
     const emitted: Pheromone = {
       id: newPheromoneId(),
-      traceId: pheromone.traceId,
-      value: structuredClone(result.value),
+      traceId,
+      value: structuredClone(value),
       at: this.iso(),
+      ...(tags ?? {}),
     };
     targetState.queue.push(emitted);
     this.resting = false;
@@ -712,16 +813,308 @@ export class PheromoneRuntime {
       nodeKind: targetNode.kind,
       pheromoneId: emitted.id,
       traceId: emitted.traceId,
+      ...(tags ?? {}),
       queueDepth: targetState.queue.length,
     });
   }
 
-  private outgoingEdge(node: NodeDefinition, result: NodeResult): EdgeDefinition | undefined {
-    if (node.kind === 'forager' || node.kind === 'user') {
-      return this.definition.edges.find((edge) => edge.from === node.id);
+  private arriveAtMerge(node: MergeNode, pheromone: Pheromone): string {
+    const forkId = pheromone.forkId;
+    const branchId = pheromone.branchId;
+    if (forkId === undefined || branchId === undefined) {
+      this.log({
+        event: 'merge.failed',
+        nodeId: node.id,
+        nodeKind: 'merge',
+        pheromoneId: pheromone.id,
+        traceId: pheromone.traceId,
+        outcome: 'invalid-pheromone',
+      });
+      return 'failed';
     }
-    const branch: EdgeWhen | undefined = result.branch;
-    return this.definition.edges.find((edge) => edge.from === node.id && edge.when === branch);
+
+    if (!node.config.required.includes(branchId)) {
+      this.failFork(forkId, 'unknown-branch', node);
+      return 'failed';
+    }
+
+    const state = this.stateOf(node.id);
+    let joins = state.joins;
+    if (joins === undefined) {
+      joins = new Map<string, JoinState>();
+      state.joins = joins;
+    }
+
+    let join = joins.get(forkId);
+    if (join === undefined) {
+      join = { forkId, arrived: new Map<string, Pheromone>() };
+      joins.set(forkId, join);
+    }
+    if (join.arrived.has(branchId)) {
+      this.failFork(forkId, 'duplicate-branch', node);
+      return 'failed';
+    }
+    join.arrived.set(branchId, clonePheromone(pheromone));
+
+    const missing = node.config.required.filter((required) => !join.arrived.has(required));
+    if (missing.length > 0) {
+      this.log({
+        event: 'merge.waiting',
+        nodeId: node.id,
+        nodeKind: 'merge',
+        pheromoneId: pheromone.id,
+        traceId: pheromone.traceId,
+        forkId,
+        branchId,
+        outcome: 'waiting',
+      });
+      return 'waiting';
+    }
+
+    const ordered: Pheromone[] = [];
+    for (const required of node.config.required) {
+      const arrived = join.arrived.get(required);
+      if (arrived === undefined) {
+        throw new Error(`merge '${node.id}' lost required branch '${required}'`);
+      }
+      ordered.push(arrived);
+    }
+    joins.delete(forkId);
+    if (joins.size === 0) {
+      delete state.joins;
+    }
+
+    this.finishMerge(node, ordered, pheromone.traceId);
+    return 'merged';
+  }
+
+  /**
+   * A restored join can already be complete; finish it once without replaying
+   * the branches that produced it.
+   */
+  private settleCompleteJoins(): boolean {
+    for (const node of this.definition.nodes.values()) {
+      if (node.kind !== 'merge') {
+        continue;
+      }
+      const state = this.stateOf(node.id);
+      const joins = state.joins;
+      if (joins === undefined) {
+        continue;
+      }
+
+      for (const forkId of [...joins.keys()]) {
+        const join = joins.get(forkId);
+        if (join === undefined) {
+          continue;
+        }
+        const ordered: Pheromone[] = [];
+        for (const required of node.config.required) {
+          const arrived = join.arrived.get(required);
+          if (arrived === undefined) {
+            break;
+          }
+          ordered.push(arrived);
+        }
+        if (ordered.length !== node.config.required.length) {
+          continue;
+        }
+        joins.delete(forkId);
+        if (joins.size === 0) {
+          delete state.joins;
+        }
+        const first = ordered[0];
+        if (first !== undefined) {
+          this.finishMerge(node, ordered, first.traceId);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Fail joins whose remaining required branches are nowhere in the field. */
+  private failMissingJoins(): void {
+    const waiting: { node: MergeNode; forkId: string }[] = [];
+    for (const node of this.definition.nodes.values()) {
+      if (node.kind !== 'merge') {
+        continue;
+      }
+      const state = this.stateOf(node.id);
+      if (state.joins === undefined) {
+        continue;
+      }
+      for (const forkId of state.joins.keys()) {
+        waiting.push({ node, forkId });
+      }
+    }
+
+    for (const { node, forkId } of waiting) {
+      const state = this.stateOf(node.id);
+      if (state.joins?.has(forkId) !== true) {
+        continue;
+      }
+      if (this.hasInFlight(forkId)) {
+        continue;
+      }
+      this.failFork(forkId, 'missing-branch', node);
+    }
+  }
+
+  private hasInFlight(forkId: string): boolean {
+    for (const state of this.states.values()) {
+      if (state.pending?.forkId === forkId) {
+        return true;
+      }
+      if (state.active?.forkId === forkId) {
+        return true;
+      }
+      if (state.hoverPheromone?.forkId === forkId) {
+        return true;
+      }
+      if (state.queue.some((pheromone) => pheromone.forkId === forkId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private finishMerge(node: MergeNode, arrived: readonly Pheromone[], traceId: string): void {
+    const text = arrived.map((pheromone) => serializeValue(pheromone.value)).join('\n');
+    const first = arrived[0];
+    this.log({
+      event: 'merge.completed',
+      nodeId: node.id,
+      nodeKind: 'merge',
+      ...(first === undefined ? {} : { pheromoneId: first.id }),
+      traceId,
+      outcome: 'merged',
+    });
+
+    const edge = this.definition.edges.find(
+      (candidate) => candidate.from === node.id && candidate.when === undefined,
+    );
+    if (edge === undefined) {
+      return;
+    }
+    this.pushPheromone(edge.to, traceId, { kind: 'text', text });
+  }
+
+  /**
+   * A branch failure makes its fork unable to complete. Cancel siblings in
+   * queues, pending slots and hovers, drop every join for that forkId, and log
+   * the affected merges. Running side effects are never cancelled or replayed.
+   */
+  private failFork(forkId: string, reason: string, source?: NodeDefinition): void {
+    const affected = new Set<NodeId>();
+
+    for (const [id, state] of this.states) {
+      const node = this.definition.nodes.get(id);
+      if (node === undefined) {
+        continue;
+      }
+      if (state.queue.some((pheromone) => pheromone.forkId === forkId)) {
+        state.queue = state.queue.filter((pheromone) => pheromone.forkId !== forkId);
+      }
+      if (state.pending?.forkId === forkId) {
+        delete state.pending;
+      }
+      if (state.hoverPheromone?.forkId === forkId) {
+        const hover = state.hover;
+        const pheromone = state.hoverPheromone;
+        delete state.hover;
+        delete state.hoverPheromone;
+        this.log({
+          event: 'hover.cancelled',
+          nodeId: id,
+          nodeKind: node.kind,
+          pheromoneId: hover?.pheromoneId ?? pheromone.id,
+          traceId: pheromone.traceId,
+          outcome: reason,
+        });
+      }
+      const joins = state.joins;
+      if (joins?.has(forkId) === true) {
+        joins.delete(forkId);
+        if (joins.size === 0) {
+          delete state.joins;
+        }
+        affected.add(id);
+      }
+    }
+
+    for (const id of affected) {
+      const node = this.definition.nodes.get(id);
+      if (node?.kind === 'merge') {
+        this.logMergeFailed(node, forkId, reason);
+      }
+    }
+    if (source?.kind === 'merge' && !affected.has(source.id)) {
+      this.logMergeFailed(source, forkId, reason);
+    }
+  }
+
+  private logMergeFailed(node: MergeNode, forkId: string, reason: string): void {
+    this.log({
+      event: 'merge.failed',
+      nodeId: node.id,
+      nodeKind: 'merge',
+      forkId,
+      outcome: reason,
+    });
+  }
+
+  private restoreJoins(
+    node: MergeNode,
+    saved: Record<string, PersistedJoinState>,
+  ): Map<string, JoinState> {
+    const joins = new Map<string, JoinState>();
+    for (const [forkId, entry] of Object.entries(saved)) {
+      if (forkId === '') {
+        throw new FieldRestoreError(`persisted join on node '${node.id}' has an empty forkId`);
+      }
+      if (!Array.isArray(entry.arrived) || entry.arrived.length === 0) {
+        throw new FieldRestoreError(
+          `persisted join '${forkId}' on node '${node.id}' has no branch Pheromones`,
+        );
+      }
+
+      const arrived = new Map<string, Pheromone>();
+      for (const pheromone of entry.arrived) {
+        if (pheromone.forkId !== forkId) {
+          throw new FieldRestoreError(
+            `persisted join '${forkId}' on node '${node.id}' holds a Pheromone for '${String(pheromone.forkId)}'`,
+          );
+        }
+        const branchId = pheromone.branchId;
+        if (branchId === undefined) {
+          throw new FieldRestoreError(
+            `persisted join '${forkId}' on node '${node.id}' holds an untagged Pheromone`,
+          );
+        }
+        if (!node.config.required.includes(branchId)) {
+          throw new FieldRestoreError(
+            `persisted join '${forkId}' on node '${node.id}' holds unknown branch '${branchId}'`,
+          );
+        }
+        if (arrived.has(branchId)) {
+          throw new FieldRestoreError(
+            `persisted join '${forkId}' on node '${node.id}' repeats branch '${branchId}'`,
+          );
+        }
+        arrived.set(branchId, clonePheromone(pheromone));
+      }
+      joins.set(forkId, { forkId, arrived });
+    }
+    return joins;
+  }
+
+  private outgoingEdge(node: NodeDefinition, result: NodeResult): EdgeDefinition | undefined {
+    if (node.kind === 'condition' || node.kind === 'counter') {
+      const branch: EdgeWhen | undefined = result.branch;
+      return this.definition.edges.find((edge) => edge.from === node.id && edge.when === branch);
+    }
+    return this.definition.edges.find((edge) => edge.from === node.id);
   }
 
   private refreshRest(): void {
@@ -749,6 +1142,15 @@ export class PheromoneRuntime {
       ...entry,
     });
   }
+}
+
+function branchTags(
+  pheromone: Pheromone,
+): { forkId: string; branchId: string } | undefined {
+  if (pheromone.forkId === undefined || pheromone.branchId === undefined) {
+    return undefined;
+  }
+  return { forkId: pheromone.forkId, branchId: pheromone.branchId };
 }
 
 function evaluateCondition(config: ConditionConfig, value: Value): 'true' | 'false' {

@@ -8,6 +8,9 @@ import type {
   EdgeDefinition,
   EdgeWhen,
   ForagerConfig,
+  ForkBranch,
+  ForkConfig,
+  MergeConfig,
   NodeDefinition,
   NodeId,
   UserConfig,
@@ -21,7 +24,7 @@ const DEFAULT_QUEUE_TTL_MS = 604_800_000;
 
 const WHEN_VALUES: readonly EdgeWhen[] = ['true', 'false', 'continue', 'done'];
 
-const UNSUPPORTED_NODE_KINDS = ['worker', 'fork', 'merge'] as const;
+const UNSUPPORTED_NODE_KINDS = ['worker'] as const;
 
 export class CompositionValidationError extends Error {
   readonly issues: readonly string[];
@@ -212,6 +215,112 @@ function parseCounterConfig(
   return { max: config['max'] as number, step: step as number };
 }
 
+function parseForkConfig(
+  config: Record<string, unknown>,
+  path: string,
+  issues: string[],
+): ForkConfig | null {
+  pushUnknownFields(config, ['branches'], path, issues);
+
+  const rawBranches = config['branches'];
+  if (!Array.isArray(rawBranches) || rawBranches.length === 0) {
+    issues.push(`${path}.branches: expected a non-empty array`);
+    return null;
+  }
+
+  const branches: ForkBranch[] = [];
+  const seen = new Set<string>();
+  let valid = true;
+
+  rawBranches.forEach((raw, index) => {
+    const branchPath = `${path}.branches[${index}]`;
+    if (!isRecord(raw)) {
+      issues.push(`${branchPath}: expected an object`);
+      valid = false;
+      return;
+    }
+    pushUnknownFields(raw, ['id', 'to'], branchPath, issues);
+
+    let branchValid = true;
+    const id = raw['id'];
+    if (!isNonEmptyString(id)) {
+      issues.push(`${branchPath}.id: expected a non-empty branch id`);
+      branchValid = false;
+    } else if (seen.has(id)) {
+      issues.push(`${branchPath}.id: duplicate branch id '${id}'`);
+      branchValid = false;
+    } else {
+      seen.add(id);
+    }
+
+    const to = raw['to'];
+    if (!isNonEmptyString(to)) {
+      issues.push(`${branchPath}.to: expected a node id`);
+      branchValid = false;
+    }
+
+    if (branchValid) {
+      branches.push({ id: id as string, to: to as string });
+    } else {
+      valid = false;
+    }
+  });
+
+  return valid ? { branches } : null;
+}
+
+function parseMergeConfig(
+  config: Record<string, unknown>,
+  path: string,
+  issues: string[],
+): MergeConfig | null {
+  pushUnknownFields(config, ['required', 'optional', 'combine', 'timeoutMs'], path, issues);
+
+  let valid = true;
+  const rawRequired = config['required'];
+  const required: string[] = [];
+  if (!Array.isArray(rawRequired) || rawRequired.length === 0) {
+    issues.push(`${path}.required: expected a non-empty array of branch ids`);
+    valid = false;
+  } else {
+    for (const [index, branchId] of rawRequired.entries()) {
+      if (!isNonEmptyString(branchId)) {
+        issues.push(`${path}.required[${index}]: expected a non-empty branch id`);
+        valid = false;
+      } else if (required.includes(branchId)) {
+        issues.push(`${path}.required[${index}]: duplicate required branch '${branchId}'`);
+        valid = false;
+      } else {
+        required.push(branchId);
+      }
+    }
+  }
+
+  const optional = config['optional'];
+  if (optional !== undefined) {
+    if (!Array.isArray(optional)) {
+      issues.push(`${path}.optional: expected an array`);
+      valid = false;
+    } else if (optional.length > 0) {
+      issues.push(`${path}.optional: optional branches are not supported in Stage 3A`);
+      valid = false;
+    }
+  }
+
+  const combine = config['combine'] ?? 'text';
+  if (combine !== 'text') {
+    issues.push(`${path}.combine: only 'text' is supported in Stage 3A`);
+    valid = false;
+  }
+
+  if (config['timeoutMs'] !== undefined) {
+    issues.push(`${path}.timeoutMs: merge timeouts are not supported in Stage 3A`);
+    valid = false;
+  }
+
+  return valid ? { required, combine: 'text' } : null;
+}
+
 function parseDefaults(value: unknown, issues: string[]): CompositionDefaults {
   const defaults: CompositionDefaults = {
     minIntervalMs: DEFAULT_MIN_INTERVAL_MS,
@@ -290,10 +399,17 @@ function parseNodes(
       continue;
     }
     if ((UNSUPPORTED_NODE_KINDS as readonly string[]).includes(kind)) {
-      issues.push(`${path}: node kind '${kind}' is not supported in the single-Pheromone slice`);
+      issues.push(`${path}: node kind '${kind}' is not supported yet`);
       continue;
     }
-    if (kind !== 'forager' && kind !== 'condition' && kind !== 'counter' && kind !== 'user') {
+    if (
+      kind !== 'forager' &&
+      kind !== 'condition' &&
+      kind !== 'counter' &&
+      kind !== 'user' &&
+      kind !== 'fork' &&
+      kind !== 'merge'
+    ) {
       issues.push(`${path}.kind: unknown node kind '${kind}'`);
       continue;
     }
@@ -323,6 +439,16 @@ function parseNodes(
       }
     } else if (kind === 'counter') {
       const parsed = parseCounterConfig(config, configPath, issues);
+      if (parsed !== null) {
+        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
+      }
+    } else if (kind === 'fork') {
+      const parsed = parseForkConfig(config, configPath, issues);
+      if (parsed !== null) {
+        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
+      }
+    } else if (kind === 'merge') {
+      const parsed = parseMergeConfig(config, configPath, issues);
       if (parsed !== null) {
         nodes.set(id, { id, kind, config: parsed, minIntervalMs });
       }
@@ -420,6 +546,32 @@ function validateEdgeShape(
   for (const node of nodes.values()) {
     const outgoing = edges.filter((edge) => edge.from === node.id);
 
+    if (node.kind === 'fork') {
+      node.config.branches.forEach((branch, index) => {
+        if (!nodes.has(branch.to)) {
+          issues.push(
+            `nodes.${node.id}.config.branches[${index}].to: unknown node '${branch.to}'`,
+          );
+        }
+      });
+      if (outgoing.length > 0) {
+        issues.push(`nodes.${node.id}: a fork node uses branches and has no normal outgoing edge`);
+      }
+      continue;
+    }
+
+    if (node.kind === 'merge') {
+      for (const edge of outgoing) {
+        if (edge.when !== undefined) {
+          issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);
+        }
+      }
+      if (outgoing.length > 1) {
+        issues.push(`nodes.${node.id}: a merge node has at most one outgoing edge`);
+      }
+      continue;
+    }
+
     if (node.kind === 'forager' || node.kind === 'user') {
       for (const edge of outgoing) {
         if (edge.when !== undefined) {
@@ -480,7 +632,7 @@ export function parseComposition(input: unknown): CompositionDefinition {
     if (!Array.isArray(input['triggers'])) {
       issues.push('triggers: expected an array');
     } else if (input['triggers'].length > 0) {
-      issues.push('triggers: scheduled triggers are not supported in the single-Pheromone slice');
+      issues.push('triggers: scheduled triggers are not supported in this slice');
     }
   }
 

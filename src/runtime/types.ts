@@ -1,8 +1,8 @@
 /**
- * Core value and graph types for the single-Pheromone runtime slice.
+ * Core value and graph types for the PheromoneField runtime.
  *
- * The full contract lives in CONTRACT.md; this module mirrors the parts that
- * Stage 1 implements: Value, Pheromone, NodeState, Composition definition.
+ * The full contract lives in CONTRACT.md; this module mirrors the implemented
+ * parts: Value, Pheromone, NodeState, joins, and the composition definition.
  */
 
 export type NodeId = string;
@@ -14,8 +14,8 @@ export interface Attachment {
 }
 
 /**
- * A Value is what a Pheromone carries. Stage 1 only produces text values from
- * triggers and whatever the injected executor returns.
+ * A Value is what a Pheromone carries. Triggers, executors and Merge's text
+ * combine use the same union; Stage 3A adds no new Value kind.
  */
 export type Value =
   | { kind: 'text'; text: string }
@@ -100,13 +100,52 @@ export interface UserNode {
   minIntervalMs: number;
 }
 
-export type NodeDefinition = ForagerNode | ConditionNode | CounterNode | UserNode;
+/** One labelled branch created by a Fork. Branch is not a node kind. */
+export interface ForkBranch {
+  id: string;
+  to: NodeId;
+}
+
+export interface ForkConfig {
+  branches: readonly ForkBranch[];
+}
+
+export interface ForkNode {
+  id: NodeId;
+  kind: 'fork';
+  config: ForkConfig;
+  minIntervalMs: number;
+}
+
+/**
+ * Stage 3A merges only required branches and combines them as text. Optional
+ * branches and the object/array combine shapes have no approved Value yet.
+ */
+export interface MergeConfig {
+  required: readonly string[];
+  combine: 'text';
+}
+
+export interface MergeNode {
+  id: NodeId;
+  kind: 'merge';
+  config: MergeConfig;
+  minIntervalMs: number;
+}
+
+export type NodeDefinition =
+  | ForagerNode
+  | ConditionNode
+  | CounterNode
+  | UserNode
+  | ForkNode
+  | MergeNode;
 
 export type NodeKind = NodeDefinition['kind'];
 
 /**
  * A Hover parks one Pheromone while the runtime waits for an external event.
- * Stage 2B only opens `user` hovers; Guard/Forager hovers arrive in 2C.
+ * The runtime opens user and Guard hovers; forager/timer are reserved.
  */
 export interface HoverSpec {
   token: string;
@@ -142,6 +181,20 @@ export interface CompositionDefinition {
   defaults: CompositionDefaults;
 }
 
+/**
+ * Branch Pheromones a Merge has already received for one forkId. The branch id
+ * is the map key; a second arrival for the same branch is a protocol error.
+ */
+export interface JoinState {
+  forkId: string;
+  arrived: Map<string, Pheromone>;
+}
+
+export interface JoinStateSnapshot {
+  forkId: string;
+  arrived: readonly Pheromone[];
+}
+
 /** Mutable per-node runtime state. Never handed out directly. */
 export interface NodeState {
   queue: Pheromone[];
@@ -152,6 +205,8 @@ export interface NodeState {
   /** The Pheromone parked behind `hover`; it is still part of the field. */
   hoverPheromone?: Pheromone;
   state?: Record<string, unknown>;
+  /** Merge-only: partially complete joins, keyed by forkId. */
+  joins?: Map<string, JoinState>;
 }
 
 /** Immutable view returned by PheromoneRuntime.snapshot(). */
@@ -162,6 +217,7 @@ export interface NodeStateSnapshot {
   hover?: HoverSpec;
   lastActivatedAt?: string;
   state: Readonly<Record<string, unknown>>;
+  joins?: Readonly<Record<string, JoinStateSnapshot>>;
 }
 
 export interface PheromoneFieldSnapshot {
@@ -174,6 +230,10 @@ export interface PheromoneFieldSnapshot {
 }
 
 /** JSON shape of `honey/field.json`. */
+export interface PersistedJoinState {
+  arrived: Pheromone[];
+}
+
 export interface PersistedNodeState {
   queue: Pheromone[];
   pending?: Pheromone;
@@ -184,6 +244,8 @@ export interface PersistedNodeState {
   state?: Record<string, unknown>;
   /** Answers that arrived before this node hovered; applied on the next hover. */
   inputs?: Value[];
+  /** Merge-only: partial joins keyed by forkId. */
+  joins?: Record<string, PersistedJoinState>;
 }
 
 export interface PersistedField {

@@ -1,5 +1,6 @@
 import type {
   CompositionDefinition,
+  JoinStateSnapshot,
   NodeId,
   NodeState,
   NodeStateSnapshot,
@@ -25,7 +26,8 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
       node.active !== undefined ||
       node.pending !== undefined ||
       node.hover !== undefined ||
-      node.queue.length > 0
+      node.queue.length > 0 ||
+      (node.joins !== undefined && node.joins.size > 0)
     ) {
       return false;
     }
@@ -47,6 +49,13 @@ export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
     }
     for (const queued of node.queue) {
       pheromones.push(clonePheromone(queued));
+    }
+    if (node.joins !== undefined) {
+      for (const join of node.joins.values()) {
+        for (const arrived of join.arrived.values()) {
+          pheromones.push(clonePheromone(arrived));
+        }
+      }
     }
   }
   return pheromones;
@@ -72,6 +81,19 @@ export function snapshotField(
     }
     if (state.hover !== undefined) {
       snapshot.hover = cloneValue(state.hover);
+    }
+    if (state.joins !== undefined && state.joins.size > 0) {
+      const entries: [string, JoinStateSnapshot][] = [];
+      for (const [forkId, join] of state.joins) {
+        entries.push([
+          forkId,
+          {
+            forkId,
+            arrived: [...join.arrived.values()].map(clonePheromone),
+          },
+        ]);
+      }
+      snapshot.joins = Object.fromEntries(entries);
     }
     if (state.lastActivatedAt !== undefined) {
       snapshot.lastActivatedAt = state.lastActivatedAt;

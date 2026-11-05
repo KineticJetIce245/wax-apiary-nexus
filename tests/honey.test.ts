@@ -56,6 +56,33 @@ function conditionComposition(): ReturnType<typeof parseComposition> {
   });
 }
 
+function forkMergeComposition(): ReturnType<typeof parseComposition> {
+  return parseComposition({
+    schemaVersion: 1,
+    id: 'fork-merge',
+    nodes: {
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
+      fork: {
+        kind: 'fork',
+        config: {
+          branches: [
+            { id: 'a', to: 'merge' },
+            { id: 'b', to: 'ask' },
+          ],
+        },
+      },
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
+      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
+    },
+    edges: [
+      { id: 'e1', from: 'start', to: 'fork' },
+      { id: 'e2', from: 'ask', to: 'merge' },
+      { id: 'e3', from: 'merge', to: 'done' },
+    ],
+  });
+}
+
 function pheromone(id = 'ph_1'): Pheromone {
   return {
     id,
@@ -395,4 +422,58 @@ test('restore refuses a different graph revision or an unknown node', () => {
       ),
     /unknown node 'ghost'/,
   );
+});
+
+test('honey persists and restores a pending merge join without replaying branches', async () => {
+  let clock = START;
+  const calls: string[] = [];
+  const executor: NodeExecutor = {
+    async execute(node, input) {
+      calls.push(node.id);
+      return input;
+    },
+  };
+  const definition = forkMergeComposition();
+  const runtime = new PheromoneRuntime(definition, {
+    executeForager: executor,
+    now: () => clock,
+  });
+
+  runtime.trigger('start', { kind: 'text', text: 'seed' });
+  await runtime.pump();
+
+  const before = runtime.snapshot();
+  assert.equal(before.rest, false);
+  const joins = before.nodes['merge']?.joins ?? {};
+  assert.equal(Object.keys(joins).length, 1);
+  const token = before.nodes['ask']?.hover?.token;
+  assert.ok(token !== undefined);
+  assert.deepEqual(calls, ['start']);
+
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'fork-merge');
+  const field = runtime.exportField();
+  store.save(field);
+  const loaded = store.load();
+  assert.ok(loaded !== undefined);
+  assert.deepEqual(loaded, field);
+
+  const { runtime: restored, report } = PheromoneRuntime.restore(definition, loaded, {
+    executeForager: executor,
+    now: () => clock,
+  });
+
+  assert.deepEqual(report, { resumedHovers: ['ask'], unknownActive: [], stuckActive: [] });
+  assert.deepEqual(calls, ['start'], 'restoring a join does not replay the arrived branches');
+  const restoredSnapshot = restored.snapshot();
+  assert.equal(restoredSnapshot.rest, false);
+  assert.equal(Object.keys(restoredSnapshot.nodes['merge']?.joins ?? {}).length, 1);
+  assert.equal(restoredSnapshot.nodes['ask']?.hover?.token, token);
+
+  restored.answerHover('ask', { kind: 'text', text: 'reply' }, token);
+  clock += 1000;
+  await restored.pump();
+
+  assert.deepEqual(calls, ['start', 'done']);
+  assert.equal(restored.snapshot().rest, true);
+  assert.equal(restored.snapshot().nodes['merge']?.joins, undefined);
 });

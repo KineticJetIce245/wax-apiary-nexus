@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, and the Stage 4C read-only revision audit and orphan-temp inspection are implemented; `npm test` passes 385/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `--harness dsh` is not wired yet.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring are implemented; `npm test` passes 390/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `wax run` and `wax daemon` select Codex or the existing DSH ACP adapter; dsh requires an explicit `--dsh-root` or `DSH_ROOT`. A real DSH smoke launched the adapter and reached the model call, then failed because no API key was configured, so a real DSH completion remains unverified.
 
 ## Vision
 
@@ -48,7 +48,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - Stage 4B-A adds `--json` to both composition commands. JSON mode writes exactly one object to stdout and nothing to stderr: `{ok:true,...}` for success, `{ok:false,command,code,error}` for failure with `code` one of `usage`, `parse`, `refused`, `io`, `internal`. Exit codes remain `0` success, `2` usage/parse/refusal, `1` IO. `src/composition-tool.ts` is the transport-neutral result layer; it calls the same guarded editing service as the human CLI, so active-reference, daemon-lock and audit policy is never reimplemented in JSON formatting. Results never contain composition bodies, prompts or outputs.
 - Stage 4C adds read-only inspection. `wax composition revisions` reads `<state-dir>/revisions.jsonl` (default `~/.wax`), filters by `--composition`, keeps the newest `--limit` matches (default 50, max 1000) and fails on any malformed line instead of skipping it. The reader whitelists the six audit fields, so a corrupt line can never leak a composition body. `wax composition recover <file>` scans the same directory for `.<basename>.tmp-*` candidates and reports each as valid or invalid; it never renames, deletes or overwrites anything, and has no `--apply`.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
-- `--harness dsh` is not wired yet; Codex is the only wired native harness.
+- `wax run` and `wax daemon` accept `--harness codex|dsh`; dsh requires `--dsh-root <path>` or `DSH_ROOT` (no implicit default), and each per-harness override is rejected on the other harness.
 - Scheduled `user` triggers remain deferred. Optional branches, object/array combine, and merge timeouts remain open; the next step is an owner review of the Stage 3C work.
 
 ## Repository layout
@@ -93,17 +93,18 @@ npm ci
 npm test
 ```
 
-The one-shot CLI runs one composition through a real Codex app-server:
+The one-shot CLI runs one composition through a native harness:
 
 ```bash
 npm run wax -- run composition.json --project . --harness codex --trigger plan --input "why is the sky blue"
+npm run wax -- run composition.json --project . --harness dsh --dsh-root <path-to-deepseek-harness> --trigger plan --input "why is the sky blue"
 ```
 
 It triggers one node, pumps the graph to Rest, and prints the node states, a log
 summary, and the final output. `user` nodes prompt on stdin; a non-interactive
 stdin is refused instead of answered. The run persists Honey and can be
 continued with `--resume` (`--state-dir` and `--apiary` override the location).
-`--harness dsh` is not wired yet.
+`--harness dsh` requires `--dsh-root` (or the `DSH_ROOT` environment variable); there is no implicit checkout path.
 
 The daemon runs one composition's `triggers` until interrupted:
 
@@ -111,9 +112,9 @@ The daemon runs one composition's `triggers` until interrupted:
 npm run wax -- daemon composition.json --project . --harness codex
 ```
 
-`--state-dir`, `--apiary` and `--codex-exe` have the same meanings as for
-`wax run`. A second daemon for the same composition is refused while the lock
-is live. The process serves no HTTP API and has no UI.
+`--state-dir`, `--apiary`, `--codex-exe` and `--dsh-root` have the same meanings
+as for `wax run`. A second daemon for the same composition is refused while the
+lock is live. The process serves no HTTP API and has no UI.
 
 The offline composition editor never starts a daemon or a harness:
 

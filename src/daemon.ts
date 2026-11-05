@@ -8,8 +8,10 @@ import {
   createDefaultAdapter,
   loadCompositionFile,
   messageOf,
+  selectHarness,
   type AdapterRequest,
 } from './cli-shared.js';
+import type { HarnessKind } from './connection.js';
 import { DaemonLock, DaemonLockError } from './daemon-lock.js';
 import { WorkspaceForagerExecutor } from './forager.js';
 import { HoneyStore } from './honey.js';
@@ -29,15 +31,18 @@ import { Workspace } from './workspace.js';
 export interface DaemonCommand {
   readonly compositionPath: string;
   readonly projectDirectory: string;
-  readonly harness: 'codex';
+  readonly harness: HarnessKind;
   readonly stateDir: string;
   readonly apiary?: string;
   readonly codexExe?: string;
+  readonly dshRoot?: string;
 }
 
 export interface DaemonDependencies {
   /** Test seam: replace the native adapter factory. */
   readonly createAdapter?: (request: AdapterRequest) => Promise<HarnessAdapter>;
+  /** Test seam: environment used to resolve DSH_ROOT. */
+  readonly env?: NodeJS.ProcessEnv;
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
   readonly now?: () => number;
@@ -50,16 +55,20 @@ const VALUE_FLAGS = new Set([
   '--project',
   '--harness',
   '--codex-exe',
+  '--dsh-root',
   '--state-dir',
   '--apiary',
 ]);
 
 const DEFAULT_STATE_DIR = '~/.wax';
 const DAEMON_USAGE =
-  'usage: wax daemon <composition.json> --project <dir> --harness codex ' +
-  '[--state-dir <dir>] [--apiary <id>] [--codex-exe <path>]';
+  'usage: wax daemon <composition.json> --project <dir> --harness <codex|dsh> ' +
+  '[--state-dir <dir>] [--apiary <id>] [--codex-exe <path>] [--dsh-root <path>]';
 
-export function parseDaemonArgs(argv: readonly string[]): DaemonCommand {
+export function parseDaemonArgs(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): DaemonCommand {
   const [command, ...rest] = argv;
   if (command !== 'daemon') {
     throw new CliUsageError(DAEMON_USAGE);
@@ -101,25 +110,26 @@ export function parseDaemonArgs(argv: readonly string[]): DaemonCommand {
     throw new CliUsageError('missing required option --project <dir>');
   }
 
-  const harness = flags.get('--harness');
-  if (harness === undefined) {
-    throw new CliUsageError('missing required option --harness codex');
-  }
-  if (harness !== 'codex') {
-    throw new CliUsageError(
-      `--harness must be 'codex', got '${harness}' (the dsh bridge is not wired)`,
-    );
-  }
-
-  const apiary = flags.get('--apiary');
+  const dshRootFlag = flags.get('--dsh-root');
   const codexExe = flags.get('--codex-exe');
+  const selection = selectHarness(
+    flags.get('--harness'),
+    {
+      ...(dshRootFlag === undefined ? {} : { dshRoot: dshRootFlag }),
+      ...(codexExe === undefined ? {} : { codexExe }),
+    },
+    env,
+  );
+  const apiary = flags.get('--apiary');
+
   return {
     compositionPath,
     projectDirectory,
-    harness,
+    harness: selection.harness,
     stateDir: flags.get('--state-dir') ?? DEFAULT_STATE_DIR,
     ...(apiary === undefined ? {} : { apiary }),
-    ...(codexExe === undefined ? {} : { codexExe }),
+    ...(selection.dshRoot === undefined ? {} : { dshRoot: selection.dshRoot }),
+    ...(selection.codexExe === undefined ? {} : { codexExe: selection.codexExe }),
   };
 }
 
@@ -143,7 +153,7 @@ export async function runDaemon(
   let store: HoneyStore;
   let apiary: string;
   try {
-    command = parseDaemonArgs(argv);
+    command = parseDaemonArgs(argv, deps.env);
     definition = loadCompositionFile(command.compositionPath);
     if (definition.triggers.length === 0) {
       throw new CliUsageError(
@@ -282,11 +292,12 @@ export async function runDaemon(
 
     const project = createKernel().registerProject(command.projectDirectory);
     const createAdapter = deps.createAdapter ?? createDefaultAdapter;
-    adapter = await createAdapter(
-      command.codexExe === undefined
-        ? { harness: command.harness }
-        : { harness: command.harness, executable: command.codexExe },
-    );
+    const request: AdapterRequest = {
+      harness: command.harness,
+      ...(command.codexExe === undefined ? {} : { executable: command.codexExe }),
+      ...(command.dshRoot === undefined ? {} : { dshRoot: command.dshRoot }),
+    };
+    adapter = await createAdapter(request);
     await adapter.start();
 
     workspace = new Workspace(adapter);

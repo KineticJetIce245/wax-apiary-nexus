@@ -12,6 +12,7 @@ import {
   createDefaultAdapter,
   loadCompositionFile,
   messageOf,
+  selectHarness,
   type AdapterRequest,
 } from './cli-shared.js';
 import type { HarnessKind } from './connection.js';
@@ -56,6 +57,8 @@ export type UserAnswerHandler = (node: UserNode, hover: HoverSpec) => Promise<Va
 export interface CliDependencies {
   /** Test seam: replace the native adapter factory. */
   readonly createAdapter?: (request: AdapterRequest) => Promise<HarnessAdapter>;
+  /** Test seam: environment used to resolve DSH_ROOT. */
+  readonly env?: NodeJS.ProcessEnv;
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
   readonly askApproval?: (request: GuardRequest) => Promise<GuardDecision>;
@@ -78,13 +81,16 @@ const BOOLEAN_FLAGS = new Set(['--resume']);
 
 const DEFAULT_STATE_DIR = '~/.wax';
 
-export function parseRunArgs(argv: readonly string[]): RunCommand {
+export function parseRunArgs(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): RunCommand {
   const [command, ...rest] = argv;
   if (command !== 'run') {
     throw new CliUsageError(
       'usage: wax run <composition.json> --project <dir> --harness <codex|dsh> ' +
         '[--trigger <node>] [--input <text>] [--resume] [--state-dir <dir>] [--apiary <id>] ' +
-        '[--codex-exe <path>]',
+        '[--codex-exe <path>] [--dsh-root <path>]',
     );
   }
 
@@ -132,29 +138,32 @@ export function parseRunArgs(argv: readonly string[]): RunCommand {
     throw new CliUsageError('missing required option --project <dir>');
   }
 
-  const harness = flags.get('--harness');
-  if (harness !== 'codex' && harness !== 'dsh') {
-    throw new CliUsageError(`--harness must be 'codex' or 'dsh', got '${harness ?? ''}'`);
-  }
-
   const resume = booleans.has('--resume');
   const trigger = flags.get('--trigger');
   if (trigger === undefined && !resume) {
     throw new CliUsageError('missing required option --trigger <node> (or pass --resume)');
   }
 
-  const dshRoot = flags.get('--dsh-root');
+  const dshRootFlag = flags.get('--dsh-root');
   const codexExe = flags.get('--codex-exe');
+  const selection = selectHarness(
+    flags.get('--harness'),
+    {
+      ...(dshRootFlag === undefined ? {} : { dshRoot: dshRootFlag }),
+      ...(codexExe === undefined ? {} : { codexExe }),
+    },
+    env,
+  );
   const apiary = flags.get('--apiary');
 
   return {
     compositionPath,
     projectDirectory,
-    harness,
+    harness: selection.harness,
     ...(trigger === undefined ? {} : { trigger }),
     input: flags.get('--input') ?? '',
-    ...(dshRoot === undefined ? {} : { dshRoot }),
-    ...(codexExe === undefined ? {} : { codexExe }),
+    ...(selection.dshRoot === undefined ? {} : { dshRoot: selection.dshRoot }),
+    ...(selection.codexExe === undefined ? {} : { codexExe: selection.codexExe }),
     stateDir: flags.get('--state-dir') ?? DEFAULT_STATE_DIR,
     ...(apiary === undefined ? {} : { apiary }),
     resume,
@@ -352,19 +361,10 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
   let persisted: PersistedField | undefined;
 
   try {
-    command = parseRunArgs(argv);
-    if (command.harness === 'dsh' && command.dshRoot === undefined) {
-      throw new CliUsageError('--harness dsh requires --dsh-root <path>');
-    }
-    if (command.harness === 'dsh' && command.codexExe !== undefined) {
-      throw new CliUsageError('--codex-exe only applies to --harness codex');
-    }
+    command = parseRunArgs(argv, deps.env);
     definition = loadCompositionFile(command.compositionPath);
     if (command.trigger !== undefined) {
       validateTrigger(definition, command.trigger);
-    }
-    if (command.harness === 'dsh') {
-      throw new CliUsageError('the dsh bridge is not wired in Stage 2A; run with --harness codex');
     }
 
     const apiary = command.apiary ?? apiaryForProject(command.projectDirectory);
@@ -388,13 +388,14 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
   }
 
   const createAdapter = deps.createAdapter ?? createDefaultAdapter;
+  const request: AdapterRequest = {
+    harness: command.harness,
+    ...(command.codexExe === undefined ? {} : { executable: command.codexExe }),
+    ...(command.dshRoot === undefined ? {} : { dshRoot: command.dshRoot }),
+  };
   let adapter: HarnessAdapter;
   try {
-    adapter = await createAdapter(
-      command.codexExe === undefined
-        ? { harness: command.harness }
-        : { harness: command.harness, executable: command.codexExe },
-    );
+    adapter = await createAdapter(request);
     await adapter.start();
   } catch (error) {
     err(`error: ${messageOf(error)}`);

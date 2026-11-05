@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
+import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
 import type { HarnessAdapter } from './adapters/harness.js';
 import { createCodexConnection, type HarnessKind } from './connection.js';
 import {
@@ -39,12 +40,61 @@ export class CompositionParseError extends CliUsageError {
 
 export interface AdapterRequest {
   readonly harness: HarnessKind;
+  /** Codex executable override; only meaningful when `harness` is `codex`. */
   readonly executable?: string;
+  /** DSH checkout root; only meaningful when `harness` is `dsh`. */
+  readonly dshRoot?: string;
+}
+
+export interface HarnessSelection {
+  readonly harness: HarnessKind;
+  readonly dshRoot?: string;
+  readonly codexExe?: string;
+}
+
+const DSH_ROOT_REQUIRED = '--harness dsh requires --dsh-root <path> or DSH_ROOT';
+
+/**
+ * Applies the selection policy shared by `wax run` and `wax daemon`. A dsh
+ * root never has an implicit default: it must come from `--dsh-root` or
+ * `DSH_ROOT`. Each per-harness override is rejected on the other harness.
+ */
+export function selectHarness(
+  rawHarness: string | undefined,
+  flags: { readonly dshRoot?: string; readonly codexExe?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): HarnessSelection {
+  if (rawHarness !== 'codex' && rawHarness !== 'dsh') {
+    throw new CliUsageError(`--harness must be 'codex' or 'dsh', got '${rawHarness ?? ''}'`);
+  }
+  if (rawHarness === 'dsh' && flags.codexExe !== undefined) {
+    throw new CliUsageError('--codex-exe only applies to --harness codex');
+  }
+  if (rawHarness === 'codex' && flags.dshRoot !== undefined) {
+    throw new CliUsageError('--dsh-root only applies to --harness dsh');
+  }
+  if (rawHarness === 'codex') {
+    return {
+      harness: 'codex',
+      ...(flags.codexExe === undefined ? {} : { codexExe: flags.codexExe }),
+    };
+  }
+
+  const dshRoot = flags.dshRoot ?? env.DSH_ROOT;
+  if (dshRoot === undefined || dshRoot === '') {
+    throw new CliUsageError(DSH_ROOT_REQUIRED);
+  }
+  return { harness: 'dsh', dshRoot };
 }
 
 export async function createDefaultAdapter(request: AdapterRequest): Promise<HarnessAdapter> {
   if (request.harness === 'dsh') {
-    throw new CliUsageError('the dsh bridge is not wired in Stage 2A; run with --harness codex');
+    if (request.dshRoot === undefined || request.dshRoot === '') {
+      throw new CliUsageError(DSH_ROOT_REQUIRED);
+    }
+    // The adapter's existing start() validates the checkout and launches the
+    // ACP process; this factory only selects it.
+    return new DshAcpAdapter({ dshRoot: request.dshRoot });
   }
   const connection = await createCodexConnection(
     request.executable === undefined ? {} : { executable: request.executable },

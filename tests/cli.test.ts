@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { DshAcpAdapter } from '../src/adapters/dsh-acp/adapter.js';
 import { apiaryForProject, CliUsageError, parseRunArgs, runCli, type CliDependencies } from '../src/cli.js';
+import { createDefaultAdapter, type AdapterRequest } from '../src/cli-shared.js';
 import { honeyPaths } from '../src/honey.js';
 import type { HoverSpec, UserNode, Value } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';
@@ -406,38 +408,74 @@ test('unknown trigger and non-forager trigger exit with a usage code', async () 
   assert.match(second.stderr.join('\n'), /must be a forager, worker or user node/);
 });
 
-test('the dsh harness is rejected until its bridge exists', async () => {
-  const withoutRoot = capture();
-  const withRoot = capture();
-
-  const first = await runCli(
-    ['run', compositionFile(), '--project', projectDirectory(), '--harness', 'dsh', '--trigger', 'start'],
-    withoutRoot.deps,
-  );
-  const second = await runCli(
+test('parses the dsh harness with an explicit root', () => {
+  const command = parseRunArgs(
     [
       'run',
-      compositionFile(),
+      'composition.json',
       '--project',
-      projectDirectory(),
+      'C:/work',
       '--harness',
       'dsh',
       '--dsh-root',
-      projectDirectory(),
+      'C:/deepseek-harness',
       '--trigger',
       'start',
     ],
-    withRoot.deps,
+    {},
   );
 
-  assert.equal(first, 2);
-  assert.match(withoutRoot.stderr.join('\n'), /requires --dsh-root/);
-  assert.equal(second, 2);
-  assert.match(withRoot.stderr.join('\n'), /not wired in Stage 2A/);
+  assert.equal(command.harness, 'dsh');
+  assert.equal(command.dshRoot, 'C:/deepseek-harness');
 });
 
-test('--codex-exe is rejected for the dsh harness', async () => {
+test('resolves the dsh root from DSH_ROOT and prefers the flag', () => {
+  const args = ['run', 'c.json', '--project', 'p', '--harness', 'dsh', '--trigger', 'start'];
+  const fromEnv = parseRunArgs(args, { DSH_ROOT: 'C:/dsh-from-env' });
+  const fromFlag = parseRunArgs([...args, '--dsh-root', 'C:/dsh-from-flag'], {
+    DSH_ROOT: 'C:/dsh-from-env',
+  });
+
+  assert.equal(fromEnv.harness, 'dsh');
+  assert.equal(fromEnv.dshRoot, 'C:/dsh-from-env');
+  assert.equal(fromFlag.dshRoot, 'C:/dsh-from-flag');
+});
+
+test('rejects a missing dsh root and cross-harness overrides', () => {
+  const dsh = ['run', 'c.json', '--project', 'p', '--harness', 'dsh', '--trigger', 'start'];
+
+  assert.throws(() => parseRunArgs(dsh, {}), /requires --dsh-root/);
+  assert.throws(() => parseRunArgs(dsh, { DSH_ROOT: '' }), /requires --dsh-root/);
+  assert.throws(
+    () => parseRunArgs([...dsh, '--dsh-root', 'C:/dsh', '--codex-exe', 'C:/tools/codex.exe'], {}),
+    /--codex-exe only applies to --harness codex/,
+  );
+  assert.throws(
+    () =>
+      parseRunArgs(
+        [
+          'run',
+          'c.json',
+          '--project',
+          'p',
+          '--harness',
+          'codex',
+          '--trigger',
+          'start',
+          '--dsh-root',
+          'C:/dsh',
+        ],
+        {},
+      ),
+    /--dsh-root only applies to --harness dsh/,
+  );
+});
+
+test('runs a composition to Rest through a selected dsh adapter', async () => {
+  const adapter = new FakeAdapter({ output: 'DSH-FAKE' });
   const captureResult = capture();
+  const dshRoot = projectDirectory();
+  const requests: AdapterRequest[] = [];
 
   const code = await runCli(
     [
@@ -447,18 +485,33 @@ test('--codex-exe is rejected for the dsh harness', async () => {
       projectDirectory(),
       '--harness',
       'dsh',
-      '--dsh-root',
-      projectDirectory(),
-      '--codex-exe',
-      'C:/tools/codex.exe',
+      '--state-dir',
+      stateDirectory(),
       '--trigger',
       'start',
+      '--input',
+      'hi',
     ],
-    captureResult.deps,
+    {
+      ...captureResult.deps,
+      env: { DSH_ROOT: dshRoot },
+      createAdapter: async (request) => {
+        requests.push(request);
+        return adapter;
+      },
+    },
   );
 
-  assert.equal(code, 2);
-  assert.match(captureResult.stderr.join('\n'), /only applies to --harness codex/);
+  assert.equal(code, 0);
+  assert.deepEqual(requests, [{ harness: 'dsh', dshRoot }]);
+  assert.deepEqual(adapter.prompts, ['reply to hi']);
+  assert.ok(captureResult.stdout.includes('output       DSH-FAKE'));
+});
+
+test('createDefaultAdapter selects DshAcpAdapter without spawning', async () => {
+  const adapter = await createDefaultAdapter({ harness: 'dsh', dshRoot: projectDirectory() });
+  assert.ok(adapter instanceof DshAcpAdapter);
+  await assert.rejects(createDefaultAdapter({ harness: 'dsh' }), /requires --dsh-root/);
 });
 
 test('a failed execution exits non-zero and still reports the field state', async () => {

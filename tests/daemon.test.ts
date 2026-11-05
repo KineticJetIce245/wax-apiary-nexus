@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { runCli } from '../src/cli.js';
-import { apiaryForProject } from '../src/cli-shared.js';
+import { apiaryForProject, type AdapterRequest } from '../src/cli-shared.js';
 import { parseDaemonArgs, runDaemon } from '../src/daemon.js';
 import { HoneyStore, honeyPaths } from '../src/honey.js';
 import { parseComposition } from '../src/runtime/index.js';
@@ -138,12 +138,66 @@ test('parses the daemon command with its default state directory', () => {
   assert.equal(command.stateDir, '~/.wax');
 });
 
+test('parses a dsh daemon from the flag or DSH_ROOT', () => {
+  const fromFlag = parseDaemonArgs(
+    [
+      'daemon',
+      'composition.json',
+      '--project',
+      'C:/work',
+      '--harness',
+      'dsh',
+      '--dsh-root',
+      'C:/deepseek-harness',
+      '--state-dir',
+      'C:/state',
+    ],
+    {},
+  );
+  assert.equal(fromFlag.harness, 'dsh');
+  assert.equal(fromFlag.dshRoot, 'C:/deepseek-harness');
+
+  const fromEnv = parseDaemonArgs(
+    ['daemon', 'composition.json', '--project', 'C:/work', '--harness', 'dsh'],
+    { DSH_ROOT: 'C:/env-dsh' },
+  );
+  assert.equal(fromEnv.harness, 'dsh');
+  assert.equal(fromEnv.dshRoot, 'C:/env-dsh');
+});
+
 test('rejects missing, duplicated and unknown daemon options', () => {
   assert.throws(() => parseDaemonArgs(['daemon', 'c.json', '--harness', 'codex']), /--project/);
   assert.throws(() => parseDaemonArgs(['daemon', 'c.json', '--project', 'p']), /--harness/);
   assert.throws(
-    () => parseDaemonArgs(['daemon', 'c.json', '--project', 'p', '--harness', 'dsh']),
-    /must be 'codex'/,
+    () => parseDaemonArgs(['daemon', 'c.json', '--project', 'p', '--harness', 'dsh'], {}),
+    /requires --dsh-root/,
+  );
+  assert.throws(
+    () =>
+      parseDaemonArgs(
+        [
+          'daemon',
+          'c.json',
+          '--project',
+          'p',
+          '--harness',
+          'dsh',
+          '--dsh-root',
+          'C:/dsh',
+          '--codex-exe',
+          'C:/tools/codex.exe',
+        ],
+        {},
+      ),
+    /--codex-exe only applies to --harness codex/,
+  );
+  assert.throws(
+    () =>
+      parseDaemonArgs(
+        ['daemon', 'c.json', '--project', 'p', '--harness', 'codex', '--dsh-root', 'C:/dsh'],
+        {},
+      ),
+    /--dsh-root only applies to --harness dsh/,
   );
   assert.throws(
     () => parseDaemonArgs(['daemon', 'c.json', '--project', 'p', '--harness', 'codex', '--trigger', 'x']),
@@ -234,6 +288,61 @@ test('a past at trigger runs a forager through the fake adapter', async () => {
 
   const serializedLog = readFileSync(paths.log, 'utf8');
   assert.equal(serializedLog.includes('DAEMON-FORAGER-OUT'), false);
+});
+
+test('a past at trigger runs through a selected dsh adapter', async () => {
+  const adapter = new FakeAdapter({ output: 'DAEMON-DSH-OUT' });
+  const captureResult = capture();
+  const controller = new AbortController();
+  const project = tempDirectory('wax-daemon-project-');
+  const state = tempDirectory('wax-daemon-state-');
+  const dshRoot = tempDirectory('wax-daemon-dsh-');
+  const compositionPath = compositionFile(
+    scheduledComposition({ id: 'daemon-dsh', targetKind: 'forager' }),
+  );
+  const paths = honeyPaths(state, apiaryForProject(project), 'daemon-dsh');
+  const requests: AdapterRequest[] = [];
+
+  const running = runDaemon(
+    [
+      'daemon',
+      compositionPath,
+      '--project',
+      project,
+      '--harness',
+      'dsh',
+      '--dsh-root',
+      dshRoot,
+      '--state-dir',
+      state,
+    ],
+    {
+      ...captureResult.deps,
+      createAdapter: async (request) => {
+        requests.push(request);
+        return adapter;
+      },
+      signal: controller.signal,
+    },
+  );
+
+  let code = -1;
+  try {
+    await waitFor(() => adapter.prompts.length === 1, 'the scheduled dsh prompt');
+    await waitFor(
+      () => hasLogEvent(paths.log, 'node.completed', 'node'),
+      'the completed dsh log entry',
+    );
+  } finally {
+    controller.abort();
+    code = await running;
+  }
+
+  assert.equal(code, 0);
+  assert.deepEqual(requests, [{ harness: 'dsh', dshRoot }]);
+  assert.deepEqual(adapter.prompts, ['scheduled ']);
+  assert.ok(captureResult.stdout.some((line) => line.startsWith('daemon started ')));
+  assert.equal(existsSync(join(paths.directory, 'daemon.lock')), false);
 });
 
 test('simultaneous past triggers both run despite the node minimum interval', async () => {

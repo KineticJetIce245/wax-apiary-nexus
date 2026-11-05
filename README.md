@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, and live-edit reference checks are implemented; `npm test` passes 224/0. `--harness dsh` is not wired, and a real Codex smoke test is still pending in an environment where `codex` is available.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, and live-edit reference checks are implemented; `npm test` passes 224/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe`; `--harness dsh` is not wired yet.
 
 ## Vision
 
@@ -38,8 +38,8 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - `--resume` rebuilds a field; an interrupted Forager becomes unknown and is never replayed, and a persisted Guard cannot be resumed.
 - `src/revision.ts` refuses a graph edit that removes or renames a node still holding queue, pending, active or hover state; a forced edit returns the nodes that must be marked as needing attention.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
-- `--harness dsh` is not wired yet; the real Codex smoke test still needs a machine with Codex available.
-- The next step is a real Codex smoke test (and then the Stage 3 graph features); no additional Stage 2 code slice is pending.
+- `--harness dsh` is not wired yet; Codex is the only wired native harness.
+- The next step is the Stage 3 graph features; the Codex vertical slice has a passing real smoke.
 
 ## Repository layout
 

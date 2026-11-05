@@ -1,4 +1,6 @@
-# 执行结果内容契约（G006 Phase 1 + 3，v1）
+# 执行结果内容契约（Legacy prototype）
+
+> **Status**: legacy prototype contract. Current design: [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and [`../CONTRACT.md`](../CONTRACT.md).
 
 本文描述一次 Execution 的结果如何携带文本、图片、文件和链接。它是 **Execution 结果**，不是流程卡（见 [`flow.md`](flow.md)），也不是 Web 渲染协议。
 

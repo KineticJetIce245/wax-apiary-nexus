@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. Its first slice is implemented in `src/runtime/` (single Pheromone: trigger, terminal/Rest, queue, condition, counter); the rest of `src/` is still the earlier prototype.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The single-Pheromone runtime, the Workspace Forager bridge, and the one-shot Codex CLI are implemented; `npm test` passes 178/0. `--harness dsh` is not wired, and a real Codex smoke test is still pending in an environment where `codex` is available.
 
 ## Vision
 
@@ -31,9 +31,11 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 ## Current state
 
 - The target architecture and contract are written.
-- The first runtime slice lives in `src/runtime/`: single-Pheromone trigger → node → terminal/Rest, with FIFO queue, pending, min interval, condition/counter, an in-memory log, and an injected executor for `forager`.
-- The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` now keeps the runtime plus the adapter and session infrastructure it will use; no new CLI is wired yet.
-- The next steps are the Forager adapter bridge, a runtime CLI, durability, and then the richer graph features.
+- The single-Pheromone runtime lives in `src/runtime/`.
+- The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`.
+- The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
+- `--harness dsh` is not wired yet; the real Codex smoke test still needs a machine with Codex available.
+- The next steps are Hover/user/Honey durability, Guard/transcript, and then the richer graph features.
 
 ## Repository layout
 
@@ -42,8 +44,10 @@ README.md            you are here
 ARCHITECTURE.md      target runtime model
 CONTRACT.md          composition file, runtime state, validation, CLI
 src/runtime/         the implemented single-Pheromone runtime
+src/forager.ts       Workspace -> NodeExecutor bridge
+src/cli.ts           one-shot `wax run` CLI
 src/adapters/        native harness adapters
-src/workspace.ts     native session lifecycle used by the future Forager bridge
+src/workspace.ts     native session lifecycle used by the Forager bridge
 src/                 session/infrastructure modules
 tests/               runtime, adapter and infrastructure tests
 legacy-contract/     earlier adapter/flow/composition/collaboration contracts

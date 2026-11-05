@@ -239,6 +239,27 @@ test('a user node asks through the injected handler and resumes the graph', asyn
   assert.ok(captureResult.stdout.some((line) => line.includes('node         ask') && line.includes('hover=no')));
 });
 
+test('a hovering user node is refused on a non-interactive stdin', async () => {
+  const adapter = new FakeAdapter({ output: 'OUT' });
+  const captureResult = capture();
+  const state = stateDirectory();
+  const project = projectDirectory();
+
+  const code = await runCli(
+    [...baseArgs(compositionFile(ASK_COMPOSITION), project, state), '--trigger', 'start'],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 1);
+  assert.match(captureResult.stderr.join('\n'), /stdin is not interactive/);
+  assert.equal(adapter.prompts.length, 1, 'only the first forager ran');
+
+  const field = JSON.parse(
+    readFileSync(honeyPaths(state, apiaryForProject(project), 'ask').field, 'utf8'),
+  ) as { nodes: Record<string, { hover?: unknown }> };
+  assert.ok(field.nodes['ask']?.hover !== undefined, 'the hover is persisted for a later resume');
+});
+
 test('a hostile apiary id exits with a usage code', async () => {
   const captureResult = capture();
   const code = await runCli(

@@ -148,6 +148,27 @@ export class DaemonLock {
   }
 }
 
+/**
+ * Reads a lock without acquiring, replacing or removing it.
+ *
+ * A missing lock returns `undefined`. Unreadable or malformed locks throw, so
+ * an offline caller can refuse instead of treating uncertain state as stale.
+ */
+export function inspectDaemonLock(path: string): DaemonLockInfo | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return undefined;
+    }
+    throw new DaemonLockError(
+      `cannot read daemon lock ${path}; refusing to treat it as stale: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return parseLock(text, path);
+}
+
 function parseLock(text: string, path: string): DaemonLockInfo {
   let parsed: unknown;
   try {

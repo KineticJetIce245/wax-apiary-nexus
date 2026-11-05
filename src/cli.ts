@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import { runDaemon } from './daemon.js';
 import type { HarnessAdapter } from './adapters/harness.js';
+import { runCompositionCli } from './composition-cli.js';
 import {
   CliUsageError,
   apiaryForProject,
@@ -335,6 +336,9 @@ function firstHover(
 }
 
 export async function runCli(argv: readonly string[], deps: CliDependencies = {}): Promise<number> {
+  if (argv[0] === 'composition') {
+    return runCompositionCli(argv, deps);
+  }
   if (argv[0] === 'daemon') {
     return runDaemon(argv, deps);
   }

@@ -32,7 +32,13 @@ export async function createDefaultAdapter(request: AdapterRequest): Promise<Har
   return new CodexAppServerAdapter({ launch: connection.launch });
 }
 
-export function loadCompositionFile(path: string): CompositionDefinition {
+export interface LoadedCompositionFile {
+  readonly definition: CompositionDefinition;
+  /** The exact file text, so a replace can preserve formatting. */
+  readonly text: string;
+}
+
+export function readCompositionFile(path: string): LoadedCompositionFile {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
@@ -48,13 +54,17 @@ export function loadCompositionFile(path: string): CompositionDefinition {
   }
 
   try {
-    return parseComposition(parsed);
+    return { definition: parseComposition(parsed), text };
   } catch (error) {
     if (error instanceof CompositionValidationError) {
       throw new CliUsageError(error.message);
     }
     throw error;
   }
+}
+
+export function loadCompositionFile(path: string): CompositionDefinition {
+  return readCompositionFile(path).definition;
 }
 
 /** Default apiary id: a filesystem-safe slug of the project directory name. */

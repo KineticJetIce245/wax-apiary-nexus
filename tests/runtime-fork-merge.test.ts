@@ -269,7 +269,11 @@ test('merge waits for every required branch and emits exactly once', async () =>
   const finished = runtime.snapshot();
   assert.equal(finished.rest, true);
   assert.deepEqual(finished.pheromones, [], 'the required branches were consumed atomically');
-  assert.equal(finished.nodes['merge']?.joins, undefined);
+  // Stage 5A keeps a completed tombstone so a late optional can be dropped.
+  const completedJoin = Object.values(finished.nodes['merge']?.joins ?? {})[0];
+  assert.ok(completedJoin !== undefined);
+  assert.ok(completedJoin.completedAt !== undefined);
+  assert.deepEqual(completedJoin.arrived, []);
   const doneCalls = calls.filter((call) => call.nodeId === 'done');
   assert.equal(doneCalls.length, 1);
   assert.equal(serializeValue(doneCalls[0]?.input as Value), 'seed\nreply');

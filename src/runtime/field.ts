@@ -27,12 +27,28 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
       node.pending !== undefined ||
       node.hover !== undefined ||
       node.queue.length > 0 ||
-      (node.joins !== undefined && node.joins.size > 0)
+      hasIncompleteJoin(node)
     ) {
       return false;
     }
   }
   return true;
+}
+
+/**
+ * A completed join is a tombstone for late optional branches, not live work:
+ * it never keeps the field out of Rest.
+ */
+function hasIncompleteJoin(node: NodeState): boolean {
+  if (node.joins === undefined) {
+    return false;
+  }
+  for (const join of node.joins.values()) {
+    if (join.completedAt === undefined) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
@@ -90,6 +106,7 @@ export function snapshotField(
           {
             forkId,
             arrived: [...join.arrived.values()].map(clonePheromone),
+            ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
           },
         ]);
       }

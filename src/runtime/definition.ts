@@ -411,29 +411,45 @@ function parseMergeConfig(
     }
   }
 
-  const optional = config['optional'];
-  if (optional !== undefined) {
-    if (!Array.isArray(optional)) {
-      issues.push(`${path}.optional: expected an array`);
+  // Stage 5A: optional branches are best effort and default to none.
+  const optional: string[] = [];
+  const rawOptional = config['optional'];
+  if (rawOptional !== undefined) {
+    if (!Array.isArray(rawOptional)) {
+      issues.push(`${path}.optional: expected an array of branch ids`);
       valid = false;
-    } else if (optional.length > 0) {
-      issues.push(`${path}.optional: optional branches are not supported in Stage 3A`);
-      valid = false;
+    } else {
+      for (const [index, branchId] of rawOptional.entries()) {
+        if (!isNonEmptyString(branchId)) {
+          issues.push(`${path}.optional[${index}]: expected a non-empty branch id`);
+          valid = false;
+        } else if (optional.includes(branchId)) {
+          issues.push(`${path}.optional[${index}]: duplicate optional branch '${branchId}'`);
+          valid = false;
+        } else if (required.includes(branchId)) {
+          issues.push(
+            `${path}.optional[${index}]: branch '${branchId}' is already required`,
+          );
+          valid = false;
+        } else {
+          optional.push(branchId);
+        }
+      }
     }
   }
 
   const combine = config['combine'] ?? 'text';
   if (combine !== 'text') {
-    issues.push(`${path}.combine: only 'text' is supported in Stage 3A`);
+    issues.push(`${path}.combine: only 'text' is supported in Stage 5A`);
     valid = false;
   }
 
   if (config['timeoutMs'] !== undefined) {
-    issues.push(`${path}.timeoutMs: merge timeouts are not supported in Stage 3A`);
+    issues.push(`${path}.timeoutMs: merge timeouts are not supported in Stage 5A`);
     valid = false;
   }
 
-  return valid ? { required, combine: 'text' } : null;
+  return valid ? { required, optional, combine: 'text' } : null;
 }
 
 function parseDefaults(value: unknown, issues: string[]): CompositionDefaults {

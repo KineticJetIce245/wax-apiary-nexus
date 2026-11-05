@@ -1,7 +1,13 @@
 export { parseComposition, CompositionValidationError } from './definition.js';
 export { createMemoryLog } from './log.js';
 export { renderPrompt, serializeValue } from './executor.js';
-export { FieldRestoreError, GuardDecisionError, PheromoneRuntime } from './runtime.js';
+export {
+  COMPLETED_JOIN_TTL_MS,
+  FieldRestoreError,
+  GuardDecisionError,
+  MAX_COMPLETED_JOINS_PER_MERGE,
+  PheromoneRuntime,
+} from './runtime.js';
 export {
   DEFAULT_WORKER_TIMEOUT_MS,
   MAX_WORKER_OUTPUT_BYTES,

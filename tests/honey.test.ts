@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { HoneyStore, honeyPaths } from '../src/honey.js';
 import {
+  createMemoryLog,
   FieldRestoreError,
   parseComposition,
   PheromoneRuntime,
@@ -73,6 +74,33 @@ function forkMergeComposition(): ReturnType<typeof parseComposition> {
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
       merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
+    },
+    edges: [
+      { id: 'e1', from: 'start', to: 'fork' },
+      { id: 'e2', from: 'ask', to: 'merge' },
+      { id: 'e3', from: 'merge', to: 'done' },
+    ],
+  });
+}
+
+function optionalForkMergeComposition(): ReturnType<typeof parseComposition> {
+  return parseComposition({
+    schemaVersion: 1,
+    id: 'optional-fork-merge',
+    nodes: {
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
+      fork: {
+        kind: 'fork',
+        config: {
+          branches: [
+            { id: 'a', to: 'merge' },
+            { id: 'b', to: 'ask' },
+          ],
+        },
+      },
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
+      merge: { kind: 'merge', config: { required: ['a'], optional: ['b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
@@ -475,5 +503,69 @@ test('honey persists and restores a pending merge join without replaying branche
 
   assert.deepEqual(calls, ['start', 'done']);
   assert.equal(restored.snapshot().rest, true);
-  assert.equal(restored.snapshot().nodes['merge']?.joins, undefined);
+  // The completed join is kept as a persisted tombstone for late optional
+  // branches, so it survives the round-trip instead of disappearing.
+  const completedJoin = Object.values(restored.snapshot().nodes['merge']?.joins ?? {})[0];
+  assert.ok(completedJoin !== undefined);
+  assert.ok(completedJoin.completedAt !== undefined);
+  assert.deepEqual(completedJoin.arrived, []);
+});
+
+test('honey persists a completed join and drops a late optional after restart', async () => {
+  let clock = START;
+  const log = createMemoryLog();
+  const calls: string[] = [];
+  const executor: NodeExecutor = {
+    async execute(node, input) {
+      calls.push(node.id);
+      return input;
+    },
+  };
+  const definition = optionalForkMergeComposition();
+  const runtime = new PheromoneRuntime(definition, {
+    executeForager: executor,
+    now: () => clock,
+  });
+
+  runtime.trigger('start', { kind: 'text', text: 'seed' });
+  await runtime.pump();
+  assert.equal(calls.filter((nodeId) => nodeId === 'done').length, 1);
+  const before = runtime.snapshot();
+  assert.equal(before.rest, false, 'the optional branch still hovers');
+  const beforeJoin = Object.values(before.nodes['merge']?.joins ?? {})[0];
+  assert.ok(beforeJoin !== undefined);
+  assert.ok(beforeJoin.completedAt !== undefined);
+  assert.deepEqual(beforeJoin.arrived, []);
+
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'optional-fork-merge');
+  const field = runtime.exportField();
+  store.save(field);
+  const loaded = store.load();
+  assert.ok(loaded !== undefined);
+  const persistedJoin = Object.values(loaded.nodes['merge']?.joins ?? {})[0];
+  assert.ok(persistedJoin !== undefined);
+  assert.equal(persistedJoin.completedAt, beforeJoin.completedAt);
+  assert.deepEqual(persistedJoin.arrived, []);
+
+  const restored = PheromoneRuntime.restore(definition, loaded, {
+    executeForager: executor,
+    now: () => clock,
+    onLog: log.sink,
+  });
+  const token = restored.runtime.snapshot().nodes['ask']?.hover?.token;
+  assert.ok(token !== undefined);
+  restored.runtime.answerHover('ask', { kind: 'text', text: 'late' }, token);
+  clock += 1000;
+  await restored.runtime.pump();
+
+  assert.equal(
+    calls.filter((nodeId) => nodeId === 'done').length,
+    1,
+    'the restored completed join never emits a second time',
+  );
+  assert.equal(restored.runtime.snapshot().rest, true);
+  assert.ok(log.entries.some((entry) => entry.event === 'merge.optional-dropped'));
+  const afterJoin = Object.values(restored.runtime.snapshot().nodes['merge']?.joins ?? {})[0];
+  assert.ok(afterJoin !== undefined);
+  assert.ok(afterJoin.completedAt !== undefined);
 });

@@ -38,8 +38,15 @@ export function findActiveReferences(snapshot: PheromoneFieldSnapshot): ActiveRe
     if (state.hover !== undefined) {
       references.push({ nodeId, reason: 'hover' });
     }
-    if (state.joins !== undefined && Object.keys(state.joins).length > 0) {
-      references.push({ nodeId, reason: 'merge-waiting' });
+    if (state.joins !== undefined) {
+      // A completed join is a tombstone for late optional branches, not live
+      // merge-waiting work, so it never blocks an edit.
+      for (const join of Object.values(state.joins)) {
+        if (join.completedAt === undefined) {
+          references.push({ nodeId, reason: 'merge-waiting' });
+          break;
+        }
+      }
     }
   }
   return references;

@@ -505,6 +505,47 @@ for (const activeCase of ACTIVE_REFERENCE_CASES) {
   });
 }
 
+test('replace allows a Honey field whose only join is a completed tombstone', () => {
+  const files = writeCompositionPair();
+  const state = stateDirectory();
+  writeField(
+    state,
+    'demo',
+    'edit-demo',
+    {
+      start: {
+        queue: [],
+        joins: {
+          fk_done: {
+            arrived: [],
+            completedAt: '2026-03-01T00:00:00.000Z',
+          },
+        },
+      },
+    },
+    { rest: true },
+  );
+  const result = capture();
+
+  const code = runCompositionCli(
+    [
+      'composition',
+      'replace',
+      files.currentPath,
+      '--with',
+      files.nextPath,
+      '--state-dir',
+      state,
+      '--apiary',
+      'demo',
+    ],
+    result.deps,
+  );
+
+  assert.equal(code, 0, result.stderr.join('\n'));
+  assert.equal(readFileSync(files.currentPath, 'utf8'), files.nextText);
+});
+
 test('replace allows a Honey field with no active references and writes no needsAttention', () => {
   const files = writeCompositionPair();
   const state = stateDirectory();

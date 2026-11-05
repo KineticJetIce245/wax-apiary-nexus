@@ -145,6 +145,40 @@ test('a runtime can mark forced nodes as needing attention', () => {
   assert.equal(runtime.snapshot().nodes['keep']?.state['needsAttention'], undefined);
 });
 
+test('a completed join does not count as a merge-waiting reference', () => {
+  const current = parseComposition({
+    schemaVersion: 1,
+    id: 'edit',
+    nodes: {
+      keep: { kind: 'forager', config: { connection: 'codex', prompt: 'keep' } },
+      merge: { kind: 'merge', config: { required: ['a'], optional: ['b'], combine: 'text' } },
+    },
+    edges: [],
+  });
+  const next = parseComposition({
+    schemaVersion: 1,
+    id: 'edit',
+    nodes: {
+      keep: { kind: 'forager', config: { connection: 'codex', prompt: 'keep' } },
+    },
+    edges: [],
+  });
+  const snapshot = snapshotWith({
+    merge: {
+      joins: {
+        fk_done: {
+          forkId: 'fk_done',
+          arrived: [],
+          completedAt: '2026-03-01T00:00:00.000Z',
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(findActiveReferences(snapshot), []);
+  assert.deepEqual(assertEditKeepsReferences(current, next, snapshot), { forced: [] });
+});
+
 test('a merge-waiting join is an active reference and blocks removing the merge', () => {
   const current = parseComposition({
     schemaVersion: 1,

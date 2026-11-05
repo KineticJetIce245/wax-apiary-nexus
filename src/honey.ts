@@ -175,6 +175,24 @@ function parseJoins(
     if (!Array.isArray(rawArrived)) {
       throw new Error(`${joinPath}: expected an arrived Pheromone array`);
     }
+
+    const rawCompletedAt = raw['completedAt'];
+    if (rawCompletedAt !== undefined) {
+      // Stage 5A completed tombstone: it remembers the forkId but holds no
+      // Pheromones, so a late optional branch can still be dropped on restore.
+      if (
+        typeof rawCompletedAt !== 'string' ||
+        !Number.isFinite(Date.parse(rawCompletedAt))
+      ) {
+        throw new Error(`${joinPath}.completedAt: expected an ISO timestamp`);
+      }
+      if (rawArrived.length !== 0) {
+        throw new Error(`${joinPath}.arrived: a completed join holds no Pheromones`);
+      }
+      entries.push([forkId, { arrived: [], completedAt: rawCompletedAt }]);
+      continue;
+    }
+
     if (rawArrived.length === 0) {
       throw new Error(`${joinPath}.arrived: expected at least one Pheromone`);
     }

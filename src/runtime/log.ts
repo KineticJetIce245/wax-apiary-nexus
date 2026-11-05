@@ -17,6 +17,8 @@ export type RuntimeEvent =
   | 'merge.waiting'
   | 'merge.completed'
   | 'merge.failed'
+  | 'merge.optional-failed'
+  | 'merge.optional-dropped'
   | 'runtime.restored'
   | 'runtime.attention'
   | 'runtime.rest';

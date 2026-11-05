@@ -55,6 +55,15 @@ export interface RuntimeOptions {
 
 const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
 
+/**
+ * How long a completed join is remembered so a late optional branch can still
+ * be dropped. A marker older than this is forgotten when the merge next runs.
+ */
+export const COMPLETED_JOIN_TTL_MS = 3_600_000;
+
+/** Hard cap on completed join markers per merge node; oldest are evicted. */
+export const MAX_COMPLETED_JOINS_PER_MERGE = 64;
+
 /** A Guard decision that does not belong to the current request. */
 export class GuardDecisionError extends Error {
   constructor(message: string) {
@@ -276,7 +285,10 @@ export class PheromoneRuntime {
         for (const [forkId, join] of state.joins) {
           entries.push([
             forkId,
-            { arrived: [...join.arrived.values()].map(clonePheromone) },
+            {
+              arrived: [...join.arrived.values()].map(clonePheromone),
+              ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
+            },
           ]);
         }
         persisted.joins = Object.fromEntries(entries);
@@ -338,8 +350,27 @@ export class PheromoneRuntime {
     const resumedHovers: NodeId[] = [];
     const unknownActive: NodeId[] = [];
     const stuckActive: NodeId[] = [];
-    /** A branch whose process is gone can never reach its Merge; fail the fork. */
-    const failedForkIds = new Set<string>();
+    /**
+     * A branch whose process is gone can never reach its Merge. A required
+     * branch fails its fork; an optional-only branch is logged and dropped.
+     */
+    const failedBranches: { forkId: string; branchId?: string }[] = [];
+    const seenFailedBranches = new Set<string>();
+    const markFailedBranch = (pheromone: Pheromone): void => {
+      if (pheromone.forkId === undefined) {
+        return;
+      }
+      const key = `${pheromone.forkId}\u0000${pheromone.branchId ?? ''}`;
+      if (seenFailedBranches.has(key)) {
+        return;
+      }
+      seenFailedBranches.add(key);
+      failedBranches.push(
+        pheromone.branchId === undefined
+          ? { forkId: pheromone.forkId }
+          : { forkId: pheromone.forkId, branchId: pheromone.branchId },
+      );
+    };
 
     for (const [id, node] of this.definition.nodes) {
       const saved = field.nodes[id];
@@ -369,6 +400,9 @@ export class PheromoneRuntime {
         const joins = this.restoreJoins(node, saved.joins);
         if (joins.size > 0) {
           state.joins = joins;
+          // Age out stale completed markers that outlived their retention while
+          // the process was down.
+          this.pruneCompletedJoins(node);
         }
       }
 
@@ -385,8 +419,8 @@ export class PheromoneRuntime {
         // cancelled, never resumed and never auto-allowed.
         stuckActive.push(id);
         state.state = { ...(state.state ?? {}), needsAttention: true };
-        if (saved.hoverPheromone?.forkId !== undefined) {
-          failedForkIds.add(saved.hoverPheromone.forkId);
+        if (saved.hoverPheromone !== undefined) {
+          markFailedBranch(saved.hoverPheromone);
         }
       }
 
@@ -399,14 +433,12 @@ export class PheromoneRuntime {
           stuckActive.push(id);
         }
         state.state = { ...(state.state ?? {}), needsAttention: true };
-        if (saved.active.forkId !== undefined) {
-          failedForkIds.add(saved.active.forkId);
-        }
+        markFailedBranch(saved.active);
       }
     }
 
-    for (const forkId of failedForkIds) {
-      this.failFork(forkId, 'unknown-active');
+    for (const failed of failedBranches) {
+      this.handleBranchFailure(failed.forkId, failed.branchId, 'unknown-active');
     }
 
     this.resting = isFieldResting(this.states.values());
@@ -514,12 +546,18 @@ export class PheromoneRuntime {
     } catch (error) {
       delete state.active;
       this.logFailed(node, pheromone, startedAt, error);
+      let optionalOnly = false;
       if (pheromone.forkId !== undefined) {
-        // A branch that failed can never reach its Merge. Cancel its siblings
-        // so no join waits forever.
-        this.failFork(pheromone.forkId, 'failed-branch');
+        // A required branch that failed can never reach its Merge; cancel its
+        // siblings so no join waits forever. An optional-only branch is logged
+        // and dropped without failing the required set.
+        optionalOnly =
+          this.handleBranchFailure(pheromone.forkId, pheromone.branchId, 'failed-branch') ===
+          'optional';
       }
-      throw error;
+      if (!optionalOnly) {
+        throw error;
+      }
     }
 
     delete state.active;
@@ -946,19 +984,56 @@ export class PheromoneRuntime {
       return 'failed';
     }
 
-    if (!node.config.required.includes(branchId)) {
+    const isRequired = node.config.required.includes(branchId);
+    const isOptional = node.config.optional.includes(branchId);
+    if (!isRequired && !isOptional) {
       this.failFork(forkId, 'unknown-branch', node);
       return 'failed';
     }
 
     const state = this.stateOf(node.id);
+    // Completed markers are read below; expire the old ones first.
+    this.pruneCompletedJoins(node);
+
     let joins = state.joins;
     if (joins === undefined) {
       joins = new Map<string, JoinState>();
       state.joins = joins;
     }
 
-    let join = joins.get(forkId);
+    const existing = joins.get(forkId);
+    if (existing?.completedAt !== undefined) {
+      if (isOptional) {
+        // Stage 5A: an optional branch that arrives after completion is
+        // dropped; the completed join is never reopened.
+        this.log({
+          event: 'merge.optional-dropped',
+          nodeId: node.id,
+          nodeKind: 'merge',
+          pheromoneId: pheromone.id,
+          traceId: pheromone.traceId,
+          forkId,
+          branchId,
+          outcome: 'late-optional',
+        });
+        return 'dropped-optional';
+      }
+      // A required branch cannot legally arrive twice. The join already
+      // emitted once, so this is logged and dropped without a second emit.
+      this.log({
+        event: 'merge.failed',
+        nodeId: node.id,
+        nodeKind: 'merge',
+        pheromoneId: pheromone.id,
+        traceId: pheromone.traceId,
+        forkId,
+        branchId,
+        outcome: 'late-required',
+      });
+      return 'failed';
+    }
+
+    let join = existing;
     if (join === undefined) {
       join = { forkId, arrived: new Map<string, Pheromone>() };
       joins.set(forkId, join);
@@ -992,10 +1067,20 @@ export class PheromoneRuntime {
       }
       ordered.push(arrived);
     }
-    joins.delete(forkId);
-    if (joins.size === 0) {
-      delete state.joins;
+    // Only optional branches that already arrived contribute, in the optional
+    // config order. A missing optional never blocks the required set.
+    for (const optional of node.config.optional) {
+      const arrived = join.arrived.get(optional);
+      if (arrived !== undefined) {
+        ordered.push(arrived);
+      }
     }
+
+    // The consumed Pheromones are released, and the join becomes a persisted
+    // tombstone so a later optional arrival can be dropped.
+    join.arrived.clear();
+    join.completedAt = this.iso();
+    this.pruneCompletedJoins(node);
 
     this.finishMerge(node, ordered, pheromone.traceId);
     return 'merged';
@@ -1018,7 +1103,7 @@ export class PheromoneRuntime {
 
       for (const forkId of [...joins.keys()]) {
         const join = joins.get(forkId);
-        if (join === undefined) {
+        if (join === undefined || join.completedAt !== undefined) {
           continue;
         }
         const ordered: Pheromone[] = [];
@@ -1032,10 +1117,17 @@ export class PheromoneRuntime {
         if (ordered.length !== node.config.required.length) {
           continue;
         }
-        joins.delete(forkId);
-        if (joins.size === 0) {
-          delete state.joins;
+        // A restored join can also hold arrived optional branches; include them
+        // in the optional config order before the single settle.
+        for (const optional of node.config.optional) {
+          const arrived = join.arrived.get(optional);
+          if (arrived !== undefined) {
+            ordered.push(arrived);
+          }
         }
+        join.arrived.clear();
+        join.completedAt = this.iso();
+        this.pruneCompletedJoins(node);
         const first = ordered[0];
         if (first !== undefined) {
           this.finishMerge(node, ordered, first.traceId);
@@ -1057,8 +1149,11 @@ export class PheromoneRuntime {
       if (state.joins === undefined) {
         continue;
       }
-      for (const forkId of state.joins.keys()) {
-        waiting.push({ node, forkId });
+      for (const [forkId, join] of state.joins) {
+        // Completed tombstones are not waiting on anything.
+        if (join.completedAt === undefined) {
+          waiting.push({ node, forkId });
+        }
       }
     }
 
@@ -1177,6 +1272,97 @@ export class PheromoneRuntime {
     });
   }
 
+  /**
+   * A branch that can never arrive (a failed node, or unknown active work on
+   * restore) fails its fork unless every merge that names it treats it as
+   * optional. An optional-only failure is logged and never fails the required
+   * set.
+   */
+  private handleBranchFailure(
+    forkId: string,
+    branchId: string | undefined,
+    reason: string,
+  ): 'required' | 'optional' {
+    if (branchId !== undefined && !this.isRequiredBranch(branchId)) {
+      const optionalMerges = this.optionalMergesForBranch(branchId);
+      if (optionalMerges.length > 0) {
+        for (const node of optionalMerges) {
+          this.log({
+            event: 'merge.optional-failed',
+            nodeId: node.id,
+            nodeKind: 'merge',
+            forkId,
+            branchId,
+            outcome: reason,
+          });
+        }
+        return 'optional';
+      }
+    }
+
+    this.failFork(forkId, reason);
+    return 'required';
+  }
+
+  private isRequiredBranch(branchId: string): boolean {
+    for (const node of this.definition.nodes.values()) {
+      if (node.kind === 'merge' && node.config.required.includes(branchId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private optionalMergesForBranch(branchId: string): MergeNode[] {
+    const merges: MergeNode[] = [];
+    for (const node of this.definition.nodes.values()) {
+      if (node.kind === 'merge' && node.config.optional.includes(branchId)) {
+        merges.push(node);
+      }
+    }
+    return merges;
+  }
+
+  /**
+   * Bounds the completed-join tombstones so they cannot grow forever: a marker
+   * older than COMPLETED_JOIN_TTL_MS is forgotten, and only the newest
+   * MAX_COMPLETED_JOINS_PER_MERGE markers are kept. After that bound a branch
+   * that is extremely late is no longer distinguishable from a fresh join.
+   */
+  private pruneCompletedJoins(node: MergeNode): void {
+    const state = this.stateOf(node.id);
+    const joins = state.joins;
+    if (joins === undefined) {
+      return;
+    }
+
+    const now = this.now();
+    const completed: { forkId: string; completedAt: string }[] = [];
+    for (const [forkId, join] of joins) {
+      if (join.completedAt === undefined) {
+        continue;
+      }
+      const at = Date.parse(join.completedAt);
+      if (!Number.isFinite(at) || now - at > COMPLETED_JOIN_TTL_MS) {
+        joins.delete(forkId);
+      } else {
+        completed.push({ forkId, completedAt: join.completedAt });
+      }
+    }
+
+    const excess = completed.length - MAX_COMPLETED_JOINS_PER_MERGE;
+    if (excess > 0) {
+      completed.sort((left, right) => left.completedAt.localeCompare(right.completedAt));
+      for (const entry of completed.slice(0, excess)) {
+        joins.delete(entry.forkId);
+      }
+    }
+
+    if (joins.size === 0) {
+      delete state.joins;
+    }
+  }
+
   private restoreJoins(
     node: MergeNode,
     saved: Record<string, PersistedJoinState>,
@@ -1186,7 +1372,31 @@ export class PheromoneRuntime {
       if (forkId === '') {
         throw new FieldRestoreError(`persisted join on node '${node.id}' has an empty forkId`);
       }
-      if (!Array.isArray(entry.arrived) || entry.arrived.length === 0) {
+      if (!Array.isArray(entry.arrived)) {
+        throw new FieldRestoreError(
+          `persisted join '${forkId}' on node '${node.id}' has no branch Pheromones`,
+        );
+      }
+      if (entry.completedAt !== undefined) {
+        // A completed tombstone holds no Pheromones; it only remembers that the
+        // join already emitted so a later optional branch can be dropped.
+        if (
+          typeof entry.completedAt !== 'string' ||
+          !Number.isFinite(Date.parse(entry.completedAt))
+        ) {
+          throw new FieldRestoreError(
+            `persisted join '${forkId}' on node '${node.id}' has an invalid completedAt`,
+          );
+        }
+        if (entry.arrived.length > 0) {
+          throw new FieldRestoreError(
+            `persisted completed join '${forkId}' on node '${node.id}' still holds branch Pheromones`,
+          );
+        }
+        joins.set(forkId, { forkId, arrived: new Map<string, Pheromone>(), completedAt: entry.completedAt });
+        continue;
+      }
+      if (entry.arrived.length === 0) {
         throw new FieldRestoreError(
           `persisted join '${forkId}' on node '${node.id}' has no branch Pheromones`,
         );
@@ -1205,7 +1415,10 @@ export class PheromoneRuntime {
             `persisted join '${forkId}' on node '${node.id}' holds an untagged Pheromone`,
           );
         }
-        if (!node.config.required.includes(branchId)) {
+        if (
+          !node.config.required.includes(branchId) &&
+          !node.config.optional.includes(branchId)
+        ) {
           throw new FieldRestoreError(
             `persisted join '${forkId}' on node '${node.id}' holds unknown branch '${branchId}'`,
           );

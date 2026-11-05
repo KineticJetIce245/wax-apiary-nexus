@@ -123,18 +123,61 @@ test('rejects a merge with empty or duplicate required branches', () => {
   assert.ok(issuesOf(duplicate).some((issue) => issue.includes("duplicate required branch 'a'")));
 });
 
-test('rejects object/array combine, non-empty optional branches and merge timeouts in 3A', () => {
-  const object = structuredClone(validComposition());
-  mergeOf(object)['config'] = { required: ['a', 'b'], combine: 'object' };
-  assert.ok(issuesOf(object).some((issue) => issue.includes("only 'text' is supported in Stage 3A")));
+test('parses optional branches, defaulting to none, and includes them in the revision', () => {
+  const defaulted = parseComposition(validComposition());
+  const defaultedMerge = defaulted.nodes.get('merge');
+  assert.ok(defaultedMerge !== undefined);
+  if (defaultedMerge.kind !== 'merge') {
+    assert.fail('expected a merge node');
+  }
+  assert.deepEqual(defaultedMerge.config.optional, []);
 
-  const optional = structuredClone(validComposition());
-  mergeOf(optional)['config'] = {
+  const optionalInput = structuredClone(validComposition());
+  mergeOf(optionalInput)['config'] = {
     required: ['a', 'b'],
     optional: ['c'],
     combine: 'text',
   };
-  assert.ok(issuesOf(optional).some((issue) => issue.includes('optional branches are not supported')));
+  const optional = parseComposition(optionalInput);
+  const optionalMerge = optional.nodes.get('merge');
+  assert.ok(optionalMerge !== undefined);
+  if (optionalMerge.kind !== 'merge') {
+    assert.fail('expected a merge node');
+  }
+  assert.deepEqual(optionalMerge.config.optional, ['c']);
+  assert.notEqual(optional.graphRevision, defaulted.graphRevision);
+});
+
+test('rejects duplicate, overlapping or malformed optional branches', () => {
+  const duplicate = structuredClone(validComposition());
+  mergeOf(duplicate)['config'] = {
+    required: ['a', 'b'],
+    optional: ['c', 'c'],
+    combine: 'text',
+  };
+  assert.ok(issuesOf(duplicate).some((issue) => issue.includes("duplicate optional branch 'c'")));
+
+  const overlap = structuredClone(validComposition());
+  mergeOf(overlap)['config'] = {
+    required: ['a', 'b'],
+    optional: ['a'],
+    combine: 'text',
+  };
+  assert.ok(issuesOf(overlap).some((issue) => issue.includes("branch 'a' is already required")));
+
+  const notArray = structuredClone(validComposition());
+  mergeOf(notArray)['config'] = { required: ['a', 'b'], optional: 'c', combine: 'text' };
+  assert.ok(issuesOf(notArray).some((issue) => issue.includes('optional: expected an array')));
+
+  const emptyId = structuredClone(validComposition());
+  mergeOf(emptyId)['config'] = { required: ['a', 'b'], optional: [''], combine: 'text' };
+  assert.ok(issuesOf(emptyId).some((issue) => issue.includes('expected a non-empty branch id')));
+});
+
+test('rejects object/array combine and merge timeouts in 5A', () => {
+  const object = structuredClone(validComposition());
+  mergeOf(object)['config'] = { required: ['a', 'b'], combine: 'object' };
+  assert.ok(issuesOf(object).some((issue) => issue.includes("only 'text' is supported in Stage 5A")));
 
   const timeout = structuredClone(validComposition());
   mergeOf(timeout)['config'] = {

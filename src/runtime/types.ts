@@ -147,11 +147,14 @@ export interface ForkNode {
 }
 
 /**
- * Stage 3A merges only required branches and combines them as text. Optional
- * branches and the object/array combine shapes have no approved Value yet.
+ * Stage 5A adds optional branches to the Stage 3A text combine. `optional` is
+ * best effort: the required set completes the join immediately and an optional
+ * branch only contributes when it has already arrived. The object/array combine
+ * shapes still have no approved Value.
  */
 export interface MergeConfig {
   required: readonly string[];
+  optional: readonly string[];
   combine: 'text';
 }
 
@@ -235,15 +238,21 @@ export interface CompositionDefinition {
 /**
  * Branch Pheromones a Merge has already received for one forkId. The branch id
  * is the map key; a second arrival for the same branch is a protocol error.
+ *
+ * Stage 5A keeps a completed join as a tombstone: `completedAt` is set and the
+ * consumed `arrived` entries are cleared, so a late optional branch can still be
+ * dropped rather than reopening the join.
  */
 export interface JoinState {
   forkId: string;
   arrived: Map<string, Pheromone>;
+  completedAt?: string;
 }
 
 export interface JoinStateSnapshot {
   forkId: string;
   arrived: readonly Pheromone[];
+  completedAt?: string;
 }
 
 /** Mutable per-node runtime state. Never handed out directly. */
@@ -283,6 +292,8 @@ export interface PheromoneFieldSnapshot {
 /** JSON shape of `honey/field.json`. */
 export interface PersistedJoinState {
   arrived: Pheromone[];
+  /** Set on a completed tombstone; its `arrived` list is empty. */
+  completedAt?: string;
 }
 
 export interface PersistedNodeState {

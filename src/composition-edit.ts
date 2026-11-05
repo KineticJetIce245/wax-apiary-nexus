@@ -289,7 +289,11 @@ function snapshotFromPersisted(field: PersistedField): PheromoneFieldSnapshot {
     if (state.joins !== undefined) {
       joins = {};
       for (const [forkId, join] of Object.entries(state.joins)) {
-        joins[forkId] = { forkId, arrived: join.arrived };
+        joins[forkId] = {
+          forkId,
+          arrived: join.arrived,
+          ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
+        };
       }
     }
 

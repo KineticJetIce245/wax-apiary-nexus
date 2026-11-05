@@ -1,0 +1,274 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import { HoneyStore, honeyPaths } from '../src/honey.js';
+import {
+  FieldRestoreError,
+  parseComposition,
+  PheromoneRuntime,
+  type NodeExecutor,
+  type PersistedField,
+  type Pheromone,
+} from '../src/runtime/index.js';
+
+const START = Date.parse('2026-02-01T00:00:00.000Z');
+
+function executor(): NodeExecutor {
+  return {
+    async execute() {
+      return { kind: 'text', text: 'ok' };
+    },
+  };
+}
+
+function askComposition(): ReturnType<typeof parseComposition> {
+  return parseComposition({
+    schemaVersion: 1,
+    id: 'ask',
+    nodes: {
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'plan {{input}}' } },
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'Approve?' } },
+      done: { kind: 'forager', config: { connection: 'codex', prompt: 'finish' } },
+    },
+    edges: [
+      { id: 'e1', from: 'start', to: 'ask' },
+      { id: 'e2', from: 'ask', to: 'done' },
+    ],
+  });
+}
+
+function conditionComposition(): ReturnType<typeof parseComposition> {
+  return parseComposition({
+    schemaVersion: 1,
+    id: 'branch',
+    nodes: {
+      check: { kind: 'condition', config: { mode: 'text', contains: 'go' } },
+      yes: { kind: 'forager', config: { connection: 'codex', prompt: 'yes' } },
+      no: { kind: 'forager', config: { connection: 'codex', prompt: 'no' } },
+    },
+    edges: [
+      { id: 'e1', from: 'check', to: 'yes', when: 'true' },
+      { id: 'e2', from: 'check', to: 'no', when: 'false' },
+    ],
+  });
+}
+
+function pheromone(id = 'ph_1'): Pheromone {
+  return {
+    id,
+    traceId: `tr_${id}`,
+    value: { kind: 'text', text: 'x' },
+    at: new Date(START).toISOString(),
+  };
+}
+
+function tempRoot(): string {
+  return mkdtempSync(join(tmpdir(), 'wax-honey-'));
+}
+
+test('honeyPaths follows the contract layout', () => {
+  const paths = honeyPaths('C:/state', 'apiary-1', 'comp-1');
+
+  assert.equal(
+    paths.directory,
+    join('C:/state', 'apiaries', 'apiary-1', 'compositions', 'comp-1'),
+  );
+  assert.equal(paths.field, join(paths.directory, 'honey', 'field.json'));
+  assert.equal(paths.log, join(paths.directory, 'log.jsonl'));
+  assert.equal(paths.transcripts, join(paths.directory, 'honey', 'transcripts'));
+});
+
+test('ids that could escape the state root are rejected', () => {
+  assert.throws(() => honeyPaths('C:/state', '../escape', 'comp'), /invalid apiary id/);
+  assert.throws(() => honeyPaths('C:/state', 'apiary', 'a/b'), /invalid composition id/);
+  assert.throws(() => honeyPaths('C:/state', '', 'comp'), /invalid apiary id/);
+});
+
+test('save then load returns the same field', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+  const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor(), now: () => START });
+
+  runtime.trigger('start', { kind: 'text', text: 'one' });
+  runtime.trigger('start', { kind: 'text', text: 'two' });
+  const field = runtime.exportField();
+  store.save(field);
+
+  assert.deepEqual(store.load(), field);
+});
+
+test('load returns undefined for a missing field and rejects broken JSON', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+  assert.equal(store.load(), undefined);
+
+  store.save({
+    schemaVersion: 1,
+    compositionId: 'ask',
+    graphRevision: 'rev',
+    rest: true,
+    nodes: {},
+  });
+  writeFileSync(store.paths.field, '{ not json');
+
+  assert.throws(() => store.load(), /not valid JSON/);
+});
+
+test('a loaded field with a bad node shape is rejected', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+  store.save({
+    schemaVersion: 1,
+    compositionId: 'ask',
+    graphRevision: 'rev',
+    rest: true,
+    nodes: {},
+  });
+  writeFileSync(
+    store.paths.field,
+    JSON.stringify({ schemaVersion: 1, compositionId: 'ask', graphRevision: 'rev', rest: true, nodes: { start: {} } }),
+  );
+
+  assert.throws(() => store.load(), /expected a node state/);
+});
+
+test('appendLog writes one metadata line per entry', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+  const entries = [
+    {
+      at: new Date(START).toISOString(),
+      event: 'node.completed' as const,
+      compositionId: 'ask',
+      graphRevision: 'rev',
+      nodeId: 'start',
+      outcome: 'ok',
+    },
+  ];
+
+  store.appendLog(entries);
+
+  const lines = readFileSync(store.paths.log, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1);
+  const parsed = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>;
+  assert.equal(parsed['event'], 'node.completed');
+  assert.equal(parsed['nodeId'], 'start');
+  assert.ok(!('prompt' in parsed));
+  assert.ok(!('output' in parsed));
+});
+
+test('transcript paths stay inside the transcripts directory', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+
+  assert.equal(
+    store.transcriptPath('conv-1'),
+    join(store.paths.transcripts, 'conv-1.jsonl'),
+  );
+  assert.throws(() => store.transcriptPath('../escape'), /invalid conversation id/);
+});
+
+test('restore keeps queue, pending and a user hover', async () => {
+  const definition = askComposition();
+  const first = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START });
+
+  first.trigger('start', { kind: 'text', text: 'x' });
+  await first.pump();
+  const hoverToken = first.snapshot().nodes['ask']?.hover?.token;
+  assert.ok(hoverToken !== undefined);
+
+  const field = first.exportField();
+  const { runtime, report } = PheromoneRuntime.restore(definition, field, {
+    executeForager: executor(),
+    now: () => START,
+  });
+
+  assert.deepEqual(report, { resumedHovers: ['ask'], unknownActive: [], stuckActive: [] });
+  assert.equal(runtime.snapshot().nodes['ask']?.hover?.token, hoverToken);
+  assert.equal(runtime.snapshot().rest, false);
+
+  runtime.answerHover('ask', { kind: 'text', text: 'yes' }, hoverToken);
+  await runtime.pump();
+  assert.equal(runtime.snapshot().rest, true);
+});
+
+test('an active forager after a crash becomes unknown and is never replayed', () => {
+  const definition = askComposition();
+  const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
+  field.nodes['start'] = { queue: [], active: pheromone('ph_crash') };
+
+  const { runtime, report } = PheromoneRuntime.restore(definition, field, {
+    executeForager: executor(),
+    now: () => START,
+  });
+
+  assert.deepEqual(report.unknownActive, ['start']);
+  assert.deepEqual(report.stuckActive, []);
+  const start = runtime.snapshot().nodes['start'];
+  assert.ok(start !== undefined);
+  assert.equal(start.active, undefined);
+  assert.equal(start.state['needsAttention'], true);
+  assert.equal(start.state['lastOutcome'], 'unknown');
+  assert.deepEqual(runtime.snapshot().pheromones, []);
+});
+
+test('an active control node becomes stuck instead of unknown', () => {
+  const definition = conditionComposition();
+  const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
+  field.nodes['check'] = { queue: [], active: pheromone('ph_check') };
+
+  const { runtime, report } = PheromoneRuntime.restore(definition, field, {
+    executeForager: executor(),
+    now: () => START,
+  });
+
+  assert.deepEqual(report.stuckActive, ['check']);
+  assert.equal(runtime.snapshot().nodes['check']?.state['needsAttention'], true);
+});
+
+test('a hover without its Pheromone is treated as stuck', () => {
+  const definition = askComposition();
+  const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
+  field.nodes['ask'] = {
+    queue: [],
+    hover: {
+      token: 'hv_x',
+      kind: 'user',
+      compositionId: 'ask',
+      nodeId: 'ask',
+      pheromoneId: 'ph_missing',
+    },
+  };
+
+  const { report, runtime } = PheromoneRuntime.restore(definition, field, {
+    executeForager: executor(),
+    now: () => START,
+  });
+
+  assert.deepEqual(report.stuckActive, ['ask']);
+  assert.equal(runtime.snapshot().nodes['ask']?.hover, undefined);
+  assert.equal(runtime.snapshot().nodes['ask']?.state['needsAttention'], true);
+});
+
+test('restore refuses a different graph revision or an unknown node', () => {
+  const definition = askComposition();
+  const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
+
+  assert.throws(
+    () =>
+      PheromoneRuntime.restore(
+        definition,
+        { ...field, graphRevision: 'other' },
+        { executeForager: executor(), now: () => START },
+      ),
+    FieldRestoreError,
+  );
+
+  assert.throws(
+    () =>
+      PheromoneRuntime.restore(
+        definition,
+        { ...field, nodes: { ...field.nodes, ghost: { queue: [] } } },
+        { executeForager: executor(), now: () => START },
+      ),
+    /unknown node 'ghost'/,
+  );
+});

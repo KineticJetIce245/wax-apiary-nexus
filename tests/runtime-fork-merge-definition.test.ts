@@ -174,11 +174,32 @@ test('rejects duplicate, overlapping or malformed optional branches', () => {
   assert.ok(issuesOf(emptyId).some((issue) => issue.includes('expected a non-empty branch id')));
 });
 
-test('parses merge timeoutMs with the 600000 default and its 32-bit bound', () => {
-  const object = structuredClone(validComposition());
-  mergeOf(object)['config'] = { required: ['a', 'b'], combine: 'object' };
-  assert.ok(issuesOf(object).some((issue) => issue.includes("only 'text' is supported in Stage 5A")));
+test('parses object and array combine, and rejects an unknown combine', () => {
+  const revisions = new Set<string>();
+  for (const combine of ['text', 'object', 'array'] as const) {
+    const input = structuredClone(validComposition());
+    mergeOf(input)['config'] = { required: ['a', 'b'], combine };
+    const composition = parseComposition(input);
+    const merge = composition.nodes.get('merge');
+    assert.ok(merge !== undefined);
+    if (merge.kind !== 'merge') {
+      assert.fail('expected a merge node');
+    }
+    assert.equal(merge.config.combine, combine);
+    revisions.add(composition.graphRevision);
+  }
+  assert.equal(revisions.size, 3, 'combine is part of the graph revision');
 
+  const invalid = structuredClone(validComposition());
+  mergeOf(invalid)['config'] = { required: ['a', 'b'], combine: 'json' };
+  assert.ok(
+    issuesOf(invalid).some((issue) =>
+      issue.includes("combine: expected 'text', 'object' or 'array'"),
+    ),
+  );
+});
+
+test('parses merge timeoutMs with the 600000 default and its 32-bit bound', () => {
   const defaulted = parseComposition(validComposition());
   const defaultedMerge = defaulted.nodes.get('merge');
   assert.ok(defaultedMerge !== undefined);

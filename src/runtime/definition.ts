@@ -10,6 +10,7 @@ import type {
   ForagerConfig,
   ForkBranch,
   ForkConfig,
+  MergeCombine,
   MergeConfig,
   NodeDefinition,
   NodeId,
@@ -446,10 +447,16 @@ function parseMergeConfig(
     }
   }
 
-  const combine = config['combine'] ?? 'text';
-  if (combine !== 'text') {
-    issues.push(`${path}.combine: only 'text' is supported in Stage 5A`);
-    valid = false;
+  // Stage 5C: `object` and `array` emit a structured Value; `text` is unchanged.
+  let combine: MergeCombine = 'text';
+  const rawCombine = config['combine'];
+  if (rawCombine !== undefined) {
+    if (rawCombine !== 'text' && rawCombine !== 'object' && rawCombine !== 'array') {
+      issues.push(`${path}.combine: expected 'text', 'object' or 'array'`);
+      valid = false;
+    } else {
+      combine = rawCombine;
+    }
   }
 
   // Stage 5B: the deadline starts on the first branch arrival for a forkId, so
@@ -472,7 +479,7 @@ function parseMergeConfig(
     }
   }
 
-  return valid ? { required, optional, combine: 'text', timeoutMs } : null;
+  return valid ? { required, optional, combine, timeoutMs } : null;
 }
 
 function parseDefaults(value: unknown, issues: string[]): CompositionDefaults {

@@ -5,6 +5,7 @@ export {
 } from './definition.js';
 export { createMemoryLog } from './log.js';
 export { renderPrompt, serializeValue } from './executor.js';
+export { assertJsonValue } from './json-value.js';
 export {
   COMPLETED_JOIN_TTL_MS,
   FieldRestoreError,
@@ -40,7 +41,9 @@ export type {
   ForkNode,
   HoverSpec,
   JoinState,
+  JsonValue,
   JoinStateSnapshot,
+  MergeCombine,
   MergeConfig,
   MergeNode,
   NodeDefinition,

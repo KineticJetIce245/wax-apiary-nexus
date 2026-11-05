@@ -12,6 +12,7 @@ import {
 import { dirname, join } from 'node:path';
 
 import { expandHomePath } from './conversation-store.js';
+import { assertJsonValue } from './runtime/json-value.js';
 import type {
   HoverSpec,
   PersistedField,
@@ -97,6 +98,12 @@ function assertValueShape(value: unknown, path: string): asserts value is Value 
       if (!Array.isArray(value['attachments'])) {
         throw new Error(`${path}.attachments: expected an array`);
       }
+      return;
+    case 'structured':
+      // Stage 5C: a structured Value is persisted as plain JSON, so the loaded
+      // field must still carry a JSON-safe payload. A malformed shape is
+      // rejected instead of silently becoming `{kind:'structured'}`.
+      assertJsonValue(value['value'], `${path}.value`);
       return;
     default:
       throw new Error(`${path}.kind: unknown value kind '${String(value['kind'])}'`);

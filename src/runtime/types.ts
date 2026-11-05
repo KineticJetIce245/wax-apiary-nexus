@@ -14,15 +14,31 @@ export interface Attachment {
 }
 
 /**
- * A Value is what a Pheromone carries. Triggers, executors and Merge's text
- * combine use the same union; Stage 3A adds no new Value kind.
+ * The JSON-safe data a `structured` Value may carry: null, booleans, finite
+ * numbers, strings, arrays and plain objects. Existing Value objects are legal
+ * members because they are plain JSON objects; the type itself stays JSON-only
+ * so the Honey and serialization boundaries have one shape to check.
+ */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+/**
+ * A Value is what a Pheromone carries. Triggers, executors and Merge use the
+ * same union. Stage 5C adds `structured` so an object/array Merge can preserve
+ * structure instead of flattening every branch to text.
  */
 export type Value =
   | { kind: 'text'; text: string }
   | { kind: 'choice'; choice: string }
   | { kind: 'boolean'; value: boolean }
   | { kind: 'message'; text?: string; attachments: Attachment[] }
-  | { kind: 'attachments'; attachments: Attachment[] };
+  | { kind: 'attachments'; attachments: Attachment[] }
+  | { kind: 'structured'; value: JsonValue };
 
 export interface Pheromone {
   id: string;
@@ -150,13 +166,15 @@ export interface ForkNode {
  * Stage 5A adds optional branches to the Stage 3A text combine. `optional` is
  * best effort: the required set completes the join immediately and an optional
  * branch only contributes when it has already arrived. Stage 5B adds
- * `timeoutMs`, measured from the first branch arrival for one forkId. The
- * object/array combine shapes still have no approved Value.
+ * `timeoutMs`, measured from the first branch arrival for one forkId. Stage 5C
+ * adds `object` and `array`, which emit a `structured` Value instead of text.
  */
+export type MergeCombine = 'text' | 'object' | 'array';
+
 export interface MergeConfig {
   required: readonly string[];
   optional: readonly string[];
-  combine: 'text';
+  combine: MergeCombine;
   timeoutMs: number;
 }
 

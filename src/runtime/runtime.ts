@@ -8,6 +8,7 @@ import {
   type NodeExecutor,
 } from './executor.js';
 import { clonePheromone, createNodeState, isFieldResting, isJoinClosed, snapshotField } from './field.js';
+import { assertJsonValue } from './json-value.js';
 import type { RuntimeLogEntry, RuntimeLogSink } from './log.js';
 import {
   runWorker,
@@ -23,6 +24,8 @@ import type {
   ForkNode,
   HoverSpec,
   JoinState,
+  JsonValue,
+  MergeCombine,
   MergeNode,
   NodeDefinition,
   NodeId,
@@ -89,7 +92,7 @@ export class FieldRestoreError extends Error {
   }
 }
 
-const VALUE_KINDS = ['text', 'choice', 'boolean', 'message', 'attachments'] as const;
+const VALUE_KINDS = ['text', 'choice', 'boolean', 'message', 'attachments', 'structured'] as const;
 
 function assertValue(value: unknown): asserts value is Value {
   if (typeof value !== 'object' || value === null) {
@@ -98,6 +101,9 @@ function assertValue(value: unknown): asserts value is Value {
   const kind = (value as { kind?: unknown }).kind;
   if (typeof kind !== 'string' || !(VALUE_KINDS as readonly string[]).includes(kind)) {
     throw new TypeError(`value.kind must be one of ${VALUE_KINDS.join(', ')}`);
+  }
+  if (kind === 'structured') {
+    assertJsonValue((value as { value?: unknown }).value, 'value.value');
   }
 }
 
@@ -1334,7 +1340,7 @@ export class PheromoneRuntime {
   }
 
   private finishMerge(node: MergeNode, arrived: readonly Pheromone[], traceId: string): void {
-    const text = arrived.map((pheromone) => serializeValue(pheromone.value)).join('\n');
+    const value = combineMergeValues(node.config.combine, arrived);
     const first = arrived[0];
     this.log({
       event: 'merge.completed',
@@ -1351,7 +1357,7 @@ export class PheromoneRuntime {
     if (edge === undefined) {
       return;
     }
-    this.pushPheromone(edge.to, traceId, { kind: 'text', text });
+    this.pushPheromone(edge.to, traceId, value);
   }
 
   /**
@@ -1690,6 +1696,50 @@ function workerLogFields(
     stderrBytes: worker.stderrBytes,
     ...(worker.exitCode === undefined ? {} : { exitCode: worker.exitCode }),
   };
+}
+
+/**
+ * Builds the single Merge output Value. `arrived` is already in required order
+ * followed by the optional branches that arrived, in optional config order.
+ *
+ * `text` keeps the Stage 3A newline join. `object` keys by branchId and `array`
+ * keeps only the branch Values, both wrapped in a `structured` Value so no
+ * information is flattened. The Merge output still carries no fork/branch tags.
+ */
+function combineMergeValues(
+  combine: MergeCombine,
+  arrived: readonly Pheromone[],
+): Value {
+  if (combine === 'text') {
+    const text = arrived.map((pheromone) => serializeValue(pheromone.value)).join('\n');
+    return { kind: 'text', text };
+  }
+
+  if (combine === 'object') {
+    const entries: [string, JsonValue][] = [];
+    for (const pheromone of arrived) {
+      const branchId = pheromone.branchId;
+      if (branchId === undefined) {
+        throw new Error('merge branch is missing its branch id');
+      }
+      entries.push([branchId, valueAsJson(pheromone.value)]);
+    }
+    return { kind: 'structured', value: Object.fromEntries(entries) };
+  }
+
+  return {
+    kind: 'structured',
+    value: arrived.map((pheromone) => valueAsJson(pheromone.value)),
+  };
+}
+
+/**
+ * A Value is a plain JSON object at runtime; the compiler cannot infer that
+ * from the union, so this cast documents the JSON-safe relationship used by
+ * `structured` Merge output.
+ */
+function valueAsJson(value: Value): JsonValue {
+  return value as unknown as JsonValue;
 }
 
 function evaluateCondition(

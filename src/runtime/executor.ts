@@ -35,7 +35,9 @@ export interface NodeExecutor {
  *
  * Stage 1 keeps this a pure helper so the contract's template rule is testable
  * without an adapter: the executor renders `node.config.prompt` with
- * `renderPrompt` before handing it to a harness.
+ * `renderPrompt` before handing it to a harness. Stage 5C serializes a
+ * `structured` Value as JSON so Forager prompts and Condition text mode keep
+ * the structure without a second rendering path.
  */
 export function serializeValue(value: Value): string {
   switch (value.kind) {
@@ -49,6 +51,13 @@ export function serializeValue(value: Value): string {
       return value.text ?? '';
     case 'attachments':
       return '';
+    case 'structured': {
+      const json = JSON.stringify(value.value);
+      if (json === undefined) {
+        throw new TypeError('structured value is not JSON-serializable');
+      }
+      return json;
+    }
   }
 }
 

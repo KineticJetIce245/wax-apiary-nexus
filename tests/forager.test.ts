@@ -7,7 +7,7 @@ import test from 'node:test';
 import type { ApprovalRequest } from '../src/adapters/harness.js';
 import { ForagerExecutionError, WorkspaceForagerExecutor, type ApprovalHandler } from '../src/forager.js';
 import { createKernel } from '../src/kernel.js';
-import { parseComposition, type ForagerNode } from '../src/runtime/index.js';
+import { parseComposition, type ForagerNode, type Value } from '../src/runtime/index.js';
 import { Workspace } from '../src/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions, type FakeTerminal } from './support/fake-adapter.js';
 
@@ -60,6 +60,31 @@ test('completed execution returns the assistant text and renders the prompt', as
   assert.deepEqual(bridge.adapter.prompts, ['do hi']);
   assert.deepEqual(bridge.adapter.submittedAttachments, [[]]);
   assert.deepEqual(bridge.executor.lastOutput, { kind: 'text', text: 'HELLO' });
+});
+
+test('renders a structured input as JSON and forwards no nested attachments', async (t) => {
+  const bridge = await setup({ output: 'SAW' });
+  t.after(async () => {
+    bridge.executor.dispose();
+    await bridge.workspace.stop();
+  });
+
+  const input: Value = {
+    kind: 'structured',
+    value: {
+      branch: { kind: 'text', text: 'A' },
+      nested: {
+        kind: 'message',
+        text: 'm',
+        attachments: [{ kind: 'file', path: '/tmp/notes.md' }],
+      },
+      n: 2,
+    },
+  };
+  await bridge.executor.execute(foragerNode(), input);
+
+  assert.deepEqual(bridge.adapter.prompts, [`do ${JSON.stringify(input.value)}`]);
+  assert.deepEqual(bridge.adapter.submittedAttachments, [[]]);
 });
 
 test('forwards an image attachment with an inferred mime type', async (t) => {

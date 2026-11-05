@@ -4,6 +4,10 @@ import { basename, resolve } from 'node:path';
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
 import type { HarnessAdapter } from './adapters/harness.js';
+import {
+  compositionToolAdapterConfig,
+  type CompositionToolAdapterConfig,
+} from './composition-mcp.js';
 import { createCodexConnection, type HarnessKind } from './connection.js';
 import {
   CompositionValidationError,
@@ -44,6 +48,8 @@ export interface AdapterRequest {
   readonly executable?: string;
   /** DSH checkout root; only meaningful when `harness` is `dsh`. */
   readonly dshRoot?: string;
+  /** Opt-in `wax_composition` MCP server; off unless `--composition-tools` is given. */
+  readonly compositionTools?: boolean;
 }
 
 export interface HarnessSelection {
@@ -88,18 +94,30 @@ export function selectHarness(
 }
 
 export async function createDefaultAdapter(request: AdapterRequest): Promise<HarnessAdapter> {
+  const compositionTools: CompositionToolAdapterConfig =
+    request.compositionTools === true
+      ? compositionToolAdapterConfig(request.harness)
+      : {};
   if (request.harness === 'dsh') {
     if (request.dshRoot === undefined || request.dshRoot === '') {
       throw new CliUsageError(DSH_ROOT_REQUIRED);
     }
     // The adapter's existing start() validates the checkout and launches the
     // ACP process; this factory only selects it.
-    return new DshAcpAdapter({ dshRoot: request.dshRoot });
+    return new DshAcpAdapter({
+      dshRoot: request.dshRoot,
+      ...(compositionTools.mcpServers === undefined
+        ? {}
+        : { mcpServers: compositionTools.mcpServers }),
+    });
   }
   const connection = await createCodexConnection(
     request.executable === undefined ? {} : { executable: request.executable },
   );
-  return new CodexAppServerAdapter({ launch: connection.launch });
+  return new CodexAppServerAdapter({
+    launch: connection.launch,
+    ...(compositionTools.config === undefined ? {} : { config: compositionTools.config }),
+  });
 }
 
 export interface LoadedCompositionFile {

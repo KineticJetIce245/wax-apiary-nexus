@@ -126,6 +126,41 @@ test('trigger is optional when resuming', () => {
   assert.equal(command.resume, true);
 });
 
+test('parses --composition-tools as an opt-in boolean', () => {
+  const off = parseRunArgs(['run', 'c.json', '--project', 'p', '--harness', 'codex', '--trigger', 's']);
+  assert.equal(off.compositionTools, false);
+
+  const on = parseRunArgs([
+    'run',
+    'c.json',
+    '--project',
+    'p',
+    '--harness',
+    'codex',
+    '--trigger',
+    's',
+    '--composition-tools',
+  ]);
+  assert.equal(on.compositionTools, true);
+
+  assert.throws(
+    () =>
+      parseRunArgs([
+        'run',
+        'c.json',
+        '--project',
+        'p',
+        '--harness',
+        'codex',
+        '--trigger',
+        's',
+        '--composition-tools',
+        '--composition-tools',
+      ]),
+    /more than once/,
+  );
+});
+
 test('rejects missing, duplicated and unknown options', () => {
   assert.throws(
     () => parseRunArgs(['run', 'c.json', '--harness', 'codex', '--trigger', 'start']),
@@ -512,6 +547,38 @@ test('createDefaultAdapter selects DshAcpAdapter without spawning', async () => 
   const adapter = await createDefaultAdapter({ harness: 'dsh', dshRoot: projectDirectory() });
   assert.ok(adapter instanceof DshAcpAdapter);
   await assert.rejects(createDefaultAdapter({ harness: 'dsh' }), /requires --dsh-root/);
+});
+
+test('runCli forwards --composition-tools to the adapter factory', async () => {
+  const adapter = new FakeAdapter({ output: 'TOOLS-FAKE' });
+  const captureResult = capture();
+  const requests: AdapterRequest[] = [];
+
+  const code = await runCli(
+    [
+      'run',
+      compositionFile(),
+      '--project',
+      projectDirectory(),
+      '--harness',
+      'codex',
+      '--state-dir',
+      stateDirectory(),
+      '--trigger',
+      'start',
+      '--composition-tools',
+    ],
+    {
+      ...captureResult.deps,
+      createAdapter: async (request) => {
+        requests.push(request);
+        return adapter;
+      },
+    },
+  );
+
+  assert.equal(code, 0);
+  assert.deepEqual(requests, [{ harness: 'codex', compositionTools: true }]);
 });
 
 test('a failed execution exits non-zero and still reports the field state', async () => {

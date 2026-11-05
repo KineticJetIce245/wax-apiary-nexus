@@ -36,6 +36,8 @@ export interface DaemonCommand {
   readonly apiary?: string;
   readonly codexExe?: string;
   readonly dshRoot?: string;
+  /** Opt-in `wax_composition` MCP server for the selected harness. */
+  readonly compositionTools: boolean;
 }
 
 export interface DaemonDependencies {
@@ -59,11 +61,13 @@ const VALUE_FLAGS = new Set([
   '--state-dir',
   '--apiary',
 ]);
+const BOOLEAN_FLAGS = new Set(['--composition-tools']);
 
 const DEFAULT_STATE_DIR = '~/.wax';
 const DAEMON_USAGE =
   'usage: wax daemon <composition.json> --project <dir> --harness <codex|dsh> ' +
-  '[--state-dir <dir>] [--apiary <id>] [--codex-exe <path>] [--dsh-root <path>]';
+  '[--composition-tools] [--state-dir <dir>] [--apiary <id>] ' +
+  '[--codex-exe <path>] [--dsh-root <path>]';
 
 export function parseDaemonArgs(
   argv: readonly string[],
@@ -76,10 +80,18 @@ export function parseDaemonArgs(
 
   const positionals: string[] = [];
   const flags = new Map<string, string>();
+  const booleans = new Set<string>();
 
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index];
     if (token === undefined) {
+      continue;
+    }
+    if (BOOLEAN_FLAGS.has(token)) {
+      if (booleans.has(token)) {
+        throw new CliUsageError(`option '${token}' was given more than once`);
+      }
+      booleans.add(token);
       continue;
     }
     if (token.startsWith('--')) {
@@ -130,6 +142,7 @@ export function parseDaemonArgs(
     ...(apiary === undefined ? {} : { apiary }),
     ...(selection.dshRoot === undefined ? {} : { dshRoot: selection.dshRoot }),
     ...(selection.codexExe === undefined ? {} : { codexExe: selection.codexExe }),
+    compositionTools: booleans.has('--composition-tools'),
   };
 }
 
@@ -296,6 +309,7 @@ export async function runDaemon(
       harness: command.harness,
       ...(command.codexExe === undefined ? {} : { executable: command.codexExe }),
       ...(command.dshRoot === undefined ? {} : { dshRoot: command.dshRoot }),
+      ...(command.compositionTools ? { compositionTools: true } : {}),
     };
     adapter = await createAdapter(request);
     await adapter.start();

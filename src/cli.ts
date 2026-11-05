@@ -20,6 +20,7 @@ import { expandHomePath } from './conversation-store.js';
 import { WorkspaceForagerExecutor } from './forager.js';
 import { HoneyStore } from './honey.js';
 import { createKernel } from './kernel.js';
+import { runMcpCommand } from './mcp-server.js';
 import {
   createMemoryLog,
   PheromoneRuntime,
@@ -49,6 +50,8 @@ export interface RunCommand {
   readonly stateDir: string;
   readonly apiary?: string;
   readonly resume: boolean;
+  /** Opt-in `wax_composition` MCP server for the selected harness. */
+  readonly compositionTools: boolean;
 }
 
 /** Interactive answer for a hovering user node. */
@@ -77,7 +80,7 @@ const VALUE_FLAGS = new Set([
   '--state-dir',
   '--apiary',
 ]);
-const BOOLEAN_FLAGS = new Set(['--resume']);
+const BOOLEAN_FLAGS = new Set(['--resume', '--composition-tools']);
 
 const DEFAULT_STATE_DIR = '~/.wax';
 
@@ -89,7 +92,8 @@ export function parseRunArgs(
   if (command !== 'run') {
     throw new CliUsageError(
       'usage: wax run <composition.json> --project <dir> --harness <codex|dsh> ' +
-        '[--trigger <node>] [--input <text>] [--resume] [--state-dir <dir>] [--apiary <id>] ' +
+        '[--trigger <node>] [--input <text>] [--resume] [--composition-tools] ' +
+        '[--state-dir <dir>] [--apiary <id>] ' +
         '[--codex-exe <path>] [--dsh-root <path>]',
     );
   }
@@ -167,6 +171,7 @@ export function parseRunArgs(
     stateDir: flags.get('--state-dir') ?? DEFAULT_STATE_DIR,
     ...(apiary === undefined ? {} : { apiary }),
     resume,
+    compositionTools: booleans.has('--composition-tools'),
   };
 }
 
@@ -345,6 +350,9 @@ function firstHover(
 }
 
 export async function runCli(argv: readonly string[], deps: CliDependencies = {}): Promise<number> {
+  if (argv[0] === 'mcp') {
+    return runMcpCommand(argv);
+  }
   if (argv[0] === 'composition') {
     return runCompositionCli(argv, deps);
   }
@@ -392,6 +400,7 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
     harness: command.harness,
     ...(command.codexExe === undefined ? {} : { executable: command.codexExe }),
     ...(command.dshRoot === undefined ? {} : { dshRoot: command.dshRoot }),
+    ...(command.compositionTools ? { compositionTools: true } : {}),
   };
   let adapter: HarnessAdapter;
   try {

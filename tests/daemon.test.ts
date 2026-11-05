@@ -138,6 +138,44 @@ test('parses the daemon command with its default state directory', () => {
   assert.equal(command.stateDir, '~/.wax');
 });
 
+test('parses the opt-in --composition-tools flag', () => {
+  const off = parseDaemonArgs([
+    'daemon',
+    'c.json',
+    '--project',
+    'p',
+    '--harness',
+    'codex',
+  ]);
+  assert.equal(off.compositionTools, false);
+
+  const on = parseDaemonArgs([
+    'daemon',
+    'c.json',
+    '--project',
+    'p',
+    '--harness',
+    'codex',
+    '--composition-tools',
+  ]);
+  assert.equal(on.compositionTools, true);
+
+  assert.throws(
+    () =>
+      parseDaemonArgs([
+        'daemon',
+        'c.json',
+        '--project',
+        'p',
+        '--harness',
+        'codex',
+        '--composition-tools',
+        '--composition-tools',
+      ]),
+    /more than once/,
+  );
+});
+
 test('parses a dsh daemon from the flag or DSH_ROOT', () => {
   const fromFlag = parseDaemonArgs(
     [
@@ -343,6 +381,41 @@ test('a past at trigger runs through a selected dsh adapter', async () => {
   assert.deepEqual(adapter.prompts, ['scheduled ']);
   assert.ok(captureResult.stdout.some((line) => line.startsWith('daemon started ')));
   assert.equal(existsSync(join(paths.directory, 'daemon.lock')), false);
+});
+
+test('runDaemon forwards --composition-tools to the adapter factory', async () => {
+  const adapter = new FakeAdapter({ output: 'DAEMON-TOOLS-OUT' });
+  const captureResult = capture();
+  const controller = new AbortController();
+  const project = tempDirectory('wax-daemon-project-');
+  const state = tempDirectory('wax-daemon-state-');
+  const compositionPath = compositionFile(
+    scheduledComposition({ id: 'daemon-tools', targetKind: 'forager' }),
+  );
+  const requests: AdapterRequest[] = [];
+
+  const running = runDaemon(
+    [...baseArgs(compositionPath, project, state), '--composition-tools'],
+    {
+      ...captureResult.deps,
+      createAdapter: async (request) => {
+        requests.push(request);
+        return adapter;
+      },
+      signal: controller.signal,
+    },
+  );
+
+  let code = -1;
+  try {
+    await waitFor(() => adapter.prompts.length === 1, 'the scheduled forager prompt');
+  } finally {
+    controller.abort();
+    code = await running;
+  }
+
+  assert.equal(code, 0);
+  assert.deepEqual(requests, [{ harness: 'codex', compositionTools: true }]);
 });
 
 test('simultaneous past triggers both run despite the node minimum interval', async () => {

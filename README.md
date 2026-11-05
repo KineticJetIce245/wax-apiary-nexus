@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring are implemented; `npm test` passes 390/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `wax run` and `wax daemon` select Codex or the existing DSH ACP adapter; dsh requires an explicit `--dsh-root` or `DSH_ROOT`. A real DSH smoke launched the adapter and reached the model call, then failed because no API key was configured, so a real DSH completion remains unverified.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, the Stage 4B-B local composition MCP tool, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring are implemented; `npm test` passes 411/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `wax run` and `wax daemon` select Codex or the existing DSH ACP adapter; dsh requires an explicit `--dsh-root` or `DSH_ROOT`. A real DSH smoke launched the adapter and reached the model call, then failed because no API key was configured, so a real DSH completion remains unverified.
 
 ## Vision
 
@@ -46,6 +46,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - `src/revision.ts` refuses a graph edit that removes or renames a node still holding queue, pending, active, hover, or merge-waiting state; a forced edit returns the nodes that must be marked as needing attention.
 - Stage 4A adds offline `wax composition validate <file>` and `wax composition replace <file> --with <new-file> [--state-dir <dir>] [--apiary <id>]`. `validate` only reads and parses. `replace` parses both files, refuses a different composition id, any queue/pending/active/hover/merge-waiting reference (when `--apiary` resolves a Honey field), and a live or uncertain daemon lock; it writes through a same-directory temp file plus rename and appends one metadata-only revision audit line to `<state-dir>/revisions.jsonl` (default `~/.wax/revisions.jsonl`). There is no `--force`, no `needsAttention` write, and a stale lock is left in place. Without `--apiary`, replace still runs but prints that active references were not checked.
 - Stage 4B-A adds `--json` to both composition commands. JSON mode writes exactly one object to stdout and nothing to stderr: `{ok:true,...}` for success, `{ok:false,command,code,error}` for failure with `code` one of `usage`, `parse`, `refused`, `io`, `internal`. Exit codes remain `0` success, `2` usage/parse/refusal, `1` IO. `src/composition-tool.ts` is the transport-neutral result layer; it calls the same guarded editing service as the human CLI, so active-reference, daemon-lock and audit policy is never reimplemented in JSON formatting. Results never contain composition bodies, prompts or outputs.
+- Stage 4B-B exposes the same 4B-A result over a local MCP stdio server. `wax mcp` (or `node dist/src/mcp-server.js`) speaks newline-delimited JSON-RPC 2.0, advertises protocol `2024-11-05` as `wax-composition` `0.0.0`, and exposes `composition_validate` and `composition_replace`. Each tool call returns one text content item with the existing JSON result and `isError: true` for `ok: false`; no composition body is returned. `wax run` and `wax daemon` accept an opt-in `--composition-tools` flag that configures one MCP server named `wax_composition` (`process.execPath` plus the absolute built server path, argv only). Codex gets `thread/start.config.mcp_servers.wax_composition` with an object `env`; DSH gets `session/new.mcpServers[].env` as an array. It is off by default, and the server only presents the existing service's active-reference, daemon-lock and audit decisions.
 - Stage 4C adds read-only inspection. `wax composition revisions` reads `<state-dir>/revisions.jsonl` (default `~/.wax`), filters by `--composition`, keeps the newest `--limit` matches (default 50, max 1000) and fails on any malformed line instead of skipping it. The reader whitelists the six audit fields, so a corrupt line can never leak a composition body. `wax composition recover <file>` scans the same directory for `.<basename>.tmp-*` candidates and reports each as valid or invalid; it never renames, deletes or overwrites anything, and has no `--apply`.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
 - `wax run` and `wax daemon` accept `--harness codex|dsh`; dsh requires `--dsh-root <path>` or `DSH_ROOT` (no implicit default), and each per-harness override is rejected on the other harness.
@@ -59,11 +60,13 @@ ARCHITECTURE.md      target runtime model
 CONTRACT.md          composition file, runtime state, validation, CLI
 src/runtime/         the implemented single-Pheromone runtime
 src/forager.ts       Workspace -> NodeExecutor bridge
-src/cli.ts           `wax run` / `wax daemon` / `wax composition` CLI entry
+src/cli.ts           `wax run` / `wax daemon` / `wax composition` / `wax mcp` CLI entry
 src/composition-cli.ts  `wax composition validate|replace` argument parsing and exit codes
-src/composition-tool.ts transport-neutral typed result layer behind `--json`
+src/composition-tool.ts transport-neutral typed result layer behind `--json` and MCP
 src/composition-edit.ts atomic composition replace, Honey/lock checks, revision audit
 src/composition-audit.ts read-only revision audit and orphan-temp inspection
+src/composition-mcp.ts per-harness `wax_composition` MCP config builders
+src/mcp-server.ts    newline-delimited JSON-RPC MCP stdio server behind `wax mcp`
 src/daemon.ts        foreground daemon for one composition's schedule
 src/scheduler.ts     durable at/every occurrence scheduler
 src/daemon-lock.ts   per-composition daemon lock
@@ -115,6 +118,25 @@ npm run wax -- daemon composition.json --project . --harness codex
 `--state-dir`, `--apiary`, `--codex-exe` and `--dsh-root` have the same meanings
 as for `wax run`. A second daemon for the same composition is refused while the
 lock is live. The process serves no HTTP API and has no UI.
+
+`--composition-tools` on `wax run` or `wax daemon` opts that harness session into
+one local MCP server named `wax_composition`. It is launched with
+`process.execPath` and the absolute built `dist/src/mcp-server.js` (argv only, no
+shell string); Codex receives it as `thread/start.config.mcp_servers.wax_composition`,
+DSH as `session/new.mcpServers`. The flag is off by default.
+
+The composition tool is also available directly over stdin/stdout:
+
+```bash
+npm run wax -- mcp
+node dist/src/mcp-server.js
+```
+
+Both speak newline-delimited JSON-RPC 2.0 MCP (`initialize`,
+`notifications/initialized`, `ping`, `tools/list`, `tools/call`) with protocol
+`2024-11-05` and tools `composition_validate` / `composition_replace`. Each tool
+result is one text content item containing the same JSON object as `--json`, with
+`isError: true` for `ok: false`; stdout carries protocol lines only.
 
 The offline composition editor never starts a daemon or a harness:
 

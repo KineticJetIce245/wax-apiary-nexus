@@ -29,7 +29,7 @@ const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
 
 function usage(): string {
   return [
-    'WAX Apiary Nexus (harness coordination)',
+    'WAX Apiary neXus (harness coordination)',
     'Usage: node dist/src/cli.js <project-dir> [options]',
     '',
     'Options:',

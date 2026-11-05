@@ -1,8 +1,8 @@
-# WAX Apiary Nexus — AI Engineering Contract
+# WAX Apiary neXus — AI Engineering Contract
 
 ## Mission
 
-Implement WAX Apiary Nexus incrementally, prioritizing evidence-based architecture validation over feature completeness.
+Implement WAX Apiary neXus incrementally, prioritizing evidence-based architecture validation over feature completeness.
 
 You are responsible for research, implementation, testing, documentation, and reporting.
 
@@ -86,7 +86,7 @@ A milestone is complete only when its stated acceptance criteria are demonstrate
 
 Code generation alone does not constitute completion.
 
-# WAX Apiary Nexus — Anti-Overengineering Rules
+# WAX Apiary neXus — Anti-Overengineering Rules
 
 You are developing a personal, experimental, open-source AI workspace.
 

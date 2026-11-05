@@ -1,4 +1,4 @@
-# WAX Apiary Nexus — Composition Contract
+# WAX Apiary neXus — Composition Contract
 
 > **Status**: target contract. The runtime described here is not implemented yet. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 

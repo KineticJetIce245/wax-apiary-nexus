@@ -166,7 +166,7 @@ export class CodexAppServerAdapter implements HarnessAdapter {
         this.client.request(
           'initialize',
           {
-            clientInfo: { name: 'wax-apiary-nexus', title: 'WAX Apiary Nexus', version: '0.0.0' },
+            clientInfo: { name: 'wax-apiary-nexus', title: 'WAX Apiary neXus', version: '0.0.0' },
           },
           this.initializeTimeoutMs,
         ),

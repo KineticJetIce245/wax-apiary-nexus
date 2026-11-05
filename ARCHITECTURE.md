@@ -1,4 +1,4 @@
-# WAX Apiary Nexus — Architecture
+# WAX Apiary neXus — Architecture
 
 > **Status**: target design. The PheromoneField runtime is not implemented yet; `src/` is an earlier prototype. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
 

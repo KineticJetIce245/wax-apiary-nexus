@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The current `src/` is an earlier prototype; the PheromoneField runtime is not implemented yet.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. Its first slice is implemented in `src/runtime/` (single Pheromone: trigger, terminal/Rest, queue, condition, counter); the rest of `src/` is still the earlier prototype.
 
 ## Vision
 
@@ -32,7 +32,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 
 - The target architecture and contract are written.
 - The repository still contains an earlier prototype (workbench, adapters, flow/delegation experiments). It is useful as protocol evidence, but it is not the target runtime.
-- The new runtime starts from a single-Pheromone vertical slice: trigger → node → terminal/Rest, with queue, pending, min interval, log, and tests.
+- The first runtime slice lives in `src/runtime/`: single-Pheromone trigger → node → terminal/Rest, with FIFO queue, pending, min interval, condition/counter, an in-memory log, and an injected executor for `forager`.
 - `Fork`, `Merge`, `Worker`, schedules, and the richer input modalities come after the single-Pheromone core is solid.
 
 ## Repository layout

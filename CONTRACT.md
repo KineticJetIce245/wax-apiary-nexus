@@ -364,4 +364,4 @@ wax honey <conversationId> [--json]
 
 ## 13. Implementation status
 
-The PheromoneField runtime is not implemented. The repository's existing `src/` is an earlier prototype. The first implementation slice is single-Pheromone: trigger → node → terminal/Rest, with queue, pending, minimum interval, log, and tests. Fork/Merge/Branch, Worker, schedules, and richer user modalities follow.
+The first slice is implemented in `src/runtime/`: composition parse/validation, `PheromoneField` state, `trigger`, single-Pheromone consumption/production, terminal/Rest, FIFO queue with pending and `minIntervalMs`, `condition`/`counter`, an in-memory log, and an injected executor for `forager`. It does not touch a real harness. The rest of `src/` is still the earlier prototype. Fork/Merge/Branch, Worker, schedules, persistence, and richer user modalities follow.

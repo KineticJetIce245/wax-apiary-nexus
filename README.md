@@ -31,11 +31,12 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 ## Current state
 
 - The target architecture and contract are written.
-- The single-Pheromone runtime lives in `src/runtime/`.
+- The single-Pheromone runtime lives in `src/runtime/`: trigger, terminal/Rest, queue/pending, condition/counter, and `user` nodes that park a Pheromone in a Hover until the answer arrives.
 - The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`.
+- Honey lives in `src/honey.ts`: an atomically replaced `field.json` under `~/.wax/apiaries/<apiary>/compositions/<id>/honey/`, plus a metadata `log.jsonl` that never stores prompt or output bodies. `--resume` rebuilds a field; an interrupted Forager becomes unknown and is never replayed.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
 - `--harness dsh` is not wired yet; the real Codex smoke test still needs a machine with Codex available.
-- The next steps are Hover/user/Honey durability, Guard/transcript, and then the richer graph features.
+- The next step is Guard/transcript and crash/live-edit semantics, then the richer graph features.
 
 ## Repository layout
 
@@ -79,7 +80,10 @@ npm run wax -- run composition.json --project . --harness codex --trigger plan -
 ```
 
 It triggers one node, pumps the graph to Rest, and prints the node states, a log
-summary, and the final output. `--harness dsh` is not wired yet.
+summary, and the final output. `user` nodes prompt on stdin; a non-interactive
+stdin is refused instead of answered. The run persists Honey and can be
+continued with `--resume` (`--state-dir` and `--apiary` override the location).
+`--harness dsh` is not wired yet.
 
 ## Design principles
 

@@ -64,6 +64,18 @@ function conditionComposition(mode: Record<string, unknown>): ReturnType<typeof 
   });
 }
 
+function twoNodeComposition(): ReturnType<typeof parseComposition> {
+  return parseComposition({
+    schemaVersion: 1,
+    id: 'pair',
+    nodes: {
+      a: { kind: 'forager', config: { connection: 'codex', prompt: 'first' } },
+      b: { kind: 'forager', config: { connection: 'codex', prompt: 'second' } },
+    },
+    edges: [],
+  });
+}
+
 function counterComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
@@ -294,12 +306,65 @@ test('a failing executor logs node.failed and surfaces the error', async () => {
   assert.equal(runtime.snapshot().nodes['start']?.active, undefined);
 });
 
-test('executor failures do not corrupt the runnable state of other nodes', async () => {
-  const { executor } = recorder();
-  const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => START });
+test('a failed activation leaves an empty field at Rest', async () => {
+  const executor: NodeExecutor = {
+    async execute() {
+      throw new Error('boom');
+    },
+  };
+  const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
-  runtime.trigger('start');
+  runtime.trigger('a');
+  await assert.rejects(runtime.pump(), /boom/);
+
+  const snapshot = runtime.snapshot();
+  assert.equal(snapshot.nodes['a']?.active, undefined);
+  assert.deepEqual(snapshot.pheromones, []);
+  assert.equal(snapshot.rest, true);
+});
+
+test('a failure keeps queued pheromones and the field is not at Rest', async () => {
+  const executor: NodeExecutor = {
+    async execute() {
+      throw new Error('boom');
+    },
+  };
+  const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
+
+  runtime.trigger('a', { kind: 'text', text: 'first' });
+  runtime.trigger('a', { kind: 'text', text: 'second' });
+  await assert.rejects(runtime.pump(), /boom/);
+
+  const snapshot = runtime.snapshot();
+  const node = snapshot.nodes['a'];
+  assert.ok(node !== undefined);
+  assert.equal(node.queue.length, 1);
+  assert.equal(snapshot.pheromones.length, 1);
+  assert.equal(snapshot.rest, false);
+});
+
+test('a failure on one node leaves another node queued work runnable', async () => {
+  const calls: string[] = [];
+  const executor: NodeExecutor = {
+    async execute(node) {
+      if (node.id === 'a') {
+        throw new Error('boom');
+      }
+      calls.push(node.id);
+      return { kind: 'text', text: 'ok' };
+    },
+  };
+  const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
+
+  runtime.trigger('a');
+  runtime.trigger('b');
+  await assert.rejects(runtime.pump(), /boom/);
+
+  assert.equal(runtime.snapshot().nodes['a']?.active, undefined);
+  assert.equal(runtime.snapshot().rest, false, 'node b is still queued');
+
   await runtime.pump();
+  assert.deepEqual(calls, ['b']);
   assert.equal(runtime.snapshot().rest, true);
 });
 

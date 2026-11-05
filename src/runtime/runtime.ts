@@ -115,14 +115,19 @@ export class PheromoneRuntime {
 
   /** Activates every runnable node until the field is quiet. */
   async pump(): Promise<void> {
-    for (;;) {
-      const next = this.takeRunnable();
-      if (next === null) {
-        break;
+    try {
+      for (;;) {
+        const next = this.takeRunnable();
+        if (next === null) {
+          break;
+        }
+        await this.activate(next.node, next.pheromone);
       }
-      await this.activate(next.node, next.pheromone);
+    } finally {
+      // A failed activation still changes the field (active is cleared), so
+      // Rest must be recomputed before the error leaves pump().
+      this.refreshRest();
     }
-    this.refreshRest();
   }
 
   /** Immutable view of the PheromoneField. */

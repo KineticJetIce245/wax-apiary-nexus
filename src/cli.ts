@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -6,6 +7,7 @@ import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import type { ApprovalDecisionKind, ApprovalRequest, HarnessAdapter } from './adapters/harness.js';
 import { createCodexConnection, type HarnessKind } from './connection.js';
 import { WorkspaceForagerExecutor, type ApprovalHandler } from './forager.js';
+import { HoneyStore } from './honey.js';
 import { createKernel } from './kernel.js';
 import {
   CompositionValidationError,
@@ -13,8 +15,13 @@ import {
   parseComposition,
   PheromoneRuntime,
   type CompositionDefinition,
+  type HoverSpec,
+  type PersistedField,
   type PheromoneFieldSnapshot,
+  type RecoveryReport,
   type RuntimeLogEntry,
+  type UserNode,
+  type Value,
 } from './runtime/index.js';
 import { Workspace } from './workspace.js';
 
@@ -29,10 +36,13 @@ export interface RunCommand {
   readonly compositionPath: string;
   readonly projectDirectory: string;
   readonly harness: HarnessKind;
-  readonly trigger: string;
+  readonly trigger?: string;
   readonly input: string;
   readonly dshRoot?: string;
   readonly codexExe?: string;
+  readonly stateDir: string;
+  readonly apiary?: string;
+  readonly resume: boolean;
 }
 
 export interface AdapterRequest {
@@ -40,30 +50,56 @@ export interface AdapterRequest {
   readonly executable?: string;
 }
 
+/** Interactive answer for a hovering user node. */
+export type UserAnswerHandler = (node: UserNode, hover: HoverSpec) => Promise<Value>;
+
 export interface CliDependencies {
   /** Test seam: replace the native adapter factory. */
   readonly createAdapter?: (request: AdapterRequest) => Promise<HarnessAdapter>;
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
   readonly askApproval?: ApprovalHandler;
+  readonly askUser?: UserAnswerHandler;
 }
 
-const VALUE_FLAGS = new Set(['--project', '--harness', '--trigger', '--input', '--dsh-root', '--codex-exe']);
+const VALUE_FLAGS = new Set([
+  '--project',
+  '--harness',
+  '--trigger',
+  '--input',
+  '--dsh-root',
+  '--codex-exe',
+  '--state-dir',
+  '--apiary',
+]);
+const BOOLEAN_FLAGS = new Set(['--resume']);
+
+const DEFAULT_STATE_DIR = '~/.wax';
 
 export function parseRunArgs(argv: readonly string[]): RunCommand {
   const [command, ...rest] = argv;
   if (command !== 'run') {
     throw new CliUsageError(
-      'usage: wax run <composition.json> --project <dir> --harness <codex|dsh> --trigger <node> [--input <text>] [--codex-exe <path>]',
+      'usage: wax run <composition.json> --project <dir> --harness <codex|dsh> ' +
+        '[--trigger <node>] [--input <text>] [--resume] [--state-dir <dir>] [--apiary <id>] ' +
+        '[--codex-exe <path>]',
     );
   }
 
   const positionals: string[] = [];
   const flags = new Map<string, string>();
+  const booleans = new Set<string>();
 
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index];
     if (token === undefined) {
+      continue;
+    }
+    if (BOOLEAN_FLAGS.has(token)) {
+      if (booleans.has(token)) {
+        throw new CliUsageError(`option '${token}' was given more than once`);
+      }
+      booleans.add(token);
       continue;
     }
     if (token.startsWith('--')) {
@@ -99,22 +135,27 @@ export function parseRunArgs(argv: readonly string[]): RunCommand {
     throw new CliUsageError(`--harness must be 'codex' or 'dsh', got '${harness ?? ''}'`);
   }
 
+  const resume = booleans.has('--resume');
   const trigger = flags.get('--trigger');
-  if (trigger === undefined) {
-    throw new CliUsageError('missing required option --trigger <node>');
+  if (trigger === undefined && !resume) {
+    throw new CliUsageError('missing required option --trigger <node> (or pass --resume)');
   }
 
   const dshRoot = flags.get('--dsh-root');
   const codexExe = flags.get('--codex-exe');
+  const apiary = flags.get('--apiary');
 
   return {
     compositionPath,
     projectDirectory,
     harness,
-    trigger,
+    ...(trigger === undefined ? {} : { trigger }),
     input: flags.get('--input') ?? '',
     ...(dshRoot === undefined ? {} : { dshRoot }),
     ...(codexExe === undefined ? {} : { codexExe }),
+    stateDir: flags.get('--state-dir') ?? DEFAULT_STATE_DIR,
+    ...(apiary === undefined ? {} : { apiary }),
+    resume,
   };
 }
 
@@ -148,9 +189,20 @@ function validateTrigger(definition: CompositionDefinition, trigger: string): vo
   if (node === undefined) {
     throw new CliUsageError(`unknown trigger node '${trigger}'`);
   }
-  if (node.kind !== 'forager') {
-    throw new CliUsageError(`trigger target '${trigger}' must be a forager node, got '${node.kind}'`);
+  if (node.kind !== 'forager' && node.kind !== 'user') {
+    throw new CliUsageError(
+      `trigger target '${trigger}' must be a forager or user node, got '${node.kind}'`,
+    );
   }
+}
+
+/** Default apiary id: a filesystem-safe slug of the project directory name. */
+export function apiaryForProject(projectDirectory: string): string {
+  const slug = basename(resolve(projectDirectory))
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug === '' ? 'apiary' : slug.slice(0, 64);
 }
 
 function fallbackDecision(request: ApprovalRequest): ApprovalDecisionKind {
@@ -192,6 +244,58 @@ async function askApprovalInteractively(request: ApprovalRequest): Promise<Appro
   }
 }
 
+function parseUserAnswer(node: UserNode, answer: string): Value {
+  if (node.config.modality === 'yes-no') {
+    const normalized = answer.trim().toLowerCase();
+    if (normalized === 'y' || normalized === 'yes' || normalized === 'true') {
+      return { kind: 'boolean', value: true };
+    }
+    if (normalized === 'n' || normalized === 'no' || normalized === 'false') {
+      return { kind: 'boolean', value: false };
+    }
+    throw new CliUsageError(`expected y or n, got '${answer}'`);
+  }
+
+  if (node.config.modality === 'choice') {
+    const choices = node.config.choices ?? [];
+    const index = Number(answer.trim());
+    if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
+      const choice = choices[index - 1];
+      if (choice !== undefined) {
+        return { kind: 'choice', choice };
+      }
+    }
+    if (choices.includes(answer.trim())) {
+      return { kind: 'choice', choice: answer.trim() };
+    }
+    throw new CliUsageError(`expected one of: ${choices.join(', ')}`);
+  }
+
+  return { kind: 'text', text: answer };
+}
+
+async function askUserInteractively(node: UserNode, hover: HoverSpec): Promise<Value> {
+  if (process.stdin.isTTY !== true) {
+    throw new Error(
+      `user node '${node.id}' is waiting for input, but stdin is not interactive (hover ${hover.token})`,
+    );
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const choices = node.config.choices ?? [];
+    const options =
+      node.config.modality === 'choice'
+        ? ` [${choices.map((choice, index) => `${String(index + 1)}=${choice}`).join(' ')}]`
+        : node.config.modality === 'yes-no'
+          ? ' [y/n]'
+          : '';
+    const answer = await rl.question(`${node.config.prompt}${options} `);
+    return parseUserAnswer(node, answer);
+  } finally {
+    rl.close();
+  }
+}
+
 async function createDefaultAdapter(request: AdapterRequest): Promise<HarnessAdapter> {
   if (request.harness === 'dsh') {
     throw new CliUsageError('the dsh bridge is not wired in Stage 2A; run with --harness codex');
@@ -202,12 +306,36 @@ async function createDefaultAdapter(request: AdapterRequest): Promise<HarnessAda
   return new CodexAppServerAdapter({ launch: connection.launch });
 }
 
+interface Hovered {
+  readonly node: UserNode;
+  readonly hover: HoverSpec;
+}
+
+function firstHover(
+  definition: CompositionDefinition,
+  snapshot: PheromoneFieldSnapshot,
+): Hovered | undefined {
+  for (const [id, state] of definition.nodes) {
+    if (state.kind !== 'user') {
+      continue;
+    }
+    const hover = snapshot.nodes[id]?.hover;
+    if (hover !== undefined) {
+      return { node: state, hover };
+    }
+  }
+  return undefined;
+}
+
 export async function runCli(argv: readonly string[], deps: CliDependencies = {}): Promise<number> {
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
 
   let command: RunCommand;
   let definition: CompositionDefinition;
+  let store: HoneyStore;
+  let persisted: PersistedField | undefined;
+
   try {
     command = parseRunArgs(argv);
     if (command.harness === 'dsh' && command.dshRoot === undefined) {
@@ -217,9 +345,24 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       throw new CliUsageError('--codex-exe only applies to --harness codex');
     }
     definition = loadComposition(command.compositionPath);
-    validateTrigger(definition, command.trigger);
+    if (command.trigger !== undefined) {
+      validateTrigger(definition, command.trigger);
+    }
     if (command.harness === 'dsh') {
       throw new CliUsageError('the dsh bridge is not wired in Stage 2A; run with --harness codex');
+    }
+
+    const apiary = command.apiary ?? apiaryForProject(command.projectDirectory);
+    try {
+      store = HoneyStore.forComposition(command.stateDir, apiary, definition.id);
+    } catch (error) {
+      throw new CliUsageError(messageOf(error));
+    }
+    if (command.resume) {
+      persisted = store.load();
+      if (persisted === undefined) {
+        throw new CliUsageError(`nothing to resume at ${store.paths.field}`);
+      }
     }
   } catch (error) {
     if (error instanceof CliUsageError) {
@@ -245,8 +388,21 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 
   const workspace = new Workspace(adapter);
   const log = createMemoryLog();
+  const askUser = deps.askUser ?? askUserInteractively;
   let forager: WorkspaceForagerExecutor | undefined;
+  let runtime: PheromoneRuntime | undefined;
+  let report: RecoveryReport | undefined;
   let code = 0;
+  let flushedCount = 0;
+
+  const flush = (): void => {
+    if (runtime === undefined) {
+      return;
+    }
+    store.save(runtime.exportField());
+    store.appendLog(log.entries.slice(flushedCount));
+    flushedCount = log.entries.length;
+  };
 
   try {
     const project = createKernel().registerProject(command.projectDirectory);
@@ -257,30 +413,45 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       onApproval: deps.askApproval ?? askApprovalInteractively,
     });
 
-    const runtime = new PheromoneRuntime(definition, {
+    const options = {
       executeForager: forager,
       onLog: log.sink,
-    });
+    };
 
-    runtime.trigger(command.trigger, { kind: 'text', text: command.input });
-
-    let failure: unknown;
-    try {
-      await runtime.pump();
-    } catch (error) {
-      failure = error;
+    if (persisted !== undefined) {
+      const restored = PheromoneRuntime.restore(definition, persisted, options);
+      runtime = restored.runtime;
+      report = restored.report;
+    } else {
+      runtime = new PheromoneRuntime(definition, options);
     }
 
-    printSummary(out, definition, runtime.snapshot(), log.entries, forager.lastOutput);
+    if (command.trigger !== undefined) {
+      runtime.trigger(command.trigger, { kind: 'text', text: command.input });
+    }
 
-    if (failure !== undefined) {
-      err(`error: ${messageOf(failure)}`);
-      code = 1;
+    for (;;) {
+      await runtime.pump();
+      flush();
+      const hovered = firstHover(definition, runtime.snapshot());
+      if (hovered === undefined) {
+        break;
+      }
+      const value = await askUser(hovered.node, hovered.hover);
+      runtime.answerHover(hovered.node.id, value, hovered.hover.token);
+      flush();
     }
   } catch (error) {
-    err(`error: ${messageOf(error)}`);
     code = 1;
+    err(`error: ${messageOf(error)}`);
   } finally {
+    try {
+      flush();
+    } catch (error) {
+      err(`error: could not persist the field: ${messageOf(error)}`);
+      code = 1;
+    }
+    printSummary(out, definition, runtime?.snapshot(), log.entries, forager?.lastOutput, report);
     forager?.dispose();
     await workspace.stop().catch(() => undefined);
   }
@@ -291,22 +462,31 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 function printSummary(
   out: (line: string) => void,
   definition: CompositionDefinition,
-  snapshot: PheromoneFieldSnapshot,
+  snapshot: PheromoneFieldSnapshot | undefined,
   entries: readonly RuntimeLogEntry[],
   output: { readonly kind: string; readonly text?: string } | undefined,
+  report: RecoveryReport | undefined,
 ): void {
   out(`composition  ${definition.id}`);
   out(`revision     ${definition.graphRevision}`);
-  out(`rest         ${String(snapshot.rest)}`);
+  out(`rest         ${String(snapshot?.rest ?? true)}`);
 
   for (const [id, node] of definition.nodes) {
-    const state = snapshot.nodes[id];
+    const state = snapshot?.nodes[id];
     const count = state?.state['count'];
     out(
       `node         ${id} kind=${node.kind} queue=${String(state?.queue.length ?? 0)} ` +
         `pending=${state?.pending === undefined ? 'no' : 'yes'} ` +
         `active=${state?.active === undefined ? 'no' : 'yes'}` +
+        ` hover=${state?.hover === undefined ? 'no' : 'yes'}` +
         (typeof count === 'number' ? ` count=${String(count)}` : ''),
+    );
+  }
+
+  if (report !== undefined) {
+    out(
+      `recovered    hovers=${report.resumedHovers.join(',') || '-'} ` +
+        `unknown=${report.unknownActive.join(',') || '-'} stuck=${report.stuckActive.join(',') || '-'}`,
     );
   }
 

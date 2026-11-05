@@ -7,6 +7,10 @@ export type RuntimeEvent =
   | 'node.activated'
   | 'node.completed'
   | 'node.failed'
+  | 'hover.opened'
+  | 'hover.resolved'
+  | 'input.queued'
+  | 'runtime.restored'
   | 'runtime.rest';
 
 export interface RuntimeLogEntry {

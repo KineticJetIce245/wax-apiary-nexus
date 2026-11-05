@@ -10,6 +10,7 @@ import type {
   ForagerConfig,
   NodeDefinition,
   NodeId,
+  UserConfig,
 } from './types.js';
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -20,7 +21,7 @@ const DEFAULT_QUEUE_TTL_MS = 604_800_000;
 
 const WHEN_VALUES: readonly EdgeWhen[] = ['true', 'false', 'continue', 'done'];
 
-const UNSUPPORTED_NODE_KINDS = ['user', 'worker', 'fork', 'merge'] as const;
+const UNSUPPORTED_NODE_KINDS = ['worker', 'fork', 'merge'] as const;
 
 export class CompositionValidationError extends Error {
   readonly issues: readonly string[];
@@ -141,6 +142,51 @@ function parseConditionConfig(
   return null;
 }
 
+function parseUserConfig(
+  config: Record<string, unknown>,
+  path: string,
+  issues: string[],
+): UserConfig | null {
+  pushUnknownFields(config, ['modality', 'prompt', 'choices'], path, issues);
+
+  const modality = config['modality'];
+  if (modality !== 'text' && modality !== 'choice' && modality !== 'yes-no') {
+    issues.push(`${path}.modality: expected 'text', 'choice' or 'yes-no'`);
+    return null;
+  }
+  if (!isNonEmptyString(config['prompt'])) {
+    issues.push(`${path}.prompt: expected a non-empty string`);
+    return null;
+  }
+
+  const rawChoices = config['choices'];
+  if (modality === 'choice') {
+    if (!Array.isArray(rawChoices) || rawChoices.length === 0) {
+      issues.push(`${path}.choices: choice mode needs a non-empty array of labels`);
+      return null;
+    }
+    const choices: string[] = [];
+    for (const choice of rawChoices) {
+      if (!isNonEmptyString(choice)) {
+        issues.push(`${path}.choices: every label must be a non-empty string`);
+        return null;
+      }
+      if (choices.includes(choice)) {
+        issues.push(`${path}.choices: duplicate label '${choice}'`);
+        return null;
+      }
+      choices.push(choice);
+    }
+    return { modality, prompt: config['prompt'] as string, choices };
+  }
+
+  if (rawChoices !== undefined) {
+    issues.push(`${path}.choices: only allowed in choice mode`);
+    return null;
+  }
+  return { modality, prompt: config['prompt'] as string };
+}
+
 function parseCounterConfig(
   config: Record<string, unknown>,
   path: string,
@@ -247,7 +293,7 @@ function parseNodes(
       issues.push(`${path}: node kind '${kind}' is not supported in the single-Pheromone slice`);
       continue;
     }
-    if (kind !== 'forager' && kind !== 'condition' && kind !== 'counter') {
+    if (kind !== 'forager' && kind !== 'condition' && kind !== 'counter' && kind !== 'user') {
       issues.push(`${path}.kind: unknown node kind '${kind}'`);
       continue;
     }
@@ -275,8 +321,13 @@ function parseNodes(
       if (parsed !== null) {
         nodes.set(id, { id, kind, config: parsed, minIntervalMs });
       }
-    } else {
+    } else if (kind === 'counter') {
       const parsed = parseCounterConfig(config, configPath, issues);
+      if (parsed !== null) {
+        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
+      }
+    } else {
+      const parsed = parseUserConfig(config, configPath, issues);
       if (parsed !== null) {
         nodes.set(id, { id, kind, config: parsed, minIntervalMs });
       }
@@ -369,14 +420,14 @@ function validateEdgeShape(
   for (const node of nodes.values()) {
     const outgoing = edges.filter((edge) => edge.from === node.id);
 
-    if (node.kind === 'forager') {
+    if (node.kind === 'forager' || node.kind === 'user') {
       for (const edge of outgoing) {
         if (edge.when !== undefined) {
           issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);
         }
       }
       if (outgoing.length > 1) {
-        issues.push(`nodes.${node.id}: a forager node has at most one outgoing edge`);
+        issues.push(`nodes.${node.id}: a ${node.kind} node has at most one outgoing edge`);
       }
       continue;
     }

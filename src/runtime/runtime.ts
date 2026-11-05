@@ -1,18 +1,23 @@
 import { randomUUID } from 'node:crypto';
 
 import { serializeValue, type NodeExecutor } from './executor.js';
-import { createNodeState, isFieldResting, snapshotField } from './field.js';
+import { clonePheromone, createNodeState, isFieldResting, snapshotField } from './field.js';
 import type { RuntimeLogEntry, RuntimeLogSink } from './log.js';
 import type {
   CompositionDefinition,
   ConditionConfig,
   EdgeDefinition,
   EdgeWhen,
+  HoverSpec,
   NodeDefinition,
   NodeId,
   NodeState,
+  PersistedField,
+  PersistedNodeState,
   Pheromone,
   PheromoneFieldSnapshot,
+  RecoveryReport,
+  UserNode,
   Value,
 } from './types.js';
 
@@ -27,6 +32,14 @@ interface NodeResult {
   value: Value;
   outcome: string;
   branch?: 'true' | 'false' | 'continue' | 'done';
+}
+
+/** The persisted field cannot be applied to this composition. */
+export class FieldRestoreError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FieldRestoreError';
+  }
 }
 
 const VALUE_KINDS = ['text', 'choice', 'boolean', 'message', 'attachments'] as const;
@@ -62,6 +75,8 @@ export class PheromoneRuntime {
   private readonly now: () => number;
   private readonly onLog: RuntimeLogSink | undefined;
   private readonly states: Map<NodeId, NodeState> = new Map();
+  /** Answers that arrived before their user node hovered; preserved, not dropped. */
+  private readonly preAnswers = new Map<NodeId, Value[]>();
   private resting: boolean;
 
   constructor(definition: CompositionDefinition, options: RuntimeOptions) {
@@ -86,8 +101,10 @@ export class PheromoneRuntime {
     if (node === undefined) {
       throw new Error(`unknown node '${nodeId}'`);
     }
-    if (node.kind !== 'forager') {
-      throw new Error(`trigger target '${nodeId}' must be a forager node, got '${node.kind}'`);
+    if (node.kind !== 'forager' && node.kind !== 'user') {
+      throw new Error(
+        `trigger target '${nodeId}' must be a forager or user node, got '${node.kind}'`,
+      );
     }
     assertValue(value);
 
@@ -135,6 +152,169 @@ export class PheromoneRuntime {
     return snapshotField(this.definition, this.states, this.resting);
   }
 
+  /**
+   * Answers a user node. While the node hovers the answer completes it; before
+   * that the answer is queued and applied when the node next hovers. Neither
+   * case drops the input.
+   */
+  answerHover(nodeId: NodeId, value: Value, token?: string): void {
+    const node = this.definition.nodes.get(nodeId);
+    if (node === undefined) {
+      throw new Error(`unknown node '${nodeId}'`);
+    }
+    if (node.kind !== 'user') {
+      throw new Error(`node '${nodeId}' is not a user node, got '${node.kind}'`);
+    }
+    this.assertUserValue(node, value);
+
+    const state = this.stateOf(nodeId);
+    if (state.hover !== undefined) {
+      if (token !== undefined && token !== state.hover.token) {
+        throw new Error(`hover token mismatch for node '${nodeId}'`);
+      }
+      const pheromone = state.hoverPheromone;
+      if (pheromone === undefined) {
+        throw new Error(`hover for node '${nodeId}' has no Pheromone`);
+      }
+      this.completeHover(node, pheromone, value, 'answered');
+      return;
+    }
+
+    const queue = this.preAnswers.get(nodeId) ?? [];
+    queue.push(structuredClone(value));
+    this.preAnswers.set(nodeId, queue);
+    this.log({
+      event: 'input.queued',
+      nodeId,
+      nodeKind: 'user',
+      queueDepth: queue.length,
+    });
+  }
+
+  /** JSON shape for `honey/field.json`; safe to persist at any pause point. */
+  exportField(): PersistedField {
+    const nodes: Record<NodeId, PersistedNodeState> = {};
+    for (const [id, state] of this.states) {
+      const persisted: PersistedNodeState = { queue: state.queue.map(clonePheromone) };
+      if (state.pending !== undefined) {
+        persisted.pending = clonePheromone(state.pending);
+      }
+      if (state.active !== undefined) {
+        persisted.active = clonePheromone(state.active);
+      }
+      if (state.hover !== undefined) {
+        persisted.hover = structuredClone(state.hover);
+      }
+      if (state.hoverPheromone !== undefined) {
+        persisted.hoverPheromone = clonePheromone(state.hoverPheromone);
+      }
+      if (state.lastActivatedAt !== undefined) {
+        persisted.lastActivatedAt = state.lastActivatedAt;
+      }
+      if (state.state !== undefined) {
+        persisted.state = structuredClone(state.state);
+      }
+      nodes[id] = persisted;
+    }
+
+    return {
+      schemaVersion: 1,
+      compositionId: this.definition.id,
+      graphRevision: this.definition.graphRevision,
+      rest: this.resting,
+      nodes,
+    };
+  }
+
+  /**
+   * Rebuilds a runtime from a persisted field.
+   *
+   * Queued Pheromones, pending slots and user hovers are resumed. An `active`
+   * Pheromone cannot be reattached to a native process: a forager becomes
+   * `unknown`, anything else becomes stuck/needs-attention. Neither is replayed.
+   */
+  static restore(
+    definition: CompositionDefinition,
+    field: PersistedField,
+    options: RuntimeOptions,
+  ): { runtime: PheromoneRuntime; report: RecoveryReport } {
+    if (field.schemaVersion !== 1) {
+      throw new FieldRestoreError(`unsupported field schemaVersion: ${String(field.schemaVersion)}`);
+    }
+    if (field.compositionId !== definition.id) {
+      throw new FieldRestoreError(
+        `persisted field belongs to composition '${field.compositionId}', not '${definition.id}'`,
+      );
+    }
+    if (field.graphRevision !== definition.graphRevision) {
+      throw new FieldRestoreError(
+        `persisted field was written for graph revision '${field.graphRevision}', current is '${definition.graphRevision}'`,
+      );
+    }
+
+    const runtime = new PheromoneRuntime(definition, options);
+    const report = runtime.applyField(field);
+    return { runtime, report };
+  }
+
+  private applyField(field: PersistedField): RecoveryReport {
+    for (const id of Object.keys(field.nodes)) {
+      if (!this.definition.nodes.has(id)) {
+        throw new FieldRestoreError(`persisted field has unknown node '${id}'`);
+      }
+    }
+
+    const resumedHovers: NodeId[] = [];
+    const unknownActive: NodeId[] = [];
+    const stuckActive: NodeId[] = [];
+
+    for (const [id, node] of this.definition.nodes) {
+      const saved = field.nodes[id];
+      if (saved === undefined) {
+        continue;
+      }
+      const state = this.stateOf(id);
+      state.queue = saved.queue.map(clonePheromone);
+      if (saved.pending !== undefined) {
+        state.pending = clonePheromone(saved.pending);
+      }
+      if (saved.lastActivatedAt !== undefined) {
+        state.lastActivatedAt = saved.lastActivatedAt;
+      }
+      if (saved.state !== undefined) {
+        state.state = structuredClone(saved.state);
+      }
+
+      if (saved.hover !== undefined && saved.hoverPheromone !== undefined) {
+        state.hover = structuredClone(saved.hover);
+        state.hoverPheromone = clonePheromone(saved.hoverPheromone);
+        resumedHovers.push(id);
+      } else if (saved.hover !== undefined) {
+        stuckActive.push(id);
+        state.state = { ...(state.state ?? {}), needsAttention: true };
+      }
+
+      if (saved.active !== undefined) {
+        // No native process can be reattached; never replay the side effect.
+        if (node.kind === 'forager') {
+          unknownActive.push(id);
+          state.state = { ...(state.state ?? {}), lastOutcome: 'unknown' };
+        } else {
+          stuckActive.push(id);
+        }
+        state.state = { ...(state.state ?? {}), needsAttention: true };
+      }
+    }
+
+    this.resting = isFieldResting(this.states.values());
+    this.log({
+      event: 'runtime.restored',
+      outcome: `hovers=${String(resumedHovers.length)} unknown=${String(unknownActive.length)} stuck=${String(stuckActive.length)}`,
+    });
+
+    return { resumedHovers, unknownActive, stuckActive };
+  }
+
   private stateOf(nodeId: NodeId): NodeState {
     const state = this.states.get(nodeId);
     if (state === undefined) {
@@ -148,7 +328,7 @@ export class PheromoneRuntime {
 
     for (const node of this.definition.nodes.values()) {
       const state = this.stateOf(node.id);
-      if (state.active !== undefined) {
+      if (state.active !== undefined || state.hover !== undefined) {
         continue;
       }
 
@@ -187,10 +367,24 @@ export class PheromoneRuntime {
 
   private async activate(node: NodeDefinition, pheromone: Pheromone): Promise<void> {
     const state = this.stateOf(node.id);
-    state.active = pheromone;
     state.lastActivatedAt = this.iso();
-    const startedAt = this.now();
     this.resting = false;
+
+    if (node.kind === 'user') {
+      this.log({
+        event: 'node.activated',
+        nodeId: node.id,
+        nodeKind: node.kind,
+        pheromoneId: pheromone.id,
+        traceId: pheromone.traceId,
+        queueDepth: state.queue.length,
+      });
+      this.openHover(node, pheromone);
+      return;
+    }
+
+    state.active = pheromone;
+    const startedAt = this.now();
 
     this.log({
       event: 'node.activated',
@@ -249,11 +443,86 @@ export class PheromoneRuntime {
       return { value: pheromone.value, outcome: branch, branch };
     }
 
+    if (node.kind === 'user') {
+      throw new Error(`user node '${node.id}' waits for input instead of running`);
+    }
+
     const previous = state.state?.['count'];
     const count = (typeof previous === 'number' ? previous : 0) + node.config.step;
     state.state = { ...(state.state ?? {}), count };
     const branch = count >= node.config.max ? 'done' : 'continue';
     return { value: pheromone.value, outcome: branch, branch };
+  }
+
+  private openHover(node: UserNode, pheromone: Pheromone): void {
+    const state = this.stateOf(node.id);
+    const queued = this.preAnswers.get(node.id);
+    const early = queued?.shift();
+    if (queued !== undefined && queued.length === 0) {
+      this.preAnswers.delete(node.id);
+    }
+
+    if (early !== undefined) {
+      this.completeHover(node, pheromone, early, 'early-input');
+      return;
+    }
+
+    const hover: HoverSpec = {
+      token: `hv_${randomUUID()}`,
+      kind: 'user',
+      compositionId: this.definition.id,
+      nodeId: node.id,
+      pheromoneId: pheromone.id,
+    };
+    state.hover = hover;
+    state.hoverPheromone = pheromone;
+    this.log({
+      event: 'hover.opened',
+      nodeId: node.id,
+      nodeKind: 'user',
+      pheromoneId: pheromone.id,
+      traceId: pheromone.traceId,
+    });
+  }
+
+  private completeHover(node: UserNode, pheromone: Pheromone, value: Value, outcome: string): void {
+    const state = this.stateOf(node.id);
+    delete state.hover;
+    delete state.hoverPheromone;
+    this.log({
+      event: 'hover.resolved',
+      nodeId: node.id,
+      nodeKind: 'user',
+      pheromoneId: pheromone.id,
+      traceId: pheromone.traceId,
+      outcome,
+    });
+    this.emit(node, pheromone, { value: structuredClone(value), outcome });
+  }
+
+  private assertUserValue(node: UserNode, value: Value): void {
+    if (node.config.modality === 'text') {
+      if (value.kind !== 'text') {
+        throw new TypeError(`user node '${node.id}' expects a text value, got '${value.kind}'`);
+      }
+      return;
+    }
+    if (node.config.modality === 'yes-no') {
+      if (value.kind !== 'boolean') {
+        throw new TypeError(`user node '${node.id}' expects a boolean value, got '${value.kind}'`);
+      }
+      return;
+    }
+
+    if (value.kind !== 'choice') {
+      throw new TypeError(`user node '${node.id}' expects a choice value, got '${value.kind}'`);
+    }
+    const choices = node.config.choices ?? [];
+    if (!choices.includes(value.choice)) {
+      throw new TypeError(
+        `user node '${node.id}' does not offer choice '${value.choice}' (${choices.join(', ')})`,
+      );
+    }
   }
 
   private emit(node: NodeDefinition, pheromone: Pheromone, result: NodeResult): void {
@@ -288,7 +557,7 @@ export class PheromoneRuntime {
   }
 
   private outgoingEdge(node: NodeDefinition, result: NodeResult): EdgeDefinition | undefined {
-    if (node.kind === 'forager') {
+    if (node.kind === 'forager' || node.kind === 'user') {
       return this.definition.edges.find((edge) => edge.from === node.id);
     }
     const branch: EdgeWhen | undefined = result.branch;

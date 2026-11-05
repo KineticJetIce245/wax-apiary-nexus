@@ -21,7 +21,12 @@ function cloneValue<T>(value: T): T {
 
 export function isFieldResting(nodes: Iterable<NodeState>): boolean {
   for (const node of nodes) {
-    if (node.active !== undefined || node.pending !== undefined || node.queue.length > 0) {
+    if (
+      node.active !== undefined ||
+      node.pending !== undefined ||
+      node.hover !== undefined ||
+      node.queue.length > 0
+    ) {
       return false;
     }
   }
@@ -33,6 +38,9 @@ export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
   for (const node of nodes) {
     if (node.active !== undefined) {
       pheromones.push(clonePheromone(node.active));
+    }
+    if (node.hoverPheromone !== undefined) {
+      pheromones.push(clonePheromone(node.hoverPheromone));
     }
     if (node.pending !== undefined) {
       pheromones.push(clonePheromone(node.pending));
@@ -61,6 +69,9 @@ export function snapshotField(
     }
     if (state.active !== undefined) {
       snapshot.active = clonePheromone(state.active);
+    }
+    if (state.hover !== undefined) {
+      snapshot.hover = cloneValue(state.hover);
     }
     if (state.lastActivatedAt !== undefined) {
       snapshot.lastActivatedAt = state.lastActivatedAt;

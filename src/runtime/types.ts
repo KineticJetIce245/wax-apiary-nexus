@@ -84,9 +84,39 @@ export interface CounterNode {
   minIntervalMs: number;
 }
 
-export type NodeDefinition = ForagerNode | ConditionNode | CounterNode;
+export type UserModality = 'text' | 'choice' | 'yes-no';
+
+export interface UserConfig {
+  modality: UserModality;
+  prompt: string;
+  /** Required for `choice`; the accepted labels. */
+  choices?: readonly string[];
+}
+
+export interface UserNode {
+  id: NodeId;
+  kind: 'user';
+  config: UserConfig;
+  minIntervalMs: number;
+}
+
+export type NodeDefinition = ForagerNode | ConditionNode | CounterNode | UserNode;
 
 export type NodeKind = NodeDefinition['kind'];
+
+/**
+ * A Hover parks one Pheromone while the runtime waits for an external event.
+ * Stage 2B only opens `user` hovers; Guard/Forager hovers arrive in 2C.
+ */
+export interface HoverSpec {
+  token: string;
+  kind: 'user' | 'forager' | 'guard' | 'timer';
+  compositionId: string;
+  nodeId: NodeId;
+  pheromoneId: string;
+  expiresAt?: string;
+  meta?: Record<string, unknown>;
+}
 
 export type EdgeWhen = 'true' | 'false' | 'continue' | 'done';
 
@@ -118,6 +148,9 @@ export interface NodeState {
   pending?: Pheromone;
   active?: Pheromone;
   lastActivatedAt?: string;
+  hover?: HoverSpec;
+  /** The Pheromone parked behind `hover`; it is still part of the field. */
+  hoverPheromone?: Pheromone;
   state?: Record<string, unknown>;
 }
 
@@ -126,6 +159,7 @@ export interface NodeStateSnapshot {
   queue: readonly Pheromone[];
   pending?: Pheromone;
   active?: Pheromone;
+  hover?: HoverSpec;
   lastActivatedAt?: string;
   state: Readonly<Record<string, unknown>>;
 }
@@ -137,4 +171,32 @@ export interface PheromoneFieldSnapshot {
   rest: boolean;
   pheromones: readonly Pheromone[];
   nodes: Readonly<Record<NodeId, NodeStateSnapshot>>;
+}
+
+/** JSON shape of `honey/field.json`. */
+export interface PersistedNodeState {
+  queue: Pheromone[];
+  pending?: Pheromone;
+  active?: Pheromone;
+  hover?: HoverSpec;
+  hoverPheromone?: Pheromone;
+  lastActivatedAt?: string;
+  state?: Record<string, unknown>;
+}
+
+export interface PersistedField {
+  schemaVersion: 1;
+  compositionId: string;
+  graphRevision: string;
+  rest: boolean;
+  nodes: Record<NodeId, PersistedNodeState>;
+}
+
+/** What a restore could not keep running, and why. */
+export interface RecoveryReport {
+  readonly resumedHovers: readonly NodeId[];
+  /** A forager was mid-execution when the process died; never replayed. */
+  readonly unknownActive: readonly NodeId[];
+  /** An active Pheromone on a node that cannot be resumed at all. */
+  readonly stuckActive: readonly NodeId[];
 }

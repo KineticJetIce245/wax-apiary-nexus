@@ -61,10 +61,10 @@ test('keeps a stable graph revision and changes it when the graph changes', () =
 
 test('rejects unsupported node kinds instead of silently ignoring them', () => {
   const issues = issuesOf(
-    minimal({ nodes: { ask: { kind: 'user', config: { modality: 'text' } } } }),
+    minimal({ nodes: { run: { kind: 'worker', config: { command: 'node' } } } }),
   );
 
-  assert.ok(issues.some((issue) => issue.includes("'user' is not supported")));
+  assert.ok(issues.some((issue) => issue.includes("'worker' is not supported")));
 });
 
 test('rejects unknown node kinds, unknown fields and malformed ids', () => {

@@ -242,6 +242,10 @@ export class PheromoneRuntime {
       if (state.state !== undefined) {
         persisted.state = structuredClone(state.state);
       }
+      const earlyInputs = this.preAnswers.get(id);
+      if (earlyInputs !== undefined && earlyInputs.length > 0) {
+        persisted.inputs = structuredClone(earlyInputs);
+      }
       nodes[id] = persisted;
     }
 
@@ -311,6 +315,9 @@ export class PheromoneRuntime {
       }
       if (saved.state !== undefined) {
         state.state = structuredClone(saved.state);
+      }
+      if (saved.inputs !== undefined && saved.inputs.length > 0) {
+        this.preAnswers.set(id, structuredClone(saved.inputs));
       }
 
       if (

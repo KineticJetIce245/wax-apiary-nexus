@@ -182,6 +182,8 @@ export interface PersistedNodeState {
   hoverPheromone?: Pheromone;
   lastActivatedAt?: string;
   state?: Record<string, unknown>;
+  /** Answers that arrived before this node hovered; applied on the next hover. */
+  inputs?: Value[];
 }
 
 export interface PersistedField {

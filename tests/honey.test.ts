@@ -266,6 +266,35 @@ test('restore keeps a pending slot and a queue', () => {
   assert.equal(runtime.snapshot().rest, false);
 });
 
+test('restore keeps early user answers that arrived before any hover', async () => {
+  const definition = askComposition();
+  const calls: string[] = [];
+  const runThrough: NodeExecutor = {
+    async execute(node) {
+      calls.push(node.id);
+      return { kind: 'text', text: 'ok' };
+    },
+  };
+  const first = new PheromoneRuntime(definition, { executeForager: runThrough, now: () => START });
+  first.answerHover('ask', { kind: 'text', text: 'early' });
+
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+  store.save(first.exportField());
+  const loaded = store.load();
+  assert.ok(loaded !== undefined);
+
+  const { runtime } = PheromoneRuntime.restore(definition, loaded, {
+    executeForager: runThrough,
+    now: () => START,
+  });
+  runtime.trigger('start', { kind: 'text', text: 'x' });
+  await runtime.pump();
+
+  assert.deepEqual(calls, ['start', 'done']);
+  assert.equal(runtime.snapshot().nodes['ask']?.hover, undefined);
+  assert.equal(runtime.snapshot().rest, true);
+});
+
 test('a guard hover cannot be resumed and is marked stuck', () => {
   const definition = askComposition();
   const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();

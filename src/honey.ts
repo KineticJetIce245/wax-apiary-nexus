@@ -175,6 +175,15 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
   if (isRecord(input['state'])) {
     state.state = structuredClone(input['state']);
   }
+  if (input['inputs'] !== undefined) {
+    if (!Array.isArray(input['inputs'])) {
+      throw new Error(`${path}.inputs: expected an array`);
+    }
+    state.inputs = input['inputs'].map((entry, index) => {
+      assertValueShape(entry, `${path}.inputs[${String(index)}]`);
+      return structuredClone(entry);
+    });
+  }
   return state;
 }
 

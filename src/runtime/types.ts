@@ -248,8 +248,8 @@ export type TriggerSchedule =
   | { kind: 'every'; everyMs: number };
 
 /**
- * A scheduled trigger names a forager or worker task node. Control nodes and
- * scheduled `user` targets are not valid in 3C-1.
+ * A scheduled trigger names a task node: forager, worker, or user. A scheduled
+ * user target opens a Hover; `wax answer` completes it without a TTY.
  */
 export interface TriggerDefinition {
   id: string;

@@ -10,6 +10,9 @@ export type RuntimeEvent =
   | 'hover.opened'
   | 'hover.resolved'
   | 'hover.cancelled'
+  | 'answer.applied'
+  | 'answer.stale'
+  | 'answer.malformed'
   | 'guard.opened'
   | 'guard.resolved'
   | 'guard.timeout'
@@ -37,6 +40,8 @@ export interface RuntimeLogEntry {
   branchId?: string;
   queueDepth?: number;
   durationMs?: number;
+  /** Answer-inbox id; the record's Value is never written to the log. */
+  answerId?: string;
   /** Worker program name only; never the full output body. */
   program?: string;
   pid?: number;

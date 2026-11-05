@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Composition Contract
 
-> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches, Stage 5B Merge timeout, Stage 5C structured Value and object/array Merge combine, Stage 5D nested Fork/Merge lineage, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring; scheduled `user` triggers and the rest of this contract are still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **Status**: target contract. The runtime implements the single-Pheromone core, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches, Stage 5B Merge timeout, Stage 5C structured Value and object/array Merge combine, Stage 5D nested Fork/Merge lineage, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, Stage 3C-2 rich manual user input, the Stage 6A answer inbox and scheduled `user` targets, the Stage 4A offline composition editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring; the rest of this contract is still target design. The architecture model is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## 1. Scope
 
@@ -134,8 +134,11 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 - `choices` is required for `choice` and is rejected on every other modality.
 - A `message` answer is `{ "kind": "message", "text": <answer>, "attachments": [] }`. An `image` or `file` answer is exactly one `{ "kind": "attachments", "attachments": [{ "kind": "image" | "file", "path": <absolute path>, "mediaType"?: <type> }] }`; Stage 3C-2 takes one local path per answer.
 - The runtime validates the Value shape and modality only; it never reads the filesystem. The interactive CLI expands a leading `~`, requires an existing regular file and stores the absolute path reference; it does not copy, preview or infer `mediaType`.
-- Early or late input queues at this node and applies on the next entry.
-- Scheduled `user` triggers remain deferred.
+- Early or late input queues at this node and applies on the next entry. The Stage 6A inbox is stricter: `wax answer` requires a currently open hover, writes only an inbox file, and the daemon never queues an inbox answer for a later hover (an unmatched answer is stale and dropped).
+- Scheduled `user` triggers are allowed in Stage 6A: the daemon creates the Pheromone and the user node opens its Hover without a TTY; `wax answer` completes it.
+- An answer inbox lives at `<composition honey directory>/answers/`. The daemon creates it (0700), scans `.json` files in name order at startup and after every heartbeat/pump, and processes one file at a time. An `answerId.json` record is `{answerId, compositionId, nodeId, hoverToken, value, at}` and never carries a prompt or output body.
+- `wax answer` or a compatible writer creates one answer file through a same-directory temp file plus rename (0600); it never writes `field.json`. The record's `value` is a Value and its `hoverToken` must match the open user hover at `nodeId`. The daemon applies it with `answerHover`, flushes Honey, then deletes the file. A missing hover, a different composition/node/token, or a duplicate after the hover resolved is logged as `answer.stale` and deleted; an unreadable or invalid record, or a Value that does not match the modality, is logged as `answer.malformed` and deleted. Neither case creates a Pheromone or queues an early answer.
+- A daemon restart restores the persisted hover before scanning the inbox, so an unprocessed answer still applies. An answer whose hover is gone after restore is stale and dropped.
 
 ### Condition
 
@@ -232,7 +235,7 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
   - `schedule.kind: "at"` carries an ISO-8601 `at` timestamp with `Z` or an explicit offset. A timezone-less local time is rejected.
   - `schedule.kind: "every"` carries an integer `everyMs >= 1000`.
   - Trigger ids are unique and use the node-id pattern.
-  - The target must be a `forager` or `worker` node. Control nodes are rejected; scheduled `user` targets are deferred to Stage 3C-2.
+  - The target must be a `forager`, `worker`, or `user` node. Control nodes are rejected; a scheduled `user` target opens a Hover without a TTY (Stage 6A).
 - A trigger creates a Pheromone at the target node. There is no `start`.
 - Node activations are rate-limited by `lastActivatedAt + minInterval`.
 - Serialized manual CLI triggers accept `forager`, `worker` and `user` targets.
@@ -356,6 +359,7 @@ Durable data:
 ```text
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/field.json
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/scheduler.json
+~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/answers/<answerId>.json
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/transcripts/<conversationId>.jsonl
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/artifacts/
 ```
@@ -372,7 +376,7 @@ History:
 
 - State snapshots and transcripts are Honey; they can be read by a future UI.
 - The log fields include `at`, `compositionId`, `graphRevision`, `event`, `nodeId`, `nodeKind`, `pheromoneId`, `traceId`, `forkId`, `branchId`, `program`, `pid`, `executionId`, `requestId`, `queueDepth`, `durationMs`, `outcome`, `error`, and refs.
-- The log does not store prompt/output bodies by default.
+- The log does not store prompt/output bodies by default. Stage 6A answer events (`answer.applied`, `answer.stale`, `answer.malformed`) carry the `answerId`, node, and an outcome only; the answer Value is never logged.
 - The log is not a replay source. Recovery reads Honey; side effects are never auto-replayed.
 
 Offline edits append a revision audit, separate from the runtime log:
@@ -408,7 +412,7 @@ Before running:
 - Edge endpoints exist; `when` only appears on Condition/Counter edges.
 - Fork branches are unique and targets exist.
 - Merge required/optional branch ids are unique and disjoint; combine is `text`, `object`, or `array`; `timeoutMs` is a positive integer no larger than `2147483647` (default `600000`).
-- Trigger targets are task nodes; scheduled triggers accept only `forager` or `worker`.
+- Trigger targets are task nodes; scheduled triggers accept `forager`, `worker` or `user`.
 - `at` carries `Z` or an explicit offset; `everyMs` is an integer >= 1000.
 - Forager connection/prompt are non-empty; user modality is valid; Condition mode is valid; Counter max/step are positive.
 - Worker `command` is non-empty; `args` is a string array; `cwd` is a non-empty string without `..`; `timeoutMs` is a positive integer. Absolute cwd containment and symlink escapes are enforced at activation, when the project directory is known.
@@ -422,6 +426,7 @@ Before running:
 ```bash
 wax run <composition.json> --project <dir> --harness <codex|dsh> [--trigger <node>] [--input <text>] [--resume] [--composition-tools] [--state-dir <dir>] [--apiary <id>] [--codex-exe <path>] [--dsh-root <path>]
 wax daemon <composition.json> --project <dir> --harness <codex|dsh> [--composition-tools] [--state-dir <dir>] [--apiary <id>] [--codex-exe <path>] [--dsh-root <path>]
+wax answer <composition.json> --project <dir> --node <user> [--token <hover-token>] <--text <text>|--choice <label>|--yes|--no|--image <path>|--file <path>> [--state-dir <dir>] [--apiary <id>]
 wax composition validate [--json] <file>
 wax composition replace [--json] <file> --with <new-file> [--state-dir <dir>] [--apiary <id>]
 wax composition revisions [--json] [--composition <id>] [--limit <n>] [--state-dir <dir>]
@@ -435,6 +440,7 @@ wax honey <conversationId> [--json]
 
 - No `run start`; a trigger creates a Pheromone.
 - `wax run` pumps to Rest. When no user hover is open and the field is not Rest but only timed work remains, it sleeps until the earlier of `PheromoneRuntime.nextWakeAt()` and the next rate-limited pending branch, then pumps again; an expired join fails without emitting. `wax daemon` keeps its existing 500 ms heartbeat and adds no socket or IPC channel.
+- `wax answer` is not a runtime writer. It parses the composition, resolves the user node and its modality, reads `<state-dir>/apiaries/<apiary>/compositions/<id>/honey/field.json` read-only, and requires exactly one open user hover unless `--token`. A `--token` must belong to the named node. The answer source flag must match the modality: `--text` for `text`/`message`, `--choice` for `choice`, `--yes`/`--no` for `yes-no`, and `--image`/`--file` for the matching attachment modality. Attachment paths are expanded (`~`), must be existing regular files, and are stored as absolute path references; nothing is copied or previewed. The command writes one `<honey>/answers/<answerId>.json` through a same-directory temp file plus rename and exits `2` on usage/no-field/no-hover and `1` on IO. It never calls `answerHover` or writes the field.
 - `--harness dsh` requires `--dsh-root <path>` or the `DSH_ROOT` environment variable; there is no implicit default. `--dsh-root` is rejected with `--harness codex`, and `--codex-exe` is rejected with `--harness dsh`. Both commands construct the existing `DshAcpAdapter` with the resolved root; adapter and daemon semantics are unchanged.
 - `wax composition validate` parses and validates only; it does not write runtime state.
 - `wax composition replace` parses both files and refuses a different composition id. When `--apiary` resolves a Honey field (the state root defaults to `~/.wax`), any queue, pending, active, hover, or merge-waiting reference refuses the edit. A live or uncertain daemon lock also refuses. The write is a same-directory temp file plus rename, followed by one revision audit line. Stage 4A has no `--force` and never writes `needsAttention`; a stale lock is left in place. Without `--apiary`, replace runs but reports that active references were not checked.
@@ -463,3 +469,5 @@ Stage 5B adds Merge `timeoutMs` and its persistence/wake plumbing. `MergeConfig.
 Stage 5C adds the `structured` Value and Merge `combine: "object" | "array"`. `Value` gains `{kind:"structured", value: JsonValue}`, where `JsonValue` is JSON-safe only: null, boolean, finite number, string, array, or plain object. `src/runtime/json-value.ts` rejects undefined, functions, BigInt, Symbol, cycles and non-finite numbers; the runtime applies it to `trigger` and executor output, and `src/honey.ts` revalidates it on load. Existing Value objects are accepted inside a structured payload because they are JSON-safe. `serializeValue` emits `JSON.stringify`, so the Forager prompt, Condition text mode and text Merge combine share one rendering. A Merge with `combine:"object"` emits `{kind:"structured", value:{[branchId]: Value}}`; `"array"` emits `{kind:"structured", value: Value[]}`. Both use required order followed by the optional branches that already arrived in optional config order. `text` is unchanged, required/optional/timeout semantics are unchanged, and attachment semantics inside `structured` are deferred.
 
 Stage 5D adds nested Fork/Merge lineage without changing combine, optional or timeout semantics. `Pheromone` gains `lineage?: BranchTag[]` (`BranchTag = {forkId, branchId}`), outer-to-inner with the last tag as the current fork; `forkId`/`branchId` remain and are kept equal to it. A Fork appends a tag to the incoming lineage, a normal node reproduces it, and a Merge keys `NodeState.joins` by the current top `forkId`. Every arrival for a join must share the same parent lineage (the incoming lineage minus its last tag); a mismatch fails that `forkId` only. `JoinState` and `PersistedJoinState` carry the parent `lineage`, and `finishMerge` emits with it: nested output restores the outer tags, top-level output is untagged. `failFork` continues to match only the current `forkId`, so an inner failure or timeout cannot cancel an outer branch. Completed and timed-out tombstones retain their parent lineage and still block late reopens for their fork, including after restore. `src/honey.ts` parses and validates tag shape, the flat/last-tag agreement, and join-lineage agreement; a pre-5D flat tag is promoted to a one-element lineage. `src/composition-edit.ts` carries join lineage into the active-reference snapshot; no new dependency, node kind or Value kind was introduced.
+
+Stage 6A adds the user answer inbox without changing Hover or the runtime wait model. `src/answer-inbox.ts` defines the `{answerId, compositionId, nodeId, hoverToken, value, at}` record, creates `<honey>/answers/` (0700), writes one record atomically through a same-directory temp file plus rename (0600), lists only `.json` files in name order, validates the Value shape with the same helper Honey uses, and deletes processed files. `src/user-answer.ts` moves the Stage 3C-2 `parseUserAnswer` out of the interactive CLI so `src/answer-cli.ts` (`wax answer`) and `wax run` share the exact same modality parsing and attachment path checks. `wax answer` reads the composition and persisted field read-only, requires exactly one open user hover unless `--token`, refuses a graph-revision mismatch, and never calls `answerHover` or writes `field.json`. The daemon creates the inbox, scans it after each pump (including startup and every 500 ms heartbeat), and applies an answer only after confirming the current hover's node and token: `answerHover` is then called, Honey is flushed, and only then is the file deleted, so a crash can at worst leave the saved field already resolved and the file stale on restart. A missing composition/node/hover/token or a duplicate after resolution logs `answer.stale`; an unreadable or invalid record, or a Value rejected by the node modality, logs `answer.malformed`. Both delete the file and create no Pheromone or early-input queue. Scheduled triggers now accept a `user` target; the daemon triggers the node, the hover opens without a TTY, and an external `wax answer` completes it. `src/runtime/definition.ts` accepts the target, and the log gains `answer.applied`/`answer.stale`/`answer.malformed` plus an `answerId` field; answer Values are not logged.

@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches and completed tombstones, the Stage 5B Merge timeout, the Stage 5C structured Value and object/array Merge combine, the Stage 5D nested Fork/Merge lineage, the Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, the Stage 4B-B local composition MCP tool, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring are implemented; `npm test` passes 469/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `wax run` and `wax daemon` select Codex or the existing DSH ACP adapter; dsh requires an explicit `--dsh-root` or `DSH_ROOT`. A real DSH smoke launched the adapter and reached the model call, then failed because no API key was configured, so a real DSH completion remains unverified.
+> **Status**: early design. [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`CONTRACT.md`](CONTRACT.md) describe the target runtime. The runtime, Forager bridge, one-shot Codex CLI, Honey/log/transcripts, Guard hovers, live-edit reference checks, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches and completed tombstones, the Stage 5B Merge timeout, the Stage 5C structured Value and object/array Merge combine, the Stage 5D nested Fork/Merge lineage, the Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 6A answer inbox and scheduled user targets, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, the Stage 4B-B local composition MCP tool, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring are implemented; `npm test` passes 494/0. A real Codex smoke passed with codex-cli 0.166.0-alpha.5.1 through `--codex-exe` for the one-shot path; the daemon is covered with a fake adapter. `wax run` and `wax daemon` select Codex or the existing DSH ACP adapter; dsh requires an explicit `--dsh-root` or `DSH_ROOT`. A real DSH smoke launched the adapter and reached the model call, then failed because no API key was configured, so a real DSH completion remains unverified.
 
 ## Vision
 
@@ -37,14 +37,15 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - Stage 5B adds Merge `timeoutMs` (default `600000`, positive integer no larger than `2147483647`), measured from the first branch arrival for one forkId and persisted as an absolute `deadlineAt`. Required branches that arrive before the deadline emit normally and disable the timeout. When the deadline is reached with required branches missing, the fork fails: queue/pending/hover siblings are cancelled, nothing is emitted, and the join becomes a persisted timed-out tombstone (`timedOutAt`, empty `arrived`). A late required/optional branch is dropped and logged instead of reopening the join. `failMissingJoins` never fails a join before its deadline, so the field stays non-Rest while it waits. `PheromoneRuntime.nextWakeAt()` exposes the earliest incomplete-join deadline; `pump()` expires due joins, `wax run` sleeps until that instant (or an earlier pending rate-limit) when no hover is left, and the daemon's existing 500 ms heartbeat is unchanged. Completed and timed-out tombstones share the 5A bound and never block Rest or an edit.
 - Stage 5C adds the `structured` Value (`{kind:"structured", value: JsonValue}`) and Merge `combine: "object" | "array"`. A structured payload is JSON-safe only: null, boolean, finite number, string, array and plain object, rejecting undefined/function/BigInt/Symbol/cycles/non-finite numbers; existing Value objects are accepted inside it. `serializeValue` emits `JSON.stringify`, shared by the Forager prompt, Condition text mode and Merge text combine. `object` emits the required then arrived-optional branch Values keyed by branchId; `array` emits them in that order. `text` is unchanged. Honey validates and round-trips the payload; attachment semantics inside `structured` are deferred.
 - Stage 5D makes Fork/Merge nest. A Pheromone carries `lineage`, an outer-to-inner list of `{forkId, branchId}` tags; `forkId`/`branchId` remain and point at the last tag. A Fork appends a tag (copying the Value), normal nodes preserve the lineage, and a Merge groups by the current top `forkId`, requires every arrival to share the same parent lineage, and pops its current tag on output: a nested Merge restores the enclosing tags, a top-level Merge emits untagged. Failure, timeout and sibling cancellation still act only on the current `forkId`. Joins persist their parent lineage; completed and timed-out tombstones keep blocking late reopens for that `forkId`, including after a Honey restore. text/object/array combine, optional and timeout semantics are unchanged.
+- Stage 6A adds the user answer inbox. Hover remains the user node's stable state. `wax answer` reads the composition, the user modality and the persisted field, requires exactly one open user hover unless `--token` is given, reuses the Stage 3C-2 answer parsing, and only writes `<honey>/answers/<answerId>.json` through a same-directory temp file plus rename; it never writes the field. The daemon creates the inbox, scans it at startup and after every heartbeat/pump, applies an answer only when it matches the current hover, logs `answer.applied`/`answer.stale`/`answer.malformed` without the Value, flushes before deleting, and drops stale, duplicate, wrong-node, wrong-token and malformed files without creating a Pheromone or queueing an early answer. Scheduled triggers may now target a `user` node: the daemon opens the hover without a TTY and `wax answer` supplies the answer; an answer left in the inbox is applied after a restart when its hover was restored, and is stale otherwise.
 - Joins persist in `honey/field.json`, including the parent `lineage` of a nested join. Incomplete joins count as live references for edit protection; completed and timed-out tombstones do not. A restored join is not replayed: arrived branches stay arrived, an already-complete join settles once, and an expired deadline fails immediately.
 - Stage 3B adds the `worker` node and `Condition` `mode: "worker"`. A worker runs an argv-only process (`shell: false`) with `cwd` contained to the registered project, a 60s default timeout, and a 64 KiB cap per output stream; timeout or cap overflow kills the process tree. stdout becomes the text Value, stderr stays error metadata, and non-zero exit fails the activation without retry. A Condition worker branches on the exit code instead: 0 is `true`, non-zero is `false`.
-- Stage 3C-1 adds scheduled triggers. A composition may declare `triggers` with an `at` instant (ISO-8601 with `Z` or an offset) or a fixed `everyMs` interval (>= 1000). Only `forager` and `worker` targets are accepted; scheduled `user` triggers and control nodes are rejected. Trigger ids are unique.
+- Stage 3C-1 adds scheduled triggers. A composition may declare `triggers` with an `at` instant (ISO-8601 with `Z` or an offset) or a fixed `everyMs` interval (>= 1000). `forager`, `worker` and (Stage 6A) `user` targets are accepted; control nodes are rejected. Trigger ids are unique.
 - `wax daemon` runs one composition's schedule in the foreground. A per-composition lock refuses a second daemon, `honey/scheduler.json` records occurrences atomically before the runtime enqueues them (at-most-once: a crash can lose an occurrence, never duplicate one), and a past `at`/missed `every` fires once on start without a missed-interval storm. Active restored Foragers stay unknown and active Workers stay stuck; nothing is replayed.
 - The daemon has no TTY: Guard requests are rejected by default and logged; there is no Guard inbox. Shutdown on SIGINT/SIGTERM (or the injected abort signal in tests) stops scheduling, stops the workspace, and releases the lock.
-- Stage 3C-2 adds manual `message`, `image`, and `file` user answers. The parser accepts the three modalities; the runtime validates the Value shape and modality without touching the filesystem; the interactive CLI prompts for a message or one local path, expands `~`, requires an existing regular file, and stores the absolute path. The Forager bridge forwards image/file attachments to the adapter as `AttachmentDraft`s, infers `mimeType` from the path extension, and uses `See attached input.` when the rendered prompt would be empty. Nothing is copied or previewed; scheduled `user` triggers remain deferred.
-- The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`; the daemon and scheduler live in `src/daemon.ts`, `src/scheduler.ts` and `src/daemon-lock.ts`.
-- Honey lives in `src/honey.ts`: an atomically replaced `field.json` under `~/.wax/apiaries/<apiary>/compositions/<id>/honey/`, plus a metadata `log.jsonl` that never stores prompt or output bodies. Transcripts keep the event bodies; the log only references them. Both rotate at a byte limit.
+- Stage 3C-2 adds manual `message`, `image`, and `file` user answers. The parser accepts the three modalities; the runtime validates the Value shape and modality without touching the filesystem; the interactive CLI prompts for a message or one local path, expands `~`, requires an existing regular file, and stores the absolute path. The Forager bridge forwards image/file attachments to the adapter as `AttachmentDraft`s, infers `mimeType` from the path extension, and uses `See attached input.` when the rendered prompt would be empty. Nothing is copied or previewed. Stage 6A lets the same parsing serve `wax answer` and allows scheduled `user` triggers.
+- The Workspace Forager bridge lives in `src/forager.ts`; the one-shot `wax run` CLI lives in `src/cli.ts`; the daemon and scheduler live in `src/daemon.ts`, `src/scheduler.ts` and `src/daemon-lock.ts`. Stage 6A adds `src/answer-inbox.ts` (record shape and atomic file transport), `src/answer-cli.ts` (`wax answer`) and `src/user-answer.ts` (shared answer parsing).
+- Honey lives in `src/honey.ts`: an atomically replaced `field.json` under `~/.wax/apiaries/<apiary>/compositions/<id>/honey/`, the Stage 6A `<honey>/answers/` inbox, plus a metadata `log.jsonl` that never stores prompt or output bodies. Transcripts keep the event bodies; the log only references them. Both rotate at a byte limit.
 - Native approvals become **Guard** hovers: bound to their `requestId`, cancelled after one hour, persisted like any other hover. An early, late or mismatched decision is rejected, and nothing is ever auto-allowed.
 - `--resume` rebuilds a field; an interrupted Forager becomes unknown and is never replayed, and a persisted Guard cannot be resumed.
 - `src/revision.ts` refuses a graph edit that removes or renames a node still holding queue, pending, active, hover, or merge-waiting state; a forced edit returns the nodes that must be marked as needing attention.
@@ -54,7 +55,7 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 - Stage 4C adds read-only inspection. `wax composition revisions` reads `<state-dir>/revisions.jsonl` (default `~/.wax`), filters by `--composition`, keeps the newest `--limit` matches (default 50, max 1000) and fails on any malformed line instead of skipping it. The reader whitelists the six audit fields, so a corrupt line can never leak a composition body. `wax composition recover <file>` scans the same directory for `.<basename>.tmp-*` candidates and reports each as valid or invalid; it never renames, deletes or overwrites anything, and has no `--apply`.
 - The old flow/composition/workbench/delegation/web orchestration has been removed. `src/` keeps the runtime plus the adapter/session infrastructure it uses.
 - `wax run` and `wax daemon` accept `--harness codex|dsh`; dsh requires `--dsh-root <path>` or `DSH_ROOT` (no implicit default), and each per-harness override is rejected on the other harness.
-- Scheduled `user` triggers remain deferred; the next step is an owner review of the Stage 5D work.
+- Scheduled `user` triggers and the answer inbox are implemented in Stage 6A; the next step is an owner review of the Stage 6A work.
 
 ## Repository layout
 
@@ -64,7 +65,10 @@ ARCHITECTURE.md      target runtime model
 CONTRACT.md          composition file, runtime state, validation, CLI
 src/runtime/         the implemented single-Pheromone runtime
 src/forager.ts       Workspace -> NodeExecutor bridge
-src/cli.ts           `wax run` / `wax daemon` / `wax composition` / `wax mcp` CLI entry
+src/cli.ts           `wax run` / `wax daemon` / `wax answer` / `wax composition` / `wax mcp` CLI entry
+src/answer-cli.ts    `wax answer` argument parsing and inbox write
+src/answer-inbox.ts  answer record shape, atomic inbox file and scanning
+src/user-answer.ts   shared user-modality answer parsing (interactive + inbox)
 src/composition-cli.ts  `wax composition validate|replace` argument parsing and exit codes
 src/composition-tool.ts transport-neutral typed result layer behind `--json` and MCP
 src/composition-edit.ts atomic composition replace, Honey/lock checks, revision audit
@@ -125,6 +129,28 @@ npm run wax -- daemon composition.json --project . --harness codex
 `--state-dir`, `--apiary`, `--codex-exe` and `--dsh-root` have the same meanings
 as for `wax run`. A second daemon for the same composition is refused while the
 lock is live. The process serves no HTTP API and has no UI.
+
+A running daemon's user hover is answered from another terminal; no TTY is
+needed on the daemon side:
+
+```bash
+npm run wax -- answer composition.json --project . --node ask --text "looks good"
+npm run wax -- answer composition.json --project . --node ask --token hv_... --choice approve
+npm run wax -- answer composition.json --project . --node ask --yes
+npm run wax -- answer composition.json --project . --node ask --image ./photo.png
+npm run wax -- answer composition.json --project . --node ask --file ./report.pdf
+```
+
+`wax answer` reads the composition and the current Honey field, requires exactly
+one open user hover unless `--token` selects one, validates the answer with the
+same parser as the interactive CLI, and writes one `answerId.json` file under
+`<honey>/answers/` through a temp file plus rename. It never writes the field.
+The daemon applies a matching answer with `answerHover`, flushes, then deletes
+the file. With no matching hover (including a duplicate, wrong node, wrong token
+or a stale answer after a restart) the file is logged as `answer.stale` and
+deleted; malformed files are logged as `answer.malformed` and deleted. Neither
+creates a Pheromone or queues an answer for later. A scheduled trigger may target
+a `user` node, so the daemon can open the hover without a TTY.
 
 `--composition-tools` on `wax run` or `wax daemon` opts that harness session into
 one local MCP server named `wax_composition`. It is launched with

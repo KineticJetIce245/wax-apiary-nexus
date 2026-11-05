@@ -3,6 +3,13 @@ import { join } from 'node:path';
 
 import type { HarnessAdapter } from './adapters/harness.js';
 import {
+  ensureAnswerInbox,
+  listAnswerFiles,
+  readAnswerRecord,
+  removeAnswerFile,
+  type AnswerRecord,
+} from './answer-inbox.js';
+import {
   CliUsageError,
   apiaryForProject,
   createDefaultAdapter,
@@ -160,6 +167,7 @@ export async function runDaemon(
 ): Promise<number> {
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const now = deps.now ?? Date.now;
 
   let command: DaemonCommand;
   let definition: CompositionDefinition;
@@ -300,6 +308,9 @@ export async function runDaemon(
 
   let code = 0;
   try {
+    // The answer inbox is daemon-owned transport: create it before restoring so
+    // an answer written by a previous run is still visible after a restart.
+    ensureAnswerInbox(store.paths.answers);
     const persisted = store.load();
     const schedulerState = store.loadScheduler();
 
@@ -357,7 +368,7 @@ export async function runDaemon(
       projectDirectory: project.directory,
       onLog: log.sink,
       onGuard: rejectGuard,
-      ...(deps.now === undefined ? {} : { now: deps.now }),
+      now,
     };
 
     if (persisted !== undefined) {
@@ -368,6 +379,108 @@ export async function runDaemon(
       runtime = new PheromoneRuntime(definition, options);
     }
     const activeRuntime = runtime;
+
+    const logAnswer = (
+      event: 'answer.applied' | 'answer.stale' | 'answer.malformed',
+      outcome: string,
+      record: AnswerRecord | undefined,
+      nodeId?: string,
+    ): void => {
+      log.sink({
+        at: new Date(now()).toISOString(),
+        event,
+        compositionId: definition.id,
+        graphRevision: definition.graphRevision,
+        ...(record === undefined ? {} : { answerId: record.answerId }),
+        ...(nodeId === undefined ? {} : { nodeId }),
+        outcome,
+      });
+    };
+
+    /**
+     * Why an answer cannot be applied to the current field, or undefined when
+     * it matches an open user hover. A missing/expired/different hover is stale:
+     * it is dropped, never queued for a later hover and never turned into a new
+     * Pheromone.
+     */
+    const staleReason = (record: AnswerRecord): string | undefined => {
+      if (record.compositionId !== definition.id) {
+        return 'composition-mismatch';
+      }
+      const node = definition.nodes.get(record.nodeId);
+      if (node === undefined || node.kind !== 'user') {
+        return 'node-mismatch';
+      }
+      const hover = activeRuntime.snapshot().nodes[record.nodeId]?.hover;
+      if (hover === undefined || hover.kind !== 'user') {
+        return 'no-hover';
+      }
+      if (hover.token !== record.hoverToken) {
+        return 'token-mismatch';
+      }
+      return undefined;
+    };
+
+    /**
+     * Applies at most the answer files present right now, one at a time.
+     *
+     * The daemon owns Honey writes; this is the only place an inbox answer
+     * reaches `answerHover`. Each applied answer is flushed before its file is
+     * removed, so a crash cannot replay it onto a field that still shows the
+     * old hover: the saved field already records the resolved hover.
+     */
+    async function processAnswerInbox(): Promise<boolean> {
+      if (stopping) {
+        return false;
+      }
+      let applied = false;
+      for (const path of listAnswerFiles(store.paths.answers)) {
+        if (stopping) {
+          break;
+        }
+
+        let record: AnswerRecord;
+        try {
+          record = readAnswerRecord(path);
+        } catch (error) {
+          logAnswer('answer.malformed', messageOf(error), undefined);
+          removeAnswerFile(path);
+          continue;
+        }
+
+        const reason = staleReason(record);
+        if (reason !== undefined) {
+          logAnswer('answer.stale', reason, record, record.nodeId);
+          removeAnswerFile(path);
+          continue;
+        }
+
+        try {
+          activeRuntime.answerHover(record.nodeId, record.value, record.hoverToken);
+        } catch (error) {
+          // The record shape was readable but its Value does not satisfy the
+          // node modality; treat it as malformed instead of retrying forever.
+          logAnswer('answer.malformed', messageOf(error), record, record.nodeId);
+          removeAnswerFile(path);
+          continue;
+        }
+
+        applied = true;
+        logAnswer('answer.applied', 'applied', record, record.nodeId);
+        try {
+          flush();
+        } catch (error) {
+          err(
+            `error: could not persist Honey after answer '${record.answerId}': ${messageOf(error)}`,
+          );
+          // Leave the file in place. The hover is already resolved in memory, so
+          // the next scan drops it as stale instead of applying it twice.
+          return applied;
+        }
+        removeAnswerFile(path);
+      }
+      return applied;
+    }
 
     const requestPump = (): void => {
       if (stopping) {
@@ -388,6 +501,18 @@ export async function runDaemon(
             } catch (error) {
               err(`error: trigger activation failed: ${messageOf(error)}`);
             }
+            // Answers are applied only after pump, so a restored/queued user
+            // Pheromone has had the chance to open its hover first. A successful
+            // answer resolves the hover and emits, so pump again for the graph.
+            let applied = false;
+            try {
+              applied = await processAnswerInbox();
+            } catch (error) {
+              err(`error: answer inbox processing failed: ${messageOf(error)}`);
+            }
+            if (applied) {
+              triggerPending = true;
+            }
             // An idle pump changes nothing; avoid rewriting Honey on every
             // heartbeat.
             if (log.entries.length !== entriesBefore) {
@@ -405,7 +530,8 @@ export async function runDaemon(
         return;
       }
       try {
-        // Scheduled triggers carry no input in 3C-1; richer input is 3C-2.
+        // Scheduled triggers carry no input; a user target opens its Hover and
+        // `wax answer` supplies the Value without a TTY.
         activeRuntime.trigger(trigger.target, { kind: 'text', text: '' });
       } catch (error) {
         err(`error: scheduled trigger '${trigger.id}' could not enqueue: ${messageOf(error)}`);

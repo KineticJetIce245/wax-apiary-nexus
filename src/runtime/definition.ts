@@ -858,12 +858,9 @@ function parseTriggers(
       if (node === undefined) {
         issues.push(`${path}.target: unknown node '${target}'`);
         valid = false;
-      } else if (node.kind === 'user') {
-        issues.push(`${path}.target: scheduled user triggers are deferred to Stage 3C-2`);
-        valid = false;
-      } else if (node.kind !== 'forager' && node.kind !== 'worker') {
+      } else if (node.kind !== 'forager' && node.kind !== 'worker' && node.kind !== 'user') {
         issues.push(
-          `${path}.target: scheduled trigger target '${target}' must be a forager or worker node, got '${node.kind}'`,
+          `${path}.target: scheduled trigger target '${target}' must be a forager, worker or user node, got '${node.kind}'`,
         );
         valid = false;
       }

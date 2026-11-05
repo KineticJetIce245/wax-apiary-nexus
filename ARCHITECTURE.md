@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-> **Status**: target design. The PheromoneField single-Pheromone slice, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches, Stage 5B Merge timeout, Stage 5C structured Value and object/array Merge combine, Stage 5D nested Fork/Merge lineage, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring are implemented; scheduled `user` triggers are still open. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
+> **Status**: target design. The PheromoneField single-Pheromone slice, Stage 3A Fork/Merge/Branch, the Stage 5A optional Merge branches, Stage 5B Merge timeout, Stage 5C structured Value and object/array Merge combine, Stage 5D nested Fork/Merge lineage, Stage 3B Worker/Condition worker, the Stage 3C-1 foreground daemon scheduler, the Stage 3C-2 rich manual user input, the Stage 6A answer inbox and scheduled `user` targets, the Stage 4A offline composition editor, the Stage 4B-A JSON CLI contract for that editor, the Stage 4C read-only revision audit and orphan-temp inspection, and the Stage 4D DSH harness wiring are implemented. This document and [`CONTRACT.md`](CONTRACT.md) are the current design references.
 
 ## 1. One sentence
 
@@ -74,11 +74,12 @@ type Value =
 - `user` nodes declare a modality: text, choice, yes/no, message, image, or file.
 - A normal prompt can be a message: text plus optional files/images/audio.
 - A review is a yes/no `user` node; a Condition can branch directly on the boolean.
+- Stage 6A adds the answer inbox: Hover stays the user node's stable state, while `wax answer` writes one inert record under `<honey>/answers/` and the daemon applies it only when it matches the current hover. There is no offline answer queue and no second field writer.
 - The Pheromone itself is not split into “nectar” and “pollen” subtypes; it carries the Value.
 
 ## 5. Runtime
 
-A trigger — manual or scheduled — creates a Pheromone at a task node. A node consumes a Pheromone, runs, and emits new Pheromones on its outgoing edges. Stage 3C-1 adds a single-composition foreground daemon that schedules `at`/`every` triggers; it records an occurrence before enqueueing it, so recovery is at-most-once.
+A trigger — manual or scheduled — creates a Pheromone at a task node. A node consumes a Pheromone, runs, and emits new Pheromones on its outgoing edges. Stage 3C-1 adds a single-composition foreground daemon that schedules `at`/`every` triggers; it records an occurrence before enqueueing it, so recovery is at-most-once. Stage 6A allows a scheduled trigger to target a `user` node: the daemon opens the Hover without a TTY and `wax answer` completes it.
 
 - A normal node emits one Pheromone.
 - **Fork** consumes one and emits N, one per branch.
@@ -100,6 +101,8 @@ A node can enter a **Hover**, represented by a `HoverSpec`:
 - `timer` — waiting for a delay
 
 Only an event matching the hover token can complete it. A native Guard stays at the Forager node and is displayed as a virtual card; it does not move the Pheromone. A graph-level review is a `user` node with a yes/no question, followed by a Condition.
+
+Stage 6A transports a human answer to the owning daemon without changing Hover: `wax answer` reads the field only to find an open user hover, validates the answer against the node modality, and creates `<honey>/answers/<answerId>.json` through a temp file plus rename. The daemon creates the inbox, scans it after startup and each pump, and calls `answerHover` only after checking the current hover's node and token. It flushes the field before deleting the file, so a crash cannot replay an applied answer; a stale, duplicate, wrong-node, wrong-token or malformed file is logged and deleted with no new Pheromone and no early-input queue.
 
 Stage 3B does not open a `worker` hover: a Worker is an awaited child process with a timeout, so there is no durable cross-process wait to represent. The `worker` hover kind remains reserved rather than used speculatively.
 
@@ -133,6 +136,8 @@ Honey is the durable layer:
 
 ```text
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/field.json
+~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/scheduler.json
+~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/answers/
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/transcripts/<conversationId>.jsonl
 ~/.wax/apiaries/<apiaryId>/compositions/<compositionId>/honey/artifacts/
 ```
@@ -170,3 +175,5 @@ Stage 5B adds `MergeConfig.timeoutMs` (default 600000, positive integer up to 21
 Stage 5C adds the `structured` Value and Merge `combine: "object" | "array"`. `Value` gains `{kind:"structured", value: JsonValue}`, where `JsonValue` is JSON-safe only (null, boolean, finite number, string, array, plain object). `src/runtime/json-value.ts` rejects undefined, functions, BigInt, Symbol, cycles and non-finite numbers at the runtime trigger/executor boundary, and `src/honey.ts` revalidates the payload on load. `serializeValue` emits `JSON.stringify`, so the Forager prompt, Condition text mode and text Merge combine share one rendering; a Honey round trip restores the payload unchanged. A Merge with `combine:"object"` emits `{kind:"structured", value:{[branchId]: Value}}` and `"array"` emits `{kind:"structured", value: Value[]}`, each in required order followed by the optional branches that already arrived in optional config order. `text` is unchanged, and no attachment semantics are defined inside `structured`.
 
 Stage 5D makes Fork/Merge nest without adding a node kind or Value kind. `Pheromone` gains `lineage?: readonly BranchTag[]`, where `BranchTag = {forkId, branchId}` and the array is outer-to-inner with the last tag as the current fork; `forkId`/`branchId` remain and are kept equal to the last tag. A Fork emits the incoming lineage plus its new tag and copies the Value. A normal node reproduces the whole lineage. A Merge reads the current top tag, groups by its `forkId`, rejects a second arrival whose parent lineage (the incoming lineage without the last tag) disagrees, and emits with the parent lineage restored: nested output keeps the enclosing tags, top-level output has none. `JoinState`/`PersistedJoinState` carry the parent `lineage`, so a Honey round trip can still settle or drop a nested join. `failFork`, duplicate/unknown-branch handling, optional drops and timeout cancellation continue to match only the current `forkId`, leaving the outer lineage untouched; completed and timed-out tombstones still block late reopens for their forkId. `src/honey.ts` validates lineage tags, the flat/last-tag agreement, and join parent lineage on load. text/object/array combine, optional and timeout semantics are unchanged.
+
+Stage 6A adds the answer inbox and scheduled `user` targets while keeping Hover as the stable user state. `src/answer-inbox.ts` owns the record shape, the 0700 inbox, the 0600 temp-plus-rename write, sorted `.json` scanning and deletion; `src/user-answer.ts` is the shared Stage 3C-2 answer parser; `src/answer-cli.ts` implements `wax answer` as a read-only field reader and single-file writer. The daemon creates the inbox, processes answers after each pump (which the 500 ms heartbeat keeps calling), checks the current hover's composition/node/token before calling `answerHover`, flushes before deleting, and logs `answer.applied`/`answer.stale`/`answer.malformed` without the answer Value. An unmatched, duplicate, wrong-node or wrong-token answer is stale; a malformed file or a Value rejected by the modality is malformed; neither creates a Pheromone or queues an early answer. `src/runtime/definition.ts` accepts a scheduled `user` target, and the daemon trigger path already passes through the same `PheromoneRuntime.trigger`. No new dependency, runtime wait model, socket/IPC channel or field writer was introduced.

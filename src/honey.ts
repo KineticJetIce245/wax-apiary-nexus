@@ -34,6 +34,8 @@ export interface HoneyPaths {
   readonly field: string;
   /** Scheduler occurrence bookkeeping: `<directory>/honey/scheduler.json` */
   readonly scheduler: string;
+  /** Answer inbox: `<directory>/honey/answers/` */
+  readonly answers: string;
   /** Append-only metadata history: `<directory>/log.jsonl` */
   readonly log: string;
   /** Reserved for 2C transcripts: `<directory>/honey/transcripts/` */
@@ -58,6 +60,7 @@ export function honeyPaths(stateRoot: string, apiaryId: string, compositionId: s
     directory,
     field: join(directory, 'honey', 'field.json'),
     scheduler: join(directory, 'honey', 'scheduler.json'),
+    answers: join(directory, 'honey', 'answers'),
     log: join(directory, 'log.jsonl'),
     transcripts: join(directory, 'honey', 'transcripts'),
   };
@@ -118,7 +121,12 @@ function sameLineage(left: readonly BranchTag[], right: readonly BranchTag[]): b
   return true;
 }
 
-function assertValueShape(value: unknown, path: string): asserts value is Value {
+/**
+ * Validates the shape of a persisted Value. Shared with the answer inbox: an
+ * answer record is untrusted local input, so it must not smuggle a Value shape
+ * that the field loader would reject.
+ */
+export function assertValueShape(value: unknown, path: string): asserts value is Value {
   if (!isRecord(value)) {
     throw new Error(`${path}: expected a value object`);
   }

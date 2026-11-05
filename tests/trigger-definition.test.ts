@@ -132,7 +132,16 @@ test('rejects duplicate trigger ids and invalid schedule kinds', () => {
   assert.ok(badKind.some((issue) => issue.includes("schedule.kind: expected 'at' or 'every'")));
 });
 
-test('rejects scheduled control, user and unknown targets', () => {
+test('accepts a scheduled user target and rejects control and unknown targets', () => {
+  const user = parseComposition(
+    composition({
+      triggers: [{ id: 'human', target: 'ask', schedule: { kind: 'every', everyMs: 1000 } }],
+    }),
+  );
+  assert.deepEqual(user.triggers, [
+    { id: 'human', target: 'ask', schedule: { kind: 'every', everyMs: 1000 } },
+  ]);
+
   const control = issuesOf(
     composition({
       triggers: [{ id: 'control', target: 'check', schedule: { kind: 'every', everyMs: 1000 } }],
@@ -140,16 +149,9 @@ test('rejects scheduled control, user and unknown targets', () => {
   );
   assert.ok(
     control.some((issue) =>
-      issue.includes("scheduled trigger target 'check' must be a forager or worker node"),
+      issue.includes("scheduled trigger target 'check' must be a forager, worker or user node"),
     ),
   );
-
-  const user = issuesOf(
-    composition({
-      triggers: [{ id: 'human', target: 'ask', schedule: { kind: 'every', everyMs: 1000 } }],
-    }),
-  );
-  assert.ok(user.some((issue) => issue.includes('scheduled user triggers are deferred')));
 
   const unknown = issuesOf(
     composition({

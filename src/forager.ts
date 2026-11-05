@@ -1,4 +1,7 @@
+import { extname } from 'node:path';
+
 import type { ApprovalDecisionKind, ApprovalRequest } from './adapters/harness.js';
+import type { AttachmentDraft } from './content.js';
 import {
   renderPrompt,
   type ExecutionContext,
@@ -83,12 +86,17 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   }
 
   async execute(node: ForagerNode, input: Value, context?: ExecutionContext): Promise<Value> {
-    const prompt = renderPrompt(node.config.prompt, input);
+    const attachments = attachmentsOf(input);
+    const rendered = renderPrompt(node.config.prompt, input);
+    // The adapter rejects an empty prompt. An attachment-only Value serializes
+    // to '', so submit a stable sentence instead.
+    const prompt =
+      rendered.trim() === '' && attachments.length > 0 ? ATTACHMENT_ONLY_PROMPT : rendered;
 
     this.activeContext = context;
     let submitted: Execution;
     try {
-      submitted = await this.workspace.submit(this.conversation.id, prompt);
+      submitted = await this.workspace.submit(this.conversation.id, prompt, attachments);
     } catch (error) {
       this.activeContext = undefined;
       throw new ForagerExecutionError(node.id, 'failed', messageOf(error), { cause: error });
@@ -184,6 +192,48 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
 function defaultDecision(request: ApprovalRequest): ApprovalDecisionKind {
   const offered = new Set(request.options.map((option) => option.kind));
   return offered.has('reject_once') ? 'reject_once' : 'cancelled';
+}
+
+/** Stable non-empty prompt for an attachment-only input. */
+const ATTACHMENT_ONLY_PROMPT = 'See attached input.';
+
+/** Small extension map; never sniff or read the file. */
+const MEDIA_TYPES: Readonly<Record<string, string>> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.json': 'application/json',
+  '.md': 'text/markdown',
+};
+
+/**
+ * Runtime attachments are local path references. Only image/file entries with a
+ * non-empty path become AttachmentDrafts; audio and pathless entries are
+ * skipped. No filesystem access: mimeType comes from the extension.
+ */
+function attachmentsOf(value: Value): AttachmentDraft[] {
+  if (value.kind !== 'message' && value.kind !== 'attachments') {
+    return [];
+  }
+  const drafts: AttachmentDraft[] = [];
+  for (const attachment of value.attachments) {
+    if (attachment.kind !== 'image' && attachment.kind !== 'file') {
+      continue;
+    }
+    if (typeof attachment.path !== 'string' || attachment.path.trim() === '') {
+      continue;
+    }
+    drafts.push({
+      kind: attachment.kind,
+      path: attachment.path,
+      mimeType: MEDIA_TYPES[extname(attachment.path).toLowerCase()] ?? 'application/octet-stream',
+    });
+  }
+  return drafts;
 }
 
 function messageOf(error: unknown): string {

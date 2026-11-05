@@ -6,6 +6,7 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from '../../src/adapters/harness.js';
+import type { AttachmentDraft } from '../../src/content.js';
 import type { Project } from '../../src/kernel.js';
 
 export type FakeTerminal = 'completed' | 'failed' | 'cancelled' | 'unknown';
@@ -36,6 +37,7 @@ export class FakeAdapter implements HarnessAdapter {
   };
 
   readonly prompts: string[] = [];
+  readonly submittedAttachments: (readonly AttachmentDraft[])[] = [];
   readonly approvals: ApprovalDecision[] = [];
   startCalls = 0;
   stopCalls = 0;
@@ -62,8 +64,14 @@ export class FakeAdapter implements HarnessAdapter {
     return `native-${String(this.conversationSeq)}`;
   }
 
-  async submit(_nativeId: string, executionId: string, text: string): Promise<void> {
+  async submit(
+    _nativeId: string,
+    executionId: string,
+    text: string,
+    attachments: readonly AttachmentDraft[] = [],
+  ): Promise<void> {
     this.prompts.push(text);
+    this.submittedAttachments.push([...attachments]);
     setTimeout(() => {
       this.emit({ type: 'execution/started', executionId });
       if (this.options.askApproval === true) {

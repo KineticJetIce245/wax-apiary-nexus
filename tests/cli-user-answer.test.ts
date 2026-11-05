@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 
 import { parseUserAnswer, runCli, type CliDependencies } from '../src/cli.js';
+import type { AttachmentDraft } from '../src/content.js';
 import { parseComposition, type UserNode, type Value } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 
@@ -137,11 +138,17 @@ test('rejects missing, empty and non-regular attachment paths', () => {
 });
 
 test('injected answer handlers accept message, image and file values', async () => {
-  const cases: readonly { modality: string; value: Value; prompt: string }[] = [
+  const cases: readonly {
+    modality: string;
+    value: Value;
+    prompt: string;
+    attachments: readonly AttachmentDraft[];
+  }[] = [
     {
       modality: 'message',
       value: { kind: 'message', text: 'hello', attachments: [] },
       prompt: 'finish hello',
+      attachments: [],
     },
     {
       modality: 'image',
@@ -150,6 +157,9 @@ test('injected answer handlers accept message, image and file values', async () 
         attachments: [{ kind: 'image', path: '/injected/photo.png' }],
       },
       prompt: 'finish ',
+      attachments: [
+        { kind: 'image', path: '/injected/photo.png', mimeType: 'image/png' },
+      ],
     },
     {
       modality: 'file',
@@ -158,6 +168,9 @@ test('injected answer handlers accept message, image and file values', async () 
         attachments: [{ kind: 'file', path: '/injected/report.pdf' }],
       },
       prompt: 'finish ',
+      attachments: [
+        { kind: 'file', path: '/injected/report.pdf', mimeType: 'application/pdf' },
+      ],
     },
   ];
 
@@ -184,6 +197,7 @@ test('injected answer handlers accept message, image and file values', async () 
     assert.equal(code, 0, `${item.modality}: ${stderr.join('\n')}`);
     assert.deepEqual(seen, [item.modality]);
     assert.deepEqual(adapter.prompts, [item.prompt]);
+    assert.deepEqual(adapter.submittedAttachments, [item.attachments]);
     assert.ok(stdout.includes('rest         true'));
   }
 });

@@ -69,6 +69,28 @@ export const COMPLETED_JOIN_TTL_MS = 3_600_000;
 /** Hard cap on closed join markers per merge node; oldest are evicted. */
 export const MAX_COMPLETED_JOINS_PER_MERGE = 64;
 
+/**
+ * How long the CLI waits before pumping again when queue backpressure is the
+ * only thing preventing progress. A blocked activation is retried, never
+ * failed, so a short bounded wait is the difference between backpressure and a
+ * 0ms spin.
+ */
+export const QUEUE_RETRY_MS = 100;
+
+/**
+ * Queue slots held for one activation's future output. Every target is
+ * reserved before the source Pheromone is consumed, so a full queue can never
+ * reject a result after its task already ran. The map is decremented as each
+ * output is actually pushed; whatever is left is released.
+ */
+interface OutputReservation {
+  readonly slots: Map<NodeId, number>;
+}
+
+type ReserveOutcome =
+  | { readonly ok: true; readonly reservation: OutputReservation }
+  | { readonly ok: false; readonly target: NodeId; readonly queueDepth: number };
+
 /** A Guard decision that does not belong to the current request. */
 export class GuardDecisionError extends Error {
   constructor(message: string) {
@@ -157,6 +179,13 @@ export class PheromoneRuntime {
   private readonly states: Map<NodeId, NodeState> = new Map();
   /** Answers that arrived before their user node hovered; preserved, not dropped. */
   private readonly preAnswers = new Map<NodeId, Value[]>();
+  /**
+   * True when the last pump stopped only because a target queue was full. The
+   * CLI uses it to sleep a short retry interval instead of spinning at 0ms.
+   */
+  private blockedByQueue = false;
+  /** Blocked activations already logged, so a retry loop does not spam Honey. */
+  private readonly reportedBlocks = new Set<string>();
   private resting: boolean;
 
   constructor(definition: CompositionDefinition, options: RuntimeOptions) {
@@ -202,8 +231,14 @@ export class PheromoneRuntime {
     };
 
     const state = this.stateOf(node.id);
-    if (state.queue.length >= this.definition.defaults.queueMax) {
-      this.rejectQueueFull(node, state.queue.length, pheromone.id, pheromone.traceId);
+    const reserved = state.reserved ?? 0;
+    if (state.queue.length + reserved >= this.definition.defaults.queueMax) {
+      this.rejectQueueFull(
+        node,
+        state.queue.length + reserved,
+        pheromone.id,
+        pheromone.traceId,
+      );
     }
     state.queue.push(pheromone);
     this.resting = false;
@@ -219,21 +254,38 @@ export class PheromoneRuntime {
     return pheromone.id;
   }
 
-  /** Activates every runnable node until the field is quiet. */
+  /**
+   * Activates every runnable node until the field is quiet.
+   *
+   * A node whose output queue is full is not activated and its input stays queued
+   * or pending. It is retried in the same pump after other work has had a
+   * chance to drain the target, and by the next pump otherwise. Backpressure is
+   * therefore discovered before the source is consumed, never after.
+   */
   async pump(): Promise<void> {
+    const blocked = new Set<NodeId>();
+    let mergeBlocked = false;
     try {
       for (;;) {
-        const next = this.takeRunnable();
+        const next = this.takeRunnable(blocked);
         if (next === null) {
           // A restored join can already hold every required branch; finish it
           // without replaying any of those branches.
-          if (this.settleCompleteJoins()) {
+          const settled = this.settleCompleteJoins();
+          if (settled === 'settled') {
+            blocked.clear();
+            mergeBlocked = false;
             continue;
+          }
+          if (settled === 'blocked') {
+            mergeBlocked = true;
           }
           // A merge deadline that passed while the field was quiet fails its
           // fork here. This is the only way a waiting join makes progress
           // without a new branch arrival.
           if (this.expireDueJoins()) {
+            blocked.clear();
+            mergeBlocked = false;
             continue;
           }
           // Quiet and still waiting for a branch that is nowhere in the field:
@@ -243,9 +295,14 @@ export class PheromoneRuntime {
           this.failMissingJoins();
           break;
         }
-        await this.activate(next.node, next.pheromone);
+        await this.activate(next.node, next.pheromone, next.reservation);
+        // The field changed, so a target that was full a moment ago may have
+        // room now: retry every blocked node once more in this pump.
+        blocked.clear();
+        mergeBlocked = false;
       }
     } finally {
+      this.blockedByQueue = blocked.size > 0 || mergeBlocked;
       // A failed activation still changes the field (active is cleared), so
       // Rest must be recomputed before the error leaves pump().
       this.refreshRest();
@@ -256,6 +313,10 @@ export class PheromoneRuntime {
    * The earliest deadline of an incomplete Merge join, or undefined when none
    * is waiting. A caller that has no hover to service can sleep until this
    * instant and pump again; it is the runtime's only timed wake signal.
+   *
+   * While a queue-full block is holding work, a short retry instant is also
+   * returned so the caller never busy-spins at 0ms waiting for another node's
+   * queue to drain.
    */
   nextWakeAt(): number | undefined {
     let next: number | undefined;
@@ -271,10 +332,19 @@ export class PheromoneRuntime {
         if (isJoinClosed(join) || join.deadlineAt === undefined) {
           continue;
         }
+        // A complete join is only waiting for downstream queue space; its old
+        // deadline must not wake the caller (or spin it at 0ms) after it passed.
+        if (this.requiredComplete(node, join)) {
+          continue;
+        }
         if (next === undefined || join.deadlineAt < next) {
           next = join.deadlineAt;
         }
       }
+    }
+    if (this.blockedByQueue) {
+      const retryAt = this.now() + QUEUE_RETRY_MS;
+      next = next === undefined ? retryAt : Math.min(next, retryAt);
     }
     return next;
   }
@@ -552,10 +622,255 @@ export class PheromoneRuntime {
     return state;
   }
 
-  private takeRunnable(): { node: NodeDefinition; pheromone: Pheromone } | null {
+  /**
+   * The queue slots this activation will need. For a worker Condition both
+   * possible branches are counted because its exit code is unknowable before
+   * it runs; a text/boolean/choice Condition and a Counter are evaluated up
+   * front so only the branch that will actually emit is checked.
+   */
+  private outputTargets(
+    node: NodeDefinition,
+    pheromone: Pheromone,
+  ): readonly { readonly targetId: NodeId; readonly count: number }[] {
+    if (node.kind === 'fork') {
+      return node.config.branches.map((branch) => ({ targetId: branch.to, count: 1 }));
+    }
+
+    if (
+      node.kind === 'forager' ||
+      node.kind === 'worker' ||
+      node.kind === 'merge'
+    ) {
+      const edge = this.definition.edges.find((candidate) => candidate.from === node.id);
+      return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
+    }
+
+    if (node.kind === 'user') {
+      // A user activation only emits when an early answer is already waiting.
+      if ((this.preAnswers.get(node.id)?.length ?? 0) === 0) {
+        return [];
+      }
+      return this.userOutputTargets(node);
+    }
+
+    if (node.kind === 'condition') {
+      if (node.config.mode === 'worker') {
+        const targets: { targetId: NodeId; count: number }[] = [];
+        for (const when of ['true', 'false'] as const) {
+          const edge = this.definition.edges.find(
+            (candidate) => candidate.from === node.id && candidate.when === when,
+          );
+          if (edge !== undefined) {
+            targets.push({ targetId: edge.to, count: 1 });
+          }
+        }
+        return targets;
+      }
+
+      let branch: 'true' | 'false';
+      try {
+        branch = evaluateCondition(node.config, pheromone.value);
+      } catch {
+        // Let activation report the real input error; no output will be emitted.
+        return [];
+      }
+      const edge = this.definition.edges.find(
+        (candidate) => candidate.from === node.id && candidate.when === branch,
+      );
+      return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
+    }
+
+    const previous = this.stateOf(node.id).state?.['count'];
+    const count = (typeof previous === 'number' ? previous : 0) + node.config.step;
+    const branch = count >= node.config.max ? 'done' : 'continue';
+    const edge = this.definition.edges.find(
+      (candidate) => candidate.from === node.id && candidate.when === branch,
+    );
+    return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
+  }
+
+  private queueDepthOf(targetId: NodeId): number {
+    const state = this.stateOf(targetId);
+    return state.queue.length + (state.reserved ?? 0);
+  }
+
+  /** The static outgoing target of a user node, if it has one. */
+  private userOutputTargets(
+    node: UserNode,
+  ): readonly { readonly targetId: NodeId; readonly count: number }[] {
+    const edge = this.definition.edges.find((candidate) => candidate.from === node.id);
+    return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
+  }
+
+  private queueAvailable(targetId: NodeId): number {
+    return this.definition.defaults.queueMax - this.queueDepthOf(targetId);
+  }
+
+  /**
+   * Reserves every required slot atomically: if any target cannot take all of
+   * its outputs, nothing is reserved and the caller keeps its input.
+   */
+  private tryReserve(
+    targets: readonly { readonly targetId: NodeId; readonly count: number }[],
+  ): ReserveOutcome {
+    const needed = new Map<NodeId, number>();
+    for (const { targetId, count } of targets) {
+      if (!this.definition.nodes.has(targetId)) {
+        throw new Error(`unknown edge target '${targetId}'`);
+      }
+      needed.set(targetId, (needed.get(targetId) ?? 0) + count);
+    }
+
+    for (const [targetId, count] of needed) {
+      if (count > this.queueAvailable(targetId)) {
+        return { ok: false, target: targetId, queueDepth: this.queueDepthOf(targetId) };
+      }
+    }
+
+    const slots = new Map<NodeId, number>();
+    for (const [targetId, count] of needed) {
+      const state = this.stateOf(targetId);
+      state.reserved = (state.reserved ?? 0) + count;
+      slots.set(targetId, count);
+    }
+    return { ok: true, reservation: { slots } };
+  }
+
+  /** Gives back every slot this reservation still holds. */
+  private releaseReservation(reservation: OutputReservation): void {
+    for (const [targetId, count] of reservation.slots) {
+      const state = this.stateOf(targetId);
+      const reserved = (state.reserved ?? 0) - count;
+      if (reserved <= 0) {
+        delete state.reserved;
+      } else {
+        state.reserved = reserved;
+      }
+    }
+    reservation.slots.clear();
+  }
+
+  /** Converts one reserved slot into an enqueued Pheromone. */
+  private consumeReservation(reservation: OutputReservation, targetId: NodeId): void {
+    const held = reservation.slots.get(targetId);
+    if (held === undefined || held <= 0) {
+      throw new Error(
+        `node '${targetId}' has no reserved output slot for this activation`,
+      );
+    }
+    const state = this.stateOf(targetId);
+    const reserved = state.reserved ?? 0;
+    if (reserved <= 0) {
+      throw new Error(`node '${targetId}' lost its reserved output slot`);
+    }
+    if (reserved === 1) {
+      delete state.reserved;
+    } else {
+      state.reserved = reserved - 1;
+    }
+    if (held === 1) {
+      reservation.slots.delete(targetId);
+    } else {
+      reservation.slots.set(targetId, held - 1);
+    }
+  }
+
+  /** Reserves the single static output of a Merge, if it has one. */
+  private reserveMergeOutput(node: MergeNode): ReserveOutcome {
+    const edge = this.definition.edges.find((candidate) => candidate.from === node.id);
+    if (edge === undefined) {
+      return { ok: true, reservation: { slots: new Map() } };
+    }
+    return this.tryReserve([{ targetId: edge.to, count: 1 }]);
+  }
+
+  /**
+   * Logs a deferred activation once per source Pheromone. Retrying every 100ms
+   * must not append a Honey line per attempt.
+   */
+  private logBlocked(
+    node: NodeDefinition,
+    pheromone: Pheromone,
+    target: NodeId,
+    queueDepth: number,
+  ): void {
+    const key = `activation\0${pheromone.id}\0${target}`;
+    if (this.reportedBlocks.has(key)) {
+      return;
+    }
+    this.reportedBlocks.add(key);
+    this.log({
+      event: 'pheromone.blocked',
+      nodeId: node.id,
+      nodeKind: node.kind,
+      pheromoneId: pheromone.id,
+      traceId: pheromone.traceId,
+      queueDepth,
+      outcome: `queue-max:${target}`,
+    });
+  }
+
+  private logHoverBlocked(
+    node: UserNode,
+    pheromone: Pheromone,
+    target: NodeId,
+    queueDepth: number,
+    hoverOutcome: string,
+  ): void {
+    const key = `hover\0${pheromone.id}\0${target}`;
+    if (this.reportedBlocks.has(key)) {
+      return;
+    }
+    this.reportedBlocks.add(key);
+    this.log({
+      event: 'hover.blocked',
+      nodeId: node.id,
+      nodeKind: 'user',
+      pheromoneId: pheromone.id,
+      traceId: pheromone.traceId,
+      queueDepth,
+      outcome: `${hoverOutcome}:queue-max:${target}`,
+    });
+  }
+
+  private logMergeBlocked(
+    node: MergeNode,
+    forkId: string,
+    target: NodeId,
+    queueDepth: number,
+  ): void {
+    const key = `merge\0${node.id}\0${forkId}\0${target}`;
+    if (this.reportedBlocks.has(key)) {
+      return;
+    }
+    this.reportedBlocks.add(key);
+    this.log({
+      event: 'merge.blocked',
+      nodeId: node.id,
+      nodeKind: 'merge',
+      forkId,
+      queueDepth,
+      outcome: `queue-max:${target}`,
+    });
+  }
+
+  /**
+   * Picks the next activation whose output can be accepted.
+   *
+   * The target queues are checked (and reserved) before the input is consumed.
+   * When a target is full the input stays in `pending` and the node is skipped
+   * for this pass; a later pump retries it. No `node.failed` is written and no
+   * Pheromone is lost.
+   */
+  private takeRunnable(
+    blocked: Set<NodeId>,
+  ): { node: NodeDefinition; pheromone: Pheromone; reservation: OutputReservation } | null {
     const now = this.now();
 
     for (const node of this.definition.nodes.values()) {
+      if (blocked.has(node.id)) {
+        continue;
+      }
       const state = this.stateOf(node.id);
       if (state.active !== undefined || state.hover !== undefined) {
         continue;
@@ -586,59 +901,77 @@ export class PheromoneRuntime {
 
       if (state.pending !== undefined && now >= dueAt) {
         const pheromone = state.pending;
+        const reserved = this.tryReserve(this.outputTargets(node, pheromone));
+        if (!reserved.ok) {
+          // Keep the pending Pheromone exactly where it is. The queue was not
+          // allowed to grow, so the source input is preserved instead of being
+          // consumed and reported as a failure.
+          blocked.add(node.id);
+          this.logBlocked(node, pheromone, reserved.target, reserved.queueDepth);
+          continue;
+        }
         delete state.pending;
-        return { node, pheromone };
+        return { node, pheromone, reservation: reserved.reservation };
       }
     }
 
     return null;
   }
 
-  private async activate(node: NodeDefinition, pheromone: Pheromone): Promise<void> {
+  private async activate(
+    node: NodeDefinition,
+    pheromone: Pheromone,
+    reservation: OutputReservation,
+  ): Promise<void> {
     const state = this.stateOf(node.id);
     state.lastActivatedAt = this.iso();
     this.resting = false;
 
-    if (node.kind === 'user') {
-      this.logActivated(node, pheromone, state);
-      this.openHover(node, pheromone);
-      return;
-    }
-
-    state.active = pheromone;
-    const startedAt = this.now();
-    this.logActivated(node, pheromone, state);
-
     try {
-      if (node.kind === 'fork') {
-        this.emitFork(node, pheromone);
-        this.logCompleted(node, pheromone, startedAt, 'forked');
-      } else if (node.kind === 'merge') {
-        const outcome = this.arriveAtMerge(node, pheromone);
-        this.logCompleted(node, pheromone, startedAt, outcome);
-      } else {
-        const result = await this.runNode(node, pheromone, state);
-        this.logCompleted(node, pheromone, startedAt, result.outcome, result.log);
-        this.emit(node, pheromone, result);
+      if (node.kind === 'user') {
+        this.logActivated(node, pheromone, state);
+        this.openHover(node, pheromone, reservation);
+        return;
       }
-    } catch (error) {
-      delete state.active;
-      this.logFailed(node, pheromone, startedAt, error);
-      let optionalOnly = false;
-      if (pheromone.forkId !== undefined) {
-        // A required branch that failed can never reach its Merge; cancel its
-        // siblings so no join waits forever. An optional-only branch is logged
-        // and dropped without failing the required set.
-        optionalOnly =
-          this.handleBranchFailure(pheromone.forkId, pheromone.branchId, 'failed-branch') ===
-          'optional';
-      }
-      if (!optionalOnly) {
-        throw error;
-      }
-    }
 
-    delete state.active;
+      state.active = pheromone;
+      const startedAt = this.now();
+      this.logActivated(node, pheromone, state);
+
+      try {
+        if (node.kind === 'fork') {
+          this.emitFork(node, pheromone, reservation);
+          this.logCompleted(node, pheromone, startedAt, 'forked');
+        } else if (node.kind === 'merge') {
+          const outcome = this.arriveAtMerge(node, pheromone, reservation);
+          this.logCompleted(node, pheromone, startedAt, outcome);
+        } else {
+          const result = await this.runNode(node, pheromone, state);
+          this.logCompleted(node, pheromone, startedAt, result.outcome, result.log);
+          this.emit(node, pheromone, result, reservation);
+        }
+      } catch (error) {
+        delete state.active;
+        this.logFailed(node, pheromone, startedAt, error);
+        let optionalOnly = false;
+        if (pheromone.forkId !== undefined) {
+          // A required branch that failed can never reach its Merge; cancel its
+          // siblings so no join waits forever. An optional-only branch is logged
+          // and dropped without failing the required set.
+          optionalOnly =
+            this.handleBranchFailure(pheromone.forkId, pheromone.branchId, 'failed-branch') ===
+            'optional';
+        }
+        if (!optionalOnly) {
+          throw error;
+        }
+      }
+    } finally {
+      // Whatever the activation did not emit is released; every consumed slot
+      // was already decremented by pushPheromone().
+      this.releaseReservation(reservation);
+      delete state.active;
+    }
   }
 
   private logActivated(node: NodeDefinition, pheromone: Pheromone, state: NodeState): void {
@@ -758,16 +1091,24 @@ export class PheromoneRuntime {
     return this.projectDirectory;
   }
 
-  private openHover(node: UserNode, pheromone: Pheromone): void {
+  private openHover(
+    node: UserNode,
+    pheromone: Pheromone,
+    reservation: OutputReservation,
+  ): void {
     const state = this.stateOf(node.id);
     const queued = this.preAnswers.get(node.id);
-    const early = queued?.shift();
-    if (queued !== undefined && queued.length === 0) {
-      this.preAnswers.delete(node.id);
-    }
+    // Peek before consuming: if the early answer cannot be emitted yet, the
+    // answer must stay queued for the next attempt. takeRunnable already
+    // reserved the target, so this normally succeeds.
+    const early = queued?.[0];
 
-    if (early !== undefined) {
-      this.completeHover(node, pheromone, early, 'early-input');
+    if (early !== undefined && queued !== undefined) {
+      this.completeHover(node, pheromone, early, 'early-input', reservation);
+      queued.shift();
+      if (queued.length === 0) {
+        this.preAnswers.delete(node.id);
+      }
       return;
     }
 
@@ -789,19 +1130,54 @@ export class PheromoneRuntime {
     });
   }
 
-  private completeHover(node: UserNode, pheromone: Pheromone, value: Value, outcome: string): void {
+  /**
+   * Resolves one hover and emits its answer.
+   *
+   * The downstream queue is checked (and reserved) before the hover is
+   * deleted. When it is full the hover and its Pheromone stay in place and a
+   * `QueueFullError` is thrown, so the answer can be retried once the target
+   * drains instead of being consumed and dropped.
+   */
+  private completeHover(
+    node: UserNode,
+    pheromone: Pheromone,
+    value: Value,
+    outcome: string,
+    reservation?: OutputReservation,
+  ): void {
     const state = this.stateOf(node.id);
-    delete state.hover;
-    delete state.hoverPheromone;
-    this.log({
-      event: 'hover.resolved',
-      nodeId: node.id,
-      nodeKind: 'user',
-      pheromoneId: pheromone.id,
-      traceId: pheromone.traceId,
-      outcome,
-    });
-    this.emit(node, pheromone, { value: structuredClone(value), outcome });
+    const owned = reservation === undefined;
+    let held = reservation;
+    if (held === undefined) {
+      const reserved = this.tryReserve(this.userOutputTargets(node));
+      if (!reserved.ok) {
+        this.logHoverBlocked(node, pheromone, reserved.target, reserved.queueDepth, outcome);
+        throw new QueueFullError(
+          reserved.target,
+          this.definition.defaults.queueMax,
+          reserved.queueDepth,
+        );
+      }
+      held = reserved.reservation;
+    }
+
+    try {
+      delete state.hover;
+      delete state.hoverPheromone;
+      this.log({
+        event: 'hover.resolved',
+        nodeId: node.id,
+        nodeKind: 'user',
+        pheromoneId: pheromone.id,
+        traceId: pheromone.traceId,
+        outcome,
+      });
+      this.emit(node, pheromone, { value: structuredClone(value), outcome }, held);
+    } finally {
+      if (owned) {
+        this.releaseReservation(held);
+      }
+    }
   }
 
   /**
@@ -992,7 +1368,12 @@ export class PheromoneRuntime {
     }
   }
 
-  private emit(node: NodeDefinition, pheromone: Pheromone, result: NodeResult): void {
+  private emit(
+    node: NodeDefinition,
+    pheromone: Pheromone,
+    result: NodeResult,
+    reservation: OutputReservation,
+  ): void {
     const edge = this.outgoingEdge(node, result);
     if (edge === undefined) {
       return;
@@ -1006,55 +1387,43 @@ export class PheromoneRuntime {
       pheromone.traceId,
       result.value,
       lineage.length === 0 ? undefined : lineage,
+      reservation,
     );
   }
 
   /**
    * Fork consumes one Pheromone and emits one tagged copy per branch.
    *
-   * Every target is preflighted before anything is enqueued, counting one
-   * slot per branch (a repeated target needs one slot per occurrence). If any
-   * target could not accept all of its branches, the whole fork is rejected:
-   * no branch is emitted, so no partially filled branch set is left behind.
+   * Every target was reserved and counted before activation (one slot per
+   * branch, so a repeated target needs one slot per occurrence). If the plan
+   * could not reserve every branch the fork never ran at all, so no partially
+   * filled branch set is ever left behind and the fork input is preserved.
    */
-  private emitFork(node: ForkNode, pheromone: Pheromone): void {
+  private emitFork(
+    node: ForkNode,
+    pheromone: Pheromone,
+    reservation: OutputReservation,
+  ): void {
     const forkId = `fk_${randomUUID()}`;
     // Stage 5D: a nested Fork appends its tag to the incoming lineage instead
     // of overwriting the enclosing fork/branch tags.
     const parentLineage = currentLineage(pheromone);
 
-    const queueMax = this.definition.defaults.queueMax;
-    const reserved = new Map<NodeId, number>();
-    let violation: { target: NodeDefinition; queueDepth: number; branchId: string } | undefined;
     for (const branch of node.config.branches) {
       const target = this.definition.nodes.get(branch.to);
       if (target === undefined) {
         throw new Error(`unknown edge target '${branch.to}'`);
       }
-      const used = reserved.get(branch.to) ?? 0;
-      reserved.set(branch.to, used + 1);
-      const queueDepth = this.stateOf(branch.to).queue.length;
-      if (violation === undefined && queueDepth + used + 1 > queueMax) {
-        violation = { target, queueDepth, branchId: branch.id };
-      }
-    }
-    if (violation !== undefined) {
-      // No branch Pheromone exists yet, so the rejection is attributed to the
-      // fork's input Pheromone (the same one `node.failed` will report).
-      this.rejectQueueFull(
-        violation.target,
-        violation.queueDepth,
-        pheromone.id,
-        pheromone.traceId,
-        { forkId, branchId: violation.branchId },
-      );
     }
 
     for (const branch of node.config.branches) {
-      this.pushPheromone(branch.to, pheromone.traceId, pheromone.value, [
-        ...parentLineage,
-        { forkId, branchId: branch.id },
-      ]);
+      this.pushPheromone(
+        branch.to,
+        pheromone.traceId,
+        pheromone.value,
+        [...parentLineage, { forkId, branchId: branch.id }],
+        reservation,
+      );
     }
   }
 
@@ -1063,6 +1432,7 @@ export class PheromoneRuntime {
     traceId: string,
     value: Value,
     lineage?: readonly BranchTag[],
+    reservation?: OutputReservation,
   ): void {
     const targetNode = this.definition.nodes.get(targetId);
     if (targetNode === undefined) {
@@ -1083,10 +1453,16 @@ export class PheromoneRuntime {
         ? {}
         : { lineage: copyLineage(lineage) }),
     };
-    if (targetState.queue.length >= this.definition.defaults.queueMax) {
+    if (reservation !== undefined) {
+      // The slot was reserved before the source was consumed, so it must be
+      // available; consuming it first also keeps the capacity check honest.
+      this.consumeReservation(reservation, targetId);
+    }
+    const reserved = targetState.reserved ?? 0;
+    if (targetState.queue.length + reserved >= this.definition.defaults.queueMax) {
       this.rejectQueueFull(
         targetNode,
-        targetState.queue.length,
+        targetState.queue.length + reserved,
         emitted.id,
         emitted.traceId,
         current === undefined
@@ -1137,7 +1513,11 @@ export class PheromoneRuntime {
     throw new QueueFullError(target.id, queueMax, queueDepth);
   }
 
-  private arriveAtMerge(node: MergeNode, pheromone: Pheromone): string {
+  private arriveAtMerge(
+    node: MergeNode,
+    pheromone: Pheromone,
+    reservation: OutputReservation,
+  ): string {
     // Stage 5D: the current fork is the last lineage tag. The parent lineage is
     // shared by every branch of that fork and becomes the Merge output lineage.
     const lineage = currentLineage(pheromone);
@@ -1274,6 +1654,25 @@ export class PheromoneRuntime {
       }
     }
 
+    // The join is complete, but its output has nowhere to go yet. Keep the
+    // joined branches and the open join exactly as they are: clearing them or
+    // writing the completed tombstone here would lose the merged output. A
+    // later pump settles the join once the downstream queue has room.
+    const mergeEdge = this.definition.edges.find((edge) => edge.from === node.id);
+    if (mergeEdge !== undefined && (reservation.slots.get(mergeEdge.to) ?? 0) === 0) {
+      this.log({
+        event: 'merge.blocked',
+        nodeId: node.id,
+        nodeKind: 'merge',
+        pheromoneId: pheromone.id,
+        traceId: pheromone.traceId,
+        forkId,
+        queueDepth: this.queueDepthOf(mergeEdge.to),
+        outcome: 'queue-max',
+      });
+      return 'blocked';
+    }
+
     // The consumed Pheromones are released, and the join becomes a persisted
     // tombstone so a later branch arrival can be dropped.
     join.arrived.clear();
@@ -1281,15 +1680,18 @@ export class PheromoneRuntime {
     join.completedAt = this.iso();
     this.pruneJoinTombstones(node);
 
-    this.finishMerge(node, ordered, pheromone.traceId, parentLineage);
+    this.finishMerge(node, ordered, pheromone.traceId, parentLineage, reservation);
     return 'merged';
   }
 
   /**
-   * A restored join can already be complete; finish it once without replaying
-   * the branches that produced it.
+   * A restored (or previously blocked) join can already be complete; finish it
+   * once without replaying the branches that produced it. The downstream queue
+   * is checked before the join is cleared, so a full target defers the merge
+   * rather than losing the joined output.
    */
-  private settleCompleteJoins(): boolean {
+  private settleCompleteJoins(): 'settled' | 'blocked' | 'none' {
+    let blockedAny = false;
     for (const node of this.definition.nodes.values()) {
       if (node.kind !== 'merge') {
         continue;
@@ -1324,18 +1726,36 @@ export class PheromoneRuntime {
             ordered.push(arrived);
           }
         }
-        join.arrived.clear();
-        delete join.deadlineAt;
-        join.completedAt = this.iso();
-        this.pruneJoinTombstones(node);
-        const first = ordered[0];
-        if (first !== undefined) {
-          this.finishMerge(node, ordered, first.traceId, join.lineage ?? []);
+
+        const reserved = this.reserveMergeOutput(node);
+        if (!reserved.ok) {
+          blockedAny = true;
+          this.logMergeBlocked(node, forkId, reserved.target, reserved.queueDepth);
+          continue;
         }
-        return true;
+
+        try {
+          join.arrived.clear();
+          delete join.deadlineAt;
+          join.completedAt = this.iso();
+          this.pruneJoinTombstones(node);
+          const first = ordered[0];
+          if (first !== undefined) {
+            this.finishMerge(
+              node,
+              ordered,
+              first.traceId,
+              join.lineage ?? [],
+              reserved.reservation,
+            );
+          }
+        } finally {
+          this.releaseReservation(reserved.reservation);
+        }
+        return 'settled';
       }
     }
-    return false;
+    return blockedAny ? 'blocked' : 'none';
   }
 
   /** True when every required branch of this join has already arrived. */
@@ -1431,6 +1851,11 @@ export class PheromoneRuntime {
         if (isJoinClosed(join)) {
           continue;
         }
+        // A join whose required set already arrived is complete, not missing:
+        // it is only waiting for downstream queue space and must never time out.
+        if (this.requiredComplete(node, join)) {
+          continue;
+        }
         // Stage 5B: a join with time left is never failed early, even when the
         // missing branch is nowhere in the field. It fails only once its
         // deadline is reached (handled above) or when a legacy incomplete join
@@ -1477,6 +1902,7 @@ export class PheromoneRuntime {
     arrived: readonly Pheromone[],
     traceId: string,
     parentLineage: readonly BranchTag[],
+    reservation: OutputReservation,
   ): void {
     const value = combineMergeValues(node.config.combine, arrived);
     const first = arrived[0];
@@ -1502,6 +1928,7 @@ export class PheromoneRuntime {
       traceId,
       value,
       parentLineage.length === 0 ? undefined : parentLineage,
+      reservation,
     );
   }
 

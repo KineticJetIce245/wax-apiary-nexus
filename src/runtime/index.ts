@@ -12,6 +12,7 @@ export {
   GuardDecisionError,
   MAX_COMPLETED_JOINS_PER_MERGE,
   PheromoneRuntime,
+  QUEUE_RETRY_MS,
   QueueFullError,
 } from './runtime.js';
 export {

@@ -27,6 +27,7 @@ import { createKernel } from './kernel.js';
 import {
   createMemoryLog,
   PheromoneRuntime,
+  QueueFullError,
   type CompositionDefinition,
   type GuardDecision,
   type GuardRequest,
@@ -384,7 +385,7 @@ export async function runDaemon(
     const activeRuntime = runtime;
 
     const logAnswer = (
-      event: 'answer.applied' | 'answer.stale' | 'answer.malformed',
+      event: 'answer.applied' | 'answer.stale' | 'answer.malformed' | 'answer.blocked',
       outcome: string,
       record: AnswerRecord | undefined,
       nodeId?: string,
@@ -431,7 +432,12 @@ export async function runDaemon(
      * reaches `answerHover`. Each applied answer is flushed before its file is
      * removed, so a crash cannot replay it onto a field that still shows the
      * old hover: the saved field already records the resolved hover.
+     *
+     * A `QueueFullError` means the answer is valid but its downstream queue had
+     * no room. The file is kept and the answer is retried on the next pump or
+     * heartbeat; it is never classified as malformed or dropped.
      */
+    const blockedAnswers = new Set<string>();
     async function processAnswerInbox(): Promise<boolean> {
       if (stopping) {
         return false;
@@ -461,6 +467,21 @@ export async function runDaemon(
         try {
           activeRuntime.answerHover(record.nodeId, record.value, record.hoverToken);
         } catch (error) {
+          if (error instanceof QueueFullError) {
+            // Backpressure, not corruption: keep the answer file and the open
+            // hover. The heartbeat pumps the target queue and retries this
+            // exact answer once there is room.
+            if (!blockedAnswers.has(record.answerId)) {
+              blockedAnswers.add(record.answerId);
+              logAnswer(
+                'answer.blocked',
+                `queue-max:${error.nodeId}`,
+                record,
+                record.nodeId,
+              );
+            }
+            continue;
+          }
           // The record shape was readable but its Value does not satisfy the
           // node modality; treat it as malformed instead of retrying forever.
           logAnswer('answer.malformed', messageOf(error), record, record.nodeId);
@@ -469,6 +490,7 @@ export async function runDaemon(
         }
 
         applied = true;
+        blockedAnswers.delete(record.answerId);
         logAnswer('answer.applied', 'applied', record, record.nodeId);
         try {
           flush();

@@ -656,6 +656,114 @@ test('a scheduled user trigger opens a hover and wax answer completes the graph'
   assert.deepEqual(listAnswerFiles(paths.answers), []);
 });
 
+test('a daemon keeps a blocked answer file and applies it once the target has room', async () => {
+  const project = tempDirectory('wax-daemon-backpressure-project-');
+  const state = tempDirectory('wax-daemon-backpressure-state-');
+  const raw = {
+    schemaVersion: 1,
+    id: 'daemon-queue-backpressure',
+    defaults: { queueMax: 1 },
+    nodes: {
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'Ask?' } },
+      sink: { kind: 'user', config: { modality: 'text', prompt: 'Sink?' } },
+    },
+    edges: [{ id: 'e1', from: 'ask', to: 'sink' }],
+    triggers: [
+      {
+        id: 'later',
+        target: 'ask',
+        schedule: { kind: 'at', at: new Date(Date.now() + 60 * 60 * 1000).toISOString() },
+      },
+    ],
+  };
+  const compositionPath = compositionFile(raw);
+  const definition = parseComposition(raw);
+  const store = HoneyStore.forComposition(state, apiaryForProject(project), definition.id);
+  const seedRuntime = new PheromoneRuntime(definition, {
+    executeForager: {
+      async execute() {
+        return { kind: 'text', text: 'never' };
+      },
+    },
+  });
+  seedRuntime.trigger('ask', { kind: 'text', text: 'question' });
+  await seedRuntime.pump();
+  seedRuntime.trigger('sink', { kind: 'text', text: 'seed' });
+  await seedRuntime.pump();
+  seedRuntime.trigger('sink', { kind: 'text', text: 'queued' });
+  const seedField = seedRuntime.exportField();
+  store.save(seedField);
+  const askToken = seedField.nodes['ask']?.hover?.token;
+  const sinkToken = seedField.nodes['sink']?.hover?.token;
+  assert.ok(askToken !== undefined);
+  assert.ok(sinkToken !== undefined);
+
+  ensureAnswerInbox(store.paths.answers);
+  const askRecord: AnswerRecord = {
+    answerId: createAnswerId(),
+    compositionId: definition.id,
+    nodeId: 'ask',
+    hoverToken: askToken,
+    value: { kind: 'text', text: 'from-ask' },
+    at: new Date().toISOString(),
+  };
+  const askPath = writeAnswerRecord(store.paths.answers, askRecord);
+
+  const adapter = new FakeAdapter();
+  const daemon = startDaemon(baseArgs(compositionPath, project, state), adapter);
+  let code = -1;
+  try {
+    await waitFor(
+      () => hasLogEvent(store.paths.log, 'answer.blocked', 'ask'),
+      'the blocked answer log',
+    );
+    // The answer is valid, only its target is full: keep the file, never call
+    // it malformed, and keep the hover open.
+    assert.equal(existsSync(askPath), true, 'the blocked answer file is kept');
+    assert.equal(countLogEvent(store.paths.log, 'answer.malformed'), 0);
+    assert.ok(
+      logEntries(store.paths.log).some(
+        (entry) =>
+          entry['event'] === 'answer.blocked' &&
+          entry['nodeId'] === 'ask' &&
+          entry['outcome'] === 'queue-max:sink',
+      ),
+    );
+
+    // Answering the sink's own hover frees one queue slot.
+    writeAnswerRecord(store.paths.answers, {
+      answerId: createAnswerId(),
+      compositionId: definition.id,
+      nodeId: 'sink',
+      hoverToken: sinkToken,
+      value: { kind: 'text', text: 'sink-answer' },
+      at: new Date().toISOString(),
+    });
+
+    await waitFor(
+      () => hasLogEvent(store.paths.log, 'answer.applied', 'ask'),
+      'the retried answer applied',
+    );
+    await waitFor(() => !existsSync(askPath), 'the applied answer file removal');
+    await waitFor(
+      () => readFileSync(store.paths.field, 'utf8').includes('from-ask'),
+      'the preserved answer reached the sink queue',
+    );
+  } finally {
+    code = await stopDaemon(daemon);
+  }
+
+  assert.equal(code, 0, daemon.stderr.join('\n'));
+  assert.equal(countLogEvent(store.paths.log, 'answer.malformed'), 0);
+  assert.equal(
+    logEntries(store.paths.log).filter(
+      (entry) => entry['event'] === 'answer.applied' && entry['nodeId'] === 'ask',
+    ).length,
+    1,
+  );
+  assert.deepEqual(adapter.prompts, []);
+});
+
 test('an unprocessed answer applies after a restore, and a stale one drops', async () => {
   // The first half mirrors a daemon crash: the field already holds the hover and
   // the answer file was written but never processed.

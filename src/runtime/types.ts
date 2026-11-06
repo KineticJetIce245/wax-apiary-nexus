@@ -306,6 +306,13 @@ export interface NodeState {
   queue: Pheromone[];
   pending?: Pheromone;
   active?: Pheromone;
+  /**
+   * Output slots reserved by an in-flight activation that is about to enqueue
+   * here. Reservations make `queueMax` a pre-consumption limit: a running task
+   * already owns the space its result will need, so no result can be refused
+   * after the task has run. They are process-local and never persisted.
+   */
+  reserved?: number;
   lastActivatedAt?: string;
   hover?: HoverSpec;
   /** The Pheromone parked behind `hover`; it is still part of the field. */

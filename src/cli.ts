@@ -23,10 +23,13 @@ import { runMcpCommand } from './mcp-server.js';
 import {
   createMemoryLog,
   PheromoneRuntime,
+  QUEUE_RETRY_MS,
+  QueueFullError,
   type CompositionDefinition,
   type GuardDecision,
   type GuardRequest,
   type HoverSpec,
+  type NodeId,
   type PersistedField,
   type PheromoneFieldSnapshot,
   type RecoveryReport,
@@ -271,9 +274,10 @@ interface Hovered {
 function firstHover(
   definition: CompositionDefinition,
   snapshot: PheromoneFieldSnapshot,
+  excludeNodeIds?: ReadonlySet<NodeId>,
 ): Hovered | undefined {
   for (const [id, state] of definition.nodes) {
-    if (state.kind !== 'user') {
+    if (state.kind !== 'user' || excludeNodeIds?.has(id) === true) {
       continue;
     }
     const hover = snapshot.nodes[id]?.hover;
@@ -472,32 +476,115 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       runtime.trigger(command.trigger, { kind: 'text', text: command.input });
     }
 
+    const activeRuntime = runtime;
+    interface PendingAnswer {
+      readonly node: UserNode;
+      readonly token: string;
+      readonly value: Value;
+    }
+    /**
+     * Answers already typed but not yet accepted because the downstream queue
+     * was full. They are kept here (and their hovers stay open) and retried
+     * before any new question is asked, so a typed answer is never dropped.
+     */
+    let pendingAnswers: PendingAnswer[] = [];
+    let announcedBackpressure = false;
+
+    const blockedNodeIds = (): Set<NodeId> =>
+      new Set(pendingAnswers.map((answer) => answer.node.id));
+
+    const announceBackpressure = (error: QueueFullError): void => {
+      if (announcedBackpressure) {
+        return;
+      }
+      announcedBackpressure = true;
+      err(
+        `backpressure: target queue '${error.nodeId}' is full; ` +
+          'the answer is kept and will be retried when it has room',
+      );
+    };
+
+    /** Retries every preserved answer; returns true when at least one applied. */
+    const deliverPendingAnswers = (): boolean => {
+      if (pendingAnswers.length === 0) {
+        return false;
+      }
+      const remaining: PendingAnswer[] = [];
+      let delivered = false;
+      for (const answer of pendingAnswers) {
+        try {
+          activeRuntime.answerHover(answer.node.id, answer.value, answer.token);
+          delivered = true;
+        } catch (error) {
+          if (!(error instanceof QueueFullError)) {
+            throw error;
+          }
+          remaining.push(answer);
+          announceBackpressure(error);
+        }
+      }
+      pendingAnswers = remaining;
+      if (delivered) {
+        announcedBackpressure = false;
+        flush();
+      }
+      return delivered;
+    };
+
     for (;;) {
-      await runtime.pump();
+      await activeRuntime.pump();
       flush();
-      const hovered = firstHover(definition, runtime.snapshot());
+      if (deliverPendingAnswers()) {
+        continue;
+      }
+
+      // Do not ask the same node twice; its previous answer is still pending.
+      const hovered = firstHover(definition, activeRuntime.snapshot(), blockedNodeIds());
       if (hovered !== undefined) {
         const value = await askUser(hovered.node, hovered.hover);
-        runtime.answerHover(hovered.node.id, value, hovered.hover.token);
-        flush();
+        const answer: PendingAnswer = {
+          node: hovered.node,
+          token: hovered.hover.token,
+          value,
+        };
+        try {
+          activeRuntime.answerHover(answer.node.id, answer.value, answer.token);
+          announcedBackpressure = false;
+          flush();
+        } catch (error) {
+          if (!(error instanceof QueueFullError)) {
+            throw error;
+          }
+          pendingAnswers.push(answer);
+          announceBackpressure(error);
+        }
         continue;
+      }
+
+      const snapshot = activeRuntime.snapshot();
+      if (snapshot.rest && pendingAnswers.length === 0) {
+        break;
       }
       // No hover to service. A Merge that is waiting out its deadline is not
       // Rest, but pump has nothing to activate: sleep until the earliest
       // deadline (or a pending rate-limited branch), then check the field
-      // again. A field with neither a hover nor a timed wake cannot make
-      // progress on its own, so it ends the run.
-      if (runtime.snapshot().rest) {
-        break;
-      }
+      // again. A blocked answer or activation adds a short retry instant so
+      // the loop never spins at 0ms.
       const times = [
-        runtime.nextWakeAt(),
-        nextPendingAt(definition, runtime.snapshot()),
+        activeRuntime.nextWakeAt(),
+        nextPendingAt(definition, snapshot),
+        ...(pendingAnswers.length === 0 ? [] : [now() + QUEUE_RETRY_MS]),
       ].filter((value): value is number => value !== undefined);
       if (times.length === 0) {
         break;
       }
-      await sleep(Math.max(0, Math.min(...times) - now()));
+      // A blocked activation can leave its own pending due instant in the
+      // past while `nextWakeAt()` asks for QUEUE_RETRY_MS. Taking the raw
+      // minimum would then sleep 0ms and spin; a non-positive wait means
+      // backpressure is the only reason we are still here.
+      const due = Math.min(...times);
+      const current = now();
+      await sleep(due > current ? due - current : QUEUE_RETRY_MS);
     }
   } catch (error) {
     code = 1;

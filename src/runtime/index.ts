@@ -12,6 +12,7 @@ export {
   GuardDecisionError,
   MAX_COMPLETED_JOINS_PER_MERGE,
   PheromoneRuntime,
+  QueueFullError,
 } from './runtime.js';
 export {
   DEFAULT_WORKER_TIMEOUT_MS,

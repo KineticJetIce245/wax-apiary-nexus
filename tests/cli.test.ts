@@ -839,3 +839,69 @@ test('run waits for nextWakeAt when no hover is left, then expires the join', as
   assert.match(log, /merge\.timed-out/);
   assert.match(log, /merge\.failed/);
 });
+
+test('a queue-full trigger exits cleanly with the rejection reason', async () => {
+  const state = stateDirectory();
+  const project = projectDirectory();
+  const composition = {
+    schemaVersion: 1,
+    id: 'cli-queue-max',
+    defaults: { queueMax: 1 },
+    nodes: {
+      node: { kind: 'forager', config: { connection: 'codex', prompt: 'go {{input}}' } },
+    },
+    edges: [],
+  };
+  const compositionPath = compositionFile(composition);
+  const definition = parseComposition(composition);
+  const store = HoneyStore.forComposition(state, apiaryForProject(project), definition.id);
+  store.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: definition.graphRevision,
+    rest: false,
+    nodes: {
+      node: {
+        queue: [
+          {
+            id: 'ph_full',
+            traceId: 'tr_full',
+            value: { kind: 'text' as const, text: 'already queued' },
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    },
+  });
+
+  const adapter = new FakeAdapter({ output: 'OUT' });
+  const captureResult = capture();
+  const code = await runCli(
+    [
+      'run',
+      compositionPath,
+      '--project',
+      project,
+      '--harness',
+      'codex',
+      '--state-dir',
+      state,
+      '--resume',
+      '--trigger',
+      'node',
+      '--input',
+      'rejected',
+    ],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 1, 'a rejected trigger is a clean exit, not a crash');
+  const stderr = captureResult.stderr.join('\n');
+  assert.match(stderr, /error:/);
+  assert.match(stderr, /queue for node 'node' is full/);
+  assert.match(stderr, /queueMax=1/);
+  assert.match(stderr, /queueDepth=1/);
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1, 'the CLI still shuts the adapter down after the rejection');
+  assert.deepEqual(adapter.prompts, [], 'the rejected trigger never runs a prompt');
+});

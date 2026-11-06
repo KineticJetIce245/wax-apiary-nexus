@@ -785,6 +785,73 @@ test('the daemon heartbeat expires a merge deadline without new IPC', async () =
   assert.deepEqual(join['arrived'], []);
 });
 
+test('a scheduled trigger rejected by a full queue is logged and the daemon keeps running', async () => {
+  const adapter = new FakeAdapter({ output: 'QUEUED-OUT' });
+  const captureResult = capture();
+  const controller = new AbortController();
+  const project = tempDirectory('wax-daemon-project-');
+  const state = tempDirectory('wax-daemon-state-');
+  const raw = {
+    ...scheduledComposition({ id: 'daemon-queue-max', targetKind: 'forager' }),
+    defaults: { queueMax: 1 },
+  };
+  const compositionPath = compositionFile(raw);
+  const definition = parseComposition(raw);
+  const apiary = apiaryForProject(project);
+  const paths = honeyPaths(state, apiary, 'daemon-queue-max');
+  const store = HoneyStore.forComposition(state, apiary, 'daemon-queue-max');
+  // The restored queue is already at queueMax, so the due trigger must be
+  // refused while the accepted entry still runs.
+  store.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: definition.graphRevision,
+    rest: false,
+    nodes: {
+      node: {
+        queue: [
+          {
+            id: 'ph_seed',
+            traceId: 'tr_seed',
+            value: { kind: 'text' as const, text: 'seed' },
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    },
+  });
+
+  const running = runDaemon(baseArgs(compositionPath, project, state), {
+    ...captureResult.deps,
+    createAdapter: async () => adapter,
+    signal: controller.signal,
+  });
+
+  let code = -1;
+  try {
+    await waitFor(() => adapter.prompts.length === 1, 'the restored queued prompt');
+    await waitFor(
+      () => hasLogEvent(paths.log, 'node.completed', 'node'),
+      'the completed restored prompt',
+    );
+  } finally {
+    controller.abort();
+    code = await running;
+  }
+
+  assert.equal(code, 0, 'the rejected scheduled trigger does not crash the daemon');
+  assert.deepEqual(adapter.prompts, ['scheduled seed']);
+  const stderr = captureResult.stderr.join('\n');
+  assert.match(stderr, /scheduled trigger 'once' could not enqueue/);
+  assert.match(stderr, /queue for node 'node' is full/);
+  const entries = logEntries(paths.log);
+  const rejected = entries.find((entry) => entry['event'] === 'pheromone.rejected');
+  assert.ok(rejected !== undefined);
+  assert.equal(rejected['nodeId'], 'node');
+  assert.equal(rejected['queueDepth'], 1);
+  assert.equal(rejected['outcome'], 'queue-max');
+});
+
 test('an early abort stops the daemon before a future trigger fires', async () => {
   const adapter = new FakeAdapter();
   const captureResult = capture();

@@ -4,6 +4,7 @@ export type RuntimeEvent =
   | 'pheromone.enqueued'
   | 'pheromone.pending'
   | 'pheromone.emitted'
+  | 'pheromone.rejected'
   | 'node.activated'
   | 'node.completed'
   | 'node.failed'

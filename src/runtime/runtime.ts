@@ -93,6 +93,27 @@ export class FieldRestoreError extends Error {
   }
 }
 
+/**
+ * A new Pheromone was refused because its target node already holds
+ * `queueMax` entries. The rejection never drops an existing input, so the
+ * caller can retry later once the queue has drained.
+ */
+export class QueueFullError extends Error {
+  readonly nodeId: NodeId;
+  readonly queueMax: number;
+  readonly queueDepth: number;
+
+  constructor(nodeId: NodeId, queueMax: number, queueDepth: number) {
+    super(
+      `queue for node '${nodeId}' is full (queueMax=${String(queueMax)}, queueDepth=${String(queueDepth)}); refusing new Pheromone`,
+    );
+    this.name = 'QueueFullError';
+    this.nodeId = nodeId;
+    this.queueMax = queueMax;
+    this.queueDepth = queueDepth;
+  }
+}
+
 const VALUE_KINDS = ['text', 'choice', 'boolean', 'message', 'attachments', 'structured'] as const;
 
 function assertValue(value: unknown): asserts value is Value {
@@ -181,6 +202,9 @@ export class PheromoneRuntime {
     };
 
     const state = this.stateOf(node.id);
+    if (state.queue.length >= this.definition.defaults.queueMax) {
+      this.rejectQueueFull(node, state.queue.length, pheromone.id, pheromone.traceId);
+    }
     state.queue.push(pheromone);
     this.resting = false;
     this.log({
@@ -423,6 +447,11 @@ export class PheromoneRuntime {
         continue;
       }
       const state = this.stateOf(id);
+      // A restored queue is kept exactly as persisted, even when it already
+      // holds `queueMax` or more entries (a field written before the limit was
+      // enforced, or under a larger limit). Dropping entries here would lose
+      // accepted input. Such a queue drains normally, while new enqueues are
+      // rejected until its depth falls below `queueMax`.
       state.queue = saved.queue.map(normalizePheromone);
       if (saved.pending !== undefined) {
         state.pending = normalizePheromone(saved.pending);
@@ -980,12 +1009,47 @@ export class PheromoneRuntime {
     );
   }
 
-  /** Fork consumes one Pheromone and emits one tagged copy per branch. */
+  /**
+   * Fork consumes one Pheromone and emits one tagged copy per branch.
+   *
+   * Every target is preflighted before anything is enqueued, counting one
+   * slot per branch (a repeated target needs one slot per occurrence). If any
+   * target could not accept all of its branches, the whole fork is rejected:
+   * no branch is emitted, so no partially filled branch set is left behind.
+   */
   private emitFork(node: ForkNode, pheromone: Pheromone): void {
     const forkId = `fk_${randomUUID()}`;
     // Stage 5D: a nested Fork appends its tag to the incoming lineage instead
     // of overwriting the enclosing fork/branch tags.
     const parentLineage = currentLineage(pheromone);
+
+    const queueMax = this.definition.defaults.queueMax;
+    const reserved = new Map<NodeId, number>();
+    let violation: { target: NodeDefinition; queueDepth: number; branchId: string } | undefined;
+    for (const branch of node.config.branches) {
+      const target = this.definition.nodes.get(branch.to);
+      if (target === undefined) {
+        throw new Error(`unknown edge target '${branch.to}'`);
+      }
+      const used = reserved.get(branch.to) ?? 0;
+      reserved.set(branch.to, used + 1);
+      const queueDepth = this.stateOf(branch.to).queue.length;
+      if (violation === undefined && queueDepth + used + 1 > queueMax) {
+        violation = { target, queueDepth, branchId: branch.id };
+      }
+    }
+    if (violation !== undefined) {
+      // No branch Pheromone exists yet, so the rejection is attributed to the
+      // fork's input Pheromone (the same one `node.failed` will report).
+      this.rejectQueueFull(
+        violation.target,
+        violation.queueDepth,
+        pheromone.id,
+        pheromone.traceId,
+        { forkId, branchId: violation.branchId },
+      );
+    }
+
     for (const branch of node.config.branches) {
       this.pushPheromone(branch.to, pheromone.traceId, pheromone.value, [
         ...parentLineage,
@@ -1019,6 +1083,17 @@ export class PheromoneRuntime {
         ? {}
         : { lineage: copyLineage(lineage) }),
     };
+    if (targetState.queue.length >= this.definition.defaults.queueMax) {
+      this.rejectQueueFull(
+        targetNode,
+        targetState.queue.length,
+        emitted.id,
+        emitted.traceId,
+        current === undefined
+          ? {}
+          : { forkId: current.forkId, branchId: current.branchId },
+      );
+    }
     targetState.queue.push(emitted);
     this.resting = false;
 
@@ -1033,6 +1108,33 @@ export class PheromoneRuntime {
         : { forkId: current.forkId, branchId: current.branchId }),
       queueDepth: targetState.queue.length,
     });
+  }
+
+  /**
+   * Refuses a new Pheromone for a full target queue. The field is left
+   * untouched: nothing is pushed, nothing existing is evicted. The rejection
+   * is logged before the error leaves the runtime, so it can never be silent.
+   */
+  private rejectQueueFull(
+    target: NodeDefinition,
+    queueDepth: number,
+    pheromoneId: string,
+    traceId: string,
+    extra: { readonly forkId?: string; readonly branchId?: string } = {},
+  ): never {
+    const queueMax = this.definition.defaults.queueMax;
+    this.log({
+      event: 'pheromone.rejected',
+      nodeId: target.id,
+      nodeKind: target.kind,
+      pheromoneId,
+      traceId,
+      ...(extra.forkId === undefined ? {} : { forkId: extra.forkId }),
+      ...(extra.branchId === undefined ? {} : { branchId: extra.branchId }),
+      queueDepth,
+      outcome: 'queue-max',
+    });
+    throw new QueueFullError(target.id, queueMax, queueDepth);
   }
 
   private arriveAtMerge(node: MergeNode, pheromone: Pheromone): string {

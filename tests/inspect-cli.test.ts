@@ -309,7 +309,12 @@ test('status reports queue, pending, active, hovers and joins without bodies or 
   assert.equal(status.nodes.gate.active, true);
   assert.equal(status.nodes.gate.hover, 'guard');
   assert.equal(status.nodes.merge.joins, 1);
-  assert.deepEqual(status.scheduler, { state: 'absent', nextDueAt: null, fired: 0 });
+  assert.deepEqual(status.scheduler, {
+    state: 'absent',
+    nextDueAt: null,
+    fired: 0,
+    unconfirmed: 0,
+  });
   assert.deepEqual(status.daemon, {
     state: 'absent',
     pid: null,
@@ -349,13 +354,18 @@ test('status human output lists nodes in composition order and hides bodies', ()
   assert.equal(text.includes('token-ask'), false);
 });
 
-test('status reports scheduler nextDueAt and fired count', () => {
+test('status reports scheduler nextDueAt, fired count and unconfirmed count', () => {
   const f = fixture();
   writeField(f);
   writeJson(pathsOf(f).scheduler, {
     schemaVersion: 1,
     triggers: {
-      firedOnce: { kind: 'at', at: '2026-01-01T00:00:00.000Z', fired: true },
+      firedOnce: {
+        kind: 'at',
+        at: '2026-01-01T00:00:00.000Z',
+        fired: true,
+        unconfirmed: { scheduledFor: '2026-01-01T00:00:00.000Z' },
+      },
       later: { kind: 'at', at: '2030-01-01T00:00:00.000Z', fired: false },
       every: { kind: 'every', everyMs: 1000, nextDueMs: Date.parse('2029-01-01T00:00:00.000Z') },
     },
@@ -367,7 +377,16 @@ test('status reports scheduler nextDueAt and fired count', () => {
     state: 'ok',
     nextDueAt: '2029-01-01T00:00:00.000Z',
     fired: 1,
+    unconfirmed: 1,
   });
+
+  const human = invoke(statusArgs(f));
+  assert.equal(human.code, 0);
+  assert.ok(
+    human.stdout.includes(
+      'scheduler    ok nextDueAt=2029-01-01T00:00:00.000Z fired=1 unconfirmed=1',
+    ),
+  );
 });
 
 test('status exits 1 when the field is not valid JSON', () => {
@@ -648,6 +667,48 @@ test('log --json projects only metadata fields, never a body field', () => {
       outcome: 'ok',
     },
   ]);
+});
+
+test('log exposes scheduler unconfirmed metadata but never a body', () => {
+  const f = fixture();
+  writeLog(f, [
+    {
+      at: '2026-01-01T00:00:00.000Z',
+      event: 'scheduler.unconfirmed',
+      compositionId: 'inspect-demo',
+      graphRevision: revision(),
+      nodeId: 'start',
+      triggerId: 'once',
+      scheduledFor: '2026-01-01T00:00:00.000Z',
+      outcome: 'unconfirmed',
+      prompt: 'SECRET-PROMPT',
+      output: 'SECRET-OUTPUT',
+    },
+  ]);
+
+  const json = invoke(logArgs(f, ['--json']));
+  assert.equal(json.code, 0);
+  const logged = JSON.parse(json.stdout[0] as string) as Record<string, unknown>[];
+  assert.deepEqual(logged, [
+    {
+      at: '2026-01-01T00:00:00.000Z',
+      event: 'scheduler.unconfirmed',
+      compositionId: 'inspect-demo',
+      graphRevision: revision(),
+      nodeId: 'start',
+      triggerId: 'once',
+      scheduledFor: '2026-01-01T00:00:00.000Z',
+      outcome: 'unconfirmed',
+    },
+  ]);
+
+  const human = invoke(logArgs(f));
+  assert.equal(human.code, 0);
+  assert.equal(
+    human.stdout[0],
+    '2026-01-01T00:00:00.000Z scheduler.unconfirmed node=start outcome=unconfirmed ' +
+      'trigger=once scheduledFor=2026-01-01T00:00:00.000Z',
+  );
 });
 
 // --- honey ----------------------------------------------------------------

@@ -46,6 +46,8 @@ const LOG_FIELDS: readonly string[] = [
   'graphRevision',
   'nodeId',
   'nodeKind',
+  'triggerId',
+  'scheduledFor',
   'pheromoneId',
   'traceId',
   'forkId',
@@ -121,6 +123,8 @@ export interface InspectStatusScheduler {
    * fired count, so it is never included here.
    */
   readonly fired: number;
+  /** Occurrences consumed but not yet confirmed by their trigger callback. */
+  readonly unconfirmed: number;
 }
 
 export interface InspectStatusDaemon {
@@ -447,12 +451,16 @@ function hoverKind(
 
 function summarizeScheduler(state: SchedulerState | undefined): InspectStatusScheduler {
   if (state === undefined) {
-    return { state: 'absent', nextDueAt: null, fired: 0 };
+    return { state: 'absent', nextDueAt: null, fired: 0, unconfirmed: 0 };
   }
 
   let nextDueMs: number | undefined;
   let fired = 0;
+  let unconfirmed = 0;
   for (const entry of Object.values(state.triggers)) {
+    if (entry.unconfirmed !== undefined) {
+      unconfirmed += 1;
+    }
     if (entry.kind === 'at') {
       if (entry.fired) {
         fired += 1;
@@ -473,6 +481,7 @@ function summarizeScheduler(state: SchedulerState | undefined): InspectStatusSch
     state: 'ok',
     nextDueAt: isoOrNull(nextDueMs),
     fired,
+    unconfirmed,
   };
 }
 
@@ -605,6 +614,12 @@ function formatLogEntry(entry: Record<string, unknown>): string {
   if (typeof entry['outcome'] === 'string') {
     parts.push(`outcome=${entry['outcome']}`);
   }
+  if (typeof entry['triggerId'] === 'string') {
+    parts.push(`trigger=${entry['triggerId']}`);
+  }
+  if (typeof entry['scheduledFor'] === 'string') {
+    parts.push(`scheduledFor=${entry['scheduledFor']}`);
+  }
   return parts.join(' ');
 }
 
@@ -634,7 +649,8 @@ function formatScheduler(scheduler: InspectStatusScheduler): string {
   if (scheduler.state === 'absent') {
     return 'absent';
   }
-  return `ok nextDueAt=${scheduler.nextDueAt ?? '-'} fired=${String(scheduler.fired)}`;
+  return `ok nextDueAt=${scheduler.nextDueAt ?? '-'} fired=${String(scheduler.fired)} ` +
+    `unconfirmed=${String(scheduler.unconfirmed)}`;
 }
 
 function formatDaemon(daemon: InspectStatusDaemon): string {

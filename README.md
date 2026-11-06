@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (563 tests).
+> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (573 tests).
 >
 > Target model: [`ARCHITECTURE.md`](ARCHITECTURE.md). Composition/command contract: [`CONTRACT.md`](CONTRACT.md).
 
@@ -56,7 +56,7 @@ npm run wax -- log composition.json --project . --tail 20 --json
 npm run wax -- honey composition.json <conversationId> --project . --tail 50 --json
 ```
 
-`status` reports composition/revision, node queue/pending/active/hover/join counts, scheduler next-due/fired, daemon lock state, and Honey paths. It never prints prompt, output, Value, hover-token or transcript bodies. `log` prints only the metadata whitelist. `honey` is the only command that prints transcript bodies. All three are read-only; a missing field/log is empty, corrupt data exits 1, and usage errors exit 2.
+`status` reports composition/revision, node queue/pending/active/hover/join counts, scheduler next-due/fired/unconfirmed, daemon lock state, and Honey paths. It never prints prompt, output, Value, hover-token or transcript bodies. `log` prints only the metadata whitelist. `honey` is the only command that prints transcript bodies. All three are read-only; a missing field/log is empty, corrupt data exits 1, and usage errors exit 2.
 
 Offline composition editing:
 
@@ -86,7 +86,7 @@ npm run wax -- mcp
 | Human input | text/choice/boolean/message/image/file answers, interactive CLI, `wax answer` inbox, scheduled `user` targets |
 | Local work | Worker argv-only (`shell: false`), project-contained cwd, 60s timeout, 64 KiB stream caps, process-tree kill; worker `Condition` |
 | Durability | Honey field/scheduler/transcripts, `--resume`, unknown-active recovery semantics, live-edit reference protection |
-| Scheduling | `at` / `every` triggers, at-most-once occurrence bookkeeping, missed intervals fire once, per-composition daemon lock, SIGINT/SIGTERM shutdown |
+| Scheduling | `at` / `every` triggers, at-most-once occurrence bookkeeping with one-time unconfirmed reporting, missed intervals fire once, per-composition daemon lock, SIGINT/SIGTERM shutdown |
 | Editing | `composition validate/replace/revisions/recover`, active-reference guards, revision audit, JSON results, MCP tools |
 | Harnesses | Codex app-server and DSH ACP adapters behind one Workspace/Forager bridge; explicit harness selection |
 | Session identity | Unified alias `wax-apiary-nexus-session-<apiary>-<composition>`; Codex native thread names and existing-project reuse; DSH native title plus Workspace adoption through a workspace-owned Cordis plugin |
@@ -155,12 +155,12 @@ legacy-contract/     historical adapter/flow contracts
 - `queueTtlMs` is checked on pump and restore, not by a wall-clock timer. A CLI blocked in `askUser`, or a long active task, delays cleanup of other node queues until the next pump; the daemon heartbeats every 500 ms.
 - One `wax run` uses one native conversation for all Forager nodes. Cross-session handoff currently requires two runs; per-node sessions are not implemented.
 - The DSH bridge plugin and its patch files live in `unified-workspace/dsh-plugins`, not in this repository. Workspace adoption runs only in the DSH web process and attaches ungrouped Sessions whose cwd exactly matches an existing Workspace; it never creates one.
-- `status.joins` counts persisted join records including closed tombstones; it is not a count of currently waiting joins. `status.scheduler.fired` counts consumed one-shot `at` triggers only; `every` triggers do not persist a fired count.
+- `status.joins` counts persisted join records including closed tombstones; it is not a count of currently waiting joins. `status.scheduler.fired` counts consumed one-shot `at` triggers only; `every` triggers do not persist a fired count. `status.scheduler.unconfirmed` counts occurrences consumed but not yet confirmed by their callback.
 - Inspection reads the current `log.jsonl` and transcript file, not rotated segments. `status`/`log`/`honey` report failures on stderr with exit 1/2; they do not emit the composition commands' `{ok:false}` JSON error object.
 - The 3-level mid-flight Honey save/load restart is covered by a deterministic test; a real OS process kill during active native DSH/Codex work is still unverified.
 - The seeded fuzz harness covers linear, fork/optional/timeout and 3-level nested/hover graphs, with 3000 steps and 120 Honey restores. It does not cover Worker/Guard/Condition/Counter or early answers.
 - Process chaos uses real `SIGKILL` against a child runtime and covers active, hover, pending/queue, open joins, and saves immediately before/after the atomic write. `SIGKILL` is not physical power loss: it does not test disk flush, torn writes, or filesystem ordering. The single-point case keeps active on `start` and pending/queue on `done`; the runtime never allows active and pending on the same node.
-- The scheduler is deliberately at-most-once: it persists an occurrence before `onTrigger`, so a crash in that window loses that occurrence instead of replaying it. There is no missed-occurrence marker yet; the behavior is characterized by a test.
+- The scheduler is deliberately at-most-once: it persists an occurrence and an `unconfirmed` marker before `onTrigger`, so a crash in that window never replays the occurrence. The next start reports the marker once through `onUnconfirmed` (logged as `scheduler.unconfirmed`) and clears it; a schedule change discards an old marker instead of reporting it.
 - No UI. Real edge verification still pending: native Codex MCP tool call, DSH graceful SIGINT, OS restart during a scheduled timer, and process-kill mid-flight.
 
 ## Next

@@ -558,9 +558,13 @@ export async function runDaemon(
         // Scheduled triggers carry no input; a user target opens its Hover and
         // `wax answer` supplies the Value without a TTY.
         activeRuntime.trigger(trigger.target, { kind: 'text', text: '' });
+        // The scheduler clears its unconfirmed marker when this callback
+        // returns. Persist the triggered queue/hover first, so a crash after the
+        // clear cannot lose an occurrence that was never written to Honey.
+        flush();
       } catch (error) {
         err(`error: scheduled trigger '${trigger.id}' could not enqueue: ${messageOf(error)}`);
-        return;
+        throw error;
       }
       requestPump();
     };
@@ -572,6 +576,21 @@ export async function runDaemon(
       ...(deps.timers === undefined ? {} : { timers: deps.timers }),
       persist: (state) => store.saveScheduler(state),
       onTrigger,
+      onUnconfirmed: (trigger, occurrence) => {
+        // A previous process consumed this occurrence but never confirmed it.
+        // Record that fact once; the scheduler clears the marker itself and
+        // never replays the trigger.
+        log.sink({
+          at: new Date(now()).toISOString(),
+          event: 'scheduler.unconfirmed',
+          compositionId: definition.id,
+          graphRevision: definition.graphRevision,
+          nodeId: trigger.target,
+          triggerId: trigger.id,
+          scheduledFor: occurrence.scheduledFor,
+          outcome: 'unconfirmed',
+        });
+      },
       onError: (error, trigger) => {
         if (trigger === undefined) {
           // A durable scheduler write failed; stop rather than risk duplicate

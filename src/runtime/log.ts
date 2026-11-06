@@ -31,7 +31,8 @@ export type RuntimeEvent =
   | 'merge.optional-dropped'
   | 'runtime.restored'
   | 'runtime.attention'
-  | 'runtime.rest';
+  | 'runtime.rest'
+  | 'scheduler.unconfirmed';
 
 export interface RuntimeLogEntry {
   at: string;
@@ -48,6 +49,10 @@ export interface RuntimeLogEntry {
   durationMs?: number;
   /** Answer-inbox id; the record's Value is never written to the log. */
   answerId?: string;
+  /** Scheduled-trigger id for scheduler lifecycle entries. */
+  triggerId?: string;
+  /** The occurrence instant a scheduler entry refers to. */
+  scheduledFor?: string;
   /** Worker program name only; never the full output body. */
   program?: string;
   pid?: number;

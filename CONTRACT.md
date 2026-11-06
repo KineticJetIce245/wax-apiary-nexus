@@ -239,7 +239,7 @@ Every node has `id`, `kind`, `config`, and optional `minIntervalMs`.
 - A trigger creates a Pheromone at the target node. There is no `start`.
 - Node activations are rate-limited by `lastActivatedAt + minInterval`.
 - Serialized manual CLI triggers accept `forager`, `worker` and `user` targets.
-- The daemon is one composition per process. Occurrences are recorded before the Pheromone is enqueued, so delivery is at-most-once: an occurrence may be lost in a crash, never duplicated. A past `at` and a missed `every` fire at most once on start; `every` then reschedules from the start time and never storms skipped intervals.
+- The daemon is one composition per process. An occurrence and an `unconfirmed` marker are recorded before the Pheromone is enqueued, and the marker is cleared after the callback returns. Delivery is at-most-once: a crash inside that window reports the occurrence once on the next start (`onUnconfirmed`, logged as `scheduler.unconfirmed`) and never replays it; a changed schedule discards an old marker. A past `at` and a missed `every` fire at most once on start; `every` then reschedules from the start time and never storms skipped intervals.
 - The daemon restores Honey before scheduling. A restored active Forager remains unknown, other active nodes (including a Worker) remain stuck, and nothing is replayed.
 
 ## 6. Values and templates

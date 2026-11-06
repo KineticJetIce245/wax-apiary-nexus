@@ -328,6 +328,69 @@ test('a past at trigger runs a forager through the fake adapter', async () => {
   assert.equal(serializedLog.includes('DAEMON-FORAGER-OUT'), false);
 });
 
+test('a restored unconfirmed marker is logged once and never replayed', async () => {
+  const adapter = new FakeAdapter({ output: 'UNCONFIRMED-OUT' });
+  const captureResult = capture();
+  const controller = new AbortController();
+  const project = tempDirectory('wax-daemon-project-');
+  const state = tempDirectory('wax-daemon-state-');
+  const atMs = Date.parse('2026-11-06T09:00:00.000Z');
+  const scheduledFor = new Date(atMs).toISOString();
+  const compositionPath = compositionFile(
+    scheduledComposition({ id: 'daemon-unconfirmed', targetKind: 'forager', atMs }),
+  );
+  const apiary = apiaryForProject(project);
+  const paths = honeyPaths(state, apiary, 'daemon-unconfirmed');
+  const store = HoneyStore.forComposition(state, apiary, 'daemon-unconfirmed');
+  store.saveScheduler({
+    schemaVersion: 1,
+    triggers: {
+      once: {
+        kind: 'at',
+        at: scheduledFor,
+        fired: true,
+        unconfirmed: { scheduledFor },
+      },
+    },
+  });
+
+  const running = runDaemon(baseArgs(compositionPath, project, state), {
+    ...captureResult.deps,
+    createAdapter: async () => adapter,
+    signal: controller.signal,
+  });
+
+  let code = -1;
+  try {
+    await waitFor(
+      () => hasLogEvent(paths.log, 'scheduler.unconfirmed', 'node'),
+      'the unconfirmed scheduler log entry',
+    );
+  } finally {
+    controller.abort();
+    code = await running;
+  }
+
+  assert.equal(code, 0);
+  assert.deepEqual(adapter.prompts, [], 'the unconfirmed occurrence is not replayed');
+  const entry = logEntries(paths.log).find(
+    (candidate) => candidate['event'] === 'scheduler.unconfirmed',
+  );
+  assert.ok(entry !== undefined);
+  assert.equal(entry['compositionId'], 'daemon-unconfirmed');
+  assert.equal(entry['nodeId'], 'node');
+  assert.equal(entry['triggerId'], 'once');
+  assert.equal(entry['scheduledFor'], scheduledFor);
+  assert.equal(entry['outcome'], 'unconfirmed');
+  assert.equal('prompt' in entry, false);
+  assert.equal('output' in entry, false);
+
+  const persisted = JSON.parse(readFileSync(paths.scheduler, 'utf8')) as {
+    triggers: Record<string, { unconfirmed?: unknown }>;
+  };
+  assert.equal(persisted.triggers['once']?.unconfirmed, undefined);
+});
+
 test('a past at trigger runs through a selected dsh adapter', async () => {
   const adapter = new FakeAdapter({ output: 'DAEMON-DSH-OUT' });
   const captureResult = capture();

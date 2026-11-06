@@ -1,15 +1,39 @@
 import type { TriggerDefinition } from '../runtime/index.js';
 
 /**
+ * Durable evidence that an occurrence was consumed but its callback has not
+ * returned yet. `scheduledFor` is the instant the occurrence was scheduled for,
+ * not when the marker was written.
+ */
+export interface SchedulerUnconfirmedOccurrence {
+  readonly scheduledFor: string;
+}
+
+/**
  * One scheduled trigger's durable occurrence bookkeeping.
  *
  * `at` stores whether that exact instant has been consumed. `every` stores the
  * next instant the trigger is due; advancing it before enqueueing an occurrence
  * is what makes delivery at-most-once across a crash.
+ *
+ * `unconfirmed` is written in the same durable update that consumes the
+ * occurrence and is removed once the callback returns. A process that dies
+ * inside that window reports the occurrence once on its next start; it never
+ * replays it through `onTrigger`.
  */
 export type SchedulerTriggerState =
-  | { kind: 'at'; at: string; fired: boolean }
-  | { kind: 'every'; everyMs: number; nextDueMs: number };
+  | {
+      kind: 'at';
+      at: string;
+      fired: boolean;
+      unconfirmed?: SchedulerUnconfirmedOccurrence;
+    }
+  | {
+      kind: 'every';
+      everyMs: number;
+      nextDueMs: number;
+      unconfirmed?: SchedulerUnconfirmedOccurrence;
+    };
 
 export interface SchedulerState {
   schemaVersion: 1;
@@ -35,6 +59,15 @@ export interface SchedulerOptions {
    */
   persist: (state: SchedulerState) => void;
   onTrigger: (trigger: TriggerDefinition) => void;
+  /**
+   * Called once on start for an occurrence that was consumed by a previous
+   * process but whose callback never confirmed completion. The occurrence is
+   * reported only; it is never passed to `onTrigger` again.
+   */
+  onUnconfirmed?: (
+    trigger: TriggerDefinition,
+    occurrence: SchedulerUnconfirmedOccurrence,
+  ) => void;
   /** A trigger callback error is reported after its occurrence was consumed. */
   onError?: (error: unknown, trigger?: TriggerDefinition) => void;
 }
@@ -53,8 +86,10 @@ const DEFAULT_TIMERS: SchedulerTimers = {
  *
  * Past `at` triggers fire once on start. An `every` trigger whose next due time
  * is already in the past fires once on start and is rescheduled from now; it
- * never emits a burst of missed intervals. The state is saved before the
- * callback runs, so a crash can lose an occurrence but cannot duplicate one.
+ * never emits a burst of missed intervals. The consumed occurrence and an
+ * `unconfirmed` marker are saved before the callback runs, so a crash cannot
+ * duplicate an occurrence; the next start reports the marker once and clears
+ * it without replaying the trigger.
  */
 export class Scheduler {
   private readonly triggers: readonly TriggerDefinition[];
@@ -62,6 +97,9 @@ export class Scheduler {
   private readonly timers: SchedulerTimers;
   private readonly persist: (state: SchedulerState) => void;
   private readonly onTrigger: (trigger: TriggerDefinition) => void;
+  private readonly onUnconfirmed:
+    | ((trigger: TriggerDefinition, occurrence: SchedulerUnconfirmedOccurrence) => void)
+    | undefined;
   private readonly onError: ((error: unknown, trigger?: TriggerDefinition) => void) | undefined;
   private state: SchedulerState;
   private timer: unknown;
@@ -82,6 +120,7 @@ export class Scheduler {
     this.timers = options.timers ?? DEFAULT_TIMERS;
     this.persist = options.persist;
     this.onTrigger = options.onTrigger;
+    this.onUnconfirmed = options.onUnconfirmed;
     this.onError = options.onError;
     this.state = reconcileState(options.triggers, options.state, this.now());
   }
@@ -98,6 +137,9 @@ export class Scheduler {
     // Persist the reconciled schedule before anything can fire. This also
     // anchors a fresh `every` trigger so a restart keeps its first due time.
     this.persist(this.state);
+    // A marker left by a previous process is reported exactly once. It is
+    // cleared before runDue, so an unconfirmed occurrence is never replayed.
+    this.reportUnconfirmed();
     this.runDue();
     this.scheduleNext();
   }
@@ -125,7 +167,7 @@ export class Scheduler {
   private runDue(): void {
     const now = this.now();
     const next = structuredClone(this.state);
-    const due: TriggerDefinition[] = [];
+    const due: { trigger: TriggerDefinition; scheduledFor: string }[] = [];
     let changed = false;
 
     for (const trigger of this.triggers) {
@@ -143,7 +185,8 @@ export class Scheduler {
           continue;
         }
         entry.fired = true;
-        due.push(trigger);
+        entry.unconfirmed = { scheduledFor: entry.at };
+        due.push({ trigger, scheduledFor: entry.at });
         changed = true;
         continue;
       }
@@ -154,26 +197,93 @@ export class Scheduler {
       // More than one whole interval late means the daemon was not running.
       // Fire this occurrence once and restart the cadence from now instead of
       // replaying every skipped interval.
+      const scheduledFor = new Date(entry.nextDueMs).toISOString();
       const missedAtLeastOne = now - entry.nextDueMs >= entry.everyMs;
       entry.nextDueMs = (missedAtLeastOne ? now : entry.nextDueMs) + entry.everyMs;
-      due.push(trigger);
+      entry.unconfirmed = { scheduledFor };
+      due.push({ trigger, scheduledFor });
       changed = true;
     }
 
-    if (changed) {
-      // Commit only after the durable write succeeds. A crash between this
-      // write and the callbacks below loses the occurrence; it never repeats it.
-      this.persist(next);
-      this.state = next;
+    if (!changed) {
+      return;
     }
 
-    for (const trigger of due) {
+    // Commit the advanced occurrence and its marker before any callback runs.
+    // A crash between this write and the clear write leaves durable evidence
+    // for the next start but can never duplicate the occurrence.
+    this.persist(next);
+    this.state = next;
+
+    for (const { trigger } of due) {
       try {
         this.onTrigger(trigger);
       } catch (error) {
         this.reportError(error, trigger);
       }
+      // The callback was attempted, so the marker is cleared whether it
+      // succeeded or threw. The occurrence is never replayed.
+      this.clearUnconfirmed(trigger.id);
     }
+  }
+
+  /**
+   * Reports every marker left by a previous process, then clears it.
+   *
+   * Reporting happens before the clear write: if that write fails the marker
+   * stays on disk and the next start reports it again instead of replaying the
+   * trigger.
+   */
+  private reportUnconfirmed(): void {
+    const pending: {
+      trigger: TriggerDefinition;
+      occurrence: SchedulerUnconfirmedOccurrence;
+    }[] = [];
+    const next = structuredClone(this.state);
+    for (const trigger of this.triggers) {
+      const entry = next.triggers[trigger.id];
+      if (entry === undefined || entry.unconfirmed === undefined) {
+        continue;
+      }
+      pending.push({
+        trigger,
+        occurrence: { scheduledFor: entry.unconfirmed.scheduledFor },
+      });
+      delete entry.unconfirmed;
+    }
+
+    if (pending.length === 0) {
+      return;
+    }
+
+    for (const { trigger, occurrence } of pending) {
+      if (this.onUnconfirmed === undefined) {
+        continue;
+      }
+      try {
+        this.onUnconfirmed(trigger, occurrence);
+      } catch (error) {
+        this.reportError(error, trigger);
+      }
+    }
+
+    this.persist(next);
+    this.state = next;
+  }
+
+  private clearUnconfirmed(triggerId: string): void {
+    const current = this.state.triggers[triggerId];
+    if (current === undefined || current.unconfirmed === undefined) {
+      return;
+    }
+    const next = structuredClone(this.state);
+    const entry = next.triggers[triggerId];
+    if (entry === undefined) {
+      return;
+    }
+    delete entry.unconfirmed;
+    this.persist(next);
+    this.state = next;
   }
 
   private scheduleNext(): void {
@@ -253,7 +363,16 @@ function reconcileState(
     const existing = stored?.triggers[trigger.id];
     if (trigger.schedule.kind === 'at') {
       if (existing?.kind === 'at' && existing.at === trigger.schedule.at) {
-        entries[trigger.id] = { kind: 'at', at: existing.at, fired: existing.fired };
+        entries[trigger.id] = {
+          kind: 'at',
+          at: existing.at,
+          fired: existing.fired,
+          // A marker belongs to the old schedule; any schedule change above
+          // resets the entry, so only an unchanged schedule keeps it.
+          ...(existing.unconfirmed === undefined
+            ? {}
+            : { unconfirmed: { ...existing.unconfirmed } }),
+        };
       } else {
         entries[trigger.id] = { kind: 'at', at: trigger.schedule.at, fired: false };
       }
@@ -269,6 +388,9 @@ function reconcileState(
         kind: 'every',
         everyMs: existing.everyMs,
         nextDueMs: existing.nextDueMs,
+        ...(existing.unconfirmed === undefined
+          ? {}
+          : { unconfirmed: { ...existing.unconfirmed } }),
       };
     } else {
       entries[trigger.id] = {
@@ -320,7 +442,13 @@ export function parseSchedulerState(input: unknown): SchedulerState {
       if (typeof raw['fired'] !== 'boolean') {
         throw new Error(`scheduler state trigger '${id}': fired must be a boolean`);
       }
-      triggers[id] = { kind: 'at', at, fired: raw['fired'] };
+      const unconfirmed = parseUnconfirmed(raw['unconfirmed'], id);
+      triggers[id] = {
+        kind: 'at',
+        at,
+        fired: raw['fired'],
+        ...(unconfirmed === undefined ? {} : { unconfirmed }),
+      };
       continue;
     }
     if (kind === 'every') {
@@ -332,11 +460,40 @@ export function parseSchedulerState(input: unknown): SchedulerState {
       if (typeof nextDueMs !== 'number' || !Number.isFinite(nextDueMs)) {
         throw new Error(`scheduler state trigger '${id}': nextDueMs must be a finite number`);
       }
-      triggers[id] = { kind: 'every', everyMs, nextDueMs };
+      const unconfirmed = parseUnconfirmed(raw['unconfirmed'], id);
+      triggers[id] = {
+        kind: 'every',
+        everyMs,
+        nextDueMs,
+        ...(unconfirmed === undefined ? {} : { unconfirmed }),
+      };
       continue;
     }
     throw new Error(`scheduler state trigger '${id}': kind must be 'at' or 'every'`);
   }
 
   return { schemaVersion: 1, triggers };
+}
+
+function parseUnconfirmed(
+  input: unknown,
+  triggerId: string,
+): SchedulerUnconfirmedOccurrence | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  if (!isRecord(input)) {
+    throw new Error(`scheduler state trigger '${triggerId}': unconfirmed must be an object`);
+  }
+  const scheduledFor = input['scheduledFor'];
+  if (
+    typeof scheduledFor !== 'string' ||
+    scheduledFor === '' ||
+    !Number.isFinite(Date.parse(scheduledFor))
+  ) {
+    throw new Error(
+      `scheduler state trigger '${triggerId}': unconfirmed.scheduledFor must be a timestamp`,
+    );
+  }
+  return { scheduledFor };
 }

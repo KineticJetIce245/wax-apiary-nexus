@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { AttachmentDraft } from '../../content.js';
 import type { Project } from '../../kernel.js';
 import { assertProjectDirectory } from '../../project-directory.js';
@@ -33,6 +34,13 @@ export interface DshAcpAdapterOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Optional ACP session/new MCP server declarations. */
   readonly mcpServers?: readonly Record<string, unknown>[];
+  /**
+   * Advertise native renaming and route titles through the WAX sidecar read by
+   * the `wax-bridge` DSH plugin. Defaults to false.
+   */
+  readonly nativeTitles?: boolean;
+  /** Directory holding `<sha256(canonicalCwd)>.json` title sidecars. */
+  readonly sidecarDir?: string;
 }
 
 interface ActiveExecution {
@@ -54,18 +62,7 @@ interface ServerRequest {
 }
 
 export class DshAcpAdapter implements HarnessAdapter {
-  readonly capabilities: HarnessCapabilities = {
-    approval: 'interactive',
-    cancel: true,
-    streaming: true,
-    // DSH projects the ACP _meta.wax.title extension onto its native session
-    // title log event. Workspace ownership stays on the DSH web side; WAX only
-    // writes the session's own title.
-    rename: true,
-    // G016 verified session/resume across a process restart; the ACP server has
-    // no session/load, and resume() below does not replay history.
-    resume: true,
-  };
+  readonly capabilities: HarnessCapabilities;
 
   private readonly dshRoot: string;
   private readonly nodePath: string;
@@ -74,6 +71,8 @@ export class DshAcpAdapter implements HarnessAdapter {
   private readonly dshArgs: readonly string[];
   private readonly env: NodeJS.ProcessEnv;
   private readonly mcpServers: readonly Record<string, unknown>[];
+  private readonly nativeTitles: boolean;
+  private readonly sidecarDir: string | undefined;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly active = new Map<string, ActiveExecution>();
   private readonly closing = new Set<string>();
@@ -94,6 +93,20 @@ export class DshAcpAdapter implements HarnessAdapter {
     this.dshArgs = options.dshArgs ?? [];
     this.env = options.env ?? {};
     this.mcpServers = options.mcpServers ?? [];
+    this.nativeTitles = options.nativeTitles === true;
+    this.sidecarDir = options.sidecarDir;
+    this.capabilities = {
+      approval: 'interactive',
+      cancel: true,
+      streaming: true,
+      // The DSH `wax-bridge` plugin promotes a per-cwd sidecar written by
+      // createConversation into the native session/title event. Workspace
+      // ownership stays on the DSH side; WAX only names its own session.
+      rename: this.nativeTitles,
+      // G016 verified session/resume across a process restart; the ACP server
+      // has no session/load, and resume() below does not replay history.
+      resume: true,
+    };
   }
 
   onEvent(handler: (event: HarnessEvent) => void): () => void {
@@ -223,23 +236,37 @@ export class DshAcpAdapter implements HarnessAdapter {
   ): Promise<string> {
     assertProjectDirectory(project.directory);
     const client = this.requireClient();
-    // The native title rides the ACP _meta extension; Workspace ownership is
-    // handled by the DSH web process, never by this ACP process.
     const params: Record<string, unknown> = {
       cwd: project.directory,
       mcpServers: this.mcpServers,
     };
+    // The DSH plugin cannot see ACP `_meta`; the title travels through a
+    // per-cwd sidecar written before session/new and removed afterwards.
     const displayName = options.displayName;
-    if (displayName !== undefined && displayName.length > 0) {
-      params['_meta'] = { wax: { title: displayName } };
+    const sidecar = this.nativeTitles && this.sidecarDir !== undefined
+      && displayName !== undefined && displayName.length > 0
+      ? join(this.sidecarDir, sessionTitleSidecarName(project.directory))
+      : undefined;
+    if (sidecar !== undefined && displayName !== undefined) {
+      this.writeTitleSidecar(sidecar, displayName);
     }
-    const result = await client.request('session/new', params, this.sessionTimeoutMs);
-    const sessionId = asString(asRecord(result)?.sessionId);
-    if (sessionId === undefined) {
-      throw new Error('ACP session/new did not return a sessionId');
+    try {
+      const result = await client.request('session/new', params, this.sessionTimeoutMs);
+      const sessionId = asString(asRecord(result)?.sessionId);
+      if (sessionId === undefined) {
+        throw new Error('ACP session/new did not return a sessionId');
+      }
+      this.cwdBySession.set(sessionId, project.directory);
+      return sessionId;
+    } finally {
+      if (sidecar !== undefined) {
+        try {
+          rmSync(sidecar, { force: true });
+        } catch {
+          // Title sidecars are best-effort; cleanup must not mask the outcome.
+        }
+      }
     }
-    this.cwdBySession.set(sessionId, project.directory);
-    return sessionId;
   }
 
   /** Reattach to a session created by an earlier process (no history replay). */
@@ -521,6 +548,16 @@ export class DshAcpAdapter implements HarnessAdapter {
     return this.client;
   }
 
+  private writeTitleSidecar(path: string, title: string): void {
+    try {
+      mkdirSync(this.sidecarDir as string, { recursive: true });
+      writeFileSync(path, JSON.stringify({ title, createdAt: Date.now() }), 'utf8');
+    } catch {
+      // A missing writable home must not block session creation; the plugin
+      // simply finds no sidecar and leaves the title to WAX.
+    }
+  }
+
   private emit(event: HarnessEvent): void {
     for (const listener of this.listeners) {
       try {
@@ -530,6 +567,32 @@ export class DshAcpAdapter implements HarnessAdapter {
       }
     }
   }
+}
+
+/**
+ * Canonical cwd spelling shared with the `wax-bridge` DSH plugin: resolved
+ * real path, Windows `\\?\` prefix stripped, and lowercased on Windows.
+ * @param path - project directory.
+ * @returns canonical path used as the title-sidecar key.
+ */
+export function canonicalCwd(path: string): string {
+  let resolved: string;
+  try {
+    resolved = realpathSync.native(path);
+  } catch {
+    resolved = resolve(path);
+  }
+  const noPrefix = resolved.replace(/^\\\\\?\\/, '');
+  return process.platform === 'win32' ? noPrefix.toLowerCase() : noPrefix;
+}
+
+/**
+ * Deterministic title-sidecar filename for one project directory.
+ * @param directory - project directory.
+ * @returns `<sha256(canonicalCwd)>.json`.
+ */
+export function sessionTitleSidecarName(directory: string): string {
+  return `${createHash('sha256').update(canonicalCwd(directory)).digest('hex')}.json`;
 }
 
 export function mapStopReason(value: unknown): StopReason {

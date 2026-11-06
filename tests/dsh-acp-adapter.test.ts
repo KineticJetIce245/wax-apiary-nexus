@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { DshAcpAdapter } from '../src/adapters/dsh-acp/adapter.js';
+import { DshAcpAdapter, sessionTitleSidecarName } from '../src/adapters/dsh-acp/adapter.js';
 import type { HarnessEvent } from '../src/adapters/harness.js';
 import { assertHarnessAdapterContract } from './support/harness-adapter-contract.js';
 
@@ -58,6 +58,63 @@ rl.on('line', (line) => {
 });
 `;
 
+const FAKE_ACP_SIDECAR_PROBE = String.raw`
+const fs = require('node:fs');
+const readline = require('node:readline');
+const recordPath = process.argv[4];
+const sidecarPath = process.env.WAX_TEST_SIDECAR;
+const rl = readline.createInterface({ input: process.stdin });
+function send(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send(message.id, { protocolVersion: 1 });
+    return;
+  }
+  if (message.method === 'session/new') {
+    let sidecar;
+    try {
+      sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+    } catch {
+      sidecar = null;
+    }
+    fs.writeFileSync(recordPath, JSON.stringify({ params: message.params, sidecar }));
+    send(message.id, { sessionId: 'sidecar-session' });
+  }
+});
+`;
+
+const FAKE_ACP_SIDECAR_REJECT = String.raw`
+const fs = require('node:fs');
+const readline = require('node:readline');
+const recordPath = process.argv[4];
+const sidecarPath = process.env.WAX_TEST_SIDECAR;
+const rl = readline.createInterface({ input: process.stdin });
+function send(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+function fail(id, message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message } }) + '\n');
+}
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send(message.id, { protocolVersion: 1 });
+    return;
+  }
+  if (message.method === 'session/new') {
+    let sidecar = null;
+    try {
+      sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+    } catch {}
+    fs.writeFileSync(recordPath, JSON.stringify({ sidecar }));
+    fail(message.id, 'session/new refused by probe');
+  }
+});
+`;
+
 function makeFakeDshRoot(binSource: string): string {
   const root = mkdtempSync(join(tmpdir(), 'uw-fake-dsh-'));
   const dir = join(root, 'apps', 'cli', 'lib');
@@ -96,7 +153,7 @@ test('passes mcpServers through to ACP session/new', async () => {
   }
 });
 
-test('passes displayName through as ACP _meta.wax.title', async () => {
+test('does not send displayName as ACP _meta', async () => {
   const root = makeFakeDshRoot(FAKE_ACP_RECORDER);
   const projectDir = mkdtempSync(join(tmpdir(), 'uw-fake-title-project-'));
   const recordPath = join(projectDir, 'session-new.json');
@@ -114,11 +171,74 @@ test('passes displayName through as ACP _meta.wax.title', async () => {
       _meta?: unknown;
     };
     assert.equal(recorded.cwd, projectDir);
-    assert.deepEqual(recorded._meta, { wax: { title: displayName } });
+    assert.equal(recorded._meta, undefined);
 
     await adapter.createConversation({ id: 'fake', directory: projectDir });
     const unnamed = JSON.parse(readFileSync(recordPath, 'utf8')) as { _meta?: unknown };
     assert.equal(unnamed._meta, undefined);
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('writes the title sidecar before session/new and removes it afterwards', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_SIDECAR_PROBE);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-sidecar-project-'));
+  const sidecarDir = mkdtempSync(join(tmpdir(), 'uw-sidecar-dir-'));
+  const sidecarPath = join(sidecarDir, sessionTitleSidecarName(projectDir));
+  const recordPath = join(projectDir, 'session-new.json');
+  const adapter = new DshAcpAdapter({
+    dshRoot: root,
+    dshArgs: [recordPath],
+    sessionTimeoutMs: 1_000,
+    nativeTitles: true,
+    sidecarDir,
+    env: { WAX_TEST_SIDECAR: sidecarPath },
+  });
+  try {
+    await adapter.start();
+    const displayName = 'wax-apiary-nexus-session-sidecar';
+    await adapter.createConversation({ id: 'fake', directory: projectDir }, { displayName });
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as {
+      params?: { _meta?: unknown };
+      sidecar?: { title?: unknown; createdAt?: unknown } | null;
+    };
+    assert.equal(recorded.params?._meta, undefined);
+    assert.equal(recorded.sidecar?.title, displayName);
+    assert.equal(typeof recorded.sidecar?.createdAt, 'number');
+    // The adapter removes the sidecar once session/new settles, so a stale
+    // title can never leak onto a later session in the same cwd.
+    assert.equal(existsSync(sidecarPath), false);
+  } finally {
+    await adapter.stop();
+  }
+});
+
+test('removes the title sidecar when session/new fails', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_SIDECAR_REJECT);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-sidecar-fail-project-'));
+  const sidecarDir = mkdtempSync(join(tmpdir(), 'uw-sidecar-fail-dir-'));
+  const sidecarPath = join(sidecarDir, sessionTitleSidecarName(projectDir));
+  const recordPath = join(projectDir, 'session-new.json');
+  const adapter = new DshAcpAdapter({
+    dshRoot: root,
+    dshArgs: [recordPath],
+    sessionTimeoutMs: 1_000,
+    nativeTitles: true,
+    sidecarDir,
+    env: { WAX_TEST_SIDECAR: sidecarPath },
+  });
+  try {
+    await adapter.start();
+    await assert.rejects(
+      adapter.createConversation({ id: 'fake', directory: projectDir }, { displayName: 'failed-title' }),
+      /refused/i,
+    );
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as {
+      sidecar?: { title?: unknown } | null;
+    };
+    assert.equal(recorded.sidecar?.title, 'failed-title');
+    assert.equal(existsSync(sidecarPath), false);
   } finally {
     await adapter.stop();
   }
@@ -167,11 +287,18 @@ test('keeps an idle session non-submittable after a close timeout', async () => 
   }
 });
 
-test('advertises its implemented resume and native rename capabilities', () => {
-  const adapter = new DshAcpAdapter({ dshRoot: join(tmpdir(), 'unused-dsh-root') });
-  assert.equal(adapter.capabilities.resume, true);
-  assert.equal(adapter.capabilities.rename, true);
-  assert.equal(typeof adapter.resume, 'function');
+test('advertises native rename only when configured', () => {
+  const plain = new DshAcpAdapter({ dshRoot: join(tmpdir(), 'unused-dsh-root') });
+  assert.equal(plain.capabilities.resume, true);
+  assert.equal(plain.capabilities.rename, false);
+  assert.equal(typeof plain.resume, 'function');
+
+  const native = new DshAcpAdapter({
+    dshRoot: join(tmpdir(), 'unused-dsh-root'),
+    sidecarDir: join(tmpdir(), 'unused-sidecar-dir'),
+    nativeTitles: true,
+  });
+  assert.equal(native.capabilities.rename, true);
 });
 
 test('turns a missing executable spawn error into a controlled rejection', async () => {

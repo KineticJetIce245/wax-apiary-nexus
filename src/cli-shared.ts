@@ -1,5 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
 import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
@@ -59,6 +61,30 @@ export interface HarnessSelection {
 }
 
 const DSH_ROOT_REQUIRED = '--harness dsh requires --dsh-root <path> or DSH_ROOT';
+const DSH_PLUGIN_SEARCH_DEPTH = 12;
+
+/**
+ * Locate the workspace-owned DSH overlay that mounts the WAX bridge plugin.
+ * The plugin directory sits beside the WAX checkout, so the search walks up
+ * from this module (source or compiled) at most twelve directories.
+ * @param startUrl - module URL to start from; defaults to this module.
+ * @returns the absolute patch path, or undefined when the workspace has none.
+ */
+export function findDshPluginPatch(startUrl: string | URL = import.meta.url): string | undefined {
+  let directory = dirname(fileURLToPath(startUrl));
+  for (let depth = 0; depth < DSH_PLUGIN_SEARCH_DEPTH; depth += 1) {
+    const candidate = join(directory, 'dsh-plugins', 'acp.patch.yml');
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) {
+      return undefined;
+    }
+    directory = parent;
+  }
+  return undefined;
+}
 
 /**
  * Applies the selection policy shared by `wax run` and `wax daemon`. A dsh
@@ -103,12 +129,22 @@ export async function createDefaultAdapter(request: AdapterRequest): Promise<Har
       throw new CliUsageError(DSH_ROOT_REQUIRED);
     }
     // The adapter's existing start() validates the checkout and launches the
-    // ACP process; this factory only selects it.
+    // ACP process; this factory only selects it. When the workspace overlay is
+    // present it enables native titles through the wax-bridge plugin; missing
+    // overlay leaves rename off and ACP keeps WAX's title alone.
+    const patch = findDshPluginPatch();
     return new DshAcpAdapter({
       dshRoot: request.dshRoot,
       ...(compositionTools.mcpServers === undefined
         ? {}
         : { mcpServers: compositionTools.mcpServers }),
+      ...(patch === undefined
+        ? {}
+        : {
+            dshArgs: ['--patch', patch],
+            nativeTitles: true,
+            sidecarDir: join(homedir(), '.wax', 'dsh', 'session-names'),
+          }),
     });
   }
   const connection = await createCodexConnection(

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { DshAcpAdapter } from '../src/adapters/dsh-acp/adapter.js';
 import { apiaryForProject, CliUsageError, parseRunArgs, runCli, type CliDependencies } from '../src/cli.js';
-import { createDefaultAdapter, type AdapterRequest } from '../src/cli-shared.js';
+import { createDefaultAdapter, findDshPluginPatch, type AdapterRequest } from '../src/cli-shared.js';
 import { HoneyStore, honeyPaths } from '../src/honey.js';
 import { parseComposition, PheromoneRuntime } from '../src/runtime/index.js';
 import type { HoverSpec, UserNode, Value } from '../src/runtime/index.js';
@@ -587,9 +587,23 @@ test('runs a composition to Rest through a selected dsh adapter', async () => {
   assert.ok(captureResult.stdout.includes('output       DSH-FAKE'));
 });
 
-test('createDefaultAdapter selects DshAcpAdapter without spawning', async () => {
+test('createDefaultAdapter selects DshAcpAdapter and mounts the WAX overlay when present', async () => {
   const adapter = await createDefaultAdapter({ harness: 'dsh', dshRoot: projectDirectory() });
   assert.ok(adapter instanceof DshAcpAdapter);
+  const patch = findDshPluginPatch();
+  if (patch === undefined) {
+    assert.equal(adapter.capabilities.rename, false);
+  } else {
+    assert.equal(adapter.capabilities.rename, true);
+    assert.deepEqual(
+      (adapter as unknown as { dshArgs: readonly string[] }).dshArgs,
+      ['--patch', patch],
+    );
+    assert.equal(
+      (adapter as unknown as { sidecarDir: string }).sidecarDir,
+      join(homedir(), '.wax', 'dsh', 'session-names'),
+    );
+  }
   await assert.rejects(createDefaultAdapter({ harness: 'dsh' }), /requires --dsh-root/);
 });
 

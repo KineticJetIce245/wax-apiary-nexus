@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
-import { Scheduler, parseSchedulerState, type SchedulerTimers } from '../src/daemon/scheduler.js';
+import {
+  Scheduler,
+  parseSchedulerState,
+  type SchedulerState,
+  type SchedulerTimers,
+} from '../src/daemon/scheduler.js';
 import type { TriggerDefinition } from '../src/runtime/index.js';
 
 const START = Date.parse('2026-11-05T12:00:00.000Z');
@@ -162,6 +167,61 @@ test('a failed occurrence write never fires the trigger', () => {
   assert.throws(() => testHarness.scheduler.start(), /disk full/);
   assert.equal(testHarness.fired.length, 0);
   testHarness.scheduler.stop();
+});
+
+test('a crash after the occurrence write but before the callback loses it instead of replaying it', () => {
+  const timers = new ManualTimers(START);
+  const trigger = atTrigger('past', START - 1000);
+  let persisted: SchedulerState | undefined;
+  let writes = 0;
+  let callbackRan = false;
+
+  const first = new Scheduler({
+    triggers: [trigger],
+    now: timers.now,
+    timers,
+    persist: (state) => {
+      writes += 1;
+      persisted = structuredClone(state);
+      if (writes === 2) {
+        // The durable write completed, then the process died before onTrigger.
+        throw new Error('process died after the durable occurrence write');
+      }
+    },
+    onTrigger: () => {
+      callbackRan = true;
+    },
+  });
+
+  assert.throws(() => first.start(), /process died/);
+  assert.equal(callbackRan, false);
+  assert.equal(writes, 2);
+  assert.ok(persisted !== undefined);
+  const fired = persisted.triggers['past'];
+  assert.ok(fired !== undefined && fired.kind === 'at');
+  assert.equal(fired.fired, true);
+
+  let restartedCallbackRan = false;
+  const secondTimers = new ManualTimers(START + 60_000);
+  const second = new Scheduler({
+    triggers: [trigger],
+    state: persisted,
+    now: secondTimers.now,
+    timers: secondTimers,
+    persist: () => undefined,
+    onTrigger: () => {
+      restartedCallbackRan = true;
+    },
+  });
+  second.start();
+  secondTimers.advance(60_000);
+
+  assert.equal(
+    restartedCallbackRan,
+    false,
+    'at-most-once does not replay an occurrence after the crash window',
+  );
+  second.stop();
 });
 
 test('a persisted at occurrence is not repeated after a restart', () => {

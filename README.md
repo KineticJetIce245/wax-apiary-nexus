@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (562 tests).
+> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (563 tests).
 >
 > Target model: [`ARCHITECTURE.md`](ARCHITECTURE.md). Composition/command contract: [`CONTRACT.md`](CONTRACT.md).
 
@@ -160,6 +160,7 @@ legacy-contract/     historical adapter/flow contracts
 - The 3-level mid-flight Honey save/load restart is covered by a deterministic test; a real OS process kill during active native DSH/Codex work is still unverified.
 - The seeded fuzz harness covers linear, fork/optional/timeout and 3-level nested/hover graphs, with 3000 steps and 120 Honey restores. It does not cover Worker/Guard/Condition/Counter or early answers.
 - Process chaos uses real `SIGKILL` against a child runtime and covers active, hover, pending/queue, open joins, and saves immediately before/after the atomic write. `SIGKILL` is not physical power loss: it does not test disk flush, torn writes, or filesystem ordering. The single-point case keeps active on `start` and pending/queue on `done`; the runtime never allows active and pending on the same node.
+- The scheduler is deliberately at-most-once: it persists an occurrence before `onTrigger`, so a crash in that window loses that occurrence instead of replaying it. There is no missed-occurrence marker yet; the behavior is characterized by a test.
 - No UI. Real edge verification still pending: native Codex MCP tool call, DSH graceful SIGINT, OS restart during a scheduled timer, and process-kill mid-flight.
 
 ## Next

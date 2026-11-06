@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -234,6 +234,73 @@ function threeLevelComposition(): CompositionDefinition {
       { id: 'e2', from: 'inner-merge', to: 'mid-merge' },
       { id: 'e3', from: 'mid-merge', to: 'outer-merge' },
       { id: 'e4', from: 'outer-merge', to: 'done' },
+    ],
+  });
+}
+
+/**
+ * The same three-level nesting as `threeLevelComposition`, but the outer right
+ * branch is a user hover instead of a direct Merge arrival:
+ *
+ * start -> outer-fork
+ *   o-left  -> mid-fork (m-left -> inner-fork, m-right -> mid-merge)
+ *              inner-fork (i-a, i-b -> inner-merge) -> mid-merge -> outer-merge
+ *   o-right -> ask-outer -> outer-merge
+ * outer-merge -> done
+ *
+ * `queue-node` is deliberately detached: no edge reaches it, so it can hold an
+ * independent queue/pending pair without touching the nested graph.
+ */
+function threeLevelHoverComposition(): CompositionDefinition {
+  return parseComposition({
+    schemaVersion: 1,
+    id: 'nested-three-level-hover',
+    nodes: {
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
+      'outer-fork': {
+        kind: 'fork',
+        config: {
+          branches: [
+            { id: 'o-left', to: 'mid-fork' },
+            { id: 'o-right', to: 'ask-outer' },
+          ],
+        },
+      },
+      'mid-fork': {
+        kind: 'fork',
+        config: {
+          branches: [
+            { id: 'm-left', to: 'inner-fork' },
+            { id: 'm-right', to: 'mid-merge' },
+          ],
+        },
+      },
+      'inner-fork': {
+        kind: 'fork',
+        config: {
+          branches: [
+            { id: 'i-a', to: 'inner-merge' },
+            { id: 'i-b', to: 'inner-merge' },
+          ],
+        },
+      },
+      'inner-merge': { kind: 'merge', config: { required: ['i-a', 'i-b'], combine: 'text' } },
+      'mid-merge': { kind: 'merge', config: { required: ['m-left', 'm-right'], combine: 'text' } },
+      'outer-merge': { kind: 'merge', config: { required: ['o-left', 'o-right'], combine: 'text' } },
+      'ask-outer': { kind: 'user', config: { modality: 'text', prompt: 'outer?' } },
+      'queue-node': {
+        kind: 'forager',
+        config: { connection: 'codex', prompt: 'detached {{input}}' },
+        minIntervalMs: 5000,
+      },
+      done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
+    },
+    edges: [
+      { id: 'e1', from: 'start', to: 'outer-fork' },
+      { id: 'e2', from: 'inner-merge', to: 'mid-merge' },
+      { id: 'e3', from: 'mid-merge', to: 'outer-merge' },
+      { id: 'e4', from: 'ask-outer', to: 'outer-merge' },
+      { id: 'e5', from: 'outer-merge', to: 'done' },
     ],
   });
 }
@@ -916,6 +983,245 @@ test('honey round-trips nested lineage and restores an incomplete inner join', a
     'seed\nreply\nseed',
   );
   assert.equal(joinAt(restored.snapshot(), 'inner-merge').lineage?.[0]?.branchId, 'left');
+});
+
+test('a real Honey restart mid-flight keeps a three-level join, hover, queue and pending', async () => {
+  let clock = START;
+  const definition = threeLevelHoverComposition();
+  const { executor, calls } = recorder();
+  const runtime = new PheromoneRuntime(definition, {
+    executeForager: executor,
+    now: () => clock,
+  });
+
+  // Pass 1: descend all three forks and park ask-outer on its user hover.
+  runtime.trigger('start', text('seed'));
+  await runtime.pump();
+  // Pass 2: finish the inner and mid joins, so the outer join holds only o-left.
+  clock += 1000;
+  await runtime.pump();
+
+  // Detached queue node: q1 drains, q2 lands in pending behind the 5s minimum
+  // interval, and q3 stays queued behind q2.
+  runtime.trigger('queue-node', text('q1'));
+  await runtime.pump();
+  runtime.trigger('queue-node', text('q2'));
+  runtime.trigger('queue-node', text('q3'));
+  await runtime.pump();
+
+  const before = runtime.snapshot();
+  assert.equal(before.rest, false);
+  assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
+
+  const innerJoin = joinAt(before, 'inner-merge');
+  const midJoin = joinAt(before, 'mid-merge');
+  const outerJoin = joinAt(before, 'outer-merge');
+  assert.ok(innerJoin.completedAt !== undefined, 'the inner join is a completed tombstone');
+  assert.ok(midJoin.completedAt !== undefined, 'the mid join is a completed tombstone');
+  assert.equal(innerJoin.arrived.length, 0);
+  assert.equal(midJoin.arrived.length, 0);
+  assert.deepEqual(
+    innerJoin.lineage?.map((tag) => tag.branchId),
+    ['o-left', 'm-left'],
+    'the inner join remembers both enclosing tags',
+  );
+  assert.deepEqual(
+    midJoin.lineage?.map((tag) => tag.branchId),
+    ['o-left'],
+    'the mid join remembers only the outer tag',
+  );
+  assert.equal(outerJoin.completedAt, undefined, 'the outer join is still incomplete');
+  assert.equal(outerJoin.arrived.length, 1);
+  assert.equal(outerJoin.arrived[0]?.branchId, 'o-left');
+
+  const outerForkId = outerJoin.arrived[0]?.forkId;
+  assert.ok(outerForkId !== undefined);
+  const token = before.nodes['ask-outer']?.hover?.token;
+  assert.ok(token !== undefined);
+  const parked = before.pheromones.find(
+    (pheromone) => pheromone.forkId === outerForkId && pheromone.branchId === 'o-right',
+  );
+  assert.ok(parked !== undefined, 'the hovered o-right branch is still in the field');
+  assert.equal(before.nodes['ask-outer']?.hover?.pheromoneId, parked.id);
+
+  const queueNode = before.nodes['queue-node'];
+  assert.ok(queueNode !== undefined);
+  assert.equal(queueNode.queue.length, 1);
+  const queued = queueNode.queue[0];
+  const pending = queueNode.pending;
+  assert.ok(queued !== undefined);
+  assert.ok(pending !== undefined, 'q2 waits in pending during the minimum interval');
+  assert.equal(serializeValue(queued.value), 'q3');
+  assert.equal(serializeValue(pending.value), 'q2');
+
+  // Real persistence: JSON on disk, parsed back, then a brand-new runtime.
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', definition.id);
+  const field = runtime.exportField();
+  store.save(field);
+  assert.equal(existsSync(store.paths.field), true, 'honey/field.json was written');
+  const loaded = store.load();
+  assert.ok(loaded !== undefined);
+  assert.deepEqual(loaded, field);
+  assert.equal(loaded.nodes['ask-outer']?.hover?.token, token);
+  assert.equal(loaded.nodes['queue-node']?.queue[0]?.id, queued.id);
+  assert.equal(loaded.nodes['queue-node']?.pending?.id, pending.id);
+
+  const restoredLog = createMemoryLog();
+  const restoredRecorder = recorder();
+  const { runtime: restored, report } = PheromoneRuntime.restore(definition, loaded, {
+    executeForager: restoredRecorder.executor,
+    now: () => clock,
+    onLog: restoredLog.sink,
+  });
+
+  assert.deepEqual(report, {
+    resumedHovers: ['ask-outer'],
+    unknownActive: [],
+    stuckActive: [],
+  });
+
+  const restoredBefore = restored.snapshot();
+  assert.equal(restoredBefore.rest, false);
+  assert.equal(restoredBefore.nodes['ask-outer']?.hover?.token, token);
+  assert.equal(restoredBefore.nodes['ask-outer']?.hover?.pheromoneId, parked.id);
+  const restoredParked = restoredBefore.pheromones.find(
+    (pheromone) => pheromone.id === parked.id,
+  );
+  assert.ok(restoredParked !== undefined, 'the hovered branch Pheromone survives restore');
+  assert.equal(restoredParked?.branchId, 'o-right');
+
+  const restoredQueueNode = restoredBefore.nodes['queue-node'];
+  assert.ok(restoredQueueNode !== undefined);
+  assert.equal(restoredQueueNode.queue.length, 1);
+  assert.equal(restoredQueueNode.queue[0]?.id, queued.id);
+  assert.equal(restoredQueueNode.queue[0]?.at, queued.at);
+  assert.equal(restoredQueueNode.pending?.id, pending.id);
+  assert.equal(restoredQueueNode.pending?.at, pending.at);
+  assert.equal(serializeValue(restoredQueueNode.queue[0]?.value as Value), 'q3');
+  assert.equal(serializeValue(restoredQueueNode.pending?.value as Value), 'q2');
+
+  const restoredInner = joinAt(restoredBefore, 'inner-merge');
+  const restoredMid = joinAt(restoredBefore, 'mid-merge');
+  const restoredOuter = joinAt(restoredBefore, 'outer-merge');
+  assert.equal(restoredInner.completedAt, innerJoin.completedAt);
+  assert.equal(restoredMid.completedAt, midJoin.completedAt);
+  assert.deepEqual(restoredInner.lineage, innerJoin.lineage);
+  assert.deepEqual(restoredMid.lineage, midJoin.lineage);
+  assert.equal(restoredOuter.completedAt, undefined);
+  assert.equal(restoredOuter.arrived.length, 1);
+  assert.equal(restoredOuter.arrived[0]?.id, outerJoin.arrived[0]?.id);
+  assert.equal(restoredOuter.arrived[0]?.branchId, 'o-left');
+  // The same fork groups survive, not newly opened joins.
+  assert.deepEqual(
+    Object.keys(restoredBefore.nodes['inner-merge']?.joins ?? {}),
+    Object.keys(before.nodes['inner-merge']?.joins ?? {}),
+  );
+  assert.deepEqual(
+    Object.keys(restoredBefore.nodes['mid-merge']?.joins ?? {}),
+    Object.keys(before.nodes['mid-merge']?.joins ?? {}),
+  );
+  assert.deepEqual(
+    Object.keys(restoredBefore.nodes['outer-merge']?.joins ?? {}),
+    Object.keys(before.nodes['outer-merge']?.joins ?? {}),
+  );
+
+  // Restoring is not replaying: a completed forager or merge must not run again.
+  assert.equal(restoredRecorder.calls.length, 0);
+  await restored.pump();
+  assert.equal(restoredRecorder.calls.length, 0, 'a quiet pump after restore re-runs nothing');
+  assert.equal(
+    restoredLog.entries.some((entry) => entry.event === 'node.activated'),
+    false,
+    'no restored node is activated before new input arrives',
+  );
+  assert.equal(
+    restoredLog.entries.some((entry) => entry.event === 'merge.completed'),
+    false,
+    'no completed merge is replayed before the answer',
+  );
+
+  // Answer with the restored token, then let the outer Merge settle.
+  restored.answerHover('ask-outer', text('reply'), token);
+  clock += 1000; // outer-merge has its own 1s minimum interval
+  await restored.pump();
+
+  assert.deepEqual(restoredRecorder.calls.map((call) => call.nodeId), ['done']);
+  assert.equal(
+    serializeValue(restoredRecorder.calls[0]?.input as Value),
+    'seed\nseed\nseed\nreply',
+    'the answer joins the three nested combine layers in order',
+  );
+  const outerCompleted = joinAt(restored.snapshot(), 'outer-merge');
+  assert.ok(outerCompleted.completedAt !== undefined);
+  assert.equal(outerCompleted.lineage, undefined, 'the top-level merge pops the outer tag');
+  assert.equal(outerCompleted.arrived.length, 0);
+  assert.equal(restored.snapshot().nodes['ask-outer']?.hover, undefined);
+
+  const doneArrivals = restoredLog.entries.filter(
+    (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'done',
+  );
+  assert.equal(doneArrivals.length, 1);
+  assert.equal(doneArrivals[0]?.forkId, undefined);
+  assert.equal(doneArrivals[0]?.branchId, undefined);
+  assert.equal(
+    restoredLog.entries.filter((entry) => entry.event === 'hover.resolved').length,
+    1,
+  );
+  assert.equal(
+    restoredLog.entries.filter(
+      (entry) => entry.event === 'merge.completed' && entry.nodeId === 'outer-merge',
+    ).length,
+    1,
+  );
+  for (const mergeId of ['inner-merge', 'mid-merge']) {
+    assert.equal(
+      restoredLog.entries.some(
+        (entry) => entry.event === 'node.activated' && entry.nodeId === mergeId,
+      ),
+      false,
+      `${mergeId} is not re-activated after restore`,
+    );
+  }
+
+  // The restored queue/pending keeps the field busy until its interval elapses.
+  assert.equal(restored.snapshot().rest, false);
+  clock += 4000; // START + 6000: q2's 5s minimum interval has elapsed
+  await restored.pump();
+  assert.deepEqual(
+    restoredRecorder.calls.map((call) => `${call.nodeId}:${serializeValue(call.input)}`),
+    ['done:seed\nseed\nseed\nreply', 'queue-node:q2'],
+  );
+  assert.equal(restored.snapshot().rest, false, 'q3 still waits behind q2');
+
+  clock += 5000; // START + 11000: q3's 5s minimum interval has elapsed
+  await restored.pump();
+  assert.equal(restored.snapshot().rest, true);
+  assert.deepEqual(
+    restoredRecorder.calls.map((call) => `${call.nodeId}:${serializeValue(call.input)}`),
+    ['done:seed\nseed\nseed\nreply', 'queue-node:q2', 'queue-node:q3'],
+  );
+  assert.equal(
+    restoredRecorder.calls.filter((call) => call.nodeId === 'done').length,
+    1,
+    'done runs exactly once across the restart',
+  );
+  assert.equal(
+    restoredRecorder.calls.filter((call) => call.nodeId === 'start').length,
+    0,
+    'the completed start forager is never replayed',
+  );
+  assert.equal(
+    restoredLog.entries.filter(
+      (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'done',
+    ).length,
+    1,
+  );
+  const finalInner = joinAt(restored.snapshot(), 'inner-merge');
+  const finalMid = joinAt(restored.snapshot(), 'mid-merge');
+  assert.equal(finalInner.completedAt, innerJoin.completedAt);
+  assert.equal(finalMid.completedAt, midJoin.completedAt);
+  assert.deepEqual(finalInner.lineage, innerJoin.lineage);
+  assert.deepEqual(finalMid.lineage, midJoin.lineage);
 });
 
 test('a restored completed nested tombstone still drops a late optional', async () => {

@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (556 tests).
+> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (557 tests).
 >
 > Target model: [`ARCHITECTURE.md`](ARCHITECTURE.md). Composition/command contract: [`CONTRACT.md`](CONTRACT.md).
 
@@ -157,7 +157,8 @@ legacy-contract/     historical adapter/flow contracts
 - The DSH bridge plugin and its patch files live in `unified-workspace/dsh-plugins`, not in this repository. Workspace adoption runs only in the DSH web process and attaches ungrouped Sessions whose cwd exactly matches an existing Workspace; it never creates one.
 - `status.joins` counts persisted join records including closed tombstones; it is not a count of currently waiting joins. `status.scheduler.fired` counts consumed one-shot `at` triggers only; `every` triggers do not persist a fired count.
 - Inspection reads the current `log.jsonl` and transcript file, not rotated segments. `status`/`log`/`honey` report failures on stderr with exit 1/2; they do not emit the composition commands' `{ok:false}` JSON error object.
-- No UI. Real edge verification still pending: native Codex MCP tool call, DSH graceful SIGINT, OS restart during a scheduled timer, and 3-level mid-flight Honey restore.
+- The 3-level mid-flight Honey save/load restart is covered by a deterministic test; a real OS process kill during active native work is still unverified.
+- No UI. Real edge verification still pending: native Codex MCP tool call, DSH graceful SIGINT, OS restart during a scheduled timer, and process-kill mid-flight.
 
 ## Next
 

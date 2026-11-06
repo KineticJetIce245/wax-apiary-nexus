@@ -6,7 +6,30 @@ It is not a new agent runtime. It keeps each harness native and coordinates them
 
 > **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (573 tests).
 >
-> Target model: [`ARCHITECTURE.md`](ARCHITECTURE.md). Composition/command contract: [`CONTRACT.md`](CONTRACT.md).
+> Implemented architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md). Composition/command contract: [`CONTRACT.md`](CONTRACT.md).
+
+## Direction: coordination fabric
+
+The current repository is an **A-mode execution kernel**: one Composition owns one `PheromoneField`, one daemon lock, and one native conversation. It is implemented and tested.
+
+The longer-term direction is **B**:
+
+```text
+Agent Network
+  → CompositionTemplate (roles, edges, requirements; no runtime state)
+  → LiveComposition (template revision + AgentBinding + PheromoneField)
+  → Harness / native session
+```
+
+- Agent is a logical identity; a native session is one of its leases.
+- CompositionTemplate connects **roles**, not concrete sessions. A LiveComposition binds roles to Agents.
+- `dispatch` is a one-off delegation and does not create a graph.
+- `compose` creates or revises a template; `instantiate` creates a LiveComposition; `persist` stores a template or a Live.
+- Network and Harness are peer domains: each exposes capabilities to the other; neither owns the other's internals.
+- Agents may propose topology changes, but structural changes require validation, human approval in the early model, and a new revision. No agent directly edits a running Live.
+- Live fork must distinguish a copied `PheromoneField` from a copied native session. Copying a `sessionId` reference is **sharing**, not forking; it is forbidden by default. Native session fork requires an adapter capability: DSH has an internal turn-boundary fork but the current ACP adapter does not expose it; Codex has no verified thread-fork API.
+
+**This direction is not implemented.** There is no Agent registry, Role/Binding layer, Template/Live split, dispatch tool, multi-Live scheduler, or native session fork yet. The working vision and open questions live in the local workspace, outside this repository.
 
 ## Quick start
 
@@ -162,11 +185,16 @@ legacy-contract/     historical adapter/flow contracts
 - Process chaos uses real `SIGKILL` against a child runtime and covers active, hover, pending/queue, open joins, and saves immediately before/after the atomic write. `SIGKILL` is not physical power loss: it does not test disk flush, torn writes, or filesystem ordering. The single-point case keeps active on `start` and pending/queue on `done`; the runtime never allows active and pending on the same node.
 - The scheduler is deliberately at-most-once: it persists an occurrence and an `unconfirmed` marker before `onTrigger`, so a crash in that window never replays the occurrence. The next start reports the marker once through `onUnconfirmed` (logged as `scheduler.unconfirmed`) and clears it; a schedule change discards an old marker instead of reporting it.
 - No UI. Real edge verification still pending: native Codex MCP tool call, DSH graceful SIGINT, OS restart during a scheduled timer, and process-kill mid-flight.
+- The Agent Network direction is not implemented: there is no Agent registry, Role/Binding layer, CompositionTemplate/LiveComposition split, `dispatch` tool, multi-Live scheduler, or native session fork. The current one-Composition-one-field model remains the supported mode.
+- Live fork is not implemented. Copying a `sessionId` reference would share one native session between two lives and is forbidden by default; WAX field-state fork and native session-context fork are different operations. DSH has an internal turn-boundary fork API, but the current ACP adapter does not expose it; Codex has no verified thread-fork path.
+- Structural changes are human-approved in the early model and committed as a new revision; agents do not directly mutate a running Live. This is a direction, not current API behavior.
 
 ## Next
 
-1. Real native edge verification for the gaps above.
-2. Optional UI only after the read-only observability surface is stable.
+1. Settle the Agent Network object model and open questions (local `docs/vision-agent-network.md`), then write an ADR. No runtime changes yet.
+2. First implementation slice after the ADR: ephemeral `dispatch`, not live graph mutation.
+3. Continue reliability hardening for the gaps above.
+4. Optional UI only after the read-only observability surface is stable.
 
 ## Design principles
 

@@ -4,7 +4,7 @@
 
 It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
 
-> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (560 tests).
+> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (562 tests).
 >
 > Target model: [`ARCHITECTURE.md`](ARCHITECTURE.md). Composition/command contract: [`CONTRACT.md`](CONTRACT.md).
 
@@ -157,8 +157,9 @@ legacy-contract/     historical adapter/flow contracts
 - The DSH bridge plugin and its patch files live in `unified-workspace/dsh-plugins`, not in this repository. Workspace adoption runs only in the DSH web process and attaches ungrouped Sessions whose cwd exactly matches an existing Workspace; it never creates one.
 - `status.joins` counts persisted join records including closed tombstones; it is not a count of currently waiting joins. `status.scheduler.fired` counts consumed one-shot `at` triggers only; `every` triggers do not persist a fired count.
 - Inspection reads the current `log.jsonl` and transcript file, not rotated segments. `status`/`log`/`honey` report failures on stderr with exit 1/2; they do not emit the composition commands' `{ok:false}` JSON error object.
-- The 3-level mid-flight Honey save/load restart is covered by a deterministic test; a real OS process kill during active native work is still unverified.
-- The seeded fuzz harness covers linear, fork/optional/timeout and 3-level nested/hover graphs, with 3000 steps and 120 Honey restores. It does not cover Worker/Guard/Condition/Counter, early answers, or real process crashes.
+- The 3-level mid-flight Honey save/load restart is covered by a deterministic test; a real OS process kill during active native DSH/Codex work is still unverified.
+- The seeded fuzz harness covers linear, fork/optional/timeout and 3-level nested/hover graphs, with 3000 steps and 120 Honey restores. It does not cover Worker/Guard/Condition/Counter or early answers.
+- Process chaos uses real `SIGKILL` against a child runtime and covers active, hover, pending/queue, open joins, and saves immediately before/after the atomic write. `SIGKILL` is not physical power loss: it does not test disk flush, torn writes, or filesystem ordering. The single-point case keeps active on `start` and pending/queue on `done`; the runtime never allows active and pending on the same node.
 - No UI. Real edge verification still pending: native Codex MCP tool call, DSH graceful SIGINT, OS restart during a scheduled timer, and process-kill mid-flight.
 
 ## Next

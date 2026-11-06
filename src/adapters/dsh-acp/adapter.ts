@@ -58,9 +58,10 @@ export class DshAcpAdapter implements HarnessAdapter {
     approval: 'interactive',
     cancel: true,
     streaming: true,
-    // ACP session/new carries no title, and DSH rejects non-empty
-    // additionalDirectories, so WAX keeps the display alias on its own side.
-    rename: false,
+    // DSH projects the ACP _meta.wax.title extension onto its native session
+    // title log event. Workspace ownership stays on the DSH web side; WAX only
+    // writes the session's own title.
+    rename: true,
     // G016 verified session/resume across a process restart; the ACP server has
     // no session/load, and resume() below does not replay history.
     resume: true,
@@ -218,17 +219,21 @@ export class DshAcpAdapter implements HarnessAdapter {
 
   async createConversation(
     project: Project,
-    _options?: ConversationOptions,
+    options: ConversationOptions = {},
   ): Promise<string> {
     assertProjectDirectory(project.directory);
     const client = this.requireClient();
-    // ACP session/new has no title and DSH rejects additionalDirectories, so
-    // the WAX display alias stays on the Workspace side.
-    const result = await client.request(
-      'session/new',
-      { cwd: project.directory, mcpServers: this.mcpServers },
-      this.sessionTimeoutMs,
-    );
+    // The native title rides the ACP _meta extension; Workspace ownership is
+    // handled by the DSH web process, never by this ACP process.
+    const params: Record<string, unknown> = {
+      cwd: project.directory,
+      mcpServers: this.mcpServers,
+    };
+    const displayName = options.displayName;
+    if (displayName !== undefined && displayName.length > 0) {
+      params['_meta'] = { wax: { title: displayName } };
+    }
+    const result = await client.request('session/new', params, this.sessionTimeoutMs);
     const sessionId = asString(asRecord(result)?.sessionId);
     if (sessionId === undefined) {
       throw new Error('ACP session/new did not return a sessionId');

@@ -160,7 +160,9 @@ export function loadCompositionFile(path: string): CompositionDefinition {
 /**
  * Stable native-session alias. The format is deliberately ASCII and shared by
  * every harness; adapters that support native renaming project it, the rest
- * keep it in WAX's own conversation record.
+ * keep it in WAX's own conversation record. The 80-byte cap matches DSH's
+ * default session-title `maxTitleBytes`, so a projected native title is never
+ * truncated differently from this alias.
  */
 export function sessionDisplayName(apiary: string, compositionId: string): string {
   const raw = `wax-apiary-nexus-session-${apiary}-${compositionId}`;
@@ -168,7 +170,7 @@ export function sessionDisplayName(apiary: string, compositionId: string): strin
     .replace(/[^A-Za-z0-9._-]+/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^[-.]+|[-.]+$/g, '');
-  const name = sanitized.slice(0, 100).replace(/[-.]+$/g, '');
+  const name = sanitized.slice(0, 80).replace(/[-.]+$/g, '');
   return name === '' ? 'wax-apiary-nexus-session' : name;
 }
 

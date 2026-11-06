@@ -96,6 +96,34 @@ test('passes mcpServers through to ACP session/new', async () => {
   }
 });
 
+test('passes displayName through as ACP _meta.wax.title', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_RECORDER);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-fake-title-project-'));
+  const recordPath = join(projectDir, 'session-new.json');
+  const adapter = new DshAcpAdapter({
+    dshRoot: root,
+    dshArgs: [recordPath],
+    sessionTimeoutMs: 1_000,
+  });
+  try {
+    await adapter.start();
+    const displayName = 'wax-apiary-nexus-session-demo-composition';
+    await adapter.createConversation({ id: 'fake', directory: projectDir }, { displayName });
+    const recorded = JSON.parse(readFileSync(recordPath, 'utf8')) as {
+      cwd?: unknown;
+      _meta?: unknown;
+    };
+    assert.equal(recorded.cwd, projectDir);
+    assert.deepEqual(recorded._meta, { wax: { title: displayName } });
+
+    await adapter.createConversation({ id: 'fake', directory: projectDir });
+    const unnamed = JSON.parse(readFileSync(recordPath, 'utf8')) as { _meta?: unknown };
+    assert.equal(unnamed._meta, undefined);
+  } finally {
+    await adapter.stop();
+  }
+});
+
 test('keeps an active execution after a close timeout', async () => {
   const root = makeFakeDshRoot(FAKE_ACP_SERVER);
   const projectDir = mkdtempSync(join(tmpdir(), 'uw-fake-project-'));
@@ -139,10 +167,10 @@ test('keeps an idle session non-submittable after a close timeout', async () => 
   }
 });
 
-test('advertises its implemented resume capability and no native rename', () => {
+test('advertises its implemented resume and native rename capabilities', () => {
   const adapter = new DshAcpAdapter({ dshRoot: join(tmpdir(), 'unused-dsh-root') });
   assert.equal(adapter.capabilities.resume, true);
-  assert.equal(adapter.capabilities.rename, false);
+  assert.equal(adapter.capabilities.rename, true);
   assert.equal(typeof adapter.resume, 'function');
 });
 

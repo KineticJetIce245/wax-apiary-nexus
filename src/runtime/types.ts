@@ -59,6 +59,12 @@ export interface Pheromone {
   /** Fork ancestry, outer-to-inner; absent for an untagged Pheromone. */
   lineage?: readonly BranchTag[];
   value: Value;
+  /**
+   * The enqueue instant, as an ISO timestamp: the moment this Pheromone was
+   * pushed into its target node's queue. `defaults.queueTtlMs` is measured from
+   * here. Restore keeps the persisted value unchanged; it is never rewritten
+   * when the Pheromone is dequeued, activated, or moved to `pending`.
+   */
   at: string;
 }
 

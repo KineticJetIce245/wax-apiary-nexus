@@ -160,6 +160,18 @@ function newTraceId(): string {
 }
 
 /**
+ * True when a queued Pheromone has waited at least `ttlMs` since its enqueue
+ * instant (`Pheromone.at`). A timestamp that does not parse is never expired.
+ */
+function isOlderThan(pheromone: Pheromone, now: number, ttlMs: number): boolean {
+  const enqueuedAt = Date.parse(pheromone.at);
+  if (!Number.isFinite(enqueuedAt)) {
+    return false;
+  }
+  return now - enqueuedAt >= ttlMs;
+}
+
+/**
  * PheromoneField runtime.
  *
  * A normal node consumes one Pheromone and emits at most one; a node without
@@ -227,6 +239,7 @@ export class PheromoneRuntime {
       id: newPheromoneId(),
       traceId: newTraceId(),
       value: structuredClone(value),
+      // `at` is the enqueue instant: the TTL clock starts here.
       at: this.iso(),
     };
 
@@ -267,6 +280,11 @@ export class PheromoneRuntime {
     let mergeBlocked = false;
     try {
       for (;;) {
+        // TTL sweep at the start of every pump pass: the first pass is the
+        // pump-start clean-up, and later passes re-check because a long-running
+        // activation can outlive `queueTtlMs`. An expired entry is never
+        // activated, even when it was fresh when the previous task started.
+        this.expireOverdueQueues();
         const next = this.takeRunnable(blocked);
         if (next === null) {
           // A restored join can already hold every required branch; finish it
@@ -306,6 +324,76 @@ export class PheromoneRuntime {
       // A failed activation still changes the field (active is cleared), so
       // Rest must be recomputed before the error leaves pump().
       this.refreshRest();
+    }
+  }
+
+  /**
+   * Drops input that has waited at a node longer than `defaults.queueTtlMs`.
+   *
+   * Only the two wait slots can age out: `state.queue` and `state.pending`.
+   * `active`, `hover`/`hoverPheromone`, merge `joins[].arrived` and the early
+   * `preAnswers` are live or externally bound work and are never removed by
+   * the TTL. An expired Pheromone is dropped outright - not failed and not
+   * retried - and its queue slot is released, so `queueMax` naturally accepts
+   * a new enqueue afterwards. Reservations held for someone else's in-flight
+   * output are untouched.
+   *
+   * The clock is `Pheromone.at`, which every creation path sets to the enqueue
+   * instant and restore keeps unchanged. A timestamp that does not parse is
+   * never treated as expired: silently dropping accepted input because of a
+   * malformed timestamp would be worse than keeping it.
+   */
+  private expireOverdueQueues(): void {
+    const ttlMs = this.definition.defaults.queueTtlMs;
+    const now = this.now();
+
+    for (const [id, state] of this.states) {
+      const node = this.definition.nodes.get(id);
+      if (node === undefined) {
+        continue;
+      }
+
+      if (state.queue.length > 0) {
+        const kept: Pheromone[] = [];
+        const expired: Pheromone[] = [];
+        for (const pheromone of state.queue) {
+          if (isOlderThan(pheromone, now, ttlMs)) {
+            expired.push(pheromone);
+          } else {
+            kept.push(pheromone);
+          }
+        }
+        if (expired.length > 0) {
+          // The survivors keep their relative order: TTL cleanup never
+          // reorders the FIFO, it only removes the aged-out prefix.
+          state.queue = kept;
+          for (const pheromone of expired) {
+            this.log({
+              event: 'pheromone.expired',
+              nodeId: id,
+              nodeKind: node.kind,
+              pheromoneId: pheromone.id,
+              traceId: pheromone.traceId,
+              queueDepth: kept.length,
+              outcome: 'ttl',
+            });
+          }
+        }
+      }
+
+      const pending = state.pending;
+      if (pending !== undefined && isOlderThan(pending, now, ttlMs)) {
+        delete state.pending;
+        this.log({
+          event: 'pheromone.expired',
+          nodeId: id,
+          nodeKind: node.kind,
+          pheromoneId: pending.id,
+          traceId: pending.traceId,
+          queueDepth: state.queue.length,
+          outcome: 'ttl',
+        });
+      }
     }
   }
 
@@ -588,6 +676,11 @@ export class PheromoneRuntime {
     // A deadline that passed while the process was down fails immediately on
     // restore: the join must never resume waiting past its absolute deadline.
     this.expireDueJoins();
+
+    // Queues are restored exactly as persisted, then aged out here: an entry
+    // that outlived `queueTtlMs` while the process was down is dropped (and
+    // logged) before the field is handed back as runnable.
+    this.expireOverdueQueues();
 
     this.resting = isFieldResting(this.states.values());
     this.log({
@@ -1445,6 +1538,7 @@ export class PheromoneRuntime {
       id: newPheromoneId(),
       traceId,
       value: structuredClone(value),
+      // `at` is the enqueue instant: the TTL clock starts here.
       at: this.iso(),
       ...(current === undefined
         ? {}

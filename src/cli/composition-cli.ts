@@ -5,7 +5,7 @@ import {
   inspectCompositionRecovery,
   parseRevisionLimit,
   readCompositionRevisions,
-} from './composition-audit.js';
+} from '../composition/composition-audit.js';
 import {
   CompositionEditRefusedError,
   CompositionIoError,
@@ -13,7 +13,7 @@ import {
   compositionAuditPath,
   replaceComposition,
   type CompositionEditDependencies,
-} from './composition-edit.js';
+} from '../composition/composition-edit.js';
 import {
   compositionToolExitCode,
   compositionToolFailure,
@@ -23,7 +23,7 @@ import {
   validateCompositionTool,
   type CompositionToolCommand,
   type CompositionToolResult,
-} from './composition-tool.js';
+} from '../composition/composition-tool.js';
 
 export type CompositionCommand =
   | { readonly kind: 'validate'; readonly file: string }

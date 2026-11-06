@@ -1,5 +1,5 @@
-import { isJoinClosed } from './runtime/field.js';
-import type { CompositionDefinition, NodeId, PheromoneFieldSnapshot } from './runtime/index.js';
+import { isJoinClosed } from '../runtime/field.js';
+import type { CompositionDefinition, NodeId, PheromoneFieldSnapshot } from '../runtime/index.js';
 
 export type ReferenceReason = 'queue' | 'pending' | 'active' | 'hover' | 'merge-waiting';
 

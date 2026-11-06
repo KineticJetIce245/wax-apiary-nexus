@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from 'node:fs';
 
-import type { AttachmentDraft } from '../../content.js';
+import type { AttachmentDraft } from '../../shared/content.js';
 
 const DEFAULT_MAX_INLINE_IMAGE_BYTES = 25 * 1024 * 1024;
 

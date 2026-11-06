@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildResultEnvelope, type Attachment } from '../src/content.js';
+import { buildResultEnvelope, type Attachment } from '../src/shared/content.js';
 
 const image: Attachment = {
   id: 'att-image',

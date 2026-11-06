@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { DaemonLock, DaemonLockError } from '../src/daemon-lock.js';
+import { DaemonLock, DaemonLockError } from '../src/daemon/daemon-lock.js';
 
 function lockPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'wax-daemon-lock-')), 'daemon.lock');

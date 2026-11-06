@@ -5,17 +5,17 @@ import { isAbsolute, join, resolve } from 'node:path';
 import test from 'node:test';
 
 import { DshAcpAdapter } from '../src/adapters/dsh-acp/adapter.js';
-import { createDefaultAdapter } from '../src/cli-shared.js';
+import { createDefaultAdapter } from '../src/cli/cli-shared.js';
 import {
   COMPOSITION_MCP_SERVER_NAME,
   codexCompositionMcpConfig,
   compositionMcpServerPath,
   compositionToolAdapterConfig,
   dshCompositionMcpServers,
-} from '../src/composition-mcp.js';
+} from '../src/composition/composition-mcp.js';
 
 const FAKE_EXEC = resolve('fake-node');
-const FAKE_SERVER = resolve('fake', 'dist', 'src', 'mcp-server.js');
+const FAKE_SERVER = resolve('fake', 'dist', 'src', 'cli', 'mcp-server.js');
 
 test('builds the exact Codex MCP config for wax_composition', () => {
   const config = codexCompositionMcpConfig({ execPath: FAKE_EXEC, serverPath: FAKE_SERVER });
@@ -40,7 +40,7 @@ test('the default Codex config uses process.execPath and the absolute built serv
   assert.deepEqual(server.args, [compositionMcpServerPath()]);
   assert.equal(isAbsolute(server.args[0] as string), true);
   assert.equal(existsSync(server.args[0] as string), true);
-  assert.match((server.args[0] as string).replaceAll('\\', '/'), /\/dist\/src\/mcp-server\.js$/);
+  assert.match((server.args[0] as string).replaceAll('\\', '/'), /\/dist\/src\/cli\/mcp-server\.js$/);
   assert.deepEqual(server.env, {});
 });
 

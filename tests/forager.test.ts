@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import type { ApprovalRequest } from '../src/adapters/harness.js';
-import { ForagerExecutionError, WorkspaceForagerExecutor, type ApprovalHandler } from '../src/forager.js';
-import { createKernel } from '../src/kernel.js';
+import { ForagerExecutionError, WorkspaceForagerExecutor, type ApprovalHandler } from '../src/session/forager.js';
+import { createKernel } from '../src/project/kernel.js';
 import { parseComposition, type ForagerNode, type Value } from '../src/runtime/index.js';
-import { Workspace } from '../src/workspace.js';
+import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions, type FakeTerminal } from './support/fake-adapter.js';
 
 function foragerNode(prompt = 'do {{input}}'): ForagerNode {

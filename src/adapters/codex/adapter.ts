@@ -1,9 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import type { AttachmentDraft } from '../../content.js';
-import type { Project } from '../../kernel.js';
-import { assertProjectDirectory } from '../../project-directory.js';
+import type { AttachmentDraft } from '../../shared/content.js';
+import type { Project } from '../../project/kernel.js';
+import { assertProjectDirectory } from '../../project/project-directory.js';
 import { attachmentForItem } from './attachments.js';
 import { buildCodexInput } from './input.js';
 import type {
@@ -17,7 +17,7 @@ import type {
   StopReason,
 } from '../harness.js';
 import { SubmitOutcomeUnknownError } from '../harness.js';
-import type { CodexLaunch } from '../../connection.js';
+import type { CodexLaunch } from '../../session/connection.js';
 import {
   CodexRpcClient,
   CodexRpcError,

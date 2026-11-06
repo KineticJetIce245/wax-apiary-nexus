@@ -1,12 +1,12 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import { CliUsageError, messageOf } from './cli-shared.js';
+import { CliUsageError, messageOf } from '../cli/cli-shared.js';
 import {
   compositionAuditPath,
   DEFAULT_COMPOSITION_STATE_DIR,
 } from './composition-edit.js';
-import { CompositionValidationError, parseComposition } from './runtime/index.js';
+import { CompositionValidationError, parseComposition } from '../runtime/index.js';
 
 /** Stage 4C reads at most the 1000 newest matching audit lines. */
 export const DEFAULT_REVISION_LIMIT = 50;

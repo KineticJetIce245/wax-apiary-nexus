@@ -1,6 +1,6 @@
 import { basename, extname } from 'node:path';
 
-import type { AttachmentDraft, AttachmentKind } from '../../content.js';
+import type { AttachmentDraft, AttachmentKind } from '../../shared/content.js';
 
 const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   '.png': 'image/png',

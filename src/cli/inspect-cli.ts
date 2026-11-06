@@ -7,15 +7,15 @@ import {
   loadCompositionFile,
   messageOf,
 } from './cli-shared.js';
-import { daemonLockState, type DaemonLockState } from './daemon-lock.js';
-import { HoneyStore } from './honey.js';
+import { daemonLockState, type DaemonLockState } from '../daemon/daemon-lock.js';
+import { HoneyStore } from '../storage/honey.js';
 import type {
   CompositionDefinition,
   NodeKind,
   PersistedField,
   PersistedNodeState,
-} from './runtime/index.js';
-import type { SchedulerState } from './scheduler.js';
+} from '../runtime/index.js';
+import type { SchedulerState } from '../daemon/scheduler.js';
 
 /** Default state root, identical to `wax run` and `wax daemon`. */
 const DEFAULT_STATE_DIR = '~/.wax';

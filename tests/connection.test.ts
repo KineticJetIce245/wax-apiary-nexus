@@ -13,7 +13,7 @@ import {
   parseCodexVersion,
   parseConnectionConfig,
   resolveCodexExecutable,
-} from '../src/connection.js';
+} from '../src/session/connection.js';
 
 test('parses a minimal local Codex connection', () => {
   assert.deepEqual(

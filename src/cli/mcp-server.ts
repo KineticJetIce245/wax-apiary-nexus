@@ -5,7 +5,7 @@ import {
   replaceCompositionTool,
   validateCompositionTool,
   type CompositionToolResult,
-} from './composition-tool.js';
+} from '../composition/composition-tool.js';
 
 /**
  * Minimal newline-delimited JSON-RPC 2.0 MCP server over stdio.

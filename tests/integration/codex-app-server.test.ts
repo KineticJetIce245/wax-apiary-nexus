@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { CodexAppServerAdapter } from '../../src/adapters/codex/adapter.js';
-import { createCodexConnection } from '../../src/connection.js';
-import type { Project } from '../../src/kernel.js';
-import { Workspace } from '../../src/workspace.js';
+import { createCodexConnection } from '../../src/session/connection.js';
+import type { Project } from '../../src/project/kernel.js';
+import { Workspace } from '../../src/session/workspace.js';
 
 const codexExe = process.env.CODEX_EXE;
 const integrationOptions = {

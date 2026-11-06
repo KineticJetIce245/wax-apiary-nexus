@@ -14,13 +14,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import { apiaryForProject, runCli } from '../src/cli.js';
-import { daemonLockState } from '../src/daemon-lock.js';
-import { honeyPaths } from '../src/honey.js';
+import { apiaryForProject, runCli } from '../src/cli/cli.js';
+import { daemonLockState } from '../src/daemon/daemon-lock.js';
+import { honeyPaths } from '../src/storage/honey.js';
 import {
   runInspectCli,
   type InspectCliDependencies,
-} from '../src/inspect-cli.js';
+} from '../src/cli/inspect-cli.js';
 import { parseComposition } from '../src/runtime/index.js';
 
 const COMPOSITION = {

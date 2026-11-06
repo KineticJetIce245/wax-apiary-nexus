@@ -15,7 +15,7 @@ import {
   type Pheromone,
   type Value,
 } from '../src/runtime/index.js';
-import { findActiveReferences } from '../src/revision.js';
+import { findActiveReferences } from '../src/composition/revision.js';
 
 const START = Date.parse('2026-06-01T00:00:00.000Z');
 const TIMEOUT = 5000;

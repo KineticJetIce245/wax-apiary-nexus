@@ -6,8 +6,8 @@ import test from 'node:test';
 
 import { DshAcpAdapter } from '../../src/adapters/dsh-acp/adapter.js';
 import type { ApprovalRequest } from '../../src/adapters/harness.js';
-import type { Project } from '../../src/kernel.js';
-import { Workspace } from '../../src/workspace.js';
+import type { Project } from '../../src/project/kernel.js';
+import { Workspace } from '../../src/session/workspace.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli = dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');

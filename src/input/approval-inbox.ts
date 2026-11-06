@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from './adapters/harness.js';
+import type { ApprovalRequest } from '../adapters/harness.js';
 
 export interface ApprovalInboxEntry {
   readonly id: number;

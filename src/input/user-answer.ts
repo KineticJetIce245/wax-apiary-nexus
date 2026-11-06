@@ -1,9 +1,9 @@
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { CliUsageError, messageOf } from './cli-shared.js';
-import { expandHomePath } from './conversation-store.js';
-import type { UserNode, Value } from './runtime/index.js';
+import { CliUsageError, messageOf } from '../cli/cli-shared.js';
+import { expandHomePath } from '../storage/conversation-store.js';
+import type { UserNode, Value } from '../runtime/index.js';
 
 /**
  * Converts one human-supplied answer string to the Value required by the node's

@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { ArtifactError, ArtifactStore } from '../src/artifact-store.js';
-import type { Attachment } from '../src/content.js';
+import { ArtifactError, ArtifactStore } from '../src/storage/artifact-store.js';
+import type { Attachment } from '../src/shared/content.js';
 
 function setup(maxBytes?: number) {
   const root = mkdtempSync(join(tmpdir(), 'uw-artifacts-test-'));

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import type { HarnessAdapter, HarnessEvent } from '../../src/adapters/harness.js';
-import type { Project } from '../../src/kernel.js';
+import type { Project } from '../../src/project/kernel.js';
 
 export interface HarnessAdapterContractFixture {
   readonly adapter: HarnessAdapter;

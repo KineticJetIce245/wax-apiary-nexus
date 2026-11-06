@@ -3,19 +3,19 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CodexAppServerAdapter } from './adapters/codex/adapter.js';
-import { DshAcpAdapter } from './adapters/dsh-acp/adapter.js';
-import type { HarnessAdapter } from './adapters/harness.js';
+import { CodexAppServerAdapter } from '../adapters/codex/adapter.js';
+import { DshAcpAdapter } from '../adapters/dsh-acp/adapter.js';
+import type { HarnessAdapter } from '../adapters/harness.js';
 import {
   compositionToolAdapterConfig,
   type CompositionToolAdapterConfig,
-} from './composition-mcp.js';
-import { createCodexConnection, type HarnessKind } from './connection.js';
+} from '../composition/composition-mcp.js';
+import { createCodexConnection, type HarnessKind } from '../session/connection.js';
 import {
   CompositionValidationError,
   parseComposition,
   type CompositionDefinition,
-} from './runtime/index.js';
+} from '../runtime/index.js';
 
 export class CliUsageError extends Error {
   constructor(message: string) {

@@ -11,12 +11,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { compositionAuditPath } from '../src/composition-edit.js';
-import { runMcpCommand } from '../src/mcp-server.js';
-import { honeyPaths } from '../src/honey.js';
+import { compositionAuditPath } from '../src/composition/composition-edit.js';
+import { runMcpCommand } from '../src/cli/mcp-server.js';
+import { honeyPaths } from '../src/storage/honey.js';
 
-const SERVER_ENTRY = resolve('dist/src/mcp-server.js');
-const CLI_ENTRY = resolve('dist/src/cli.js');
+const SERVER_ENTRY = resolve('dist/src/cli/mcp-server.js');
+const CLI_ENTRY = resolve('dist/src/cli/cli.js');
 
 interface RpcErrorShape {
   readonly code: number;

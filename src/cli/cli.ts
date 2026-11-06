@@ -2,9 +2,9 @@ import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
 import { runAnswerCli } from './answer-cli.js';
-import { runDaemon } from './daemon.js';
+import { runDaemon } from '../daemon/daemon.js';
 import { runInspectCli } from './inspect-cli.js';
-import type { HarnessAdapter } from './adapters/harness.js';
+import type { HarnessAdapter } from '../adapters/harness.js';
 import { runCompositionCli } from './composition-cli.js';
 import {
   CliUsageError,
@@ -16,10 +16,10 @@ import {
   sessionDisplayName,
   type AdapterRequest,
 } from './cli-shared.js';
-import type { HarnessKind } from './connection.js';
-import { WorkspaceForagerExecutor } from './forager.js';
-import { HoneyStore } from './honey.js';
-import { createKernel } from './kernel.js';
+import type { HarnessKind } from '../session/connection.js';
+import { WorkspaceForagerExecutor } from '../session/forager.js';
+import { HoneyStore } from '../storage/honey.js';
+import { createKernel } from '../project/kernel.js';
 import { runMcpCommand } from './mcp-server.js';
 import {
   createMemoryLog,
@@ -37,9 +37,9 @@ import {
   type RuntimeLogEntry,
   type UserNode,
   type Value,
-} from './runtime/index.js';
-import { Workspace } from './workspace.js';
-import { parseUserAnswer } from './user-answer.js';
+} from '../runtime/index.js';
+import { Workspace } from '../session/workspace.js';
+import { parseUserAnswer } from '../input/user-answer.js';
 
 export { CliUsageError, apiaryForProject, parseUserAnswer };
 

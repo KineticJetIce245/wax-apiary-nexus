@@ -1,4 +1,4 @@
-import type { AttachmentDraft } from '../../content.js';
+import type { AttachmentDraft } from '../../shared/content.js';
 
 /**
  * Build the Codex `turn/start.input` array. Images with an image MIME type use

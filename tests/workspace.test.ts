@@ -14,9 +14,9 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import { SubmitOutcomeUnknownError } from '../src/adapters/harness.js';
-import type { AttachmentDraft } from '../src/content.js';
-import type { Project } from '../src/kernel.js';
-import { ProjectDirectoryError } from '../src/project-directory.js';
+import type { AttachmentDraft } from '../src/shared/content.js';
+import type { Project } from '../src/project/kernel.js';
+import { ProjectDirectoryError } from '../src/project/project-directory.js';
 import {
   ConversationBusyError,
   ConversationClosingError,
@@ -26,7 +26,7 @@ import {
   UnknownExecutionError,
   Workspace,
   type WorkspaceEvent,
-} from '../src/workspace.js';
+} from '../src/session/workspace.js';
 
 class FakeAdapter implements HarnessAdapter {
   capabilities: HarnessCapabilities = {

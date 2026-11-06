@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { HoneyStore } from '../src/honey.js';
+import { HoneyStore } from '../src/storage/honey.js';
 import {
   createMemoryLog,
   parseComposition,

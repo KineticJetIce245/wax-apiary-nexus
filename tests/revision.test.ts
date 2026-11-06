@@ -5,7 +5,7 @@ import {
   assertEditKeepsReferences,
   findActiveReferences,
   GraphEditBlockedError,
-} from '../src/revision.js';
+} from '../src/composition/revision.js';
 import {
   parseComposition,
   PheromoneRuntime,

@@ -8,8 +8,8 @@ import {
   createAnswerId,
   writeAnswerRecord,
   type AnswerRecord,
-} from './answer-inbox.js';
-import { HoneyStore } from './honey.js';
+} from '../input/answer-inbox.js';
+import { HoneyStore } from '../storage/honey.js';
 import type {
   CompositionDefinition,
   HoverSpec,
@@ -17,8 +17,8 @@ import type {
   PersistedField,
   UserNode,
   Value,
-} from './runtime/index.js';
-import { parseUserAnswer } from './user-answer.js';
+} from '../runtime/index.js';
+import { parseUserAnswer } from '../input/user-answer.js';
 
 const DEFAULT_STATE_DIR = '~/.wax';
 

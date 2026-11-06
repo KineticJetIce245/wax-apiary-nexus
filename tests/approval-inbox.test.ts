@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { ApprovalRequest } from '../src/adapters/harness.js';
-import { ApprovalInbox } from '../src/approval-inbox.js';
+import { ApprovalInbox } from '../src/input/approval-inbox.js';
 
 function request(requestId: string): ApprovalRequest {
   return {

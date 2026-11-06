@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 
-import type { HarnessKind } from './connection.js';
+import type { HarnessKind } from '../session/connection.js';
 
 /**
  * One opt-in MCP server per harness, named `wax_composition`, launched as
@@ -38,9 +38,9 @@ export interface DshMcpServerDeclaration {
   readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
 }
 
-/** Absolute path of the built server next to this module (`dist/src/mcp-server.js`). */
+/** Absolute path of the built server next to this module (`dist/src/cli/mcp-server.js`). */
 export function compositionMcpServerPath(): string {
-  return fileURLToPath(new URL('./mcp-server.js', import.meta.url));
+  return fileURLToPath(new URL('../cli/mcp-server.js', import.meta.url));
 }
 
 export function codexCompositionMcpConfig(

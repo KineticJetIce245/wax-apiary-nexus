@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { HoneyStore, honeyPaths } from '../src/honey.js';
+import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
 import {
   createMemoryLog,
   FieldRestoreError,

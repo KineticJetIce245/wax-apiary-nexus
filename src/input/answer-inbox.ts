@@ -9,8 +9,8 @@ import {
 } from 'node:fs';
 import { basename, join } from 'node:path';
 
-import { assertValueShape } from './honey.js';
-import type { NodeId, Value } from './runtime/index.js';
+import { assertValueShape } from '../storage/honey.js';
+import type { NodeId, Value } from '../runtime/index.js';
 
 /**
  * One answer queued by `wax answer` for the daemon.

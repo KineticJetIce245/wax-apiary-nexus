@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { cloneAttachment, type Attachment, type AttachmentDraft } from './content.js';
-import type { Project } from './kernel.js';
-import { assertProjectDirectory } from './project-directory.js';
+import { cloneAttachment, type Attachment, type AttachmentDraft } from '../shared/content.js';
+import type { Project } from '../project/kernel.js';
+import { assertProjectDirectory } from '../project/project-directory.js';
 import type {
   ApprovalDecisionKind,
   ApprovalRequest,
@@ -10,8 +10,8 @@ import type {
   HarnessAdapter,
   HarnessEvent,
   StopReason,
-} from './adapters/harness.js';
-import { SubmitOutcomeUnknownError } from './adapters/harness.js';
+} from '../adapters/harness.js';
+import { SubmitOutcomeUnknownError } from '../adapters/harness.js';
 
 export interface Conversation {
   readonly id: string;

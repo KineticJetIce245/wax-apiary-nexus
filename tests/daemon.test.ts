@@ -10,10 +10,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { runCli } from '../src/cli.js';
-import { apiaryForProject, type AdapterRequest } from '../src/cli-shared.js';
-import { parseDaemonArgs, runDaemon } from '../src/daemon.js';
-import { HoneyStore, honeyPaths } from '../src/honey.js';
+import { runCli } from '../src/cli/cli.js';
+import { apiaryForProject, type AdapterRequest } from '../src/cli/cli-shared.js';
+import { parseDaemonArgs, runDaemon } from '../src/daemon/daemon.js';
+import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
 import { parseComposition, PheromoneRuntime } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 

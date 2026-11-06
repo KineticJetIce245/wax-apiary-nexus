@@ -13,7 +13,7 @@ import {
   removeAnswerFile,
   writeAnswerRecord,
   type AnswerRecord,
-} from '../src/answer-inbox.js';
+} from '../src/input/answer-inbox.js';
 
 function tempDirectory(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));

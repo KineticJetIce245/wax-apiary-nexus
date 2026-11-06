@@ -15,8 +15,8 @@ import test from 'node:test';
 import {
   runCompositionCli,
   type CompositionCliDependencies,
-} from '../src/composition-cli.js';
-import { compositionAuditPath } from '../src/composition-edit.js';
+} from '../src/cli/composition-cli.js';
+import { compositionAuditPath } from '../src/composition/composition-edit.js';
 import { parseComposition } from '../src/runtime/index.js';
 
 interface Capture {
@@ -593,7 +593,7 @@ test('recover human output lists candidates and says nothing was changed', () =>
 test('the built CLI exits 1 for a malformed audit line and keeps stderr empty', () => {
   const state = stateDirectory();
   writeAudit(state, [JSON.stringify(auditEntry()), '{ not json']);
-  const cliEntry = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+  const cliEntry = fileURLToPath(new URL('../src/cli/cli.js', import.meta.url));
   const child = spawnSync(
     process.execPath,
     [cliEntry, 'composition', 'revisions', '--json', '--state-dir', state],

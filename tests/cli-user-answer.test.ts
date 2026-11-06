@@ -4,8 +4,8 @@ import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 
-import { parseUserAnswer, runCli, type CliDependencies } from '../src/cli.js';
-import type { AttachmentDraft } from '../src/content.js';
+import { parseUserAnswer, runCli, type CliDependencies } from '../src/cli/cli.js';
+import type { AttachmentDraft } from '../src/shared/content.js';
 import { parseComposition, type UserNode, type Value } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 

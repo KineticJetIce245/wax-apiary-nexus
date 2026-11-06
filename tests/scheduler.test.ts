@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { HoneyStore, honeyPaths } from '../src/honey.js';
-import { Scheduler, parseSchedulerState, type SchedulerTimers } from '../src/scheduler.js';
+import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
+import { Scheduler, parseSchedulerState, type SchedulerTimers } from '../src/daemon/scheduler.js';
 import type { TriggerDefinition } from '../src/runtime/index.js';
 
 const START = Date.parse('2026-11-05T12:00:00.000Z');

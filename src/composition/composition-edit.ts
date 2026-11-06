@@ -8,21 +8,21 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import { CliUsageError, messageOf, readCompositionFile } from './cli-shared.js';
-import { expandHomePath } from './conversation-store.js';
+import { CliUsageError, messageOf, readCompositionFile } from '../cli/cli-shared.js';
+import { expandHomePath } from '../storage/conversation-store.js';
 import {
   DaemonLockError,
   inspectDaemonLock,
   isProcessAlive,
-} from './daemon-lock.js';
-import { HoneyStore } from './honey.js';
+} from '../daemon/daemon-lock.js';
+import { HoneyStore } from '../storage/honey.js';
 import { findActiveReferences, type ActiveReference } from './revision.js';
 import type {
   JoinStateSnapshot,
   NodeStateSnapshot,
   PersistedField,
   PheromoneFieldSnapshot,
-} from './runtime/index.js';
+} from '../runtime/index.js';
 
 /** Matches the default state root used by `wax run` and `wax daemon`. */
 export const DEFAULT_COMPOSITION_STATE_DIR = '~/.wax';

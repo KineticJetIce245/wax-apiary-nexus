@@ -1,14 +1,14 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { HarnessAdapter } from './adapters/harness.js';
+import type { HarnessAdapter } from '../adapters/harness.js';
 import {
   ensureAnswerInbox,
   listAnswerFiles,
   readAnswerRecord,
   removeAnswerFile,
   type AnswerRecord,
-} from './answer-inbox.js';
+} from '../input/answer-inbox.js';
 import {
   CliUsageError,
   apiaryForProject,
@@ -18,12 +18,12 @@ import {
   selectHarness,
   sessionDisplayName,
   type AdapterRequest,
-} from './cli-shared.js';
-import type { HarnessKind } from './connection.js';
+} from '../cli/cli-shared.js';
+import type { HarnessKind } from '../session/connection.js';
 import { DaemonLock, DaemonLockError } from './daemon-lock.js';
-import { WorkspaceForagerExecutor } from './forager.js';
-import { HoneyStore } from './honey.js';
-import { createKernel } from './kernel.js';
+import { WorkspaceForagerExecutor } from '../session/forager.js';
+import { HoneyStore } from '../storage/honey.js';
+import { createKernel } from '../project/kernel.js';
 import {
   createMemoryLog,
   PheromoneRuntime,
@@ -33,9 +33,9 @@ import {
   type GuardRequest,
   type RecoveryReport,
   type TriggerDefinition,
-} from './runtime/index.js';
+} from '../runtime/index.js';
 import { Scheduler, type SchedulerTimers } from './scheduler.js';
-import { Workspace } from './workspace.js';
+import { Workspace } from '../session/workspace.js';
 
 export interface DaemonCommand {
   readonly compositionPath: string;

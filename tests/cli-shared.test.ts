@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { findDshPluginPatch, sessionDisplayName } from '../src/cli-shared.js';
+import { findDshPluginPatch, sessionDisplayName } from '../src/cli/cli-shared.js';
 
 test('caps session display names at the DSH native title byte limit', () => {
   const name = sessionDisplayName('a'.repeat(64), 'b'.repeat(64));
@@ -28,7 +28,7 @@ test('finds dsh-plugins/acp.patch.yml by walking up from the module', () => {
   mkdirSync(pluginDir);
   const patch = join(pluginDir, 'acp.patch.yml');
   writeFileSync(patch, '[]\n');
-  const start = pathToFileURL(join(root, 'repo', 'dist', 'src', 'cli-shared.js'));
+  const start = pathToFileURL(join(root, 'repo', 'dist', 'src', 'cli', 'cli-shared.js'));
   assert.equal(findDshPluginPatch(start), patch);
 });
 

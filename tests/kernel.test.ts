@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createKernel } from '../src/kernel.js';
+import { createKernel } from '../src/project/kernel.js';
 
 function createProjectDirectory(): string {
   return mkdtempSync(join(tmpdir(), 'wax-apiary-nexus-test-'));

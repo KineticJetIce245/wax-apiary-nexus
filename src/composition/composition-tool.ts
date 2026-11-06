@@ -4,7 +4,7 @@ import {
   readCompositionFile,
   CompositionParseError,
   CompositionReadError,
-} from './cli-shared.js';
+} from '../cli/cli-shared.js';
 import {
   CompositionAuditIoError,
   CompositionAuditParseError,

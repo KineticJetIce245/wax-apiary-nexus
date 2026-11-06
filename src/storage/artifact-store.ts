@@ -11,7 +11,7 @@ import {
 import { basename, extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import type { Attachment, AttachmentKind } from './content.js';
+import type { Attachment, AttachmentKind } from '../shared/content.js';
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 const ARTIFACT_ID = /^[a-f0-9]{64}$/;

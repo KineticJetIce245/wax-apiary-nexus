@@ -12,7 +12,7 @@ import {
 import { dirname, join } from 'node:path';
 
 import { expandHomePath } from './conversation-store.js';
-import { assertJsonValue } from './runtime/json-value.js';
+import { assertJsonValue } from '../runtime/json-value.js';
 import type {
   BranchTag,
   HoverSpec,
@@ -22,8 +22,8 @@ import type {
   Pheromone,
   RuntimeLogEntry,
   Value,
-} from './runtime/index.js';
-import { parseSchedulerState, type SchedulerState } from './scheduler.js';
+} from '../runtime/index.js';
+import { parseSchedulerState, type SchedulerState } from '../daemon/scheduler.js';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 

@@ -136,15 +136,14 @@ ARCHITECTURE.md      target runtime model
 CONTRACT.md          composition file, runtime state, validation, CLI
 src/runtime/         PheromoneField, composition parsing, logging, Worker
 src/adapters/        Codex app-server and DSH ACP adapters
-src/workspace.ts     native session/execution lifecycle
-src/forager.ts       Workspace -> NodeExecutor bridge
-src/honey.ts         atomic field/scheduler/transcript persistence
-src/cli.ts           CLI entry and run loop
-src/inspect-cli.ts   read-only status/log/honey commands
-src/daemon.ts        foreground daemon and answer-inbox scanning
-src/scheduler.ts     durable at/every scheduler
-src/daemon-lock.ts   per-composition lock
-src/composition-*.ts offline editor, audit, MCP config
+src/cli/             CLI entry, read-only inspection, and MCP server
+src/daemon/          foreground daemon, per-composition lock, scheduler
+src/composition/     offline editor, audit, MCP config, revision references
+src/session/         workspace lifecycle, Forager bridge, Codex connection
+src/project/         project kernel and project-directory checks
+src/storage/         Honey, conversation store, artifact store
+src/input/           answer/approval inboxes and the shared answer parser
+src/shared/          shared content types and envelopes
 tests/               runtime, adapter, CLI and infrastructure tests
 legacy-contract/     historical adapter/flow contracts
 ```

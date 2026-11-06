@@ -1,4 +1,4 @@
-import type { TriggerDefinition } from './runtime/index.js';
+import type { TriggerDefinition } from '../runtime/index.js';
 
 /**
  * One scheduled trigger's durable occurrence bookkeeping.

@@ -8,11 +8,11 @@ import {
   listAnswerFiles,
   readAnswerRecord,
   type AnswerRecord,
-} from '../src/answer-inbox.js';
-import { parseAnswerArgs, runAnswerCli } from '../src/answer-cli.js';
-import { apiaryForProject } from '../src/cli-shared.js';
-import { parseUserAnswer, runCli } from '../src/cli.js';
-import { HoneyStore } from '../src/honey.js';
+} from '../src/input/answer-inbox.js';
+import { parseAnswerArgs, runAnswerCli } from '../src/cli/answer-cli.js';
+import { apiaryForProject } from '../src/cli/cli-shared.js';
+import { parseUserAnswer, runCli } from '../src/cli/cli.js';
+import { HoneyStore } from '../src/storage/honey.js';
 import {
   parseComposition,
   PheromoneRuntime,

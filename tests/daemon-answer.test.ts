@@ -15,11 +15,11 @@ import {
   listAnswerFiles,
   writeAnswerRecord,
   type AnswerRecord,
-} from '../src/answer-inbox.js';
-import { runCli } from '../src/cli.js';
-import { apiaryForProject } from '../src/cli-shared.js';
-import { runDaemon } from '../src/daemon.js';
-import { HoneyStore, honeyPaths, type HoneyPaths } from '../src/honey.js';
+} from '../src/input/answer-inbox.js';
+import { runCli } from '../src/cli/cli.js';
+import { apiaryForProject } from '../src/cli/cli-shared.js';
+import { runDaemon } from '../src/daemon/daemon.js';
+import { HoneyStore, honeyPaths, type HoneyPaths } from '../src/storage/honey.js';
 import {
   parseComposition,
   PheromoneRuntime,

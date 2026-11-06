@@ -2,9 +2,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { AttachmentDraft } from '../../content.js';
-import type { Project } from '../../kernel.js';
-import { assertProjectDirectory } from '../../project-directory.js';
+import type { AttachmentDraft } from '../../shared/content.js';
+import type { Project } from '../../project/kernel.js';
+import { assertProjectDirectory } from '../../project/project-directory.js';
 import { buildDshPrompt } from './content.js';
 import type {
   ApprovalDecision,

@@ -7,8 +7,8 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from '../../src/adapters/harness.js';
-import type { AttachmentDraft } from '../../src/content.js';
-import type { Project } from '../../src/kernel.js';
+import type { AttachmentDraft } from '../../src/shared/content.js';
+import type { Project } from '../../src/project/kernel.js';
 
 export type FakeTerminal = 'completed' | 'failed' | 'cancelled' | 'unknown';
 

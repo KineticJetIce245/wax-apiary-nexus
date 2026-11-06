@@ -16,13 +16,13 @@ import test from 'node:test';
 import {
   runCompositionCli,
   type CompositionCliDependencies,
-} from '../src/composition-cli.js';
-import { compositionAuditPath } from '../src/composition-edit.js';
+} from '../src/cli/composition-cli.js';
+import { compositionAuditPath } from '../src/composition/composition-edit.js';
 import {
   compositionToolExitCode,
   compositionToolFailure,
-} from '../src/composition-tool.js';
-import { honeyPaths } from '../src/honey.js';
+} from '../src/composition/composition-tool.js';
+import { honeyPaths } from '../src/storage/honey.js';
 import { parseComposition } from '../src/runtime/index.js';
 
 const CURRENT_COMPOSITION = {
@@ -590,7 +590,7 @@ test('a JSON request without a tool subcommand stays a human usage error', () =>
 
 test('the built CLI writes one JSON object to stdout and nothing to stderr', () => {
   const files = writeCompositionPair();
-  const cliEntry = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+  const cliEntry = fileURLToPath(new URL('../src/cli/cli.js', import.meta.url));
   const child = spawnSync(
     process.execPath,
     [cliEntry, 'composition', 'validate', '--json', files.currentPath],
@@ -627,7 +627,7 @@ test('the built CLI exits 2 with a parseable JSON refusal', () => {
       ],
     },
   });
-  const cliEntry = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+  const cliEntry = fileURLToPath(new URL('../src/cli/cli.js', import.meta.url));
   const child = spawnSync(
     process.execPath,
     [

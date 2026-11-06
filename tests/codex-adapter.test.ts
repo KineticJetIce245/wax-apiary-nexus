@@ -7,8 +7,8 @@ import test from 'node:test';
 import { CodexAppServerAdapter } from '../src/adapters/codex/adapter.js';
 import type { HarnessEvent } from '../src/adapters/harness.js';
 import { SubmitOutcomeUnknownError } from '../src/adapters/harness.js';
-import type { CodexLaunch } from '../src/connection.js';
-import { ConversationBusyError, ConversationClosingError, Workspace } from '../src/workspace.js';
+import type { CodexLaunch } from '../src/session/connection.js';
+import { ConversationBusyError, ConversationClosingError, Workspace } from '../src/session/workspace.js';
 import { assertHarnessAdapterContract } from './support/harness-adapter-contract.js';
 
 const FAKE_SERVER = String.raw`

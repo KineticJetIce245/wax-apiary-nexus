@@ -13,14 +13,14 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { runCli } from '../src/cli.js';
+import { runCli } from '../src/cli/cli.js';
 import {
   runCompositionCli,
   type CompositionCliDependencies,
-} from '../src/composition-cli.js';
-import { compositionAuditPath, replaceComposition } from '../src/composition-edit.js';
-import { isProcessAlive } from '../src/daemon-lock.js';
-import { honeyPaths } from '../src/honey.js';
+} from '../src/cli/composition-cli.js';
+import { compositionAuditPath, replaceComposition } from '../src/composition/composition-edit.js';
+import { isProcessAlive } from '../src/daemon/daemon-lock.js';
+import { honeyPaths } from '../src/storage/honey.js';
 import { parseComposition } from '../src/runtime/index.js';
 
 const CURRENT_COMPOSITION = {

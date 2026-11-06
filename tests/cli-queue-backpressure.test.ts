@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { runCli } from '../src/cli.js';
-import { apiaryForProject } from '../src/cli-shared.js';
-import { HoneyStore } from '../src/honey.js';
+import { runCli } from '../src/cli/cli.js';
+import { apiaryForProject } from '../src/cli/cli-shared.js';
+import { HoneyStore } from '../src/storage/honey.js';
 import {
   parseComposition,
   PheromoneRuntime,

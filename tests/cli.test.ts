@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { DshAcpAdapter } from '../src/adapters/dsh-acp/adapter.js';
-import { apiaryForProject, CliUsageError, parseRunArgs, runCli, type CliDependencies } from '../src/cli.js';
-import { createDefaultAdapter, findDshPluginPatch, type AdapterRequest } from '../src/cli-shared.js';
-import { HoneyStore, honeyPaths } from '../src/honey.js';
+import { apiaryForProject, CliUsageError, parseRunArgs, runCli, type CliDependencies } from '../src/cli/cli.js';
+import { createDefaultAdapter, findDshPluginPatch, type AdapterRequest } from '../src/cli/cli-shared.js';
+import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
 import { parseComposition, PheromoneRuntime } from '../src/runtime/index.js';
 import type { HoverSpec, UserNode, Value } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';

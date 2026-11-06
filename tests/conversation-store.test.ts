@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { ConversationStore, expandHomePath, type ConversationRecord } from '../src/conversation-store.js';
+import { ConversationStore, expandHomePath, type ConversationRecord } from '../src/storage/conversation-store.js';
 
 function store(): ConversationStore {
   return new ConversationStore(join(mkdtempSync(join(tmpdir(), 'uw-conv-store-')), 'conversations.json'));
@@ -73,7 +73,7 @@ test('blocks a second writer until the lock file is removed', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'uw-conv-lock-'));
   const filePath = join(dir, 'conversations.json');
   const startedPath = join(dir, 'writer.started');
-  const storePath = fileURLToPath(new URL('../src/conversation-store.js', import.meta.url));
+  const storePath = fileURLToPath(new URL('../src/storage/conversation-store.js', import.meta.url));
   writeFileSync(`${filePath}.lock`, JSON.stringify({ pid: process.pid }), 'utf8');
 
   const storeUrl = pathToFileURL(storePath).href;

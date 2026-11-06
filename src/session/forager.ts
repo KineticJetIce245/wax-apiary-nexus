@@ -1,7 +1,7 @@
 import { extname } from 'node:path';
 
-import type { ApprovalDecisionKind, ApprovalRequest } from './adapters/harness.js';
-import type { AttachmentDraft } from './content.js';
+import type { ApprovalDecisionKind, ApprovalRequest } from '../adapters/harness.js';
+import type { AttachmentDraft } from '../shared/content.js';
 import {
   renderPrompt,
   type ExecutionContext,
@@ -10,7 +10,7 @@ import {
   type GuardRequest,
   type NodeExecutor,
   type Value,
-} from './runtime/index.js';
+} from '../runtime/index.js';
 import type { Conversation, Execution, Workspace, WorkspaceEvent } from './workspace.js';
 
 /** Interactive approval decision supplied by the caller (CLI in Stage 2A). */

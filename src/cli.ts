@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import { runAnswerCli } from './answer-cli.js';
 import { runDaemon } from './daemon.js';
+import { runInspectCli } from './inspect-cli.js';
 import type { HarnessAdapter } from './adapters/harness.js';
 import { runCompositionCli } from './composition-cli.js';
 import {
@@ -329,6 +330,11 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
   }
   if (argv[0] === 'daemon') {
     return runDaemon(argv, deps);
+  }
+  if (argv[0] === 'status' || argv[0] === 'log' || argv[0] === 'honey') {
+    // Read-only Honey inspection lives in its own module; it never starts the
+    // runtime, a daemon or an adapter, and never writes state.
+    return runInspectCli(argv, deps);
   }
 
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));

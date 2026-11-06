@@ -169,6 +169,41 @@ export function inspectDaemonLock(path: string): DaemonLockInfo | undefined {
   return parseLock(text, path);
 }
 
+/**
+ * Read-only classification of a daemon lock.
+ *
+ * `absent` means no lock file. `running` and `stale` split on `isProcessAlive`
+ * and still carry the recorded pid/start instant. `invalid` covers an
+ * unreadable or malformed lock, plus a liveness probe that could not answer:
+ * uncertain state is never reported as stale. The file is never created,
+ * rewritten or removed here.
+ */
+export type DaemonLockState =
+  | { readonly state: 'absent' }
+  | { readonly state: 'running'; readonly info: DaemonLockInfo }
+  | { readonly state: 'stale'; readonly info: DaemonLockInfo }
+  | { readonly state: 'invalid'; readonly error: string };
+
+export function daemonLockState(path: string): DaemonLockState {
+  let info: DaemonLockInfo | undefined;
+  try {
+    info = inspectDaemonLock(path);
+  } catch (error) {
+    return { state: 'invalid', error: error instanceof Error ? error.message : String(error) };
+  }
+  if (info === undefined) {
+    return { state: 'absent' };
+  }
+  try {
+    return isProcessAlive(info.pid)
+      ? { state: 'running', info }
+      : { state: 'stale', info };
+  } catch (error) {
+    // A probe failure is uncertainty, not proof that the owner is gone.
+    return { state: 'invalid', error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function parseLock(text: string, path: string): DaemonLockInfo {
   let parsed: unknown;
   try {

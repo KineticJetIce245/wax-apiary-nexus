@@ -31,7 +31,7 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 
 ## Progress
 
-**M1–M4c2c2 are complete and committed** as `3a6054f` (not yet pushed at the time of this README update).
+**M1–M4c2c2 are complete and pushed** as `3a6054f`; this README refocus is `3e842e9`.
 
 | Milestone | State |
 | --- | --- |
@@ -62,7 +62,7 @@ Current verification:
 | M7 | A command-surface pruning; A becomes a B-core profile |
 | M8 | Edit API + six-stage validation + CAS/lease + atomic graph write |
 
-M5 is the next implementation step. It is not started yet.
+M5a — manifest parser + `wax graph load --manifest` — is in progress.
 
 ## Known limits
 

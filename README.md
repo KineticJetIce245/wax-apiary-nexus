@@ -1,205 +1,75 @@
 # WAX Apiary neXus
 
-**WAX Apiary neXus** is a lightweight coordination runtime for composing native AI harnesses — Codex app-server, DeepSeek Harness/ACP, and future harnesses — into live, editable flowgraphs.
+WAX Apiary neXus is a local coordination runtime for composing native AI harnesses — Codex app-server, DeepSeek Harness/ACP, and future harnesses — into live graphs without reimplementing their session logic.
 
-It is not a new agent runtime. It keeps each harness native and coordinates them through a shared graph, so a composition can mix agent work, human input, local programs, waits, guards, and forks without reimplementing session logic.
+It is not a new agent runtime. Each harness stays native; WAX coordinates graphs, sessions, work, waits, and persistence around it.
 
-> **Status**: early, usable single-composition runtime. The core, Fork/Merge, Worker/Condition, user input, the daemon scheduler, the composition editor, both harness adapters, session naming, queue backpressure, queue TTL, and read-only inspection are implemented. There is no UI. `npm test` is green (762 tests: 761 pass, 1 platform-skipped; full native DSH/Codex integration is 11/11).
->
-> Implemented architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md). Composition/command contract: [`CONTRACT.md`](CONTRACT.md).
+## Vision
 
-## Direction: coordination fabric
-
-The current repository is an **A-mode execution kernel**: one Composition owns one `PheromoneField`, one daemon lock, and one native conversation. It is implemented and tested.
-
-The longer-term direction is **B**:
+The target is **B-core**: one daemon, many live graphs, real native sessions.
 
 ```text
-Agent Network
-  → CompositionTemplate (roles, edges, requirements; no runtime state)
-  → LiveComposition (template revision + AgentBinding + PheromoneField)
-  → Harness / native session
+waxd
+  ├─ GraphHost
+  │    ├─ Composition (nodes, edges, triggers)
+  │    ├─ PheromoneField (runtime state)
+  │    └─ Honey (durable field/scheduler/log)
+  ├─ SessionRegistry (native sessions, busy, persistence)
+  └─ Control API (load / trigger / status / unload / sweep)
 ```
 
-- Agent is a logical identity; a native session is one of its leases.
-- CompositionTemplate connects **roles**, not concrete sessions. A LiveComposition binds roles to Agents.
-- `dispatch` is a one-off delegation and does not create a graph.
-- `compose` creates or revises a template; `instantiate` creates a LiveComposition; `persist` stores a template or a Live.
-- Network and Harness are peer domains: each exposes capabilities to the other; neither owns the other's internals.
-- Agents may propose topology changes, but structural changes require validation, human approval in the early model, and a new revision. No agent directly edits a running Live.
-- Live fork must distinguish a copied `PheromoneField` from a copied native session. Copying a `sessionId` reference is **sharing**, not forking; it is forbidden by default. Native session fork requires an adapter capability: DSH has an internal turn-boundary fork but the current ACP adapter does not expose it; Codex has no verified thread-fork API.
+- **One execution path.** A-mode is not a second engine; it becomes a profile of B-core.
+- **Graphs are live objects.** Load creates a LiveGraph; trigger uses it; unload releases it; idle graphs are evicted.
+- **Sessions are real leases.** A Forager binds a native session or requests a fresh one; session identity is persisted and lazily reattached after restart.
+- **Composition and manifest are separate.** A composition describes the graph; a `<graph>.wax.json` manifest describes how to load it (project, harness, bindings, idle TTL).
+- **Graph references can restore work.** A trigger or hover answer may carry a manifest/address; when the graph is no longer in memory, the daemon can load it again.
+- **Idle and hover graphs can unload.** Honey preserves field and hover state; sessions are decoupled from graph lifetime and have their own lifecycle.
+- **Plugins coordinate across graphs.** A harness plugin owns the session → compositions map and sends triggers one at a time; the daemon does not share nodes across graphs or broadcast to “all graphs for a session”.
+- **Edits are validated and revisioned.** Structural graph changes go through a validated API, not direct mutation of a running Live. This part is still future work.
 
-**This direction is not implemented.** There is no Agent registry, Role/Binding layer, Template/Live split, dispatch tool, multi-Live scheduler, or native session fork yet. The working vision and open questions live in the local workspace, outside this repository.
+The full Agent Network direction — Agent identity, CompositionTemplate, Live binding, dispatch, multi-Live scheduling, native session fork — is **not implemented**. B-core currently stops at graphs, sessions, hosting, persistence, and local control.
 
-## Quick start
+## Progress
 
-Node.js 26 LTS + npm:
+**M1–M4c2c2 are complete and committed** as `3a6054f` (not yet pushed at the time of this README update).
 
-```bash
-npm ci
-npm run typecheck
-npm test
-```
-
-Run one composition through a native harness:
-
-```bash
-npm run wax -- run composition.json --project . --harness codex --trigger plan --input "why is the sky blue"
-npm run wax -- run composition.json --project . --harness dsh \
-  --dsh-root <path-to-deepseek-harness> --trigger plan --input "why is the sky blue"
-```
-
-`--state-dir` and `--apiary` override the Honey location. `--harness dsh` requires `--dsh-root` or `DSH_ROOT`; there is no implicit checkout path. `user` nodes prompt on stdin; without a TTY they are refused instead of answered.
-
-Run a daemon for a composition's `triggers`:
-
-```bash
-npm run wax -- daemon composition.json --project . --harness codex
-```
-
-A second daemon for the same composition is refused while its lock is live. The daemon serves no HTTP API and has no UI.
-
-Answer a running daemon's user hover from another terminal:
-
-```bash
-npm run wax -- answer composition.json --project . --node ask --text "looks good"
-npm run wax -- answer composition.json --project . --node ask --token hv_... --choice approve
-npm run wax -- answer composition.json --project . --node ask --yes
-npm run wax -- answer composition.json --project . --node ask --image ./photo.png
-npm run wax -- answer composition.json --project . --node ask --file ./report.pdf
-```
-
-`wax answer` writes one record under `<honey>/answers/` and never writes the field. The daemon applies it only when it matches the current hover; stale, duplicate, wrong-node, wrong-token and malformed records are logged and dropped.
-
-Inspect persisted state without starting a runtime, daemon or adapter:
-
-```bash
-npm run wax -- status composition.json --project . --json
-npm run wax -- log composition.json --project . --tail 20 --json
-npm run wax -- honey composition.json <conversationId> --project . --tail 50 --json
-```
-
-`status` reports composition/revision, node queue/pending/active/hover/join counts, scheduler next-due/fired/unconfirmed, daemon lock state, and Honey paths. It never prints prompt, output, Value, hover-token or transcript bodies. `log` prints only the metadata whitelist. `honey` is the only command that prints transcript bodies. All three are read-only; a missing field/log is empty, corrupt data exits 1, and usage errors exit 2.
-
-Offline composition editing:
-
-```bash
-npm run wax -- composition validate composition.json
-npm run wax -- composition replace composition.json --with next.json --apiary demo
-npm run wax -- composition revisions --state-dir ~/.wax --composition demo --limit 20
-npm run wax -- composition recover composition.json --json
-```
-
-`replace` refuses a different composition id, active references, and a live or uncertain daemon lock. It writes through a same-directory temp file plus rename and appends one metadata-only revision audit line. `revisions` and `recover` are read-only; malformed audit lines fail instead of being skipped.
-
-The same editing service is available as a local MCP stdio server:
-
-```bash
-npm run wax -- mcp
-```
-
-`wax run` / `wax daemon` also accept `--composition-tools`, which mounts this server as `wax_composition` for the selected harness. It is off by default.
-
-## What works
-
-| Area | Implemented |
+| Milestone | State |
 | --- | --- |
-| Core runtime | `PheromoneField`, trigger, terminal/Rest, node queue/pending, `minIntervalMs`, `Condition`, `Counter`, `user` hovers, Guard hovers |
-| Flow control | Explicit Fork/Merge/Branch, optional Merge branches, Merge timeout, structured object/array combine, nested Fork/Merge lineage, persisted join tombstones |
-| Human input | text/choice/boolean/message/image/file answers, interactive CLI, `wax answer` inbox, scheduled `user` targets |
-| Local work | Worker argv-only (`shell: false`), project-contained cwd, 60s timeout, 64 KiB stream caps, process-tree kill; worker `Condition` |
-| Durability | Honey field/scheduler/transcripts, `--resume`, unknown-active recovery semantics, live-edit reference protection |
-| Scheduling | `at` / `every` triggers, at-most-once occurrence bookkeeping with one-time unconfirmed reporting, missed intervals fire once, per-composition daemon lock, SIGINT/SIGTERM shutdown |
-| Editing | `composition validate/replace/revisions/recover`, active-reference guards, revision audit, JSON results, MCP tools |
-| Harnesses | Codex app-server and DSH ACP adapters behind one Workspace/Forager bridge; explicit harness selection |
-| Session identity | Unified alias `wax-apiary-nexus-session-<apiary>-<composition>`; Codex native thread names and existing-project reuse; DSH native title plus Workspace adoption through a workspace-owned Cordis plugin |
-| Backpressure / TTL | `queueMax` pre-consumption preflight with reserved output slots; hover answers and Merge joins survive a full downstream queue; `queueTtlMs` expires queue/pending entries on pump/restore |
-| Inspection | Read-only `status` / `log` / `honey`; field/scheduler/daemon-lock snapshot; metadata-only log whitelist; transcript bodies only through `honey` |
+| M1 Honey durability | Atomic write, fsync, temp cleanup, failure-injection tests |
+| M2 Graph registry | Residency, idle TTL, sweep, refCount/lease, Rest-only unload |
+| M3 Session binding | Binding validation, SessionRegistry, routing executor, per-forager sessions |
+| M4a GraphHost | Load / trigger / status / unload / sweep; pacing waits; Rest-only unload |
+| M4b Honey persistence | Restore on load, flush on trigger/unload, flush failure blocks unload |
+| M4c1 Control API | Loopback HTTP, token auth, load/trigger/status/unload/sweep |
+| M4c2a ControlClient | Daemon discovery, loopback-only, timeouts, safe errors |
+| M4c2b CLI | `waxd`, `wax graph`, `wax trigger`; real process smoke |
+| M4c2c1 Session persistence | Store, hydrate, `ensureAttached`, native session resume |
+| M4c2c2 Multi-harness | One `waxd` process, per-harness control servers and state roots |
 
-## Concepts
+Current verification:
 
-| Term | Meaning |
-| --- | --- |
-| Apiary | A project/workspace containing one or more compositions. |
-| Composition | A live graph of nodes and edges, stored as JSON. |
-| Pheromone | A short-lived Value moving through the graph. |
-| PheromoneField | The runtime state: node queues, pending/active slots, hovers, joins, Rest. |
-| Forager / Worker | Harness task node / local argv task node. |
-| Fork / Merge / Branch | Explicit fan-out, join, and branch tags; no implicit multi-edge fan-out. |
-| Guard | Native tool approval or graph-level human review, represented as a hover. |
-| Hover | A stable wait state; user and guard hovers are persisted and resumed. |
-| Honey | Durable state, transcripts, and artifacts. |
-| log | Separate append-only metadata history; no prompt/output bodies. |
-| Rest | The field is quiet: no queue, pending, active, hover, or incomplete join. |
-
-There is no End node. A node with no outgoing edge is terminal. There is no persistent cursor or Run object.
-
-## Commands
-
-| Command | Purpose |
-| --- | --- |
-| `wax run <composition.json> ...` | Trigger one node, pump to Rest, print node state/output. |
-| `wax daemon <composition.json> ...` | Run the composition's scheduled triggers in the foreground. |
-| `wax answer <composition.json> ...` | Write an answer for a running user hover; never writes the field. |
-| `wax status <composition.json> ...` | Read-only field/scheduler/lock snapshot; no bodies. |
-| `wax log <composition.json> ...` | Read-only metadata log tail; no bodies. |
-| `wax honey <composition.json> <conversationId>` | Read-only transcript tail; the only inspection command with bodies. |
-| `wax composition validate <file>` | Parse and validate; read-only. |
-| `wax composition replace <file> --with <next>` | Guarded atomic edit with active-reference/lock checks and audit. |
-| `wax composition revisions ...` | Read the revision audit; malformed lines fail. |
-| `wax composition recover <file>` | Inspect orphan temp files; never applies. |
-| `wax mcp` | Local JSON-RPC MCP server for the composition tools. |
-
-`--json` on the composition commands writes exactly one object to stdout and nothing to stderr; exit codes are `0` success, `2` usage/parse/refusal, `1` IO.
-
-## Repository layout
-
-```text
-ARCHITECTURE.md      target runtime model
-CONTRACT.md          composition file, runtime state, validation, CLI
-src/runtime/         PheromoneField, composition parsing, logging, Worker
-src/adapters/        Codex app-server and DSH ACP adapters
-src/cli/             CLI entry, read-only inspection, and MCP server
-src/daemon/          foreground daemon, per-composition lock, scheduler
-src/composition/     offline editor, audit, MCP config, revision references
-src/session/         workspace lifecycle, Forager bridge, Codex connection
-src/project/         project kernel and project-directory checks
-src/storage/         Honey, conversation store, artifact store
-src/input/           answer/approval inboxes and the shared answer parser
-src/shared/          shared content types and envelopes
-tests/               runtime, adapter, CLI and infrastructure tests
-legacy-contract/     historical adapter/flow contracts
-```
-
-## Known limits
-
-- `queueMax` counts `queue + reserved` only; `pending` and `active` are not included, so a node can briefly hold up to `queueMax + 2` inputs.
-- Queue reservations are process-local. A crash with an active task keeps the existing unknown/no-replay semantics.
-- `queueTtlMs` is checked on pump and restore, not by a wall-clock timer. A CLI blocked in `askUser`, or a long active task, delays cleanup of other node queues until the next pump; the daemon heartbeats every 500 ms.
-- One `wax run` uses one native conversation for all Forager nodes. Cross-session handoff currently requires two runs; per-node sessions are not implemented.
-- The DSH bridge plugin and its patch files live in `unified-workspace/dsh-plugins`, not in this repository. Workspace adoption runs only in the DSH web process and attaches ungrouped Sessions whose cwd exactly matches an existing Workspace; it never creates one.
-- `status.joins` counts persisted join records including closed tombstones; it is not a count of currently waiting joins. `status.scheduler.fired` counts consumed one-shot `at` triggers only; `every` triggers do not persist a fired count. `status.scheduler.unconfirmed` counts occurrences consumed but not yet confirmed by their callback.
-- Inspection reads the current `log.jsonl` and transcript file, not rotated segments. `status`/`log`/`honey` report failures on stderr with exit 1/2; they do not emit the composition commands' `{ok:false}` JSON error object.
-- The 3-level mid-flight Honey save/load restart is covered by a deterministic test; a real OS process kill during active native DSH/Codex work is still unverified.
-- The seeded fuzz harness covers linear, fork/optional/timeout and 3-level nested/hover graphs, with 3000 steps and 120 Honey restores. It does not cover Worker/Guard/Condition/Counter or early answers.
-- Process chaos uses real `SIGKILL` against a child runtime and covers active, hover, pending/queue, open joins, and saves immediately before/after the atomic write. `SIGKILL` is not physical power loss: it does not test disk flush, torn writes, or filesystem ordering. The single-point case keeps active on `start` and pending/queue on `done`; the runtime never allows active and pending on the same node.
-- The scheduler is deliberately at-most-once: it persists an occurrence and an `unconfirmed` marker before `onTrigger`, so a crash in that window never replays the occurrence. The next start reports the marker once through `onUnconfirmed` (logged as `scheduler.unconfirmed`) and clears it; a schedule change discards an old marker instead of reporting it.
-- No UI. Real edge verification still pending: native Codex MCP tool call, DSH graceful SIGINT, OS restart during a scheduled timer, and process-kill mid-flight.
-- The Agent Network direction is not implemented: there is no Agent registry, Role/Binding layer, CompositionTemplate/LiveComposition split, `dispatch` tool, multi-Live scheduler, or native session fork. The current one-Composition-one-field model remains the supported mode.
-- Live fork is not implemented. Copying a `sessionId` reference would share one native session between two lives and is forbidden by default; WAX field-state fork and native session-context fork are different operations. DSH has an internal turn-boundary fork API, but the current ACP adapter does not expose it; Codex has no verified thread-fork path.
-- Structural changes are human-approved in the early model and committed as a new revision; agents do not directly mutate a running Live. This is a direction, not current API behavior.
+- full suite: **762 tests — 761 pass, 1 platform-skipped**
+- native DSH/Codex integration: **11/11** (last full run after M3a)
+- real native smokes: session create/busy/close, multi-session fork/merge, GraphHost, Honey unload/reload, HTTP control, ControlClient, `waxd` CLI, session resume after restart, dual-harness `waxd`
+- A-mode tests remain green; the `wax run` path was not rewritten
 
 ## Next
 
-1. Settle the Agent Network object model and open questions (local `docs/vision-agent-network.md`), then write an ADR. No runtime changes yet.
-2. First implementation slice after the ADR: ephemeral `dispatch`, not live graph mutation.
-3. Continue reliability hardening for the gaps above.
-4. Optional UI only after the read-only observability surface is stable.
+| Milestone | Planned |
+| --- | --- |
+| M5 | Manifest + `fresh_once` / `fresh_always` + resolved bindings store |
+| M6 | `graphRef` lazy load + hover unload + session lifecycle |
+| M7 | A command-surface pruning; A becomes a B-core profile |
+| M8 | Edit API + six-stage validation + CAS/lease + atomic graph write |
 
-## Design principles
+M5 is the next implementation step. It is not started yet.
 
-- Preserve native harness semantics.
-- Prefer a small, boring, recoverable implementation.
-- Do not auto-replay side-effecting operations after uncertain failure.
-- Keep the graph editable, but never silently reroute active work.
-- Separate runtime state (`PheromoneField`) from durable data (`Honey`) and history (`log`).
+## Known limits
+
+- No edit API or structural validation/CAS yet; graph edits are still offline.
+- A is still exposed as a separate command surface; pruning has not started.
+- Graph definitions and bindings are not auto-restored today; only sessions and Honey are persisted. M5/M6 address this.
+- Idle unload is Rest-only today; hover and session-decoupled unload are M6.
+- OS SIGTERM graceful cleanup, `close` after a failed session-store removal, and the single-endpoint multi-host model remain unverified or unfinished.
+- Native session fork, Agent identity, Template/Live, and multi-Live scheduling are not implemented.
+- Physical power-loss durability and real active-work native process kills are not verified.

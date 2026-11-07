@@ -17,6 +17,7 @@ import {
   type LoadGraphOptions,
 } from '../daemon/graph-host.js';
 import type { GraphBindings } from '../graph/binding.js';
+import type { GraphBindingStore } from '../graph/binding-store.js';
 import { GraphAlreadyLoadedError } from '../graph/registry.js';
 import type { Project } from '../project/kernel.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
@@ -65,6 +66,11 @@ export interface ControlServerOptions {
    * daemon's state layout.
    */
   readonly honeyForGraph?: (graphId: string) => HoneyStore;
+  /**
+   * Durable `fresh_once` reuse mappings. Omitted means `fresh_once` loads are
+   * rejected; it never silently degrades to `fresh_always`.
+   */
+  readonly bindingStore?: GraphBindingStore;
   readonly now?: () => number;
   /**
    * Metadata-only request log. It never receives a body, prompt, output or
@@ -305,6 +311,9 @@ export class ControlServer {
         registry: this.options.registry,
         ...(this.options.now === undefined ? {} : { now: this.options.now }),
         honeyForGraph: this.honeyForGraph,
+        ...(this.options.bindingStore === undefined
+          ? {}
+          : { bindingStore: this.options.bindingStore }),
       });
 
       server = createServer((request, response) => {
@@ -835,7 +844,7 @@ function parseBindings(value: unknown): GraphBindings {
     if (kind === 'session') {
       assertExactFields(raw, ['kind', 'sessionId'], 'binding');
     } else if (kind === 'fresh') {
-      assertExactFields(raw, ['kind', 'model', 'reasoning'], 'binding');
+      assertExactFields(raw, ['kind', 'mode', 'model', 'reasoning'], 'binding');
     } else {
       throw new HttpError(400, 'bad-request', "binding kind must be 'session' or 'fresh'");
     }

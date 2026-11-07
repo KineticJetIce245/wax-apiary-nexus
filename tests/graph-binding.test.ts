@@ -348,6 +348,46 @@ test('accepts fresh bindings with absent, model-only, or reasoning-only metadata
   assert.equal(lookup.busyCalls, 0);
 });
 
+test('accepts fresh bindings with mode once or always and keeps absent mode valid', () => {
+  const definition = makeDefinition({ start: foragerNode() });
+  const lookup = new FakeLookup();
+
+  for (const binding of [
+    { kind: 'fresh' as const },
+    { kind: 'fresh' as const, mode: 'once' as const },
+    { kind: 'fresh' as const, mode: 'always' as const, model: 'deepseek-chat' },
+  ]) {
+    assert.deepEqual(validateBindings(definition, { start: binding }, lookup), {
+      ok: true,
+      issues: [],
+    });
+  }
+
+  assert.equal(lookup.getCalls, 0);
+  assert.equal(lookup.busyCalls, 0);
+});
+
+test('rejects an unknown fresh mode as invalid-fresh', () => {
+  const definition = makeDefinition({ start: foragerNode() });
+  const lookup = new FakeLookup();
+
+  for (const mode of ['sometimes', '', 42, null]) {
+    const result = validateBindings(
+      definition,
+      { start: { kind: 'fresh', mode } } as unknown as GraphBindings,
+      lookup,
+    );
+
+    assert.deepEqual(issueKeys(result.issues), [
+      { code: 'invalid-fresh', nodeId: 'start' },
+    ]);
+    assert.match(result.issues[0]?.message ?? '', /mode/);
+  }
+
+  assert.equal(lookup.getCalls, 0);
+  assert.equal(lookup.busyCalls, 0);
+});
+
 test('rejects empty and whitespace-only fresh model and reasoning metadata', () => {
   const definition = makeDefinition({ start: foragerNode() });
   const lookup = new FakeLookup();

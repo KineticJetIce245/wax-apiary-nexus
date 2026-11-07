@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import type { HarnessAdapter } from '../adapters/harness.js';
 import type { ControlServerInfo } from '../control/server.js';
 import { ControlServer } from '../control/server.js';
+import { GraphBindingStore } from '../graph/binding-store.js';
 import type { HarnessKind } from '../session/connection.js';
 import { SessionRegistry } from '../session/session-registry.js';
 import { Workspace } from '../session/workspace.js';
@@ -263,6 +264,11 @@ async function startHarness(
     // file fails here, before ControlServer.start creates a token or lock.
     const daemonDirectory = resolve(expandHomePath(plan.daemonDir));
     const sessionStore = new ConversationStore(join(daemonDirectory, 'sessions.json'));
+    // Construction validates the file. A corrupt resolved-binding store fails
+    // here, before ControlServer.start creates a token or a daemon lock.
+    const bindingStore = new GraphBindingStore(
+      join(daemonDirectory, 'graph-bindings.json'),
+    );
     const registry = new SessionRegistry({
       workspace,
       harness: plan.harness,
@@ -276,6 +282,7 @@ async function startHarness(
       apiary: command.apiary,
       daemonDir: plan.daemonDir,
       port: command.port,
+      bindingStore,
     });
 
     const info = await server.start();

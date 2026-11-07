@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import type {
@@ -16,6 +19,7 @@ import {
   type GraphStatus,
 } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
+import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { Project } from '../src/project/kernel.js';
 import {
   parseComposition,
@@ -241,6 +245,13 @@ function allFresh(definition: CompositionDefinition): GraphBindings {
     }
   }
   return bindings;
+}
+
+function makeBindingStore(): GraphBindingStore {
+  return new GraphBindingStore(
+    join(mkdtempSync(join(tmpdir(), 'wax-m5b-host-bindings-')), 'graph-bindings.json'),
+    { now: () => FIXED_NOW },
+  );
 }
 
 function promptsFor(adapter: RecordingAdapter, nativeId: string): readonly string[] {
@@ -1245,4 +1256,140 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
   const again = await host.trigger('paced', 'start', text('again'));
   assert.equal(again.graphId, 'paced');
   assert.equal(host.statusOf('paced') !== undefined, true);
+});
+
+test('fresh_once keeps its session and mapping across unload and reuses it on reload', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const bindingStore = makeBindingStore();
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    bindingStore,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('once', 'run {{input}}');
+  const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'once' } };
+  await host.loadGraph({ definition, bindings, project: env.project });
+  const session = env.registry.list()[0];
+  assert.ok(session !== undefined);
+  assert.equal(bindingStore.get('once', 'only')?.sessionId, session.sessionId);
+
+  const first = await host.trigger('once', 'only', text('one'));
+  assert.equal(first.rest, true);
+  assert.equal(await host.unload('once'), true);
+  assert.equal(host.statusOf('once'), undefined);
+
+  // A normal unload retains both the WAX session and the resolved mapping.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.get(session.sessionId)?.sessionId, session.sessionId);
+  assert.ok(env.workspace.getConversation(session.sessionId) !== undefined);
+  assert.equal(bindingStore.get('once', 'only')?.sessionId, session.sessionId);
+  assert.equal(workspaceListenerCount(env.workspace), 0);
+
+  await host.loadGraph({ definition, bindings, project: env.project });
+  // Reload reused the existing session: no native conversation was created.
+  assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
+  assert.equal(env.registry.list().length, 1);
+  assert.equal(env.registry.list()[0]?.sessionId, session.sessionId);
+  assert.equal(workspaceListenerCount(env.workspace), 1);
+
+  const second = await host.trigger('once', 'only', text('two'));
+  assert.equal(second.rest, true);
+  assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['run one', 'run two']);
+
+  // dispose follows the same retention rule: a fresh_once session is not closed.
+  await host.dispose();
+  assert.deepEqual(host.status(), []);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.get(session.sessionId)?.sessionId, session.sessionId);
+  assert.equal(bindingStore.get('once', 'only')?.sessionId, session.sessionId);
+});
+
+test('fresh_always closes on unload and creates a new session on reload', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const bindingStore = makeBindingStore();
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    bindingStore,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('always', 'run {{input}}');
+  const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'always' } };
+  await host.loadGraph({ definition, bindings, project: env.project });
+  const first = env.registry.list()[0];
+  assert.ok(first !== undefined);
+  assert.equal(await host.unload('always'), true);
+
+  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(env.registry.list(), []);
+  assert.deepEqual(bindingStore.snapshot(), []);
+
+  await host.loadGraph({ definition, bindings, project: env.project });
+  const second = env.registry.list()[0];
+  assert.ok(second !== undefined);
+  assert.notEqual(second.sessionId, first.sessionId);
+  assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
+  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(bindingStore.snapshot(), []);
+
+  const result = await host.trigger('always', 'only', text('go'));
+  assert.equal(result.rest, true);
+  assert.deepEqual(promptsFor(env.adapter, 'native-2'), ['run go']);
+});
+
+test('an idle sweep retains a fresh_once session and the reload still reuses it', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const bindingStore = makeBindingStore();
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    bindingStore,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('once-sweep', 'run {{input}}');
+  const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'once' } };
+  await host.loadGraph({
+    definition,
+    bindings,
+    project: env.project,
+    idleTtlMs: 100,
+  });
+  const session = env.registry.list()[0];
+  assert.ok(session !== undefined);
+  const triggered = await host.trigger('once-sweep', 'only', text('one'));
+  assert.equal(triggered.rest, true);
+
+  clock.advance(100);
+  const report = await host.sweep();
+  assert.deepEqual(report.unloaded, ['once-sweep']);
+  assert.equal(host.statusOf('once-sweep'), undefined);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.get(session.sessionId)?.sessionId, session.sessionId);
+  assert.equal(bindingStore.get('once-sweep', 'only')?.sessionId, session.sessionId);
+
+  await host.loadGraph({ definition, bindings, project: env.project });
+  assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
+  assert.equal(env.registry.list()[0]?.sessionId, session.sessionId);
+  const second = await host.trigger('once-sweep', 'only', text('two'));
+  assert.equal(second.rest, true);
+  assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['run one', 'run two']);
 });

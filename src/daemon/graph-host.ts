@@ -1,4 +1,5 @@
 import type { GraphBindings } from '../graph/binding.js';
+import type { GraphBindingStore } from '../graph/binding-store.js';
 import {
   GraphAlreadyLoadedError,
   GraphNotLoadedError,
@@ -45,6 +46,11 @@ export interface GraphHostOptions {
    * Omit it for a purely in-memory host (M4a behavior).
    */
   readonly honeyForGraph?: (graphId: string) => HoneyStore;
+  /**
+   * Durable `fresh_once` reuse mappings. Required whenever a loaded graph uses
+   * `fresh_once`; the instantiation layer rejects that mode without a store.
+   */
+  readonly bindingStore?: GraphBindingStore;
   /** Max pump iterations for one trigger; default 50. */
   readonly maxPumps?: number;
   /**
@@ -190,9 +196,10 @@ interface LiveGraph {
  *
  * It composes the pieces landed in M1-M3b. Load creates fresh sessions through
  * `instantiateForagers`; trigger holds a residency lease across pumps and
- * pacing waits; unload closes only the sessions this graph created and leaves
- * borrowed sessions alone. Without Honey, M4a semantics are unchanged: unload
- * and sweep are Rest-only and the default idle TTL is 0. With Honey, the field
+ * pacing waits; unload closes only the sessions this graph created in
+ * `fresh_always` mode and leaves borrowed and `fresh_once` sessions alone.
+ * Without Honey, M4a semantics are unchanged: unload and sweep are Rest-only
+ * and the default idle TTL is 0. With Honey, the field
  * is restored on load and flushed on trigger and before every unload; a failed
  * flush keeps the graph loaded and its resources open.
  */
@@ -202,6 +209,7 @@ export class GraphHost {
   private readonly now: () => number;
   private readonly defaultIdleTtlMs: number;
   private readonly honeyForGraph: ((graphId: string) => HoneyStore) | undefined;
+  private readonly bindingStore: GraphBindingStore | undefined;
   private readonly maxPumps: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxWaitMs: number;
@@ -216,6 +224,7 @@ export class GraphHost {
     this.sessionRegistry = options.registry;
     this.now = options.now ?? (() => Date.now());
     this.honeyForGraph = options.honeyForGraph;
+    this.bindingStore = options.bindingStore;
     this.defaultIdleTtlMs =
       options.defaultIdleTtlMs ??
       (options.honeyForGraph === undefined ? 0 : DEFAULT_IDLE_TTL_MS);
@@ -270,16 +279,18 @@ export class GraphHost {
     try {
       instantiated = await instantiateForagers({
         definition: options.definition,
+        graphId,
         bindings: options.bindings,
         registry: this.sessionRegistry,
         workspace: this.workspace,
         project: options.project,
+        ...(this.bindingStore === undefined ? {} : { bindingStore: this.bindingStore }),
       });
 
       // A dispose may have started while instantiation was in flight. The
       // graph must not become reachable after the host was disposed.
       if (this.disposed) {
-        await this.releaseGraphResources(graphId, instantiated, options.bindings);
+        await this.releaseGraphResources(graphId, instantiated, options.bindings, false);
         instantiated = undefined;
         throw new GraphHostDisposedError();
       }
@@ -325,7 +336,7 @@ export class GraphHost {
       try {
         this.graphs.load(graphId, live, residency);
       } catch (error) {
-        await this.releaseGraphResources(graphId, instantiated, options.bindings);
+        await this.releaseGraphResources(graphId, instantiated, options.bindings, false);
         instantiated = undefined;
         if (error instanceof GraphAlreadyLoadedError) {
           throw new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`, {
@@ -345,7 +356,7 @@ export class GraphHost {
       return status;
     } catch (error) {
       if (instantiated !== undefined) {
-        await this.releaseGraphResources(graphId, instantiated, options.bindings);
+        await this.releaseGraphResources(graphId, instantiated, options.bindings, false);
         instantiated = undefined;
       }
       if (error instanceof GraphAlreadyLoadedError) {
@@ -576,21 +587,29 @@ export class GraphHost {
     if (live.honey !== undefined) {
       await live.honey.save(live.runtime.exportField());
     }
-    await this.releaseGraphResources(graphId, live.instantiated, live.bindings);
+    await this.releaseGraphResources(graphId, live.instantiated, live.bindings, true);
   }
 
   /**
-   * Cleanup hook used by explicit unload and TTL sweep. It never rejects:
-   * GraphRegistry must be able to forget the graph even if a close fails.
-   * Fresh sessions are captured before routing is disposed; borrowed sessions
-   * (binding kind `session`) are never closed here.
+   * Cleanup hook used by explicit unload, TTL sweep and load rollback. It never
+   * rejects: GraphRegistry must be able to forget the graph even if a close
+   * fails.
+   *
+   * On a successful unload/sweep/dispose (`retainFreshOnce` = true) only the
+   * fresh sessions this graph created in `fresh_always` mode are closed; a
+   * `fresh_once` session and its store mapping survive so a later load can
+   * reuse them. On load rollback (`retainFreshOnce` = false) every session this
+   * load created is closed and the `fresh_once` mappings it created are
+   * removed. A reused session is never in `createdSessionIds`, so it is never
+   * closed or removed here.
    */
   private async releaseGraphResources(
     graphId: GraphId,
     instantiated: InstantiatedForagers,
     bindings: GraphBindings,
+    retainFreshOnce: boolean,
   ): Promise<void> {
-    const freshSessionIds = freshSessionIdsOf(instantiated, bindings);
+    const sessionIds = createdSessionsToClose(instantiated, bindings, retainFreshOnce);
 
     try {
       instantiated.dispose();
@@ -603,7 +622,37 @@ export class GraphHost {
       });
     }
 
-    for (const sessionId of freshSessionIds) {
+    if (!retainFreshOnce && this.bindingStore !== undefined) {
+      const created = new Set(instantiated.createdSessionIds);
+      for (const [nodeId, record] of instantiated.sessions) {
+        if (!created.has(record.sessionId)) {
+          continue;
+        }
+        const binding = bindings[nodeId];
+        if (
+          binding === undefined ||
+          binding.kind !== 'fresh' ||
+          (binding.mode ?? 'always') !== 'once'
+        ) {
+          continue;
+        }
+        try {
+          this.bindingStore.remove(graphId, nodeId);
+        } catch (error) {
+          // Mapping cleanup shares the session cleanup event: the failure is
+          // metadata only and must not mask the original load failure.
+          this.reportCleanupFailure({
+            type: 'graph.cleanup-failed',
+            graphId,
+            phase: 'session',
+            sessionId: record.sessionId,
+            error: messageOf(error),
+          });
+        }
+      }
+    }
+
+    for (const sessionId of sessionIds) {
       try {
         await this.sessionRegistry.close(sessionId);
       } catch (error) {
@@ -701,24 +750,34 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Session ids this graph created itself. Only `fresh` bindings are closed on
- * unload; an existing `session` binding is borrowed and must stay open.
+ * Session ids to close for one release.
+ *
+ * Only sessions created by this load are candidates. A `session` binding is
+ * borrowed and is never closed. With `retainFreshOnce` (normal unload), a
+ * `fresh_once` session is retained; on rollback every created fresh session
+ * (once and always) is closed.
  */
-function freshSessionIdsOf(
+function createdSessionsToClose(
   instantiated: InstantiatedForagers,
   bindings: GraphBindings,
+  retainFreshOnce: boolean,
 ): readonly string[] {
-  const ids = new Set<string>();
-  for (const [nodeId, binding] of Object.entries(bindings)) {
-    if (binding.kind !== 'fresh') {
+  const created = new Set(instantiated.createdSessionIds);
+  const ids: string[] = [];
+  for (const [nodeId, record] of instantiated.sessions) {
+    if (!created.has(record.sessionId)) {
       continue;
     }
-    const record = instantiated.sessions.get(nodeId);
-    if (record !== undefined) {
-      ids.add(record.sessionId);
+    const binding = bindings[nodeId];
+    if (binding === undefined || binding.kind !== 'fresh') {
+      continue;
     }
+    if (retainFreshOnce && (binding.mode ?? 'always') === 'once') {
+      continue;
+    }
+    ids.push(record.sessionId);
   }
-  return [...ids];
+  return ids;
 }
 
 function assertNonNegativeInteger(value: number, name: string): void {

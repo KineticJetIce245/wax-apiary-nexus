@@ -2,14 +2,27 @@ import type { CompositionDefinition } from '../runtime/types.js';
 import { sameProjectPath } from '../storage/conversation-store.js';
 
 /**
+ * How a `fresh` binding treats its session across unload/reload.
+ *
+ * `always` is the original behavior: every load creates a new session and
+ * nothing is retained. `once` creates the first session, records it in the
+ * resolved bindings store, and reuses it until that store is removed.
+ */
+export type FreshMode = 'once' | 'always';
+
+/**
  * How one forager node obtains its native conversation. `session` reuses an
  * existing WAX session; `fresh` asks the session layer to create one. B-core's
  * first version never shares a session between two foragers.
+ *
+ * An absent `mode` means `always`, preserving the original fresh behavior.
  */
 export type ForagerBinding =
   | { readonly kind: 'session'; readonly sessionId: string }
   | {
       readonly kind: 'fresh';
+      /** Absent means `always` (backward compatible). */
+      readonly mode?: FreshMode;
       readonly model?: string;
       readonly reasoning?: string;
     };
@@ -79,10 +92,10 @@ export interface BindingValidation {
  * Issues are deterministic: definition node order first, then binding keys that
  * name no definition node, in binding key insertion order. For one forager the
  * shape checks run first, then empty -> duplicate -> unknown -> wrong-harness ->
- * wrong-project -> busy; a fresh binding is checked for non-empty
- * model/reasoning metadata. Harness/project checks apply only to session
- * bindings (a fresh binding has no session record yet) and only when the
- * corresponding `context` field is present.
+ * wrong-project -> busy; a fresh binding is checked for a valid `mode` and for
+ * non-empty model/reasoning metadata. Harness/project checks apply only to
+ * session bindings (a fresh binding has no session record yet) and only when
+ * the corresponding `context` field is present.
  */
 export function validateBindings(
   definition: CompositionDefinition,
@@ -271,6 +284,15 @@ function validateFreshMetadata(
   binding: Record<string, unknown>,
   issues: BindingIssue[],
 ): void {
+  const mode = binding['mode'];
+  if (mode !== undefined && mode !== 'once' && mode !== 'always') {
+    issues.push({
+      code: 'invalid-fresh',
+      message: `forager '${nodeId}' fresh binding mode must be 'once' or 'always'`,
+      nodeId,
+    });
+  }
+
   for (const field of ['model', 'reasoning'] as const) {
     const value = binding[field];
     if (value !== undefined && (typeof value !== 'string' || value.trim() === '')) {

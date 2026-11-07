@@ -11,6 +11,7 @@ import type {
 } from '../src/adapters/harness.js';
 import { GraphHost, GraphLoadError } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
+import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { Project } from '../src/project/kernel.js';
 import {
   parseComposition,
@@ -895,4 +896,120 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
       `status leaked key '${key}'`,
     );
   }
+});
+
+test('a failed restore closes created fresh_once sessions and removes their mappings', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-m5b-rollback-once-'));
+  const honey = HoneyStore.forComposition(root, 'apiary', 'rollback-once');
+  const bindingStore = new GraphBindingStore(join(root, 'graph-bindings.json'), {
+    now: () => FIXED_NOW,
+  });
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+    bindingStore,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('rollback-once', 'go {{input}}');
+  // The field is valid JSON but belongs to another revision, so instantiation
+  // succeeds and restore fails afterwards. That is the rollback window.
+  honey.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: 'stale-revision',
+    rest: true,
+    nodes: {},
+  });
+
+  await assert.rejects(
+    host.loadGraph({
+      definition,
+      bindings: { only: { kind: 'fresh', mode: 'once' } },
+      project: env.project,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GraphLoadError);
+      assert.equal(error.graphId, 'rollback-once');
+      assert.match(error.message, /graph revision/);
+      return true;
+    },
+  );
+
+  assert.equal(host.statusOf('rollback-once'), undefined);
+  assert.deepEqual(host.status(), []);
+  assert.equal(workspaceListenerCount(env.workspace), 0);
+  // The session created for the failed load was closed and its mapping removed.
+  assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
+  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(env.registry.list(), []);
+  assert.equal(bindingStore.get('rollback-once', 'only'), undefined);
+  assert.deepEqual(bindingStore.snapshot(), []);
+});
+
+test('a failed reload never closes a reused fresh_once session or removes its mapping', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-m5b-rollback-reused-'));
+  const honey = HoneyStore.forComposition(root, 'apiary', 'keep-once');
+  const bindingStore = new GraphBindingStore(join(root, 'graph-bindings.json'), {
+    now: () => FIXED_NOW,
+  });
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+    bindingStore,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('keep-once', 'go {{input}}');
+  const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'once' } };
+  await host.loadGraph({ definition, bindings, project: env.project });
+  const session = env.registry.list()[0];
+  assert.ok(session !== undefined);
+  const triggered = await host.trigger('keep-once', 'only', text('one'));
+  assert.equal(triggered.rest, true);
+  assert.equal(await host.unload('keep-once'), true);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.get(session.sessionId)?.sessionId, session.sessionId);
+  assert.equal(bindingStore.get('keep-once', 'only')?.sessionId, session.sessionId);
+
+  // Make the next restore fail after instantiation has reused the once session.
+  honey.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: 'other-revision',
+    rest: true,
+    nodes: {},
+  });
+
+  await assert.rejects(
+    host.loadGraph({ definition, bindings, project: env.project }),
+    (error: unknown) => {
+      assert.ok(error instanceof GraphLoadError);
+      assert.match(error.message, /graph revision/);
+      return true;
+    },
+  );
+
+  assert.equal(host.statusOf('keep-once'), undefined);
+  assert.equal(workspaceListenerCount(env.workspace), 0);
+  // No replacement session was created, and the reused one stayed open.
+  assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.get(session.sessionId)?.sessionId, session.sessionId);
+  assert.ok(env.workspace.getConversation(session.sessionId) !== undefined);
+  assert.equal(bindingStore.get('keep-once', 'only')?.sessionId, session.sessionId);
 });

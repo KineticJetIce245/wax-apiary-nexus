@@ -301,6 +301,63 @@ function assertNoSecrets(haystack: string, token: string): void {
   }
 }
 
+interface ServerHoverAccess {
+  readonly graphHost?: {
+    readonly graphs: {
+      peek(id: string):
+        | {
+            readonly value: {
+              readonly runtime: {
+                snapshot(): {
+                  readonly nodes: Readonly<
+                    Record<
+                      string,
+                      { readonly hover?: { readonly token: string; readonly kind: string } }
+                    >
+                  >;
+                };
+              };
+            };
+          }
+        | undefined;
+    };
+  };
+}
+
+/** Test-only read of the parked hover token; status deliberately never has it. */
+function hoverTokenOf(server: ControlServer, graphId: string, nodeId: string): string {
+  const host = (server as unknown as ServerHoverAccess).graphHost;
+  assert.ok(host !== undefined, 'control server has no graph host');
+  const entry = host.graphs.peek(graphId);
+  assert.ok(entry !== undefined, `graph '${graphId}' is not loaded`);
+  const hover = entry.value.runtime.snapshot().nodes[nodeId]?.hover;
+  assert.ok(hover !== undefined, `node '${nodeId}' has no open hover`);
+  return hover.token;
+}
+
+function userAnswerComposition(id: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    id,
+    nodes: {
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'say something' } },
+    },
+    edges: [],
+  };
+}
+
+function userForagerComposition(id: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    id,
+    nodes: {
+      idle: { kind: 'forager', config: { connection: 'fake', prompt: 'idle {{input}}' } },
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'say something' } },
+    },
+    edges: [],
+  };
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolvePromise, reject) => {
@@ -1645,4 +1702,394 @@ test('concurrent triggers with the same graphRef load exactly once', async (t) =
   assert.equal(conflict.body?.['code'], 'conflict');
   assert.equal(env.registry.list().length, 1);
   assert.equal(adapter.displayNames.length, 1);
+});
+
+test('answer resolves an open user hover over real HTTP and rejects invalid targets and tokens', async (t) => {
+  const env = makeEnv({ output: OUTPUT_SECRET });
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const logs: string[] = [];
+  const running = await startServer(env, { logger: (line) => logs.push(line) });
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+  const responses: string[] = [];
+
+  const definition = userAnswerComposition('answer-memory');
+  const load = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(definition, env.project, {}, 0),
+  );
+  responses.push(load.text);
+  assert.equal(load.status, 200);
+
+  const trigger = await postJson(info.url, token, '/trigger', {
+    graphId: 'answer-memory',
+    nodeId: 'ask',
+    value: { kind: 'text', text: INPUT_SECRET },
+  });
+  responses.push(trigger.text);
+  assert.equal(trigger.status, 200);
+  assert.equal(trigger.body?.['result']?.['hovered'], true);
+  const hoverToken = hoverTokenOf(running.server, 'answer-memory', 'ask');
+
+  const wrongToken = await postJson(info.url, token, '/answer', {
+    graphId: 'answer-memory',
+    nodeId: 'ask',
+    value: { kind: 'text', text: INPUT_SECRET },
+    token: 'hv_wrong',
+  });
+  responses.push(wrongToken.text);
+  assert.equal(wrongToken.status, 409);
+  assert.equal(wrongToken.body?.['code'], 'conflict');
+  assert.match(wrongToken.body?.['error'] ?? '', /hover is not open/);
+  assert.equal(wrongToken.text.includes('hv_wrong'), false);
+  assert.equal(wrongToken.text.includes(hoverToken), false);
+
+  for (const badToken of ['', `bad\u0000token`, `bad\u0007token`, 'x'.repeat(4_097)]) {
+    const rejected = await postJson(info.url, token, '/answer', {
+      graphId: 'answer-memory',
+      nodeId: 'ask',
+      value: { kind: 'text', text: 'x' },
+      token: badToken,
+    });
+    responses.push(rejected.text);
+    assert.equal(rejected.status, 400, JSON.stringify(badToken.slice(0, 8)));
+    assert.equal(rejected.body?.['code'], 'bad-request');
+  }
+  for (const badGraphRef of ['', '   ', `bad\u0000path`, `bad\u0007path`, 'x'.repeat(4_097)]) {
+    const rejected = await postJson(info.url, token, '/answer', {
+      graphId: 'answer-memory',
+      nodeId: 'ask',
+      value: { kind: 'text', text: 'x' },
+      graphRef: badGraphRef,
+    });
+    responses.push(rejected.text);
+    assert.equal(rejected.status, 400, JSON.stringify(badGraphRef.slice(0, 8)));
+    assert.equal(rejected.body?.['code'], 'bad-request');
+  }
+
+  const answered = await postJson(info.url, token, '/answer', {
+    graphId: 'answer-memory',
+    nodeId: 'ask',
+    value: { kind: 'text', text: INPUT_SECRET },
+    token: hoverToken,
+  });
+  responses.push(answered.text);
+  assert.equal(answered.status, 200);
+  assert.equal(answered.body?.['result']?.['rest'], true);
+  assert.equal(answered.body?.['result']?.['hovered'], false);
+  assert.equal(answered.body?.['result']?.['persisted'], true);
+  assert.equal(answered.body?.['result']?.['status']?.['rest'], true);
+
+  const again = await postJson(info.url, token, '/answer', {
+    graphId: 'answer-memory',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'again' },
+  });
+  responses.push(again.text);
+  assert.equal(again.status, 409);
+  assert.equal(again.body?.['code'], 'conflict');
+
+  const unknownGraph = await postJson(info.url, token, '/answer', {
+    graphId: 'missing',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'x' },
+  });
+  responses.push(unknownGraph.text);
+  assert.equal(unknownGraph.status, 404);
+
+  const unknownNode = await postJson(info.url, token, '/answer', {
+    graphId: 'answer-memory',
+    nodeId: 'absent',
+    value: { kind: 'text', text: 'x' },
+  });
+  responses.push(unknownNode.text);
+  assert.equal(unknownNode.status, 400);
+
+  const foragerDefinitionBody = foragerDefinition('answer-forager', 'run {{input}}');
+  const foragerLoad = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(foragerDefinitionBody, env.project, { only: { kind: 'fresh' } }, 0),
+  );
+  responses.push(foragerLoad.text);
+  assert.equal(foragerLoad.status, 200);
+  const nonUser = await postJson(info.url, token, '/answer', {
+    graphId: 'answer-forager',
+    nodeId: 'only',
+    value: { kind: 'text', text: 'x' },
+  });
+  responses.push(nonUser.text);
+  assert.equal(nonUser.status, 400);
+  assert.equal(nonUser.body?.['code'], 'bad-request');
+
+  const getAnswer = await getJson(info.url, token, '/answer');
+  responses.push(getAnswer.text);
+  assert.equal(getAnswer.status, 405);
+  assert.match(getAnswer.headers.get('allow') ?? '', /POST/);
+
+  assertNoSecrets(`${responses.join('\n')}\n${logs.join('\n')}`, token);
+});
+
+test('answer with a graphRef loads the manifest, restores a flushed hover and answers it', async (t) => {
+  const clock = new FakeClock(1_000);
+  const env = makeEnv();
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env, {
+    harness: 'codex',
+    allowHoverUnload: true,
+    now: clock.now,
+  });
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+
+  const composition = userForagerComposition('answer-lazy');
+  const bindings = { idle: { kind: 'fresh' } };
+  const fixture = writeManifestFixture(env, {
+    graphId: 'answer-lazy',
+    composition,
+    bindings,
+  });
+
+  const load = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(composition, env.project, bindings, 0),
+  );
+  assert.equal(load.status, 200);
+  assert.equal(env.adapter.displayNames.length, 1);
+
+  const trigger = await postJson(info.url, token, '/trigger', {
+    graphId: 'answer-lazy',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'waiting' },
+  });
+  assert.equal(trigger.status, 200);
+  assert.equal(trigger.body?.['result']?.['hovered'], true);
+
+  // waxd-style hover unload: the hover is flushed to Honey before release.
+  const unload = await postJson(info.url, token, '/graphs/unload', {
+    graphId: 'answer-lazy',
+  });
+  assert.equal(unload.status, 200);
+  assert.equal(unload.body?.['unloaded'], true);
+  assert.equal(env.registry.list().length, 0);
+  assert.equal(env.adapter.displayNames.length, 1);
+
+  const answered = await postJson(info.url, token, '/answer', {
+    graphId: 'answer-lazy',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'answered' },
+    graphRef: fixture.manifestPath,
+  });
+  assert.equal(answered.status, 200);
+  assert.equal(answered.body?.['result']?.['rest'], true);
+  assert.equal(answered.body?.['result']?.['hovered'], false);
+  assert.equal(answered.body?.['result']?.['persisted'], true);
+  // The lazy load created a replacement fresh session; the hover was restored.
+  assert.equal(env.adapter.displayNames.length, 2);
+  assert.equal(env.adapter.prompts.length, 0);
+  assert.equal(env.registry.list().length, 1);
+
+  const status = await getJson(info.url, token, '/status/answer-lazy');
+  assert.equal(status.status, 200);
+  assert.equal(status.body?.['status']?.['rest'], true);
+
+  // A loaded graph always wins over graphRef, even a broken one.
+  // The restored ask node was last activated at the frozen clock time, so let
+  // its 1000ms pacing elapse before triggering it again.
+  clock.advance(1_000);
+  const parkAgain = await postJson(info.url, token, '/trigger', {
+    graphId: 'answer-lazy',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'waiting again' },
+  });
+  assert.equal(parkAgain.body?.['result']?.['hovered'], true);
+  const memoryWins = await postJson(info.url, token, '/answer', {
+    graphId: 'answer-lazy',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'answered from memory' },
+    graphRef: join(fixture.root, 'absent.wax.json'),
+  });
+  assert.equal(memoryWins.status, 200);
+  assert.equal(memoryWins.body?.['result']?.['rest'], true);
+  assert.equal(env.adapter.displayNames.length, 2);
+});
+
+test('answer with a graphRef rejects bad manifests, nodes and bindings with 0 sessions', async (t) => {
+  const env = makeEnv();
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env, { harness: 'codex' });
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+
+  const notLoaded = await postJson(info.url, token, '/answer', {
+    graphId: 'not-loaded',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'x' },
+  });
+  assert.equal(notLoaded.status, 404);
+  assert.equal(notLoaded.body?.['code'], 'not-found');
+
+  const foragerOnly = writeManifestFixture(env, { graphId: 'forager-only' });
+  for (const nodeId of ['only', 'absent']) {
+    const rejected = await postJson(info.url, token, '/answer', {
+      graphId: 'forager-only',
+      nodeId,
+      value: { kind: 'text', text: 'x' },
+      graphRef: foragerOnly.manifestPath,
+    });
+    assert.equal(rejected.status, 400, nodeId);
+    assert.equal(rejected.body?.['code'], 'bad-request');
+  }
+
+  const wrongHarness = writeManifestFixture(env, {
+    graphId: 'wrong-harness-answer',
+    harness: 'dsh',
+    composition: userAnswerComposition('wrong-harness-answer'),
+    bindings: {},
+  });
+  const harness = await postJson(info.url, token, '/answer', {
+    graphId: 'wrong-harness-answer',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'x' },
+    graphRef: wrongHarness.manifestPath,
+  });
+  assert.equal(harness.status, 400);
+
+  const missingManifest = await postJson(info.url, token, '/answer', {
+    graphId: 'missing-manifest',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'x' },
+    graphRef: join(foragerOnly.root, 'absent.wax.json'),
+  });
+  assert.equal(missingManifest.status, 400);
+
+  // A user+forager composition with no forager binding fails semantic binding
+  // validation before any session exists.
+  const badBindings = writeManifestFixture(env, {
+    graphId: 'bad-bindings-answer',
+    composition: userForagerComposition('bad-bindings-answer'),
+    bindings: {},
+  });
+  const bindings = await postJson(info.url, token, '/answer', {
+    graphId: 'bad-bindings-answer',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'x' },
+    graphRef: badBindings.manifestPath,
+  });
+  assert.equal(bindings.status, 400);
+  assert.equal(bindings.body?.['code'], 'bad-request');
+
+  assert.equal(env.adapter.displayNames.length, 0);
+  assert.equal(env.adapter.prompts.length, 0);
+  assert.equal(env.registry.list().length, 0);
+});
+
+test('a hover-only graph is swept only when allowHoverUnload is enabled', async (t) => {
+  const clock = new FakeClock(1_000);
+  const env = makeEnv();
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env, {
+    allowHoverUnload: true,
+    now: clock.now,
+  });
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+  const definition = userAnswerComposition('hover-sweep');
+
+  const load = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(definition, env.project, {}, 100),
+  );
+  assert.equal(load.status, 200);
+  const trigger = await postJson(info.url, token, '/trigger', {
+    graphId: 'hover-sweep',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'waiting' },
+  });
+  assert.equal(trigger.body?.['result']?.['hovered'], true);
+
+  clock.advance(100);
+  const sweep = await postJson(info.url, token, '/sweep', {});
+  assert.equal(sweep.status, 200);
+  assert.deepEqual(sweep.body?.['report']?.['unloaded'], ['hover-sweep']);
+  assert.deepEqual(sweep.body?.['report']?.['failed'], []);
+  const gone = await getJson(info.url, token, '/status/hover-sweep');
+  assert.equal(gone.status, 404);
+
+  // The sweep flushed the hover: reloading restores it and it can be answered.
+  const reload = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(definition, env.project, {}, 0),
+  );
+  assert.equal(reload.status, 200);
+  assert.equal(reload.body?.['status']?.['rest'], false);
+  assert.equal(reload.body?.['status']?.['hovered'], true);
+  const answer = await postJson(info.url, token, '/answer', {
+    graphId: 'hover-sweep',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'answered' },
+  });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body?.['result']?.['rest'], true);
+
+  // The default (false) still refuses the same graph.
+  const clockB = new FakeClock(1_000);
+  const envB = makeEnv();
+  t.after(async () => {
+    await envB.workspace.stop();
+  });
+  const runningB = await startServer(envB, { now: clockB.now });
+  t.after(async () => {
+    await runningB.server.stop();
+  });
+  const loadB = await postJson(
+    runningB.info.url,
+    runningB.token,
+    '/graphs/load',
+    loadBody(definition, envB.project, {}, 100),
+  );
+  assert.equal(loadB.status, 200);
+  const triggerB = await postJson(runningB.info.url, runningB.token, '/trigger', {
+    graphId: 'hover-sweep',
+    nodeId: 'ask',
+    value: { kind: 'text', text: 'waiting' },
+  });
+  assert.equal(triggerB.body?.['result']?.['hovered'], true);
+  clockB.advance(100);
+  const sweepB = await postJson(runningB.info.url, runningB.token, '/sweep', {});
+  assert.deepEqual(sweepB.body?.['report']?.['unloaded'], []);
+  assert.deepEqual(sweepB.body?.['report']?.['skipped'], [
+    { id: 'hover-sweep', reason: 'unsafe' },
+  ]);
+  const unloadB = await postJson(runningB.info.url, runningB.token, '/graphs/unload', {
+    graphId: 'hover-sweep',
+  });
+  assert.equal(unloadB.status, 409);
+  assert.equal(unloadB.body?.['code'], 'conflict');
+  assert.equal(unloadB.body?.['status']?.['hovered'], true);
 });

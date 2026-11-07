@@ -181,6 +181,24 @@ function parkedComposition(id: string): Record<string, unknown> {
   };
 }
 
+function userForagerComposition(id: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    id,
+    nodes: {
+      idle: {
+        kind: 'forager',
+        config: { connection: 'fake', prompt: 'idle {{input}}' },
+      },
+      ask: {
+        kind: 'user',
+        config: { modality: 'text', prompt: 'Approve?' },
+      },
+    },
+    edges: [],
+  };
+}
+
 function freshBindings(): Record<string, unknown> {
   return { only: { kind: 'fresh' } };
 }
@@ -198,6 +216,8 @@ interface ManifestFixtureOptions {
   readonly projectId?: string;
   readonly idleTtlMs?: number;
   readonly harness?: HarnessKind;
+  readonly composition?: Record<string, unknown>;
+  readonly bindings?: Record<string, unknown>;
 }
 
 function manifestFixture(options: ManifestFixtureOptions = {}): ManifestFixture {
@@ -207,14 +227,14 @@ function manifestFixture(options: ManifestFixtureOptions = {}): ManifestFixture 
   const composition = join(root, 'composition.json');
   writeFileSync(
     composition,
-    JSON.stringify(foragerComposition(options.graphId ?? 'manifest-graph')),
+    JSON.stringify(options.composition ?? foragerComposition(options.graphId ?? 'manifest-graph')),
   );
   const manifest: Record<string, unknown> = {
     schemaVersion: 1,
     composition: 'composition.json',
     project: { id: options.projectId ?? 'manifest-project-id', directory: 'project' },
     harness: options.harness ?? 'codex',
-    bindings: freshBindings(),
+    bindings: options.bindings ?? freshBindings(),
     ...(options.idleTtlMs === undefined ? {} : { idleTtlMs: options.idleTtlMs }),
   };
   const manifestPath = join(root, 'graph.wax.json');
@@ -1615,7 +1635,7 @@ test('graph load rejects bad local input before any session is created', async (
   assert.equal(daemon.adapter.displayNames.length, 1);
 });
 
-test('unknown status/unload exit 1 and a non-Rest unload returns a 409 without crashing the daemon', async (t) => {
+test('unknown status/unload exit 1 and waxd unloads a hover-only graph', async (t) => {
   const daemon = await startWaxd(t);
 
   const missingStatus = await invokeControl(
@@ -1656,22 +1676,24 @@ test('unknown status/unload exit 1 and a non-Rest unload returns a 409 without c
   assert.equal(result['rest'], false);
   assert.equal(result['hovered'], true);
 
+  // waxd enables hover-only unload; the parked hover is flushed to Honey and
+  // the graph is reclaimed without waiting for an answer.
   const unload = await invokeControl(
     runGraphCli,
     ['graph', 'unload', 'parked', '--json'],
     { daemonDir: daemon.daemonDir },
   );
-  assert.equal(unload.code, 1);
-  assert.equal(unload.stdout.length, 0);
-  assert.equal(unload.stderr.length, 1);
-  assert.match(unload.stderr[0] as string, /409/);
+  const unloaded = singleJson(unload);
+  assert.equal(unloaded['graphId'], 'parked');
+  assert.equal(unloaded['unloaded'], true);
+  assert.deepEqual(daemon.adapter.closedNativeIds.length, 1);
 
   const list = singleJson(
     await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
       daemonDir: daemon.daemonDir,
     }),
   );
-  assert.equal((list['status'] as unknown[]).length, 1);
+  assert.equal((list['status'] as unknown[]).length, 0);
 });
 
 test('daemon discovery and network failures exit 1 without printing a token', async () => {
@@ -2090,4 +2112,223 @@ test('trigger --graph with an unreadable manifest exits 1 without a session', as
   assert.match(invocation.stderr[0] as string, /400|rejected/);
   assert.equal(daemon.adapter.displayNames.length, 0);
   assert.equal(daemon.adapter.prompts.length, 0);
+});
+
+test('graph answer answers an open hover over real HTTP and rejects bad local input', async (t) => {
+  const daemon = await startWaxd(t);
+  const composition = tempJson({
+    schemaVersion: 1,
+    id: 'answer-cli',
+    nodes: {
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'Approve?' } },
+    },
+    edges: [],
+  });
+  const bindings = tempJson({});
+  const project = tempDir('wax-control-cli-answer-project-');
+  const load = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(load.code, 0, load.stderr.join(' | '));
+
+  const trigger = await invokeControl(
+    runTriggerCli,
+    ['trigger', 'answer-cli', 'ask', '--input', 'waiting', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(singleJson(trigger)['hovered'], true);
+
+  const answered = await invokeControl(
+    runGraphCli,
+    ['graph', 'answer', 'answer-cli', 'ask', '--input', 'done', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const result = singleJson(answered);
+  assert.equal(result['graphId'], 'answer-cli');
+  assert.equal(result['rest'], true);
+  assert.equal(result['hovered'], false);
+  assert.equal(result['persisted'], true);
+
+  // Human output is a single summary line, not a JSON object.
+  await invokeControl(
+    runTriggerCli,
+    ['trigger', 'answer-cli', 'ask', '--input', 'waiting again', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const human = await invokeControl(
+    runGraphCli,
+    ['graph', 'answer', 'answer-cli', 'ask', '--input', 'done again'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(human.code, 0, human.stderr.join(' | '));
+  assert.equal(human.stdout.length, 1);
+  assert.match(
+    human.stdout[0] as string,
+    /^answer answer-cli rest=true hovered=false pumps=[0-9]+ persisted=true$/,
+  );
+
+  // A wrong token is a server 409; the token is never echoed.
+  await invokeControl(
+    runTriggerCli,
+    ['trigger', 'answer-cli', 'ask', '--input', 'third', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const wrongToken = await invokeControl(
+    runGraphCli,
+    ['graph', 'answer', 'answer-cli', 'ask', '--token', 'hv_bogus', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(wrongToken.code, 1);
+  assert.equal(wrongToken.stdout.length, 0);
+  assert.equal(wrongToken.stderr.length, 1);
+  assert.match(wrongToken.stderr[0] as string, /409|conflict|hover/);
+  assertNoSecret(wrongToken.stderr, 'hv_bogus');
+
+  // The refused answer did not consume the hover.
+  const recovered = singleJson(
+    await invokeControl(
+      runGraphCli,
+      ['graph', 'answer', 'answer-cli', 'ask', '--input', 'recovered', '--json'],
+      { daemonDir: daemon.daemonDir },
+    ),
+  );
+  assert.equal(recovered['rest'], true);
+
+  const usageCases: (readonly string[])[] = [
+    ['graph', 'answer'],
+    ['graph', 'answer', 'answer-cli'],
+    ['graph', 'answer', 'answer-cli', 'ask', '--token', ''],
+    ['graph', 'answer', 'answer-cli', 'ask', '--token', '   '],
+    ['graph', 'answer', 'answer-cli', 'ask', '--token', 'bad\u0000token'],
+    ['graph', 'answer', 'answer-cli', 'ask', '--token', 'x'.repeat(4_097)],
+    ['graph', 'answer', 'answer-cli', 'ask', '--graph', ''],
+    ['graph', 'answer', 'answer-cli', 'ask', '--graph', '   '],
+    ['graph', 'answer', 'answer-cli', 'ask', '--graph', 'bad\u0000path'],
+    ['graph', 'answer', 'answer-cli', 'ask', '--graph', 'x'.repeat(4_097)],
+  ];
+  for (const argv of usageCases) {
+    const invocation = await invokeControl(runGraphCli, argv, {
+      daemonDir: daemon.daemonDir,
+    });
+    assert.equal(invocation.code, 2, argv.join(' '));
+    assert.equal(invocation.stdout.length, 0);
+    assert.equal(invocation.stderr.length, 1);
+  }
+
+  // The user-only graph never creates a session or submits a prompt.
+  assert.equal(daemon.adapter.displayNames.length, 0);
+  assert.equal(daemon.adapter.prompts.length, 0);
+});
+
+test('graph answer --graph restores a waxd hover-only unload and forwards a real token', async (t) => {
+  const daemon = await startWaxd(t);
+  const fixture = manifestFixture({
+    graphId: 'answer-manifest',
+    composition: userForagerComposition('answer-manifest'),
+    bindings: { idle: { kind: 'fresh' } },
+  });
+
+  const load = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', '--manifest', fixture.manifestPath, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(load.code, 0, load.stderr.join(' | '));
+  assert.equal(daemon.adapter.displayNames.length, 1);
+
+  const trigger = await invokeControl(
+    runTriggerCli,
+    ['trigger', 'answer-manifest', 'ask', '--input', 'waiting', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(singleJson(trigger)['hovered'], true);
+
+  // waxd allows a hover-only unload, so the parked hover is flushed and the
+  // fresh session is closed before the lazy answer restores it.
+  const unload = await invokeControl(
+    runGraphCli,
+    ['graph', 'unload', 'answer-manifest', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const unloaded = singleJson(unload);
+  assert.equal(unloaded['unloaded'], true);
+  assert.equal(daemon.adapter.displayNames.length, 1);
+  assert.equal(daemon.adapter.closedNativeIds.length, 1);
+
+  // Read the flushed hover token from Honey; the CLI forwards it under
+  // boundary checks, and the daemon validates it against the restored hover.
+  const fieldPath = join(
+    daemon.stateRoot,
+    'apiaries',
+    'apiary',
+    'compositions',
+    'answer-manifest',
+    'honey',
+    'field.json',
+  );
+  const saved = JSON.parse(readFileSync(fieldPath, 'utf8')) as {
+    readonly nodes: {
+      readonly ask?: { readonly hover?: { readonly token?: string } };
+    };
+  };
+  const hoverToken = saved.nodes.ask?.hover?.token;
+  assert.ok(typeof hoverToken === 'string' && hoverToken.startsWith('hv_'));
+
+  const answered = await invokeControl(
+    runGraphCli,
+    [
+      'graph',
+      'answer',
+      'answer-manifest',
+      'ask',
+      '--input',
+      'answered',
+      '--token',
+      hoverToken,
+      '--graph',
+      fixture.manifestPath,
+      '--json',
+    ],
+    { daemonDir: daemon.daemonDir },
+  );
+  const result = singleJson(answered);
+  assert.equal(result['graphId'], 'answer-manifest');
+  assert.equal(result['rest'], true);
+  assert.equal(result['hovered'], false);
+  assert.equal(daemon.adapter.displayNames.length, 2);
+  assert.equal(daemon.adapter.prompts.length, 0);
+
+  const status = singleJson(
+    await invokeControl(runGraphCli, ['graph', 'status', 'answer-manifest', '--json'], {
+      daemonDir: daemon.daemonDir,
+    }),
+  );
+  assert.equal(status['rest'], true);
+
+  // Memory wins: a loaded graph is answered even when --graph is unreadable.
+  await invokeControl(
+    runTriggerCli,
+    ['trigger', 'answer-manifest', 'ask', '--input', 'waiting again', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const memoryWins = await invokeControl(
+    runGraphCli,
+    [
+      'graph',
+      'answer',
+      'answer-manifest',
+      'ask',
+      '--input',
+      'from memory',
+      '--graph',
+      join(fixture.root, 'absent.wax.json'),
+      '--json',
+    ],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(memoryWins.code, 0, memoryWins.stderr.join(' | '));
+  assert.equal(singleJson(memoryWins)['rest'], true);
+  assert.equal(daemon.adapter.displayNames.length, 2);
 });

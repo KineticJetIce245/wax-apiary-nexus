@@ -32,6 +32,14 @@ import type { HoneyStore } from '../storage/honey.js';
 export interface GraphHostOptions {
   readonly workspace: Workspace;
   readonly registry: SessionRegistry;
+  /**
+   * Allow an explicit unload or TTL sweep of a graph whose only non-Rest state
+   * is quiescent hover(s): at least one user or guard hover and no active,
+   * pending or queued Pheromone anywhere. Default false, preserving the M4a
+   * Rest-only behavior. With Honey the field (including the hover) is flushed
+   * before release, so a reload can still answer it.
+   */
+  readonly allowHoverUnload?: boolean;
   /** Residency clock; default `Date.now`. */
   readonly now?: () => number;
   /**
@@ -170,6 +178,29 @@ export class GraphLoadError extends Error {
   }
 }
 
+/** Why `GraphHost.answer` refused an answer. */
+export type GraphAnswerErrorReason =
+  | 'unknown-node'
+  | 'not-user-node'
+  | 'no-hover'
+  | 'token-mismatch';
+
+/**
+ * A typed answer rejection. The message carries only ids the caller already
+ * sent and the reason; it never carries a hover token, value or prompt.
+ */
+export class GraphAnswerError extends Error {
+  constructor(
+    readonly graphId: GraphId,
+    readonly nodeId: NodeId,
+    readonly reason: GraphAnswerErrorReason,
+    options?: ErrorOptions,
+  ) {
+    super(`Answer rejected for node '${nodeId}' in graph '${graphId}': ${reason}`, options);
+    this.name = 'GraphAnswerError';
+  }
+}
+
 /** The host was disposed; it no longer accepts loads or triggers. */
 export class GraphHostDisposedError extends Error {
   constructor() {
@@ -191,21 +222,33 @@ interface LiveGraph {
   readonly recovery: RecoveryReport | undefined;
 }
 
+/** What one `trigger`/`answer` run reached, before the status is re-read. */
+interface QuiescenceOutcome {
+  readonly pumps: number;
+  readonly snapshot: PheromoneFieldSnapshot;
+  readonly persisted: boolean;
+  readonly persistError?: string;
+}
+
 /**
  * In-memory graph host with optional Honey persistence.
  *
  * It composes the pieces landed in M1-M3b. Load creates fresh sessions through
- * `instantiateForagers`; trigger holds a residency lease across pumps and
- * pacing waits; unload closes only the sessions this graph created in
- * `fresh_always` mode and leaves borrowed and `fresh_once` sessions alone.
- * Without Honey, M4a semantics are unchanged: unload and sweep are Rest-only
- * and the default idle TTL is 0. With Honey, the field
- * is restored on load and flushed on trigger and before every unload; a failed
- * flush keeps the graph loaded and its resources open.
+ * `instantiateForagers`; trigger and answer hold a residency lease across pumps,
+ * pacing waits and the final Honey flush; unload closes only the sessions this
+ * graph created in `fresh_always` mode and leaves borrowed and `fresh_once`
+ * sessions alone. Without Honey, M4a semantics are unchanged: unload and sweep
+ * are Rest-only and the default idle TTL is 0. With Honey, the field
+ * is restored on load and flushed on trigger, answer and before every unload; a
+ * failed flush keeps the graph loaded and its resources open.
+ *
+ * `allowHoverUnload` opts a daemon into unloading a field that is parked on
+ * quiescent hover(s) only; the default stays Rest-only.
  */
 export class GraphHost {
   private readonly workspace: Workspace;
   private readonly sessionRegistry: SessionRegistry;
+  private readonly allowHoverUnload: boolean;
   private readonly now: () => number;
   private readonly defaultIdleTtlMs: number;
   private readonly honeyForGraph: ((graphId: string) => HoneyStore) | undefined;
@@ -222,6 +265,10 @@ export class GraphHost {
   constructor(options: GraphHostOptions) {
     this.workspace = options.workspace;
     this.sessionRegistry = options.registry;
+    this.allowHoverUnload = options.allowHoverUnload ?? false;
+    if (typeof this.allowHoverUnload !== 'boolean') {
+      throw new TypeError('allowHoverUnload must be a boolean');
+    }
     this.now = options.now ?? (() => Date.now());
     this.honeyForGraph = options.honeyForGraph;
     this.bindingStore = options.bindingStore;
@@ -241,9 +288,13 @@ export class GraphHost {
     this.graphs = new GraphRegistry<LiveGraph>({
       now: this.now,
       defaultIdleTtlMs: this.defaultIdleTtlMs,
-      // Unload stays Rest-only. Non-Rest work would have to be drained (or
-      // explicitly abandoned) first; Honey only makes a Rest field replayable.
-      isSafeToUnload: (_id, live) => live.runtime.snapshot().rest,
+      // Rest-only by default. With `allowHoverUnload`, a field parked on
+      // hover(s) with no active/pending/queued work may be flushed and
+      // released; Honey makes that hover replayable after a reload.
+      isSafeToUnload: (_id, live) => {
+        const snapshot = live.runtime.snapshot();
+        return snapshot.rest || (this.allowHoverUnload && isQuiescentHover(snapshot));
+      },
       onUnload: (id, live) => this.flushAndRelease(id, live),
     });
   }
@@ -373,84 +424,58 @@ export class GraphHost {
   async trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult> {
     this.assertNotDisposed();
     const lease = this.acquireLease(graphId);
-    const live = lease.value;
-    let pumps = 0;
-    let waitedMs = 0;
-    let snapshot: PheromoneFieldSnapshot | undefined;
-    let persisted = true;
-    let persistError: string | undefined;
+    let outcome: QuiescenceOutcome | undefined;
     try {
+      const live = lease.value;
       live.runtime.trigger(nodeId, value);
-      snapshot = live.runtime.snapshot();
-
-      while (pumps < this.maxPumps && !snapshot.rest && !snapshotHovered(snapshot)) {
-        await live.runtime.pump();
-        pumps += 1;
-        snapshot = live.runtime.snapshot();
-        if (snapshot.rest || snapshotHovered(snapshot) || pumps >= this.maxPumps) {
-          break;
-        }
-
-        // The field is not Rest and has no hover, so the only way forward is
-        // time: a pending node's `minIntervalMs`, a merge deadline or the
-        // runtime's queue retry. The lease stays held across this wait.
-        const due = earliestDue(live.definition, live.runtime, snapshot);
-        if (due === undefined) {
-          break;
-        }
-        const remainingWaitMs = this.maxWaitMs - waitedMs;
-        if (remainingWaitMs <= 0) {
-          break;
-        }
-        const current = this.now();
-        const dueInMs = due > current ? due - current : 0;
-        if (dueInMs <= 0) {
-          // Do not 0ms-spin: a due instant in the past means backpressure or
-          // an already-expired wake signal, not work a new pump can finish.
-          break;
-        }
-        const waitMs = Math.min(dueInMs, remainingWaitMs);
-        if (waitMs <= 0) {
-          break;
-        }
-        await this.sleep(waitMs);
-        waitedMs += waitMs;
-      }
-
-      if (live.honey !== undefined) {
-        // Still under the lease: a TTL sweep cannot unload between the last
-        // pump and this flush. A failed save is reported, never retried and
-        // never replayed as another trigger.
-        try {
-          await live.honey.save(live.runtime.exportField());
-        } catch (error) {
-          persisted = false;
-          persistError = messageOf(error);
-        }
-      }
+      outcome = await this.pumpToQuiescence(live);
     } finally {
       // The lease spans `trigger`, the whole pump loop, every pacing wait and
       // the final Honey flush.
       lease.release();
     }
 
-    if (snapshot === undefined) {
-      // Unreachable: trigger() assigns it before its first await.
+    if (outcome === undefined) {
+      // Unreachable: `pumpToQuiescence` either returns or throws.
       throw new GraphNotFoundError(graphId);
     }
-    const status = this.statusOf(graphId);
-    if (status === undefined) {
+    return this.resultOf(graphId, outcome);
+  }
+
+  /**
+   * Answers one open user hover.
+   *
+   * The answer is rejected instead of queued when no user hover is open right
+   * now: a control caller is answering a concrete parked Pheromone, not seeding
+   * an early answer. The whole run holds the residency lease, pumps to
+   * quiescence and flushes Honey exactly like `trigger`; a flush failure is
+   * reported, never retried.
+   */
+  async answer(
+    graphId: GraphId,
+    nodeId: NodeId,
+    value: Value,
+    token?: string,
+  ): Promise<GraphRunResult> {
+    this.assertNotDisposed();
+    const lease = this.acquireLease(graphId);
+    let outcome: QuiescenceOutcome | undefined;
+    try {
+      const live = lease.value;
+      this.assertAnswerable(live, graphId, nodeId, token);
+      live.runtime.answerHover(nodeId, value, token);
+      outcome = await this.pumpToQuiescence(live);
+    } finally {
+      // The lease spans the answer, the whole pump loop, every pacing wait and
+      // the final Honey flush.
+      lease.release();
+    }
+
+    if (outcome === undefined) {
+      // Unreachable: `pumpToQuiescence` either returns or throws.
       throw new GraphNotFoundError(graphId);
     }
-    return {
-      graphId,
-      rest: snapshot.rest,
-      hovered: snapshotHovered(snapshot),
-      pumps,
-      status,
-      persisted,
-      ...(persistError === undefined ? {} : { persistError }),
-    };
+    return this.resultOf(graphId, outcome);
   }
 
   /** Read-only view; it never acquires, touches or loads a graph. */
@@ -475,8 +500,9 @@ export class GraphHost {
   }
 
   /**
-   * Explicit unload. Refused while the graph is busy, pinned or not at Rest;
-   * a refused unload does not touch sessions or dispose routing. With Honey the
+   * Explicit unload. Refused while the graph is busy, pinned or not safe to
+   * unload (Rest, or a quiescent hover when `allowHoverUnload` is set); a
+   * refused unload does not touch sessions or dispose routing. With Honey the
    * field is flushed first: if that save fails the unload returns false and the
    * graph stays loaded.
    */
@@ -484,15 +510,15 @@ export class GraphHost {
     return this.graphs.unload(graphId);
   }
 
-  /** One TTL pass. Non-Rest graphs are skipped as `unsafe`, never flushed. */
+  /** One TTL pass. Unsafe graphs are skipped, never flushed. */
   async sweep(): Promise<SweepReport> {
     return this.graphs.sweep();
   }
 
   /**
    * Idempotent, best-effort shutdown. Unloads every graph that is safe to
-   * unload (Rest); a non-Rest graph stays loaded so its field is never silently
-   * discarded. A Rest graph whose Honey flush fails also stays loaded. The
+   * unload; a busy or otherwise unsafe graph stays loaded so its field is never
+   * silently discarded. A graph whose Honey flush fails also stays loaded. The
    * Workspace is not stopped.
    */
   dispose(): Promise<void> {
@@ -525,6 +551,126 @@ export class GraphHost {
         throw new GraphNotFoundError(graphId, { cause: error });
       }
       throw error;
+    }
+  }
+
+  /**
+   * Pumps a live field until Rest or a hover, honoring `maxPumps`/`maxWaitMs`,
+   * then flushes Honey. Shared by trigger and answer so both have exactly one
+   * pumping and persistence path.
+   *
+   * The caller holds the residency lease across this call, so a TTL sweep
+   * cannot unload between the last pump and the flush. A failed save is
+   * reported in the outcome, never retried and never replayed.
+   */
+  private async pumpToQuiescence(live: LiveGraph): Promise<QuiescenceOutcome> {
+    let pumps = 0;
+    let waitedMs = 0;
+    let snapshot = live.runtime.snapshot();
+    let persisted = true;
+    let persistError: string | undefined;
+
+    while (pumps < this.maxPumps && !snapshot.rest && !snapshotHovered(snapshot)) {
+      await live.runtime.pump();
+      pumps += 1;
+      snapshot = live.runtime.snapshot();
+      if (snapshot.rest || snapshotHovered(snapshot) || pumps >= this.maxPumps) {
+        break;
+      }
+
+      // The field is not Rest and has no hover, so the only way forward is
+      // time: a pending node's `minIntervalMs`, a merge deadline or the
+      // runtime's queue retry. The lease stays held across this wait.
+      const due = earliestDue(live.definition, live.runtime, snapshot);
+      if (due === undefined) {
+        break;
+      }
+      const remainingWaitMs = this.maxWaitMs - waitedMs;
+      if (remainingWaitMs <= 0) {
+        break;
+      }
+      const current = this.now();
+      const dueInMs = due > current ? due - current : 0;
+      if (dueInMs <= 0) {
+        // Do not 0ms-spin: a due instant in the past means backpressure or
+        // an already-expired wake signal, not work a new pump can finish.
+        break;
+      }
+      const waitMs = Math.min(dueInMs, remainingWaitMs);
+      if (waitMs <= 0) {
+        break;
+      }
+      await this.sleep(waitMs);
+      waitedMs += waitMs;
+    }
+
+    if (live.honey !== undefined) {
+      try {
+        await live.honey.save(live.runtime.exportField());
+      } catch (error) {
+        persisted = false;
+        persistError = messageOf(error);
+      }
+    }
+
+    return {
+      pumps,
+      snapshot,
+      persisted,
+      ...(persistError === undefined ? {} : { persistError }),
+    };
+  }
+
+  /**
+   * Build the public result after the lease is released, so the embedded
+   * residency snapshot reports `refCount: 0`.
+   */
+  private resultOf(graphId: GraphId, outcome: QuiescenceOutcome): GraphRunResult {
+    const status = this.statusOf(graphId);
+    if (status === undefined) {
+      throw new GraphNotFoundError(graphId);
+    }
+    return {
+      graphId,
+      rest: outcome.snapshot.rest,
+      hovered: snapshotHovered(outcome.snapshot),
+      pumps: outcome.pumps,
+      status,
+      persisted: outcome.persisted,
+      ...(outcome.persistError === undefined
+        ? {}
+        : { persistError: outcome.persistError }),
+    };
+  }
+
+  /**
+   * Reject an answer that does not match the currently open user hover.
+   *
+   * `PheromoneRuntime.answerHover` also accepts an answer before the next hover
+   * and queues it for later. The control surface deliberately does not: it is
+   * answering a concrete parked Pheromone and tells the caller when the hover
+   * is not open. This check and the `answerHover` call run without an await
+   * between them, so no other request can resolve the hover in between.
+   */
+  private assertAnswerable(
+    live: LiveGraph,
+    graphId: GraphId,
+    nodeId: NodeId,
+    token: string | undefined,
+  ): void {
+    const node = live.definition.nodes.get(nodeId);
+    if (node === undefined) {
+      throw new GraphAnswerError(graphId, nodeId, 'unknown-node');
+    }
+    if (node.kind !== 'user') {
+      throw new GraphAnswerError(graphId, nodeId, 'not-user-node');
+    }
+    const hover = live.runtime.snapshot().nodes[nodeId]?.hover;
+    if (hover === undefined || hover.kind !== 'user') {
+      throw new GraphAnswerError(graphId, nodeId, 'no-hover');
+    }
+    if (token !== undefined && token !== hover.token) {
+      throw new GraphAnswerError(graphId, nodeId, 'token-mismatch');
     }
   }
 
@@ -693,6 +839,32 @@ function snapshotHovered(snapshot: PheromoneFieldSnapshot): boolean {
     }
   }
   return false;
+}
+
+/**
+ * A field may be flushed and released while parked on hover(s) only.
+ *
+ * At least one node hovers, and no node has active, pending or queued work. An
+ * incomplete Merge join is allowed: the hover branch can still be waiting in
+ * it, and Honey persists joins together with the hover. A guard hover is
+ * allowed too, even though in practice it coexists with its own active
+ * execution and therefore is not quiescent.
+ */
+function isQuiescentHover(snapshot: PheromoneFieldSnapshot): boolean {
+  let hovered = false;
+  for (const state of Object.values(snapshot.nodes)) {
+    if (
+      state.active !== undefined ||
+      state.pending !== undefined ||
+      state.queue.length > 0
+    ) {
+      return false;
+    }
+    if (state.hover !== undefined) {
+      hovered = true;
+    }
+  }
+  return hovered;
 }
 
 /**

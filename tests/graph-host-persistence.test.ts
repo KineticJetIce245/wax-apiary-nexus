@@ -1013,3 +1013,120 @@ test('a failed reload never closes a reused fresh_once session or removes its ma
   assert.ok(env.workspace.getConversation(session.sessionId) !== undefined);
   assert.equal(bindingStore.get('keep-once', 'only')?.sessionId, session.sessionId);
 });
+
+function userNode(prompt = 'say something'): Record<string, unknown> {
+  return { kind: 'user', config: { modality: 'text', prompt } };
+}
+
+/** A user hover plus a forager whose fresh session unload can close. */
+function userAndForagerDefinition(id: string): CompositionDefinition {
+  return fastDefinition(id, {
+    idle: forager('idle {{input}}'),
+    ask: userNode(),
+  });
+}
+
+test('a quiescent hover flushes to Honey, survives unload and is answered after reload', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-reload-'));
+  const honey = HoneyStore.forComposition(root, 'apiary', 'hover-reload');
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+    allowHoverUnload: true,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = userAndForagerDefinition('hover-reload');
+  const bindings = allFresh(definition);
+  await host.loadGraph({ definition, bindings, project: env.project });
+  assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
+  const triggered = await host.trigger('hover-reload', 'ask', text('waiting'));
+  assert.equal(triggered.rest, false);
+  assert.equal(triggered.hovered, true);
+  assert.equal(triggered.persisted, true);
+
+  // The hover-only unload flushes the parked hover before releasing sessions.
+  assert.equal(await host.unload('hover-reload'), true);
+  assert.equal(host.statusOf('hover-reload'), undefined);
+  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  const saved = honey.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, false);
+  assert.equal(saved.nodes['ask']?.hover?.kind, 'user');
+  assert.equal(typeof saved.nodes['ask']?.hover?.token, 'string');
+
+  const reloaded = await host.loadGraph({ definition, bindings, project: env.project });
+  assert.equal(reloaded.rest, false);
+  assert.equal(reloaded.hovered, true);
+  assert.deepEqual(reloaded.recovery?.resumedHovers, ['ask']);
+  assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
+
+  const answered = await host.answer('hover-reload', 'ask', text('answered'));
+  assert.equal(answered.rest, true);
+  assert.equal(answered.hovered, false);
+  assert.equal(answered.persisted, true);
+  const after = honey.load();
+  assert.ok(after !== undefined);
+  assert.equal(after.rest, true);
+  assert.equal(after.nodes['ask']?.hover, undefined);
+
+  assert.equal(await host.unload('hover-reload'), true);
+  assert.deepEqual(env.adapter.closedNativeIds, ['native-1', 'native-2']);
+});
+
+test('a failed Honey flush blocks a hover-only unload and keeps it loaded', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-flush-'));
+  const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'hover-flush'));
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+    allowHoverUnload: true,
+  });
+  t.after(async () => {
+    honey.failSave = false;
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = fastDefinition('hover-flush', { ask: userNode() });
+  await host.loadGraph({
+    definition,
+    bindings: {},
+    project: env.project,
+  });
+
+  honey.failSave = true;
+  const triggered = await host.trigger('hover-flush', 'ask', text('waiting'));
+  assert.equal(triggered.hovered, true);
+  assert.equal(triggered.persisted, false);
+  assert.equal(triggered.persistError, SAVE_ERROR);
+
+  assert.equal(await host.unload('hover-flush'), false);
+  const retained = host.statusOf('hover-flush');
+  assert.ok(retained !== undefined);
+  assert.equal(retained.rest, false);
+  assert.equal(retained.hovered, true);
+  assert.equal(retained.residency.state, 'loaded');
+
+  clock.advance(30 * 60_000);
+  const report = await host.sweep();
+  assert.deepEqual(report.unloaded, []);
+  assert.deepEqual(report.failed, [{ id: 'hover-flush', error: SAVE_ERROR }]);
+  assert.notEqual(host.statusOf('hover-flush'), undefined);
+
+  honey.failSave = false;
+  assert.equal(await host.unload('hover-flush'), true);
+  assert.equal(host.statusOf('hover-flush'), undefined);
+  assert.equal(honey.load()?.nodes['ask']?.hover?.kind, 'user');
+});

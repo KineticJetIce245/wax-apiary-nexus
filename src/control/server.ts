@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { DaemonLock } from '../daemon/daemon-lock.js';
 import {
+  GraphAnswerError,
   GraphHost,
   GraphHostDisposedError,
   GraphLoadError,
@@ -43,10 +44,13 @@ const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_DAEMON_DIR = join(expandHomePath('~/.wax'), 'waxd');
 const MAX_ID_LENGTH = 512;
 const MAX_PATH_LENGTH = 2_048;
+/** Bound for the bearer token and the optional `/answer` hover token. */
 const MAX_TOKEN_LENGTH = 4_096;
-/** Bound for the optional manifest path on a trigger request. */
+/** Bound for the optional manifest path on a trigger or answer request. */
 const MAX_GRAPH_REF_LENGTH = 4_096;
 const TRIGGERABLE_NODE_KINDS: readonly string[] = ['forager', 'worker', 'user'];
+/** `/answer` only resolves a user hover; guard decisions keep their own path. */
+const ANSWERABLE_NODE_KINDS: readonly string[] = ['user'];
 
 export interface ControlServerOptions {
   readonly workspace: Workspace;
@@ -79,6 +83,12 @@ export interface ControlServerOptions {
    * rejected; it never silently degrades to `fresh_always`.
    */
   readonly bindingStore?: GraphBindingStore;
+  /**
+   * Allow unload/sweep of a graph parked on quiescent hover(s) only. Default
+   * false; `waxd` enables it explicitly so a local daemon can reclaim a field
+   * that is waiting for an answer. Honey is flushed before release.
+   */
+  readonly allowHoverUnload?: boolean;
   readonly now?: () => number;
   /**
    * Metadata-only request log. It never receives a body, prompt, output or
@@ -125,7 +135,15 @@ class HttpError extends Error {
   }
 }
 
-type RouteKind = 'health' | 'status' | 'graph-status' | 'load' | 'trigger' | 'unload' | 'sweep';
+type RouteKind =
+  | 'health'
+  | 'status'
+  | 'graph-status'
+  | 'load'
+  | 'trigger'
+  | 'answer'
+  | 'unload'
+  | 'sweep';
 
 interface Route {
   readonly kind: RouteKind;
@@ -142,6 +160,28 @@ interface TriggerRequest {
    * in memory; it is a manifest, never a composition path.
    */
   readonly graphRef?: string;
+}
+
+interface AnswerRequest {
+  readonly graphId: string;
+  readonly nodeId: string;
+  readonly value: Value;
+  /** Hover token from the parked user hover; optional. Never logged. */
+  readonly token?: string;
+  /**
+   * Optional manifest path. It is only consulted when `graphId` is not already
+   * in memory; it is a manifest, never a composition path.
+   */
+  readonly graphRef?: string;
+}
+
+/** One lazy load from a manifest, with the node kind the caller can accept. */
+interface LazyLoadRequest {
+  readonly graphId: string;
+  readonly nodeId: string;
+  readonly graphRef: string;
+  readonly allowedNodeKinds: readonly string[];
+  readonly nodeErrorMessage: string;
 }
 
 /**
@@ -245,6 +285,12 @@ export class ControlServer {
     if (options.honeyForGraph !== undefined && typeof options.honeyForGraph !== 'function') {
       throw new TypeError('honeyForGraph must be a function');
     }
+    if (
+      options.allowHoverUnload !== undefined &&
+      typeof options.allowHoverUnload !== 'boolean'
+    ) {
+      throw new TypeError('allowHoverUnload must be a boolean');
+    }
     this.honeyForGraph =
       options.honeyForGraph ??
       ((graphId: string) => HoneyStore.forComposition(options.stateRoot, options.apiary, graphId));
@@ -322,6 +368,9 @@ export class ControlServer {
       graphHost = new GraphHost({
         workspace: this.options.workspace,
         registry: this.options.registry,
+        ...(this.options.allowHoverUnload === undefined
+          ? {}
+          : { allowHoverUnload: this.options.allowHoverUnload }),
         ...(this.options.now === undefined ? {} : { now: this.options.now }),
         honeyForGraph: this.honeyForGraph,
         ...(this.options.bindingStore === undefined
@@ -669,7 +718,13 @@ export class ControlServer {
           if (graphRef === undefined) {
             throw new HttpError(404, 'not-found', 'graph is not loaded');
           }
-          await this.loadGraphFromRef(host, trigger.graphId, trigger.nodeId, graphRef);
+          await this.loadGraphFromRef(host, {
+            graphId: trigger.graphId,
+            nodeId: trigger.nodeId,
+            graphRef,
+            allowedNodeKinds: TRIGGERABLE_NODE_KINDS,
+            nodeErrorMessage: 'unknown or untriggerable node',
+          });
           current = host.statusOf(trigger.graphId);
           if (current === undefined) {
             // Defensive: a successful load registers the graph under the
@@ -696,6 +751,61 @@ export class ControlServer {
           }
           if (error instanceof TypeError) {
             throw new HttpError(400, 'bad-request', 'invalid trigger value');
+          }
+          throw error;
+        }
+      }
+      case 'answer': {
+        const answer = this.parseAnswerBody(requirePayload(payload));
+        let current = host.statusOf(answer.graphId);
+        if (current === undefined) {
+          const graphRef = answer.graphRef;
+          if (graphRef === undefined) {
+            throw new HttpError(404, 'not-found', 'graph is not loaded');
+          }
+          // A lazy answer load restores Honey, so the hover the caller is
+          // answering can come back with the field. No revision is compared:
+          // the caller asked for exactly this manifest.
+          await this.loadGraphFromRef(host, {
+            graphId: answer.graphId,
+            nodeId: answer.nodeId,
+            graphRef,
+            allowedNodeKinds: ANSWERABLE_NODE_KINDS,
+            nodeErrorMessage: 'unknown or unanswerable node',
+          });
+          current = host.statusOf(answer.graphId);
+          if (current === undefined) {
+            // Defensive: a successful load registers the graph under the
+            // composition id, which was already checked against graphId.
+            throw new HttpError(500, 'internal', 'internal error');
+          }
+        }
+        const node = current.nodes.find(
+          (candidate) => candidate.nodeId === answer.nodeId,
+        );
+        if (node === undefined || node.kind !== 'user') {
+          throw new HttpError(400, 'bad-request', 'unknown or unanswerable node');
+        }
+        try {
+          const result = await host.answer(
+            answer.graphId,
+            answer.nodeId,
+            answer.value,
+            answer.token,
+          );
+          return { ok: true, result };
+        } catch (error) {
+          if (error instanceof GraphNotFoundError) {
+            throw new HttpError(404, 'not-found', 'graph is not loaded');
+          }
+          if (error instanceof GraphAnswerError) {
+            throw answerErrorToHttp(error);
+          }
+          if (error instanceof QueueFullError) {
+            throw new HttpError(409, 'conflict', 'graph queue is full');
+          }
+          if (error instanceof TypeError) {
+            throw new HttpError(400, 'bad-request', 'invalid answer value');
           }
           throw error;
         }
@@ -730,23 +840,22 @@ export class ControlServer {
   }
 
   /**
-   * Lazily load a graph named by a trigger's manifest path.
+   * Lazily load a graph named by a trigger or answer's manifest path.
    *
    * Everything that can reject the graph cheaply runs before `loadGraph`:
    * manifest/harness/composition/node/bindings. A bad node must never create a
-   * session, so the node check cannot be deferred to `host.trigger`. The
+   * session, so the node check cannot be deferred to the host call. The
    * manifest is a sidecar (`composition` + `project` + `harness` + bindings);
    * relative paths resolve against the manifest's directory inside the loader.
    *
-   * No revision is compared: a graph load is explicit and the trigger was
-   * asked to load exactly this manifest.
+   * No revision is compared: a graph load is explicit and the caller was asked
+   * to load exactly this manifest.
    */
   private async loadGraphFromRef(
     host: GraphHost,
-    graphId: string,
-    nodeId: string,
-    graphRef: string,
+    request: LazyLoadRequest,
   ): Promise<void> {
+    const { graphId, nodeId, graphRef, allowedNodeKinds, nodeErrorMessage } = request;
     let spec: ManifestLoadSpec;
     try {
       spec = loadGraphManifest(graphRef);
@@ -768,8 +877,8 @@ export class ControlServer {
       throw new HttpError(400, 'bad-request', 'manifest composition id does not match graphId');
     }
     const node = definition.nodes.get(nodeId);
-    if (node === undefined || !TRIGGERABLE_NODE_KINDS.includes(node.kind)) {
-      throw new HttpError(400, 'bad-request', 'unknown or untriggerable node');
+    if (node === undefined || !allowedNodeKinds.includes(node.kind)) {
+      throw new HttpError(400, 'bad-request', nodeErrorMessage);
     }
 
     const bindings = parseBindings(spec.bindings);
@@ -838,6 +947,42 @@ export class ControlServer {
     };
   }
 
+  private parseAnswerBody(body: Record<string, unknown>): AnswerRequest {
+    const token = body['token'];
+    const graphRef = body['graphRef'];
+    const allowed = ['graphId', 'nodeId', 'value'];
+    if (token !== undefined) {
+      allowed.push('token');
+    }
+    if (graphRef !== undefined) {
+      allowed.push('graphRef');
+    }
+    assertExactFields(body, allowed, 'answer request');
+    const graphId = requireStringField(body, 'graphId', 'graphId', MAX_ID_LENGTH);
+    const nodeId = requireStringField(body, 'nodeId', 'nodeId', MAX_ID_LENGTH);
+    if (!Object.hasOwn(body, 'value') || body['value'] === undefined) {
+      throw new HttpError(400, 'bad-request', "missing field 'value' in answer request");
+    }
+    let tokenValue: string | undefined;
+    if (token !== undefined) {
+      tokenValue = requireStringField(body, 'token', 'token', MAX_TOKEN_LENGTH);
+    }
+    let graphRefValue: string | undefined;
+    if (graphRef !== undefined) {
+      graphRefValue = requireStringField(body, 'graphRef', 'graphRef', MAX_GRAPH_REF_LENGTH);
+      if (graphRefValue.trim() === '') {
+        throw new HttpError(400, 'bad-request', 'graphRef must not be blank');
+      }
+    }
+    return {
+      graphId,
+      nodeId,
+      value: body['value'] as Value,
+      ...(tokenValue === undefined ? {} : { token: tokenValue }),
+      ...(graphRefValue === undefined ? {} : { graphRef: graphRefValue }),
+    };
+  }
+
   private parseUnloadBody(body: Record<string, unknown>): string {
     assertExactFields(body, ['graphId'], 'unload request');
     return requireStringField(body, 'graphId', 'graphId', MAX_ID_LENGTH);
@@ -858,6 +1003,9 @@ export class ControlServer {
     }
     if (error instanceof GraphNotFoundError) {
       return new HttpError(404, 'not-found', 'graph is not loaded');
+    }
+    if (error instanceof GraphAnswerError) {
+      return answerErrorToHttp(error);
     }
     if (error instanceof QueueFullError) {
       return new HttpError(409, 'conflict', 'graph queue is full');
@@ -893,6 +1041,24 @@ export class ControlServer {
 
 function unauthorized(): HttpError {
   return new HttpError(401, 'unauthorized', 'missing or invalid bearer token');
+}
+
+/**
+ * Map a typed answer rejection to a static HTTP error.
+ *
+ * A node that cannot be answered is a request problem (400); an answer whose
+ * hover is gone or whose token does not match is a state conflict (409). The
+ * hover token and the value are never echoed.
+ */
+function answerErrorToHttp(error: GraphAnswerError): HttpError {
+  switch (error.reason) {
+    case 'unknown-node':
+    case 'not-user-node':
+      return new HttpError(400, 'bad-request', 'unknown or unanswerable node');
+    case 'no-hover':
+    case 'token-mismatch':
+      return new HttpError(409, 'conflict', 'hover is not open');
+  }
 }
 
 function tokensEqual(provided: string, expected: string): boolean {
@@ -1068,6 +1234,8 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
         return { kind: 'status', methods: ['GET'] };
       case 'trigger':
         return { kind: 'trigger', methods: ['POST'] };
+      case 'answer':
+        return { kind: 'answer', methods: ['POST'] };
       case 'sweep':
         return { kind: 'sweep', methods: ['POST'] };
       default:

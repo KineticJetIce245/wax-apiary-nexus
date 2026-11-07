@@ -16,13 +16,16 @@ import { CliUsageError, messageOf } from './cli-shared.js';
 
 const GRAPH_USAGE =
   'usage: wax graph <list|status <graphId>|load <composition.json>|load --manifest <file>|' +
-  'unload <graphId>|sweep> [--json] [--daemon-dir <dir>] [--harness <codex|dsh>] ' +
+  'unload <graphId>|sweep|answer <graphId> <nodeId> [--input <text>] [--token <hv_...>] ' +
+  '[--graph <manifest>]> [--json] [--daemon-dir <dir>] [--harness <codex|dsh>] ' +
   '(load also needs --project <dir> --bindings <file> [--idle-ttl-ms <n>], or --manifest)';
 const TRIGGER_USAGE =
   'usage: wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>] [--json] ' +
   '[--daemon-dir <dir>] [--harness <codex|dsh>]';
-/** Same bound as the control server's trigger `graphRef`. */
+/** Same bound as the control server's trigger/answer `graphRef`. */
 const MAX_GRAPH_REF_LENGTH = 4_096;
+/** Same bound as the control server's `/answer` hover token. */
+const MAX_TOKEN_LENGTH = 4_096;
 
 /** Injected by the CLI entry points and by tests. */
 export interface ControlCliDependencies {
@@ -126,6 +129,14 @@ const UNLOAD_FLAGS = new Set(['--daemon-dir', '--harness']);
 const SWEEP_FLAGS = new Set(['--daemon-dir', '--harness']);
 const TRIGGER_FLAGS = new Set(['--input', '--graph', '--daemon-dir', '--harness']);
 const TRIGGER_EMPTY_FLAGS = new Set(['--input']);
+const ANSWER_FLAGS = new Set([
+  '--input',
+  '--token',
+  '--graph',
+  '--daemon-dir',
+  '--harness',
+]);
+const ANSWER_EMPTY_FLAGS = new Set(['--input']);
 
 interface GraphCommon {
   readonly json: boolean;
@@ -149,7 +160,20 @@ export type GraphCommand =
   | (GraphCommon & { readonly kind: 'status'; readonly graphId: string })
   | (GraphCommon & { readonly kind: 'load'; readonly source: GraphLoadSource })
   | (GraphCommon & { readonly kind: 'unload'; readonly graphId: string })
-  | (GraphCommon & { readonly kind: 'sweep' });
+  | (GraphCommon & { readonly kind: 'sweep' })
+  | (GraphCommon & {
+      readonly kind: 'answer';
+      readonly graphId: string;
+      readonly nodeId: string;
+      readonly input: string;
+      /** Optional hover token; validated locally, forwarded only when given. */
+      readonly token?: string;
+      /**
+       * Optional manifest path. The CLI only validates and forwards it; the
+       * daemon reads the manifest, so a bad file here can never create a session.
+       */
+      readonly graphRef?: string;
+    });
 
 export interface TriggerCommand {
   readonly graphId: string;
@@ -217,6 +241,40 @@ function parseNonNegativeInteger(raw: string, flag: string): number {
     throw new CliUsageError(`${flag} must be a non-negative integer`);
   }
   return value;
+}
+
+function parseGraphRefFlag(parsed: ParsedCliTokens): string | undefined {
+  const raw = parsed.flags.get('--graph');
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (
+    raw.trim() === '' ||
+    raw.length > MAX_GRAPH_REF_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(raw)
+  ) {
+    throw new CliUsageError(
+      `--graph must be a non-empty manifest path of at most ${String(MAX_GRAPH_REF_LENGTH)} characters`,
+    );
+  }
+  return raw;
+}
+
+function parseHoverTokenFlag(parsed: ParsedCliTokens): string | undefined {
+  const raw = parsed.flags.get('--token');
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (
+    raw.trim() === '' ||
+    raw.length > MAX_TOKEN_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(raw)
+  ) {
+    throw new CliUsageError(
+      `--token must be a non-empty hover token of at most ${String(MAX_TOKEN_LENGTH)} characters`,
+    );
+  }
+  return raw;
 }
 
 export function parseGraphArgs(argv: readonly string[]): GraphCommand {
@@ -296,6 +354,29 @@ export function parseGraphArgs(argv: readonly string[]): GraphCommand {
     return { kind: 'sweep', json: parsed.json, ...commonOf(parsed) };
   }
 
+  if (subcommand === 'answer') {
+    const parsed = parseCliTokens(rest, ANSWER_FLAGS, {
+      allowEmpty: ANSWER_EMPTY_FLAGS,
+    });
+    if (parsed.positionals.length !== 2) {
+      throw new CliUsageError(
+        'expected exactly a graph id and a node id after "wax graph answer"',
+      );
+    }
+    const token = parseHoverTokenFlag(parsed);
+    const graphRef = parseGraphRefFlag(parsed);
+    return {
+      kind: 'answer',
+      graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
+      nodeId: requireIdentifier(parsed.positionals[1], 'node id'),
+      input: parsed.flags.get('--input') ?? '',
+      ...(token === undefined ? {} : { token }),
+      ...(graphRef === undefined ? {} : { graphRef }),
+      json: parsed.json,
+      ...commonOf(parsed),
+    };
+  }
+
   if (subcommand === undefined) {
     throw new CliUsageError(GRAPH_USAGE);
   }
@@ -315,20 +396,7 @@ export function parseTriggerArgs(argv: readonly string[]): TriggerCommand {
       'expected exactly a graph id and a node id after "wax trigger"',
     );
   }
-  const graphRaw = parsed.flags.get('--graph');
-  let graphRef: string | undefined;
-  if (graphRaw !== undefined) {
-    if (
-      graphRaw.trim() === '' ||
-      graphRaw.length > MAX_GRAPH_REF_LENGTH ||
-      /[\u0000-\u001f\u007f]/.test(graphRaw)
-    ) {
-      throw new CliUsageError(
-        `--graph must be a non-empty manifest path of at most ${String(MAX_GRAPH_REF_LENGTH)} characters`,
-      );
-    }
-    graphRef = graphRaw;
-  }
+  const graphRef = parseGraphRefFlag(parsed);
   return {
     graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
     nodeId: requireIdentifier(parsed.positionals[1], 'node id'),
@@ -514,6 +582,30 @@ export async function runGraphCli(
           writeJson(out, status);
         } else {
           printStatus(out, status, 'loaded');
+        }
+        return 0;
+      }
+      case 'answer': {
+        // Exactly one attempt. An answer can resolve a hover and have side
+        // effects, so a failure is reported as-is and never retried.
+        const result = await client.answer({
+          graphId: command.graphId,
+          nodeId: command.nodeId,
+          value: { kind: 'text', text: command.input },
+          ...(command.token === undefined ? {} : { token: command.token }),
+          ...(command.graphRef === undefined ? {} : { graphRef: command.graphRef }),
+        });
+        if (command.json) {
+          writeJson(out, result);
+        } else {
+          out(
+            `answer ${result.graphId} rest=${String(result.rest)} ` +
+              `hovered=${String(result.hovered)} pumps=${String(result.pumps)} ` +
+              `persisted=${String(result.persisted)}`,
+          );
+          if (!result.persisted) {
+            out(`persist-failed ${oneLine(result.persistError ?? 'unknown')}`);
+          }
         }
         return 0;
       }

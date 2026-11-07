@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import type { GraphRunResult } from '../daemon/graph-host.js';
 import { expandHomePath } from '../storage/conversation-store.js';
 
 const LOOPBACK_HOST = '127.0.0.1';
@@ -138,9 +139,10 @@ export function discoverDaemon(options: DaemonDiscoveryOptions = {}): DaemonDisc
 /**
  * Minimal client for the M4c1 control endpoint.
  *
- * Every request is a single attempt: `trigger` and `load` have side effects and
- * are never retried automatically after a network failure or timeout. Request
- * bodies and server response bodies are never included in thrown errors.
+ * Every request is a single attempt: `trigger`, `answer` and `load` have side
+ * effects and are never retried automatically after a network failure or
+ * timeout. Request bodies and server response bodies are never included in
+ * thrown errors.
  */
 export class ControlClient {
   private readonly baseUrl: string;
@@ -235,6 +237,33 @@ export class ControlClient {
       ...(graphRef === undefined ? {} : { graphRef }),
     });
     return requireField(body, 'result');
+  }
+
+  /**
+   * Answer one open user hover.
+   *
+   * `token` is the hover token and `graphRef` is a manifest path the daemon may
+   * load when the graph is not already in memory. Both are omitted from the
+   * body when undefined, so an existing loaded graph is always reused as-is.
+   * Neither is ever placed in a URL, error message or log.
+   */
+  async answer(body: {
+    graphId: string;
+    nodeId: string;
+    value: unknown;
+    token?: string;
+    graphRef?: string;
+  }): Promise<GraphRunResult> {
+    const graphId = requireId(body.graphId, 'graphId');
+    const nodeId = requireId(body.nodeId, 'nodeId');
+    const response = await this.request('POST', '/answer', {
+      graphId,
+      nodeId,
+      value: body.value,
+      ...(body.token === undefined ? {} : { token: body.token }),
+      ...(body.graphRef === undefined ? {} : { graphRef: body.graphRef }),
+    });
+    return requireField(response, 'result') as GraphRunResult;
   }
 
   async unload(graphId: string): Promise<boolean> {

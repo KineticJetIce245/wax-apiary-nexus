@@ -283,6 +283,9 @@ async function startHarness(
       daemonDir: plan.daemonDir,
       port: command.port,
       bindingStore,
+      // A local daemon reclaims a field parked on hover(s) once its TTL
+      // expires; Honey keeps the hover replayable for a later answer.
+      allowHoverUnload: true,
     });
 
     const info = await server.start();

@@ -19,6 +19,7 @@ import {
 import {
   ControlServer,
   type ControlServerInfo,
+  type ControlServerOptions,
 } from '../src/control/server.js';
 import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
@@ -83,6 +84,7 @@ async function startDaemon(
   t: TestContext,
   adapterOptions: FakeAdapterOptions = {},
   harness = 'fake-harness',
+  overrides: Partial<ControlServerOptions> = {},
 ): Promise<TestDaemon> {
   const env = makeEnv(adapterOptions);
   t.after(async () => {
@@ -95,6 +97,7 @@ async function startDaemon(
     stateRoot: env.stateRoot,
     apiary: 'apiary',
     daemonDir: env.daemonDir,
+    ...overrides,
   });
   const info = await server.start();
   t.after(async () => {
@@ -117,6 +120,52 @@ function foragerDefinition(id: string, prompt: string): Record<string, unknown> 
     },
     edges: [],
   };
+}
+
+function userForagerDefinition(id: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    id,
+    nodes: {
+      idle: { kind: 'forager', config: { connection: 'fake', prompt: 'idle {{input}}' } },
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'say something' } },
+    },
+    edges: [],
+  };
+}
+
+interface ClientHoverAccess {
+  readonly graphHost?: {
+    readonly graphs: {
+      peek(id: string):
+        | {
+            readonly value: {
+              readonly runtime: {
+                snapshot(): {
+                  readonly nodes: Readonly<
+                    Record<
+                      string,
+                      { readonly hover?: { readonly token: string; readonly kind: string } }
+                    >
+                  >;
+                };
+              };
+            };
+          }
+        | undefined;
+    };
+  };
+}
+
+/** Test-only read of the parked hover token; status deliberately never has it. */
+function hoverTokenOf(daemon: TestDaemon, graphId: string, nodeId: string): string {
+  const host = (daemon.server as unknown as ClientHoverAccess).graphHost;
+  assert.ok(host !== undefined, 'daemon has no graph host');
+  const entry = host.graphs.peek(graphId);
+  assert.ok(entry !== undefined, `graph '${graphId}' is not loaded`);
+  const hover = entry.value.runtime.snapshot().nodes[nodeId]?.hover;
+  assert.ok(hover !== undefined, `node '${nodeId}' has no open hover`);
+  return hover.token;
 }
 
 interface ClientManifestFixture {
@@ -811,4 +860,159 @@ test('an unloaded graph without graphRef is still a 404', async (t) => {
     isControlError('not-found', 404),
   );
   assert.equal(daemon.env.adapter.displayNames.length, 0);
+});
+
+test('answer includes token and graphRef only when provided and is attempted exactly once', async () => {
+  const bodies: Record<string, unknown>[] = [];
+  let calls = 0;
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    calls += 1;
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ ok: true, result: { graphId: 'g', rest: true } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const client = new ControlClient({
+    baseUrl: 'http://127.0.0.1:4321',
+    token: VALID_TOKEN,
+    fetchImpl,
+  });
+
+  await client.answer({ graphId: 'g', nodeId: 'n', value: { kind: 'text', text: 'x' } });
+  await client.answer({
+    graphId: 'g',
+    nodeId: 'n',
+    value: { kind: 'text', text: 'x' },
+    token: 'hv_test',
+    graphRef: 'C:/graphs/g.wax.json',
+  });
+
+  assert.equal(calls, 2);
+  const withoutOptional = bodies[0];
+  const withOptional = bodies[1];
+  assert.ok(withoutOptional !== undefined);
+  assert.ok(withOptional !== undefined);
+  assert.equal(Object.hasOwn(withoutOptional, 'token'), false);
+  assert.equal(Object.hasOwn(withoutOptional, 'graphRef'), false);
+  assert.equal(withOptional['token'], 'hv_test');
+  assert.equal(withOptional['graphRef'], 'C:/graphs/g.wax.json');
+  assert.equal(withOptional['graphId'], 'g');
+  assert.equal(withOptional['nodeId'], 'n');
+
+  // A network failure is reported, not retried: an answer can resolve a hover.
+  let attempts = 0;
+  const failing: typeof fetch = async () => {
+    attempts += 1;
+    throw new Error('network down');
+  };
+  const failingClient = new ControlClient({
+    baseUrl: 'http://127.0.0.1:4321',
+    token: VALID_TOKEN,
+    fetchImpl: failing,
+  });
+  await assert.rejects(
+    failingClient.answer({
+      graphId: 'g',
+      nodeId: 'n',
+      value: { kind: 'text', text: 'x' },
+    }),
+    isControlError('network'),
+  );
+  assert.equal(attempts, 1);
+});
+
+test('answer answers an open hover over real HTTP and maps a closed hover to conflict', async (t) => {
+  const daemon = await startDaemon(t);
+  await daemon.client.load({
+    definition: userForagerDefinition('answer-client'),
+    bindings: { idle: { kind: 'fresh' } },
+    project: daemon.env.project,
+  });
+  const trigger = asRecord(
+    await daemon.client.trigger('answer-client', 'ask', { kind: 'text', text: 'waiting' }),
+  );
+  assert.equal(trigger['hovered'], true);
+  const token = hoverTokenOf(daemon, 'answer-client', 'ask');
+
+  await assert.rejects(
+    daemon.client.answer({
+      graphId: 'answer-client',
+      nodeId: 'ask',
+      value: { kind: 'text', text: 'wrong token body' },
+      token: 'hv_wrong_token',
+    }),
+    (error: unknown) => {
+      assert.equal(isControlError('conflict', 409)(error), true);
+      const message = (error as ControlClientError).message;
+      assert.equal(message.includes('hv_wrong_token'), false);
+      assert.equal(message.includes(token), false);
+      assert.equal(message.includes('wrong token body'), false);
+      return true;
+    },
+  );
+
+  const answered = asRecord(
+    await daemon.client.answer({
+      graphId: 'answer-client',
+      nodeId: 'ask',
+      value: { kind: 'text', text: 'answered' },
+      token,
+    }),
+  );
+  assert.equal(answered['graphId'], 'answer-client');
+  assert.equal(answered['rest'], true);
+  assert.equal(answered['hovered'], false);
+  assert.equal(answered['persisted'], true);
+
+  // The hover is gone, so a second answer is a state conflict, not a queue.
+  await assert.rejects(
+    daemon.client.answer({
+      graphId: 'answer-client',
+      nodeId: 'ask',
+      value: { kind: 'text', text: 'again' },
+    }),
+    isControlError('conflict', 409),
+  );
+  assert.equal(daemon.env.adapter.displayNames.length, 1);
+});
+
+test('answer with a graphRef lazily loads the manifest and restores a flushed hover', async (t) => {
+  const daemon = await startDaemon(t, {}, 'codex', { allowHoverUnload: true });
+  const composition = userForagerDefinition('answer-lazy-client');
+  const bindings = { idle: { kind: 'fresh' } };
+  const fixture = clientManifestFixture({
+    graphId: 'answer-lazy-client',
+    composition,
+    bindings,
+  });
+
+  await daemon.client.load({
+    definition: composition,
+    bindings,
+    project: daemon.env.project,
+  });
+  await daemon.client.trigger('answer-lazy-client', 'ask', {
+    kind: 'text',
+    text: 'waiting',
+  });
+  assert.equal(await daemon.client.unload('answer-lazy-client'), true);
+  assert.equal(daemon.env.registry.list().length, 0);
+  assert.equal(daemon.env.adapter.displayNames.length, 1);
+
+  const answered = asRecord(
+    await daemon.client.answer({
+      graphId: 'answer-lazy-client',
+      nodeId: 'ask',
+      value: { kind: 'text', text: 'answered' },
+      graphRef: fixture.manifestPath,
+    }),
+  );
+  assert.equal(answered['graphId'], 'answer-lazy-client');
+  assert.equal(answered['rest'], true);
+  assert.equal(answered['hovered'], false);
+  assert.equal(answered['persisted'], true);
+  assert.equal(daemon.env.adapter.displayNames.length, 2);
+  assert.equal(daemon.env.adapter.prompts.length, 0);
+  assert.equal(daemon.env.registry.list().length, 1);
 });

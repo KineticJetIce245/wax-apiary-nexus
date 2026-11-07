@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 import { runCli } from '../src/cli/cli.js';
@@ -183,6 +183,49 @@ function parkedComposition(id: string): Record<string, unknown> {
 
 function freshBindings(): Record<string, unknown> {
   return { only: { kind: 'fresh' } };
+}
+
+interface ManifestFixture {
+  readonly root: string;
+  readonly project: string;
+  readonly composition: string;
+  readonly manifestPath: string;
+  readonly manifest: Record<string, unknown>;
+}
+
+interface ManifestFixtureOptions {
+  readonly graphId?: string;
+  readonly projectId?: string;
+  readonly idleTtlMs?: number;
+  readonly harness?: HarnessKind;
+}
+
+function manifestFixture(options: ManifestFixtureOptions = {}): ManifestFixture {
+  const root = tempDir('wax-control-cli-manifest-');
+  const project = join(root, 'project');
+  mkdirSync(project, { recursive: true });
+  const composition = join(root, 'composition.json');
+  writeFileSync(
+    composition,
+    JSON.stringify(foragerComposition(options.graphId ?? 'manifest-graph')),
+  );
+  const manifest: Record<string, unknown> = {
+    schemaVersion: 1,
+    composition: 'composition.json',
+    project: { id: options.projectId ?? 'manifest-project-id', directory: 'project' },
+    harness: options.harness ?? 'codex',
+    bindings: freshBindings(),
+    ...(options.idleTtlMs === undefined ? {} : { idleTtlMs: options.idleTtlMs }),
+  };
+  const manifestPath = join(root, 'graph.wax.json');
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  return { root, project, composition, manifestPath, manifest };
+}
+
+function writeManifestVariant(root: string, name: string, value: unknown): string {
+  const path = join(root, name);
+  writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value));
+  return path;
 }
 
 async function startWaxd(t: TestContext): Promise<TestDaemon> {
@@ -1720,6 +1763,186 @@ test('trigger usage errors exit 2 and a failed trigger is attempted exactly once
   );
   assert.equal(triggered.code, 0);
   assert.equal(daemon.adapter.prompts.length, 1);
+});
+
+test('graph load --manifest keeps its own project id, relative paths and idle ttl', async (t) => {
+  const daemon = await startWaxd(t);
+  const fixture = manifestFixture({
+    graphId: 'manifest-graph',
+    projectId: 'manifest-project-not-the-basename',
+    idleTtlMs: 1_234,
+  });
+
+  const load = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', '--manifest', fixture.manifestPath, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const loaded = singleJson(load);
+  assert.equal(loaded['graphId'], 'manifest-graph');
+  assert.equal(loaded['rest'], true);
+  assert.equal(asRecord(loaded['residency'])['idleTtlMs'], 1_234);
+
+  // The server received the manifest's project id, not a basename of the dir.
+  const sessionsPath = join(daemon.daemonDir, 'sessions.json');
+  const sessions = JSON.parse(
+    readFileSync(sessionsPath, 'utf8'),
+  ) as Array<Record<string, unknown>>;
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0]?.['projectId'], 'manifest-project-not-the-basename');
+  assert.equal(sessions[0]?.['projectDirectory'], resolve(fixture.project));
+
+  // A second load is the existing 409 conflict, not a second session.
+  const duplicate = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', '--manifest', fixture.manifestPath, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(duplicate.code, 1);
+  assert.equal(duplicate.stdout.length, 0);
+  assert.equal(duplicate.stderr.length, 1);
+  assert.match(duplicate.stderr[0] as string, /conflict|409/);
+  assert.equal(daemon.adapter.displayNames.length, 1);
+});
+
+test('graph load --manifest rejects conflicting flags and bad manifests before any session', async (t) => {
+  const daemon = await startWaxd(t);
+  const fixture = manifestFixture();
+  const bindings = tempJson(freshBindings());
+  const base = fixture.manifest;
+
+  const usageCases: (readonly string[])[] = [
+    // --manifest is mutually exclusive with a positional composition file.
+    ['graph', 'load', fixture.composition, '--manifest', fixture.manifestPath, '--json'],
+    // The manifest owns project, bindings and idle ttl.
+    ['graph', 'load', '--manifest', fixture.manifestPath, '--project', fixture.project, '--json'],
+    ['graph', 'load', '--manifest', fixture.manifestPath, '--bindings', bindings, '--json'],
+    [
+      'graph',
+      'load',
+      '--manifest',
+      fixture.manifestPath,
+      '--idle-ttl-ms',
+      '5',
+      '--json',
+    ],
+    // Explicit harness must agree with the manifest.
+    [
+      'graph',
+      'load',
+      '--manifest',
+      fixture.manifestPath,
+      '--harness',
+      'dsh',
+      '--json',
+    ],
+  ];
+
+  for (const args of usageCases) {
+    const invocation = await invokeControl(runGraphCli, args, {
+      daemonDir: daemon.daemonDir,
+    });
+    assert.equal(
+      daemon.adapter.displayNames.length,
+      0,
+      `rejected load created a session: ${args.join(' ')}`,
+    );
+    assert.equal(invocation.code, 2, invocation.stderr.join(' | '));
+    assert.equal(invocation.stdout.length, 0);
+    assert.equal(invocation.stderr.length, 1);
+  }
+
+  const badManifests = [
+    writeManifestVariant(fixture.root, 'bad-version.wax.json', {
+      ...base,
+      schemaVersion: 2,
+    }),
+    writeManifestVariant(fixture.root, 'unknown-field.wax.json', {
+      ...base,
+      typoField: true,
+    }),
+    writeManifestVariant(fixture.root, 'missing-composition.wax.json', {
+      ...base,
+      composition: 'missing.json',
+    }),
+    writeManifestVariant(fixture.root, 'bad-idle.wax.json', {
+      ...base,
+      idleTtlMs: -5,
+    }),
+    writeManifestVariant(fixture.root, 'broken.wax.json', '{"schemaVersion": 1,'),
+    join(fixture.root, 'absent.wax.json'),
+  ];
+
+  for (const manifestPath of badManifests) {
+    const invocation = await invokeControl(
+      runGraphCli,
+      ['graph', 'load', '--manifest', manifestPath, '--json'],
+      { daemonDir: daemon.daemonDir },
+    );
+    assert.equal(
+      daemon.adapter.displayNames.length,
+      0,
+      `bad manifest created a session: ${manifestPath}`,
+    );
+    assert.equal(invocation.code, 2, invocation.stderr.join(' | '));
+    assert.equal(invocation.stdout.length, 0);
+    assert.equal(invocation.stderr.length, 1);
+  }
+
+  // None of the rejected commands reached /graphs/load.
+  assert.equal(daemon.adapter.displayNames.length, 0);
+  assert.equal(existsSync(join(daemon.daemonDir, 'sessions.json')), false);
+
+  // The same daemon still accepts a valid manifest load.
+  const valid = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', '--manifest', fixture.manifestPath, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(valid.code, 0, valid.stderr.join(' | '));
+  assert.equal(daemon.adapter.displayNames.length, 1);
+});
+
+test('graph load --manifest accepts a matching --harness and stays on that daemon', async (t) => {
+  const daemon = await startMultiWaxd(t);
+  const fixture = manifestFixture({ graphId: 'manifest-codex', harness: 'codex' });
+
+  const load = await invokeControl(
+    runGraphCli,
+    [
+      'graph',
+      'load',
+      '--manifest',
+      fixture.manifestPath,
+      '--harness',
+      'codex',
+      '--json',
+    ],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(singleJson(load)['graphId'], 'manifest-codex');
+  assert.equal(daemon.adapters.get('codex')?.displayNames.length, 1);
+  assert.equal(daemon.adapters.get('dsh')?.displayNames.length, 0);
+
+  const mismatch = await invokeControl(
+    runGraphCli,
+    [
+      'graph',
+      'load',
+      '--manifest',
+      fixture.manifestPath,
+      '--harness',
+      'dsh',
+      '--json',
+    ],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(mismatch.code, 2);
+  assert.equal(mismatch.stdout.length, 0);
+  assert.equal(mismatch.stderr.length, 1);
+  assert.match(mismatch.stderr[0] as string, /harness/);
+  assert.equal(daemon.adapters.get('codex')?.displayNames.length, 1);
+  assert.equal(daemon.adapters.get('dsh')?.displayNames.length, 0);
 });
 
 test('runCli dispatches graph, trigger and waxd without changing wax run', async (t) => {

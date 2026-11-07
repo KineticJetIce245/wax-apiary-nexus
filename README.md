@@ -45,10 +45,11 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 | M4c2b CLI | `waxd`, `wax graph`, `wax trigger`; real process smoke |
 | M4c2c1 Session persistence | Store, hydrate, `ensureAttached`, native session resume |
 | M4c2c2 Multi-harness | One `waxd` process, per-harness control servers and state roots |
+| M5a Manifest load | Sidecar parser and `wax graph load --manifest`; fresh modes and resolved bindings are M5b |
 
 Current verification:
 
-- full suite: **762 tests — 761 pass, 1 platform-skipped**
+- full suite: **772 tests — 771 pass, 1 platform-skipped**
 - native DSH/Codex integration: **11/11** (last full run after M3a)
 - real native smokes: session create/busy/close, multi-session fork/merge, GraphHost, Honey unload/reload, HTTP control, ControlClient, `waxd` CLI, session resume after restart, dual-harness `waxd`
 - A-mode tests remain green; the `wax run` path was not rewritten
@@ -62,7 +63,7 @@ Current verification:
 | M7 | A command-surface pruning; A becomes a B-core profile |
 | M8 | Edit API + six-stage validation + CAS/lease + atomic graph write |
 
-M5a — manifest parser + `wax graph load --manifest` — is in progress.
+M5a — manifest parser + `wax graph load --manifest` — is complete. M5b — `fresh_once` / `fresh_always` + resolved bindings — is next.
 
 ## Known limits
 

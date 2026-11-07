@@ -8,14 +8,16 @@ import {
   discoverDaemon,
 } from '../control/client.js';
 import type { GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
+import { GraphManifestError, loadGraphManifest } from '../graph/manifest.js';
+import type { ManifestLoadSpec } from '../graph/manifest.js';
 import type { SweepReport } from '../graph/registry.js';
 import type { HarnessKind } from '../session/connection.js';
 import { CliUsageError, messageOf } from './cli-shared.js';
 
 const GRAPH_USAGE =
-  'usage: wax graph <list|status <graphId>|load <composition.json>|unload <graphId>|sweep> ' +
-  '[--json] [--daemon-dir <dir>] [--harness <codex|dsh>] ' +
-  '(load also needs --project <dir> --bindings <file> [--idle-ttl-ms <n>])';
+  'usage: wax graph <list|status <graphId>|load <composition.json>|load --manifest <file>|' +
+  'unload <graphId>|sweep> [--json] [--daemon-dir <dir>] [--harness <codex|dsh>] ' +
+  '(load also needs --project <dir> --bindings <file> [--idle-ttl-ms <n>], or --manifest)';
 const TRIGGER_USAGE =
   'usage: wax trigger <graphId> <nodeId> [--input <text>] [--json] ' +
   '[--daemon-dir <dir>] [--harness <codex|dsh>]';
@@ -111,6 +113,7 @@ export function parseCliTokens(
 const LIST_FLAGS = new Set(['--daemon-dir', '--harness']);
 const STATUS_FLAGS = new Set(['--daemon-dir', '--harness']);
 const LOAD_FLAGS = new Set([
+  '--manifest',
   '--project',
   '--bindings',
   '--idle-ttl-ms',
@@ -128,16 +131,21 @@ interface GraphCommon {
   readonly harness?: HarnessKind;
 }
 
-export type GraphCommand =
-  | (GraphCommon & { readonly kind: 'list' })
-  | (GraphCommon & { readonly kind: 'status'; readonly graphId: string })
-  | (GraphCommon & {
-      readonly kind: 'load';
+/** Where a `graph load` takes its definition, bindings and project from. */
+export type GraphLoadSource =
+  | {
+      readonly kind: 'composition';
       readonly compositionPath: string;
       readonly projectDirectory: string;
       readonly bindingsPath: string;
       readonly idleTtlMs?: number;
-    })
+    }
+  | { readonly kind: 'manifest'; readonly manifestPath: string };
+
+export type GraphCommand =
+  | (GraphCommon & { readonly kind: 'list' })
+  | (GraphCommon & { readonly kind: 'status'; readonly graphId: string })
+  | (GraphCommon & { readonly kind: 'load'; readonly source: GraphLoadSource })
   | (GraphCommon & { readonly kind: 'unload'; readonly graphId: string })
   | (GraphCommon & { readonly kind: 'sweep' });
 
@@ -229,16 +237,36 @@ export function parseGraphArgs(argv: readonly string[]): GraphCommand {
 
   if (subcommand === 'load') {
     const parsed = parseCliTokens(rest, LOAD_FLAGS);
+    const manifestPath = parsed.flags.get('--manifest');
+    if (manifestPath !== undefined) {
+      if (parsed.positionals.length > 0) {
+        throw new CliUsageError('--manifest cannot be combined with a composition file');
+      }
+      for (const flag of ['--project', '--bindings', '--idle-ttl-ms']) {
+        if (parsed.flags.has(flag)) {
+          throw new CliUsageError(`${flag} cannot be combined with --manifest`);
+        }
+      }
+      return {
+        kind: 'load',
+        source: { kind: 'manifest', manifestPath },
+        json: parsed.json,
+        ...commonOf(parsed),
+      };
+    }
     requirePositionals(parsed, 1, 'expected exactly one composition file after "wax graph load"');
     const idleRaw = parsed.flags.get('--idle-ttl-ms');
     return {
       kind: 'load',
-      compositionPath: parsed.positionals[0] as string,
-      projectDirectory: requireFlag(parsed, '--project', 'dir'),
-      bindingsPath: requireFlag(parsed, '--bindings', 'file'),
-      ...(idleRaw === undefined
-        ? {}
-        : { idleTtlMs: parseNonNegativeInteger(idleRaw, '--idle-ttl-ms') }),
+      source: {
+        kind: 'composition',
+        compositionPath: parsed.positionals[0] as string,
+        projectDirectory: requireFlag(parsed, '--project', 'dir'),
+        bindingsPath: requireFlag(parsed, '--bindings', 'file'),
+        ...(idleRaw === undefined
+          ? {}
+          : { idleTtlMs: parseNonNegativeInteger(idleRaw, '--idle-ttl-ms') }),
+      },
       json: parsed.json,
       ...commonOf(parsed),
     };
@@ -330,20 +358,50 @@ function projectIdForDirectory(directory: string): string {
   return safe === '' ? 'project' : safe;
 }
 
+function loadManifestOrUsage(manifestPath: string): ManifestLoadSpec {
+  try {
+    return loadGraphManifest(manifestPath);
+  } catch (error) {
+    // A bad manifest is local input, so it keeps the CLI's exit-2 contract and
+    // never reaches discovery or the daemon.
+    if (error instanceof GraphManifestError) {
+      throw new CliUsageError(error.message);
+    }
+    throw error;
+  }
+}
+
 function prepareLoad(command: Extract<GraphCommand, { kind: 'load' }>): PreparedLoad {
-  const definition = readJsonFile(command.compositionPath, 'composition');
-  const bindings = readJsonFile(command.bindingsPath, 'bindings');
+  if (command.source.kind === 'manifest') {
+    const spec = loadManifestOrUsage(command.source.manifestPath);
+    if (command.harness !== undefined && command.harness !== spec.harness) {
+      throw new CliUsageError(
+        `manifest harness '${spec.harness}' conflicts with --harness '${command.harness}'`,
+      );
+    }
+    return {
+      definition: spec.definition,
+      bindings: spec.bindings,
+      project: spec.project,
+      ...(spec.idleTtlMs === undefined ? {} : { idleTtlMs: spec.idleTtlMs }),
+    };
+  }
+
+  const definition = readJsonFile(command.source.compositionPath, 'composition');
+  const bindings = readJsonFile(command.source.bindingsPath, 'bindings');
   if (!isRecord(bindings)) {
     throw new CliUsageError(
-      `bindings file '${command.bindingsPath}' must contain a JSON object`,
+      `bindings file '${command.source.bindingsPath}' must contain a JSON object`,
     );
   }
-  const directory = resolve(command.projectDirectory);
+  const directory = resolve(command.source.projectDirectory);
   return {
     definition,
     bindings,
     project: { id: projectIdForDirectory(directory), directory },
-    ...(command.idleTtlMs === undefined ? {} : { idleTtlMs: command.idleTtlMs }),
+    ...(command.source.idleTtlMs === undefined
+      ? {}
+      : { idleTtlMs: command.source.idleTtlMs }),
   };
 }
 

@@ -18,6 +18,11 @@ import {
 } from '../daemon/graph-host.js';
 import type { GraphBindings } from '../graph/binding.js';
 import type { GraphBindingStore } from '../graph/binding-store.js';
+import {
+  GraphManifestError,
+  loadGraphManifest,
+  type ManifestLoadSpec,
+} from '../graph/manifest.js';
 import { GraphAlreadyLoadedError } from '../graph/registry.js';
 import type { Project } from '../project/kernel.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
@@ -39,6 +44,9 @@ const DEFAULT_DAEMON_DIR = join(expandHomePath('~/.wax'), 'waxd');
 const MAX_ID_LENGTH = 512;
 const MAX_PATH_LENGTH = 2_048;
 const MAX_TOKEN_LENGTH = 4_096;
+/** Bound for the optional manifest path on a trigger request. */
+const MAX_GRAPH_REF_LENGTH = 4_096;
+const TRIGGERABLE_NODE_KINDS: readonly string[] = ['forager', 'worker', 'user'];
 
 export interface ControlServerOptions {
   readonly workspace: Workspace;
@@ -129,6 +137,11 @@ interface TriggerRequest {
   readonly graphId: string;
   readonly nodeId: string;
   readonly value: Value;
+  /**
+   * Optional manifest path. It is only consulted when `graphId` is not already
+   * in memory; it is a manifest, never a composition path.
+   */
+  readonly graphRef?: string;
 }
 
 /**
@@ -650,14 +663,24 @@ export class ControlServer {
       }
       case 'trigger': {
         const trigger = this.parseTriggerBody(requirePayload(payload));
-        const current = host.statusOf(trigger.graphId);
+        let current = host.statusOf(trigger.graphId);
         if (current === undefined) {
-          throw new HttpError(404, 'not-found', 'graph is not loaded');
+          const graphRef = trigger.graphRef;
+          if (graphRef === undefined) {
+            throw new HttpError(404, 'not-found', 'graph is not loaded');
+          }
+          await this.loadGraphFromRef(host, trigger.graphId, trigger.nodeId, graphRef);
+          current = host.statusOf(trigger.graphId);
+          if (current === undefined) {
+            // Defensive: a successful load registers the graph under the
+            // composition id, which was already checked against graphId.
+            throw new HttpError(500, 'internal', 'internal error');
+          }
         }
         const node = current.nodes.find((candidate) => candidate.nodeId === trigger.nodeId);
         if (
           node === undefined ||
-          !['forager', 'worker', 'user'].includes(node.kind)
+          !TRIGGERABLE_NODE_KINDS.includes(node.kind)
         ) {
           throw new HttpError(400, 'bad-request', 'unknown or untriggerable node');
         }
@@ -706,6 +729,72 @@ export class ControlServer {
     }
   }
 
+  /**
+   * Lazily load a graph named by a trigger's manifest path.
+   *
+   * Everything that can reject the graph cheaply runs before `loadGraph`:
+   * manifest/harness/composition/node/bindings. A bad node must never create a
+   * session, so the node check cannot be deferred to `host.trigger`. The
+   * manifest is a sidecar (`composition` + `project` + `harness` + bindings);
+   * relative paths resolve against the manifest's directory inside the loader.
+   *
+   * No revision is compared: a graph load is explicit and the trigger was
+   * asked to load exactly this manifest.
+   */
+  private async loadGraphFromRef(
+    host: GraphHost,
+    graphId: string,
+    nodeId: string,
+    graphRef: string,
+  ): Promise<void> {
+    let spec: ManifestLoadSpec;
+    try {
+      spec = loadGraphManifest(graphRef);
+    } catch (error) {
+      // The loader message names paths only, but the response deliberately
+      // stays static: the manifest path is client input.
+      if (error instanceof GraphManifestError) {
+        throw new HttpError(400, 'bad-request', 'invalid graph manifest');
+      }
+      throw error;
+    }
+
+    if (spec.harness !== this.options.harness) {
+      throw new HttpError(400, 'bad-request', 'manifest harness does not match this server');
+    }
+
+    const definition = parseComposition(spec.definition);
+    if (definition.id !== graphId) {
+      throw new HttpError(400, 'bad-request', 'manifest composition id does not match graphId');
+    }
+    const node = definition.nodes.get(nodeId);
+    if (node === undefined || !TRIGGERABLE_NODE_KINDS.includes(node.kind)) {
+      throw new HttpError(400, 'bad-request', 'unknown or untriggerable node');
+    }
+
+    const bindings = parseBindings(spec.bindings);
+    try {
+      await host.loadGraph({
+        definition,
+        bindings,
+        project: spec.project,
+        ...(spec.idleTtlMs === undefined ? {} : { idleTtlMs: spec.idleTtlMs }),
+      });
+    } catch (error) {
+      if (error instanceof BindingValidationError) {
+        // Semantic binding problems are only known inside GraphHost, after the
+        // schema check above. No session is created when validation fails.
+        throw new HttpError(400, 'bad-request', 'invalid graph bindings');
+      }
+      if (error instanceof GraphLoadError) {
+        // Includes the in-flight/already-loaded race: two triggers carrying the
+        // same graphRef are not merged, and the loser is told to retry later.
+        throw new HttpError(409, 'conflict', 'graph is already loaded');
+      }
+      throw error;
+    }
+  }
+
   private parseLoadBody(body: Record<string, unknown>): LoadGraphOptions {
     assertExactFields(body, ['definition', 'bindings', 'project', 'idleTtlMs'], 'load request');
     const definition = parseComposition(requireBodyField(body, 'definition', 'load request'));
@@ -721,13 +810,32 @@ export class ControlServer {
   }
 
   private parseTriggerBody(body: Record<string, unknown>): TriggerRequest {
-    assertExactFields(body, ['graphId', 'nodeId', 'value'], 'trigger request');
+    const graphRef = body['graphRef'];
+    assertExactFields(
+      body,
+      graphRef === undefined
+        ? ['graphId', 'nodeId', 'value']
+        : ['graphId', 'nodeId', 'value', 'graphRef'],
+      'trigger request',
+    );
     const graphId = requireStringField(body, 'graphId', 'graphId', MAX_ID_LENGTH);
     const nodeId = requireStringField(body, 'nodeId', 'nodeId', MAX_ID_LENGTH);
     if (!Object.hasOwn(body, 'value') || body['value'] === undefined) {
       throw new HttpError(400, 'bad-request', "missing field 'value' in trigger request");
     }
-    return { graphId, nodeId, value: body['value'] as Value };
+    let graphRefValue: string | undefined;
+    if (graphRef !== undefined) {
+      graphRefValue = requireStringField(body, 'graphRef', 'graphRef', MAX_GRAPH_REF_LENGTH);
+      if (graphRefValue.trim() === '') {
+        throw new HttpError(400, 'bad-request', 'graphRef must not be blank');
+      }
+    }
+    return {
+      graphId,
+      nodeId,
+      value: body['value'] as Value,
+      ...(graphRefValue === undefined ? {} : { graphRef: graphRefValue }),
+    };
   }
 
   private parseUnloadBody(body: Record<string, unknown>): string {

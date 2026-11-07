@@ -82,6 +82,7 @@ function makeEnv(adapterOptions: FakeAdapterOptions = {}): TestEnv {
 async function startDaemon(
   t: TestContext,
   adapterOptions: FakeAdapterOptions = {},
+  harness = 'fake-harness',
 ): Promise<TestDaemon> {
   const env = makeEnv(adapterOptions);
   t.after(async () => {
@@ -90,7 +91,7 @@ async function startDaemon(
   const server = new ControlServer({
     workspace: env.workspace,
     registry: env.registry,
-    harness: 'fake-harness',
+    harness,
     stateRoot: env.stateRoot,
     apiary: 'apiary',
     daemonDir: env.daemonDir,
@@ -116,6 +117,45 @@ function foragerDefinition(id: string, prompt: string): Record<string, unknown> 
     },
     edges: [],
   };
+}
+
+interface ClientManifestFixture {
+  readonly root: string;
+  readonly manifestPath: string;
+  readonly compositionPath: string;
+}
+
+/** A real manifest for exercising the client's optional graphRef end to end. */
+function clientManifestFixture(
+  options: {
+    readonly graphId?: string;
+    readonly harness?: 'codex' | 'dsh';
+    readonly composition?: Record<string, unknown>;
+    readonly bindings?: Record<string, unknown>;
+  } = {},
+): ClientManifestFixture {
+  const root = mkdtempSync(join(tmpdir(), 'wax-client-manifest-'));
+  const projectDirectory = join(root, 'project');
+  mkdirSync(projectDirectory, { recursive: true });
+  const compositionPath = join(root, 'composition.json');
+  writeFileSync(
+    compositionPath,
+    JSON.stringify(
+      options.composition ?? foragerDefinition(options.graphId ?? 'client-manifest', 'run {{input}}'),
+    ),
+  );
+  const manifestPath = join(root, 'graph.wax.json');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      composition: 'composition.json',
+      project: { id: 'client-manifest-project', directory: 'project' },
+      harness: options.harness ?? 'codex',
+      bindings: options.bindings ?? { only: { kind: 'fresh' } },
+    }),
+  );
+  return { root, manifestPath, compositionPath };
 }
 
 function asRecord(value: unknown): Record<string, any> {
@@ -709,4 +749,66 @@ test('requests carry bearer auth, stay on the base url and refuse redirects', as
   const headers = new Headers(first.init?.headers);
   assert.equal(headers.get('authorization'), `Bearer ${token}`);
   assert.equal(first.init?.redirect, 'error');
+});
+
+test('trigger includes graphRef in the body only when it was provided', async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ ok: true, result: { graphId: 'g' } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const client = new ControlClient({
+    baseUrl: 'http://127.0.0.1:4321',
+    token: VALID_TOKEN,
+    fetchImpl,
+  });
+
+  await client.trigger('g', 'n', { kind: 'text', text: 'x' });
+  await client.trigger('g', 'n', { kind: 'text', text: 'x' }, 'C:/graphs/g.wax.json');
+
+  assert.equal(bodies.length, 2);
+  const withoutRef = bodies[0];
+  const withRef = bodies[1];
+  assert.ok(withoutRef !== undefined);
+  assert.ok(withRef !== undefined);
+  assert.equal(Object.hasOwn(withoutRef, 'graphRef'), false);
+  assert.equal(withRef['graphRef'], 'C:/graphs/g.wax.json');
+  assert.equal(withRef['graphId'], 'g');
+  assert.equal(withRef['nodeId'], 'n');
+});
+
+test('trigger with a graphRef lazily loads the manifest graph over real HTTP', async (t) => {
+  const daemon = await startDaemon(t, {}, 'codex');
+  const fixture = clientManifestFixture({ graphId: 'client-lazy' });
+
+  const result = asRecord(
+    await daemon.client.trigger(
+      'client-lazy',
+      'only',
+      { kind: 'text', text: 'client lazy input' },
+      fixture.manifestPath,
+    ),
+  );
+  assert.equal(result['graphId'], 'client-lazy');
+  assert.equal(result['rest'], true);
+  assert.equal(result['persisted'], true);
+
+  const status = asRecord(await daemon.client.statusOf('client-lazy'));
+  assert.equal(status['graphId'], 'client-lazy');
+  assert.equal(status['rest'], true);
+  assert.equal(daemon.env.registry.list().length, 1);
+  assert.equal(daemon.env.adapter.prompts.length, 1);
+  assert.match(daemon.env.adapter.prompts[0] ?? '', /client lazy input/);
+});
+
+test('an unloaded graph without graphRef is still a 404', async (t) => {
+  const daemon = await startDaemon(t);
+  await assert.rejects(
+    daemon.client.trigger('missing', 'only', { kind: 'text', text: 'x' }),
+    isControlError('not-found', 404),
+  );
+  assert.equal(daemon.env.adapter.displayNames.length, 0);
 });

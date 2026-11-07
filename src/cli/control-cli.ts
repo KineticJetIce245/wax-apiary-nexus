@@ -19,8 +19,10 @@ const GRAPH_USAGE =
   'unload <graphId>|sweep> [--json] [--daemon-dir <dir>] [--harness <codex|dsh>] ' +
   '(load also needs --project <dir> --bindings <file> [--idle-ttl-ms <n>], or --manifest)';
 const TRIGGER_USAGE =
-  'usage: wax trigger <graphId> <nodeId> [--input <text>] [--json] ' +
+  'usage: wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>] [--json] ' +
   '[--daemon-dir <dir>] [--harness <codex|dsh>]';
+/** Same bound as the control server's trigger `graphRef`. */
+const MAX_GRAPH_REF_LENGTH = 4_096;
 
 /** Injected by the CLI entry points and by tests. */
 export interface ControlCliDependencies {
@@ -122,7 +124,7 @@ const LOAD_FLAGS = new Set([
 ]);
 const UNLOAD_FLAGS = new Set(['--daemon-dir', '--harness']);
 const SWEEP_FLAGS = new Set(['--daemon-dir', '--harness']);
-const TRIGGER_FLAGS = new Set(['--input', '--daemon-dir', '--harness']);
+const TRIGGER_FLAGS = new Set(['--input', '--graph', '--daemon-dir', '--harness']);
 const TRIGGER_EMPTY_FLAGS = new Set(['--input']);
 
 interface GraphCommon {
@@ -153,6 +155,11 @@ export interface TriggerCommand {
   readonly graphId: string;
   readonly nodeId: string;
   readonly input: string;
+  /**
+   * Optional manifest path. The CLI only validates and forwards it; the daemon
+   * reads the manifest, so a bad file here can never create a session.
+   */
+  readonly graphRef?: string;
   readonly json: boolean;
   readonly daemonDir?: string;
   readonly harness?: HarnessKind;
@@ -308,10 +315,25 @@ export function parseTriggerArgs(argv: readonly string[]): TriggerCommand {
       'expected exactly a graph id and a node id after "wax trigger"',
     );
   }
+  const graphRaw = parsed.flags.get('--graph');
+  let graphRef: string | undefined;
+  if (graphRaw !== undefined) {
+    if (
+      graphRaw.trim() === '' ||
+      graphRaw.length > MAX_GRAPH_REF_LENGTH ||
+      /[\u0000-\u001f\u007f]/.test(graphRaw)
+    ) {
+      throw new CliUsageError(
+        `--graph must be a non-empty manifest path of at most ${String(MAX_GRAPH_REF_LENGTH)} characters`,
+      );
+    }
+    graphRef = graphRaw;
+  }
   return {
     graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
     nodeId: requireIdentifier(parsed.positionals[1], 'node id'),
     input: parsed.flags.get('--input') ?? '',
+    ...(graphRef === undefined ? {} : { graphRef }),
     json: parsed.json,
     ...commonOf(parsed),
   };
@@ -540,10 +562,15 @@ export async function runTriggerCli(
     const client = createClient(command.daemonDir, command.harness, deps);
     // Exactly one attempt. ControlClient never retries, and neither does this
     // CLI: a trigger can have side effects, so a failure is reported as-is.
-    const result = (await client.trigger(command.graphId, command.nodeId, {
-      kind: 'text',
-      text: command.input,
-    })) as GraphRunResult;
+    const result = (await client.trigger(
+      command.graphId,
+      command.nodeId,
+      {
+        kind: 'text',
+        text: command.input,
+      },
+      command.graphRef,
+    )) as GraphRunResult;
     if (command.json) {
       writeJson(out, result);
     } else {

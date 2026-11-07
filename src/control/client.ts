@@ -215,13 +215,24 @@ export class ControlClient {
     return requireField(response, 'status');
   }
 
-  async trigger(graphId: string, nodeId: string, value: unknown): Promise<unknown> {
+  /**
+   * Trigger one node. An optional `graphRef` is a manifest path the daemon may
+   * load when the graph is not already in memory; it is omitted from the body
+   * when undefined, so an existing loaded graph is always reused as-is.
+   */
+  async trigger(
+    graphId: string,
+    nodeId: string,
+    value: unknown,
+    graphRef?: string,
+  ): Promise<unknown> {
     const id = requireId(graphId, 'graphId');
     const node = requireId(nodeId, 'nodeId');
     const body = await this.request('POST', '/trigger', {
       graphId: id,
       nodeId: node,
       value,
+      ...(graphRef === undefined ? {} : { graphRef }),
     });
     return requireField(body, 'result');
   }

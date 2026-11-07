@@ -1999,3 +1999,95 @@ test('runCli dispatches graph, trigger and waxd without changing wax run', async
   assert.equal(runStderr.length, 1);
   assert.match(runStderr[0] as string, /wax run/);
 });
+
+test('trigger --graph lazily loads a manifest graph and triggers it over real HTTP', async (t) => {
+  const daemon = await startWaxd(t);
+  const fixture = manifestFixture({
+    graphId: 'trigger-manifest-graph',
+    projectId: 'trigger-manifest-project',
+  });
+
+  const trigger = await invokeControl(
+    runTriggerCli,
+    [
+      'trigger',
+      'trigger-manifest-graph',
+      'only',
+      '--graph',
+      fixture.manifestPath,
+      '--input',
+      'from manifest',
+      '--json',
+    ],
+    { daemonDir: daemon.daemonDir },
+  );
+  const result = singleJson(trigger);
+  assert.equal(result['graphId'], 'trigger-manifest-graph');
+  assert.equal(result['rest'], true);
+  assert.equal(result['persisted'], true);
+  assert.equal(daemon.adapter.displayNames.length, 1);
+  assert.equal(daemon.adapter.prompts.length, 1);
+  assert.match(daemon.adapter.prompts[0] as string, /from manifest/);
+
+  // The manifest's project identity and directory reached the daemon.
+  const sessions = JSON.parse(
+    readFileSync(join(daemon.daemonDir, 'sessions.json'), 'utf8'),
+  ) as Array<Record<string, unknown>>;
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0]?.['projectId'], 'trigger-manifest-project');
+  assert.equal(sessions[0]?.['projectDirectory'], resolve(fixture.project));
+
+  const status = singleJson(
+    await invokeControl(
+      runGraphCli,
+      ['graph', 'status', 'trigger-manifest-graph', '--json'],
+      { daemonDir: daemon.daemonDir },
+    ),
+  );
+  assert.equal(status['rest'], true);
+});
+
+test('trigger --graph rejects empty, blank, control and oversized paths as usage', async (t) => {
+  const daemon = await startWaxd(t);
+  const usageCases: (readonly string[])[] = [
+    ['trigger', 'graph', 'only', '--graph', '', '--json'],
+    ['trigger', 'graph', 'only', '--graph', '   ', '--json'],
+    ['trigger', 'graph', 'only', '--graph', 'bad\u0000path', '--json'],
+    ['trigger', 'graph', 'only', '--graph', 'bad\u0001path', '--json'],
+    ['trigger', 'graph', 'only', '--graph', 'x'.repeat(4_097), '--json'],
+  ];
+
+  for (const argv of usageCases) {
+    const invocation = await invokeControl(runTriggerCli, argv, {
+      daemonDir: daemon.daemonDir,
+    });
+    assert.equal(invocation.code, 2, argv.join(' '));
+    assert.equal(invocation.stdout.length, 0);
+    assert.equal(invocation.stderr.length, 1);
+    assert.match(invocation.stderr[0] as string, /--graph/);
+  }
+
+  // Local validation runs before discovery and before any HTTP request.
+  assert.equal(daemon.adapter.displayNames.length, 0);
+  assert.equal(daemon.adapter.prompts.length, 0);
+});
+
+test('trigger --graph with an unreadable manifest exits 1 without a session', async (t) => {
+  const daemon = await startWaxd(t);
+  const missing = join(
+    tempDir('wax-control-cli-missing-manifest-'),
+    'absent.wax.json',
+  );
+
+  const invocation = await invokeControl(
+    runTriggerCli,
+    ['trigger', 'graph', 'only', '--graph', missing, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(invocation.code, 1);
+  assert.equal(invocation.stdout.length, 0);
+  assert.equal(invocation.stderr.length, 1);
+  assert.match(invocation.stderr[0] as string, /400|rejected/);
+  assert.equal(daemon.adapter.displayNames.length, 0);
+  assert.equal(daemon.adapter.prompts.length, 0);
+});

@@ -9,6 +9,7 @@ import { runCli } from '../src/cli/cli.js';
 import { CliUsageError } from '../src/cli/cli-shared.js';
 import {
   runGraphCli,
+  runSessionCli,
   runTriggerCli,
   type ControlCliDependencies,
 } from '../src/cli/control-cli.js';
@@ -977,7 +978,8 @@ test('graph commands round-trip load, status, list, trigger, unload and sweep ov
   );
   assert.equal(unload['graphId'], 'cli-graph');
   assert.equal(unload['unloaded'], true);
-  assert.equal(daemon.adapter.closedNativeIds.length, 1);
+  // Unload retains the session: no native close happens here.
+  assert.equal(daemon.adapter.closedNativeIds.length, 0);
 
   const emptyList = singleJson(
     await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
@@ -1002,6 +1004,224 @@ test('graph commands round-trip load, status, list, trigger, unload and sweep ov
   assert.deepEqual(sweep['unloaded'], []);
   assert.deepEqual(sweep['skipped'], []);
   assert.deepEqual(sweep['failed'], []);
+});
+
+test('wax session list/close work over real HTTP and never print a token', async (t) => {
+  const daemon = await startWaxd(t);
+  const token = readFileSync(daemon.started.tokenPath, 'utf8').trim();
+  const sessionsPath = join(daemon.daemonDir, 'sessions.json');
+  const bindings = tempJson(freshBindings());
+  const project = tempDir('wax-control-cli-session-project-');
+  const composition = tempJson(foragerComposition('session-cli'));
+
+  const load = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(load.code, 0, load.stderr.join(' | '));
+
+  const listed = await invokeControl(runSessionCli, ['session', 'list', '--json'], {
+    daemonDir: daemon.daemonDir,
+  });
+  const listBody = singleJson(listed);
+  const summaries = listBody['sessions'] as Record<string, unknown>[];
+  assert.equal(summaries.length, 1);
+  const summary = summaries[0];
+  assert.ok(summary !== undefined);
+  assert.deepEqual(Object.keys(summary).sort(), [
+    'bound',
+    'busy',
+    'harness',
+    'projectId',
+    'sessionId',
+  ]);
+  assert.equal(summary['harness'], 'codex');
+  assert.equal(summary['busy'], false);
+  assert.equal(summary['bound'], true);
+  const sessionId = summary['sessionId'];
+  assert.equal(typeof sessionId, 'string');
+  const listedText = listed.stdout.join('\n');
+  assert.equal(listedText.includes('native-'), false);
+  assert.equal(listedText.includes('projectDirectory'), false);
+  assert.equal(listedText.includes(project), false);
+  assertNoSecret(listed.stdout, token);
+
+  const humanList = await invokeControl(runSessionCli, ['session', 'list'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.equal(humanList.code, 0, humanList.stderr.join(' | '));
+  assert.equal(humanList.stdout.length, 1);
+  assert.equal(
+    humanList.stdout[0],
+    `${String(sessionId)} harness=codex project=${String(summary['projectId'])} ` +
+      'busy=no bound=yes',
+  );
+
+  // A session bound to a loaded graph cannot be closed.
+  const boundClose = await invokeControl(
+    runSessionCli,
+    ['session', 'close', sessionId as string, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(boundClose.code, 1);
+  assert.equal(boundClose.stdout.length, 0);
+  assert.equal(boundClose.stderr.length, 1);
+  assert.match(boundClose.stderr[0] as string, /409|conflict/);
+  assertNoSecret(boundClose.stderr, token);
+
+  const unload = await invokeControl(
+    runGraphCli,
+    ['graph', 'unload', 'session-cli', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(unload.code, 0, unload.stderr.join(' | '));
+  // The unload retains the session; the list still shows it, now unbound.
+  assert.equal(daemon.adapter.closedNativeIds.length, 0);
+  const afterUnload = await invokeControl(runSessionCli, ['session', 'list', '--json'], {
+    daemonDir: daemon.daemonDir,
+  });
+  const afterUnloadBody = singleJson(afterUnload);
+  const afterUnloadSessions = afterUnloadBody['sessions'] as Record<string, unknown>[];
+  assert.equal(afterUnloadSessions.length, 1);
+  assert.equal(afterUnloadSessions[0]?.['sessionId'], sessionId);
+  assert.equal(afterUnloadSessions[0]?.['bound'], false);
+
+  const closed = await invokeControl(
+    runSessionCli,
+    ['session', 'close', sessionId as string, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(closed.code, 0, closed.stderr.join(' | '));
+  assert.deepEqual(singleJson(closed), { closed: true });
+  assert.equal(daemon.adapter.closedNativeIds.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(sessionsPath, 'utf8')), []);
+  const empty = await invokeControl(runSessionCli, ['session', 'list', '--json'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.deepEqual(singleJson(empty)['sessions'], []);
+
+  // Closing an unknown/already closed session exits 1.
+  const again = await invokeControl(
+    runSessionCli,
+    ['session', 'close', sessionId as string],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(again.code, 1);
+  assert.equal(again.stdout.length, 0);
+  assert.equal(again.stderr.length, 1);
+  assert.match(again.stderr[0] as string, /unknown or already closed/);
+  assertNoSecret(again.stderr, token);
+
+  // A human close prints one line and still removes the session.
+  const compositionB = tempJson(foragerComposition('session-cli-b'));
+  await invokeControl(
+    runGraphCli,
+    ['graph', 'load', compositionB, '--project', project, '--bindings', bindings, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const unloadB = await invokeControl(
+    runGraphCli,
+    ['graph', 'unload', 'session-cli-b', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(unloadB.code, 0, unloadB.stderr.join(' | '));
+  const listB = singleJson(
+    await invokeControl(runSessionCli, ['session', 'list', '--json'], {
+      daemonDir: daemon.daemonDir,
+    }),
+  );
+  const sessionB = (listB['sessions'] as Record<string, unknown>[])[0]?.['sessionId'];
+  assert.equal(typeof sessionB, 'string');
+  const humanClose = await invokeControl(
+    runSessionCli,
+    ['session', 'close', sessionB as string],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(humanClose.code, 0, humanClose.stderr.join(' | '));
+  assert.equal(humanClose.stdout.length, 1);
+  assert.equal(humanClose.stdout[0], `closed ${String(sessionB)}`);
+  assert.equal(daemon.adapter.closedNativeIds.length, 2);
+  assert.deepEqual(JSON.parse(readFileSync(sessionsPath, 'utf8')), []);
+
+  // Local usage errors exit 2 before discovery or any HTTP request.
+  const usageCases: (readonly string[])[] = [
+    ['session'],
+    ['session', 'close'],
+    ['session', 'close', 'a', 'b'],
+    ['session', 'list', 'extra'],
+    ['session', 'bogus'],
+    ['session', 'close', 'bad\u0000id'],
+    ['session', 'close', 'x'.repeat(513)],
+    ['session', 'list', '--json', '--json'],
+    ['session', 'list', '--wat'],
+  ];
+  for (const argv of usageCases) {
+    const invocation = await invokeControl(runSessionCli, argv, {
+      daemonDir: daemon.daemonDir,
+    });
+    assert.equal(invocation.code, 2, argv.join(' '));
+    assert.equal(invocation.stdout.length, 0);
+    assert.equal(invocation.stderr.length, 1);
+  }
+});
+
+test('wax session list follows --harness on a multi-harness daemon', async (t) => {
+  const daemon = await startMultiWaxd(t);
+  const bindings = tempJson(freshBindings());
+  const project = tempDir('wax-control-cli-session-multi-project-');
+  const composition = tempJson(foragerComposition('session-multi'));
+
+  const load = await invokeControl(
+    runGraphCli,
+    [
+      'graph',
+      'load',
+      composition,
+      '--project',
+      project,
+      '--bindings',
+      bindings,
+      '--harness',
+      'codex',
+      '--json',
+    ],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(load.code, 0, load.stderr.join(' | '));
+
+  const ambiguous = await invokeControl(runSessionCli, ['session', 'list', '--json'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.equal(ambiguous.code, 1);
+  assert.equal(ambiguous.stdout.length, 0);
+  assert.equal(ambiguous.stderr.length, 1);
+  assert.match(ambiguous.stderr[0] as string, /--harness/);
+
+  const codex = await invokeControl(
+    runSessionCli,
+    ['session', 'list', '--harness', 'codex', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const codexSessions = singleJson(codex)['sessions'] as Record<string, unknown>[];
+  assert.equal(codexSessions.length, 1);
+  assert.equal(codexSessions[0]?.['harness'], 'codex');
+
+  const dsh = await invokeControl(
+    runSessionCli,
+    ['session', 'list', '--harness', 'dsh', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.deepEqual(singleJson(dsh)['sessions'], []);
+
+  const invalidHarness = await invokeControl(
+    runSessionCli,
+    ['session', 'list', '--harness', 'claude', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(invalidHarness.code, 2);
+  assert.equal(invalidHarness.stderr.length, 1);
+  assert.match(invalidHarness.stderr[0] as string, /--harness must be/);
 });
 
 test('graph and trigger --harness address each multi-harness daemon independently', async (t) => {
@@ -1116,7 +1336,8 @@ test('graph and trigger --harness address each multi-harness daemon independentl
     ),
   );
   assert.equal(unloadCodex['unloaded'], true);
-  assert.equal(daemon.adapters.get('codex')?.closedNativeIds.length, 1);
+  // Unload retains both harnesses' sessions; nothing was closed.
+  assert.equal(daemon.adapters.get('codex')?.closedNativeIds.length, 0);
   assert.equal(daemon.adapters.get('dsh')?.closedNativeIds.length, 0);
 
   const dshStillLoaded = singleJson(
@@ -1127,9 +1348,14 @@ test('graph and trigger --harness address each multi-harness daemon independentl
     ),
   );
   assert.equal(dshStillLoaded['graphId'], 'dsh-graph');
-  assert.deepEqual(
-    JSON.parse(readFileSync(join(daemon.daemonDir, 'codex', 'sessions.json'), 'utf8')),
-    [],
+  // Each harness keeps its session after unload; the other daemon is untouched.
+  assert.equal(
+    (
+      JSON.parse(
+        readFileSync(join(daemon.daemonDir, 'codex', 'sessions.json'), 'utf8'),
+      ) as unknown[]
+    ).length,
+    1,
   );
   assert.equal(
     (
@@ -1411,7 +1637,7 @@ test('a one-entry --harnesses list keeps the single-harness root layout', async 
   assert.equal(adapter.stopCalls, 1);
 });
 
-test('waxd persists a fresh session and removes it when the graph unloads', async (t) => {
+test('waxd persists a fresh session and retains it when the graph unloads', async (t) => {
   const daemon = await startWaxd(t);
   const sessionsPath = join(daemon.daemonDir, 'sessions.json');
   assert.equal(existsSync(sessionsPath), false);
@@ -1441,7 +1667,12 @@ test('waxd persists a fresh session and removes it when the graph unloads', asyn
     { daemonDir: daemon.daemonDir },
   );
   assert.equal(unload.code, 0, unload.stderr.join(' | '));
-  assert.deepEqual(JSON.parse(readFileSync(sessionsPath, 'utf8')), []);
+  // The unload retains the persisted session mapping.
+  const afterUnload = JSON.parse(readFileSync(sessionsPath, 'utf8')) as Array<
+    Record<string, unknown>
+  >;
+  assert.equal(afterUnload.length, 1);
+  assert.equal(afterUnload[0]?.['conversationId'], stored[0]?.['conversationId']);
 });
 
 test('runWaxdCli exits 1 before daemon files exist when sessions.json is corrupt', async () => {
@@ -1508,7 +1739,7 @@ test('one waxd process serves multiple graphs for its single harness', async (t)
     );
     assert.equal(unload.code, 0, unload.stderr.join(' | '));
   }
-  assert.equal(daemon.adapter.closedNativeIds.length, 2);
+  assert.equal(daemon.adapter.closedNativeIds.length, 0);
 
   const empty = singleJson(
     await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
@@ -1686,7 +1917,8 @@ test('unknown status/unload exit 1 and waxd unloads a hover-only graph', async (
   const unloaded = singleJson(unload);
   assert.equal(unloaded['graphId'], 'parked');
   assert.equal(unloaded['unloaded'], true);
-  assert.deepEqual(daemon.adapter.closedNativeIds.length, 1);
+  // A hover-only unload retains the session too.
+  assert.deepEqual(daemon.adapter.closedNativeIds.length, 0);
 
   const list = singleJson(
     await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
@@ -1967,7 +2199,7 @@ test('graph load --manifest accepts a matching --harness and stays on that daemo
   assert.equal(daemon.adapters.get('dsh')?.displayNames.length, 0);
 });
 
-test('runCli dispatches graph, trigger and waxd without changing wax run', async (t) => {
+test('runCli dispatches graph, trigger, session and waxd without changing wax run', async (t) => {
   const daemon = await startWaxd(t);
 
   const graphStdout: string[] = [];
@@ -1984,6 +2216,21 @@ test('runCli dispatches graph, trigger and waxd without changing wax run', async
   assert.equal(graphStderr.length, 0);
   assert.equal(graphStdout.length, 1);
   assert.equal(Array.isArray(JSON.parse(graphStdout[0] as string)['status']), true);
+
+  const sessionStdout: string[] = [];
+  const sessionStderr: string[] = [];
+  const sessionCode = await runCli(
+    ['session', 'list', '--json', '--daemon-dir', daemon.daemonDir],
+    {
+      stdout: (line) => sessionStdout.push(line),
+      stderr: (line) => sessionStderr.push(line),
+      env: {},
+    },
+  );
+  assert.equal(sessionCode, 0);
+  assert.equal(sessionStderr.length, 0);
+  assert.equal(sessionStdout.length, 1);
+  assert.deepEqual(JSON.parse(sessionStdout[0] as string)['sessions'], []);
 
   const triggerStderr: string[] = [];
   const triggerCode = await runCli(
@@ -2246,7 +2493,7 @@ test('graph answer --graph restores a waxd hover-only unload and forwards a real
   assert.equal(singleJson(trigger)['hovered'], true);
 
   // waxd allows a hover-only unload, so the parked hover is flushed and the
-  // fresh session is closed before the lazy answer restores it.
+  // fresh session is retained for the explicit session API.
   const unload = await invokeControl(
     runGraphCli,
     ['graph', 'unload', 'answer-manifest', '--json'],
@@ -2255,7 +2502,7 @@ test('graph answer --graph restores a waxd hover-only unload and forwards a real
   const unloaded = singleJson(unload);
   assert.equal(unloaded['unloaded'], true);
   assert.equal(daemon.adapter.displayNames.length, 1);
-  assert.equal(daemon.adapter.closedNativeIds.length, 1);
+  assert.equal(daemon.adapter.closedNativeIds.length, 0);
 
   // Read the flushed hover token from Honey; the CLI forwards it under
   // boundary checks, and the daemon validates it against the restored hover.

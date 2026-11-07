@@ -31,7 +31,7 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 
 ## Progress
 
-**M1–M6b are complete**. M1–M5 are pushed; M6a/M6b are committed locally and not yet pushed. The B-core baseline is `3a6054f`; the manifest load slice is `dad5d4f`.
+**M1–M6c1 are complete**. M1–M5 are pushed; M6a/M6b/M6c1 are committed locally and not yet pushed. The B-core baseline is `3a6054f`; the manifest load slice is `dad5d4f`.
 
 | Milestone | State |
 | --- | --- |
@@ -48,10 +48,11 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 | M5 Manifest + fresh modes | Sidecar parser, `wax graph load --manifest`, `fresh_once`/`fresh_always`, resolved bindings, unload retention for fresh_once |
 | M6a graphRef trigger | `wax trigger --graph <manifest>`; memory-first lazy load; no revision gate; node/bindings checked before load |
 | M6b Hover unload + answer | Hover-only unload/sweep; Honey-restored hover; `POST /answer`, `ControlClient.answer`, `wax graph answer`; answer graphRef |
+| M6c1 Session retention | Graph unload/sweep/dispose keep every session; `GET /sessions`, `POST /sessions/close`, `wax session list/close`; close refuses busy/bound |
 
 Current verification:
 
-- full suite: **830 tests — 829 pass, 1 platform-skipped**
+- full suite: **841 tests — 840 pass, 1 platform-skipped**
 - native DSH/Codex integration: **11/11** (last full run after M3a)
 - real native smokes: session create/busy/close, multi-session fork/merge, GraphHost, Honey unload/reload, HTTP control, ControlClient, `waxd` CLI, session resume after restart, dual-harness `waxd`
 - A-mode tests remain green; the `wax run` path was not rewritten
@@ -60,11 +61,11 @@ Current verification:
 
 | Milestone | Planned |
 | --- | --- |
-| M6c | Full session lifecycle and decoupling |
+| M6c2 | Session idle TTL and orphan cleanup |
 | M7 | A command-surface pruning; A becomes a B-core profile |
 | M8 | Edit API + six-stage validation + CAS/lease + atomic graph write |
 
-M6b is complete. M6c — full session lifecycle and decoupling — is next.
+M6c1 is complete. M6c2 — session idle TTL and orphan cleanup — is next.
 
 ## Known limits
 
@@ -73,8 +74,8 @@ M6b is complete. M6c — full session lifecycle and decoupling — is next.
 - Graph definitions and bindings are not auto-restored today; only sessions and Honey are persisted. M6b/M6c address the remaining reload semantics.
 - `graphRef` currently accepts a manifest path only; graph id-only lookup needs a catalog.
 - Loaded graphs ignore an incoming `graphRef`; there is no revision or hot-swap check.
-- Idle unload is Rest-only by default; `waxd` enables hover-only unload, while full session decoupling/TTL is M6c.
-- `fresh_always` sessions are still closed on graph unload; only `fresh_once` and borrowed sessions survive.
+- Idle unload is Rest-only by default; `waxd` enables hover-only unload.
+- Graph unload/sweep/dispose now retain every session, but session idle TTL/orphan cleanup is not implemented yet (M6c2).
 - OS SIGTERM graceful cleanup, `close` after a failed session-store removal, and the single-endpoint multi-host model remain unverified or unfinished.
 - Native session fork, Agent identity, Template/Live, and multi-Live scheduling are not implemented.
 - Physical power-loss durability and real active-work native process kills are not verified.

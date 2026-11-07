@@ -6,6 +6,7 @@ import {
   ControlClient,
   ControlClientError,
   discoverDaemon,
+  type SessionSummary,
 } from '../control/client.js';
 import type { GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
 import { GraphManifestError, loadGraphManifest } from '../graph/manifest.js';
@@ -22,10 +23,15 @@ const GRAPH_USAGE =
 const TRIGGER_USAGE =
   'usage: wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>] [--json] ' +
   '[--daemon-dir <dir>] [--harness <codex|dsh>]';
+const SESSION_USAGE =
+  'usage: wax session <list|close <sessionId>> [--json] [--daemon-dir <dir>] ' +
+  '[--harness <codex|dsh>]';
 /** Same bound as the control server's trigger/answer `graphRef`. */
 const MAX_GRAPH_REF_LENGTH = 4_096;
 /** Same bound as the control server's `/answer` hover token. */
 const MAX_TOKEN_LENGTH = 4_096;
+/** Same bound as the control server's session id field. */
+const MAX_SESSION_ID_LENGTH = 512;
 
 /** Injected by the CLI entry points and by tests. */
 export interface ControlCliDependencies {
@@ -137,6 +143,7 @@ const ANSWER_FLAGS = new Set([
   '--harness',
 ]);
 const ANSWER_EMPTY_FLAGS = new Set(['--input']);
+const SESSION_FLAGS = new Set(['--daemon-dir', '--harness']);
 
 interface GraphCommon {
   readonly json: boolean;
@@ -188,6 +195,10 @@ export interface TriggerCommand {
   readonly daemonDir?: string;
   readonly harness?: HarnessKind;
 }
+
+export type SessionCommand =
+  | (GraphCommon & { readonly kind: 'list' })
+  | (GraphCommon & { readonly kind: 'close'; readonly sessionId: string });
 
 function harnessOf(parsed: ParsedCliTokens): { readonly harness?: HarnessKind } {
   const value = parsed.flags.get('--harness');
@@ -405,6 +416,55 @@ export function parseTriggerArgs(argv: readonly string[]): TriggerCommand {
     json: parsed.json,
     ...commonOf(parsed),
   };
+}
+
+function requireSessionId(value: string | undefined): string {
+  if (
+    value === undefined ||
+    value.trim() === '' ||
+    value.length > MAX_SESSION_ID_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new CliUsageError(
+      `session id must be a non-empty string of at most ` +
+        `${String(MAX_SESSION_ID_LENGTH)} characters`,
+    );
+  }
+  return value;
+}
+
+/**
+ * The explicit session surface is separate from `wax status|log|honey` (Honey
+ * inspection) and from the graph commands: `list` is read-only and `close`
+ * names exactly one session.
+ */
+export function parseSessionArgs(argv: readonly string[]): SessionCommand {
+  const [command, subcommand, ...rest] = argv;
+  if (command !== 'session') {
+    throw new CliUsageError(SESSION_USAGE);
+  }
+
+  if (subcommand === 'list') {
+    const parsed = parseCliTokens(rest, SESSION_FLAGS);
+    requirePositionals(parsed, 0, 'expected no arguments after "wax session list"');
+    return { kind: 'list', json: parsed.json, ...commonOf(parsed) };
+  }
+
+  if (subcommand === 'close') {
+    const parsed = parseCliTokens(rest, SESSION_FLAGS);
+    requirePositionals(parsed, 1, 'expected exactly one session id after "wax session close"');
+    return {
+      kind: 'close',
+      sessionId: requireSessionId(parsed.positionals[0]),
+      json: parsed.json,
+      ...commonOf(parsed),
+    };
+  }
+
+  if (subcommand === undefined) {
+    throw new CliUsageError(SESSION_USAGE);
+  }
+  throw new CliUsageError(`unknown session command '${subcommand}'`);
 }
 
 interface PreparedLoad {
@@ -681,6 +741,55 @@ export async function runTriggerCli(
   }
 }
 
+/**
+ * `wax session list|close`. A single attempt over the real control HTTP API; a
+ * 404 close is reported as a normal "not found" failure (exit 1), never retried.
+ */
+export async function runSessionCli(
+  argv: readonly string[],
+  deps: ControlCliDependencies = {},
+): Promise<number> {
+  const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
+  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  let harnessHint = false;
+  try {
+    const command = parseSessionArgs(argv);
+    harnessHint = command.harness === undefined;
+    const client = createClient(command.daemonDir, command.harness, deps);
+
+    switch (command.kind) {
+      case 'list': {
+        const sessions = await client.listSessions();
+        if (command.json) {
+          writeJson(out, { sessions });
+        } else {
+          for (const session of sessions) {
+            out(sessionLine(session));
+          }
+        }
+        return 0;
+      }
+      case 'close': {
+        const closed = await client.closeSession(command.sessionId);
+        if (!closed) {
+          // Static text: the id is local input and is safe to echo, but no
+          // server response body is involved.
+          err(`error: session '${command.sessionId}' is unknown or already closed`);
+          return 1;
+        }
+        if (command.json) {
+          writeJson(out, { closed: true });
+        } else {
+          out(`closed ${command.sessionId}`);
+        }
+        return 0;
+      }
+    }
+  } catch (error) {
+    return reportCliError(error, err, { harnessHint });
+  }
+}
+
 function reportCliError(
   error: unknown,
   err: Writer,
@@ -727,6 +836,14 @@ function listLine(status: GraphStatus): string {
     `${status.graphId} rest=${String(status.rest)} ` +
     `hovered=${String(status.hovered)} nodes=${String(status.nodes.length)} ` +
     `refCount=${String(status.residency.refCount)}`
+  );
+}
+
+function sessionLine(session: SessionSummary): string {
+  return (
+    `${session.sessionId} harness=${session.harness} ` +
+    `project=${session.projectId} busy=${yesNo(session.busy)} ` +
+    `bound=${yesNo(session.bound)}`
   );
 }
 

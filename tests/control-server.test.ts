@@ -275,6 +275,35 @@ class GatedFakeAdapter extends FakeAdapter {
   }
 }
 
+/** Counts native closes so a retained session is provable, not assumed. */
+class TrackingFakeAdapter extends FakeAdapter {
+  readonly closedNativeIds: string[] = [];
+
+  override async closeConversation(nativeId: string): Promise<void> {
+    this.closedNativeIds.push(nativeId);
+    await super.closeConversation(nativeId);
+  }
+}
+
+/**
+ * A submit that never emits a terminal event. The session stays busy without
+ * relying on approval timing, so the busy-state assertions are deterministic.
+ */
+class HoldingFakeAdapter extends TrackingFakeAdapter {
+  override async submit(
+    _nativeId: string,
+    _executionId: string,
+    _text: string,
+  ): Promise<void> {}
+}
+
+/** A native close that fails with a marker that must never reach a response. */
+class FailingCloseFakeAdapter extends FakeAdapter {
+  override async closeConversation(_nativeId: string): Promise<void> {
+    throw new Error('native close failed: NATIVE_CLOSE_SECRET');
+  }
+}
+
 function collectKeys(value: unknown, keys: string[] = []): string[] {
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -643,6 +672,14 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   assert.equal(unload.body?.['unloaded'], true);
   bodies.push(unload.body);
 
+  // The session outlives the graph: it is still listed, now unbound.
+  const sessionsAfterUnload = await getJson(info.url, token, '/sessions');
+  responses.push(sessionsAfterUnload.text);
+  assert.equal(sessionsAfterUnload.status, 200);
+  assert.equal(sessionsAfterUnload.body?.['sessions']?.length, 1);
+  assert.equal(sessionsAfterUnload.body?.['sessions']?.[0]?.['bound'], false);
+  bodies.push(sessionsAfterUnload.body);
+
   const gone = await getJson(info.url, token, '/status/main');
   responses.push(gone.text);
   assert.equal(gone.status, 404);
@@ -790,10 +827,221 @@ test('sweep reports skips and unloads expired graphs', async (t) => {
   const expired = await postJson(info.url, token, '/sweep', {});
   assert.equal(expired.status, 200);
   assert.deepEqual(expired.body?.['report']?.['unloaded'], ['sweepme']);
-  assert.equal(env.registry.list().length, 0);
+  // A sweep releases the graph but retains the sessions it created.
+  assert.equal(env.registry.list().length, 1);
 
   const gone = await getJson(info.url, token, '/status/sweepme');
   assert.equal(gone.status, 404);
+});
+
+test('session list exposes routing metadata and close refuses busy or bound sessions', async (t) => {
+  const adapter = new HoldingFakeAdapter();
+  const env = makeEnvWithAdapter(adapter);
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env);
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+
+  const empty = await getJson(info.url, token, '/sessions');
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body?.['sessions'], []);
+
+  const idle = await env.registry.create(env.project, { displayName: 'idle' });
+  const busy = await env.registry.create(env.project, { displayName: 'busy' });
+  // The holding fake never emits a terminal event, so the execution stays active.
+  await env.workspace.submit(busy.sessionId, 'hold');
+  assert.equal(env.workspace.isConversationBusy(busy.sessionId), true);
+
+  const definition = foragerDefinition('sessions-graph', 'run {{input}}');
+  const loaded = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(definition, env.project, { only: { kind: 'fresh' } }),
+  );
+  assert.equal(loaded.status, 200);
+  const boundRecord = env.registry.list().find((record) => record.nativeId === 'native-3');
+  assert.ok(boundRecord !== undefined);
+
+  const list = await getJson(info.url, token, '/sessions');
+  assert.equal(list.status, 200);
+  const sessions = list.body?.['sessions'] as Record<string, unknown>[];
+  assert.equal(sessions.length, 3);
+  // Registry insertion order is preserved.
+  assert.deepEqual(
+    sessions.map((session) => session['sessionId']),
+    [idle.sessionId, busy.sessionId, boundRecord.sessionId],
+  );
+  const idleSummary = sessions[0];
+  assert.ok(idleSummary !== undefined);
+  assert.deepEqual(Object.keys(idleSummary).sort(), [
+    'bound',
+    'busy',
+    'harness',
+    'projectId',
+    'sessionId',
+  ]);
+  assert.deepEqual(idleSummary, {
+    sessionId: idle.sessionId,
+    harness: 'fake-harness',
+    projectId: env.project.id,
+    busy: false,
+    bound: false,
+  });
+  assert.equal(sessions[1]?.['busy'], true);
+  assert.equal(sessions[1]?.['bound'], false);
+  assert.equal(sessions[2]?.['busy'], false);
+  assert.equal(sessions[2]?.['bound'], true);
+  // No native id, project directory or prompt reaches the session list.
+  assert.equal(list.text.includes('native-'), false);
+  assert.equal(list.text.includes(env.project.directory), false);
+  assert.equal(list.text.includes('projectDirectory'), false);
+  assertNoSecrets(list.text, token);
+
+  // A busy session is refused and stays registered.
+  assert.equal(env.registry.isBusy(busy.sessionId), true, 'busy session lost its state');
+  const busyClose = await postJson(info.url, token, '/sessions/close', {
+    sessionId: busy.sessionId,
+  });
+  assert.equal(busyClose.status, 409, 'busy close');
+  assert.equal(busyClose.body?.['code'], 'conflict');
+  assert.equal(env.registry.get(busy.sessionId)?.sessionId, busy.sessionId);
+
+  // A session bound to a loaded graph is refused and the graph stays routed.
+  const boundClose = await postJson(info.url, token, '/sessions/close', {
+    sessionId: boundRecord.sessionId,
+  });
+  assert.equal(boundClose.status, 409, 'bound close');
+  assert.equal(boundClose.body?.['code'], 'conflict');
+  assert.equal(env.registry.get(boundRecord.sessionId)?.sessionId, boundRecord.sessionId);
+  assert.equal((await getJson(info.url, token, '/status/sessions-graph')).status, 200);
+
+  // An idle, unbound session closes for real and disappears from the list.
+  const closed = await postJson(info.url, token, '/sessions/close', {
+    sessionId: idle.sessionId,
+  });
+  assert.equal(closed.status, 200);
+  assert.equal(closed.body?.['closed'], true);
+  assert.deepEqual(adapter.closedNativeIds, ['native-1']);
+  assert.equal(env.registry.get(idle.sessionId), undefined);
+  const afterClose = await getJson(info.url, token, '/sessions');
+  const remaining = afterClose.body?.['sessions'] as Record<string, unknown>[];
+  assert.equal(remaining.length, 2);
+  assert.equal(
+    remaining.some((session) => session['sessionId'] === idle.sessionId),
+    false,
+  );
+
+  // Unknown and malformed close requests never touch a session.
+  const unknown = await postJson(info.url, token, '/sessions/close', {
+    sessionId: 'missing',
+  });
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.body?.['code'], 'not-found');
+  const badBodies: Record<string, unknown>[] = [
+    {},
+    { sessionId: '' },
+    { sessionId: 'bad\u0000id' },
+    { sessionId: 'bad\u0007id' },
+    { sessionId: 'x'.repeat(513) },
+    { sessionId: 7 },
+    { sessionId: 'x', extra: true },
+  ];
+  for (const body of badBodies) {
+    const bad = await postJson(info.url, token, '/sessions/close', body);
+    assert.equal(bad.status, 400, JSON.stringify(body).slice(0, 40));
+    assert.equal(bad.body?.['code'], 'bad-request');
+  }
+  assert.equal(env.registry.get(busy.sessionId)?.sessionId, busy.sessionId);
+  assert.equal(env.registry.get(boundRecord.sessionId)?.sessionId, boundRecord.sessionId);
+
+  const getClose = await getJson(info.url, token, '/sessions/close');
+  assert.equal(getClose.status, 405);
+  assert.match(getClose.headers.get('allow') ?? '', /POST/);
+  const postSessions = await postJson(info.url, token, '/sessions', {});
+  assert.equal(postSessions.status, 405);
+  assert.match(postSessions.headers.get('allow') ?? '', /GET/);
+
+  assertNoSecrets(
+    `${busyClose.text}\n${boundClose.text}\n${closed.text}\n${unknown.text}`,
+    token,
+  );
+  assert.equal(adapter.closedNativeIds.length, 1);
+});
+
+test('a native close failure is a static 500 and keeps the session', async (t) => {
+  const adapter = new FailingCloseFakeAdapter();
+  const env = makeEnvWithAdapter(adapter);
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env);
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+
+  const session = await env.registry.create(env.project);
+  const close = await postJson(info.url, token, '/sessions/close', {
+    sessionId: session.sessionId,
+  });
+  assert.equal(close.status, 500);
+  assert.equal(close.body?.['code'], 'internal');
+  assert.equal(close.text.includes('NATIVE_CLOSE_SECRET'), false);
+  assert.equal(close.body?.['error'], 'internal error');
+  assert.equal(env.registry.get(session.sessionId)?.sessionId, session.sessionId);
+  const list = await getJson(info.url, token, '/sessions');
+  assert.equal((list.body?.['sessions'] as unknown[]).length, 1);
+});
+
+test('an unloaded graph leaves its session listable and closable', async (t) => {
+  const adapter = new TrackingFakeAdapter();
+  const env = makeEnvWithAdapter(adapter);
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env);
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+
+  const definition = foragerDefinition('retained-session', 'run {{input}}');
+  const load = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(definition, env.project, { only: { kind: 'fresh' } }),
+  );
+  assert.equal(load.status, 200);
+  const session = env.registry.list()[0];
+  assert.ok(session !== undefined);
+  assert.equal(adapter.closedNativeIds.length, 0);
+
+  const unload = await postJson(info.url, token, '/graphs/unload', {
+    graphId: 'retained-session',
+  });
+  assert.equal(unload.status, 200);
+  assert.deepEqual(adapter.closedNativeIds, []);
+
+  const listed = await getJson(info.url, token, '/sessions');
+  const summaries = listed.body?.['sessions'] as Record<string, unknown>[];
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0]?.['sessionId'], session.sessionId);
+  assert.equal(summaries[0]?.['bound'], false);
+
+  const closed = await postJson(info.url, token, '/sessions/close', {
+    sessionId: session.sessionId,
+  });
+  assert.equal(closed.status, 200);
+  assert.equal(closed.body?.['closed'], true);
+  assert.deepEqual(adapter.closedNativeIds, ['native-1']);
+  const after = await getJson(info.url, token, '/sessions');
+  assert.deepEqual(after.body?.['sessions'], []);
 });
 
 test('invalid definitions, bindings and projects are rejected without creating sessions', async (t) => {
@@ -1884,7 +2132,8 @@ test('answer with a graphRef loads the manifest, restores a flushed hover and an
   });
   assert.equal(unload.status, 200);
   assert.equal(unload.body?.['unloaded'], true);
-  assert.equal(env.registry.list().length, 0);
+  // The flushed hover's session is retained by the unload.
+  assert.equal(env.registry.list().length, 1);
   assert.equal(env.adapter.displayNames.length, 1);
 
   const answered = await postJson(info.url, token, '/answer', {
@@ -1897,10 +2146,11 @@ test('answer with a graphRef loads the manifest, restores a flushed hover and an
   assert.equal(answered.body?.['result']?.['rest'], true);
   assert.equal(answered.body?.['result']?.['hovered'], false);
   assert.equal(answered.body?.['result']?.['persisted'], true);
-  // The lazy load created a replacement fresh session; the hover was restored.
+  // The lazy load created a replacement fresh session; the retained one stays
+  // registered and the hover was restored.
   assert.equal(env.adapter.displayNames.length, 2);
   assert.equal(env.adapter.prompts.length, 0);
-  assert.equal(env.registry.list().length, 1);
+  assert.equal(env.registry.list().length, 2);
 
   const status = await getJson(info.url, token, '/status/answer-lazy');
   assert.equal(status.status, 200);

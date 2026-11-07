@@ -338,8 +338,9 @@ test('unload and reload restore the field and continue the counter', async (t) =
 
   assert.equal(await host.unload('counter'), true);
   assert.equal(host.statusOf('counter'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1', 'native-2', 'native-3']);
-  assert.deepEqual(env.registry.list(), []);
+  // Unload releases routing only; the three fresh sessions are retained.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 3);
   assert.equal(workspaceListenerCount(env.workspace), 0);
   assert.equal(counterCount(honey.load()), 1);
 
@@ -359,10 +360,12 @@ test('unload and reload restore the field and continue the counter', async (t) =
     'native-6',
   ]);
   const secondSessionIds = env.registry.list().map((record) => record.sessionId);
-  assert.equal(secondSessionIds.length, 3);
+  // The three retained sessions from the first load are still registered; the
+  // reload added three replacements.
+  assert.equal(secondSessionIds.length, 6);
   assert.equal(workspaceListenerCount(env.workspace), 3);
   for (const sessionId of firstSessionIds) {
-    assert.equal(secondSessionIds.includes(sessionId), false);
+    assert.equal(secondSessionIds.includes(sessionId), true);
   }
   // The restored field carries the counter state; a fresh runtime was not used.
   assert.equal(counterCount(runtimeOf(host, 'counter').exportField()), 1);
@@ -381,7 +384,7 @@ test('unload and reload restore the field and continue the counter', async (t) =
   ]);
 });
 
-test('unload closes fresh sessions and reload creates replacements', async (t) => {
+test('unload retains fresh sessions and reload creates replacements', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-fresh-'));
@@ -407,14 +410,20 @@ test('unload closes fresh sessions and reload creates replacements', async (t) =
   const result = await host.trigger('fresh', 'only', text('go'));
   assert.equal(result.rest, true);
   assert.equal(await host.unload('fresh'), true);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
-  assert.deepEqual(env.registry.list(), []);
+  // The first session is retained; the graph no longer routes to it.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.deepEqual(
+    env.registry.list().map((record) => record.sessionId),
+    [first.sessionId],
+  );
   assert.equal(workspaceListenerCount(env.workspace), 0);
 
   await host.loadGraph({ definition, bindings, project: env.project });
-  const second = env.registry.list()[0];
-  assert.ok(second !== undefined);
-  assert.notEqual(second.sessionId, first.sessionId);
+  const sessionIds = env.registry.list().map((record) => record.sessionId);
+  assert.equal(sessionIds.length, 2);
+  assert.ok(sessionIds.includes(first.sessionId));
+  const replacementId = sessionIds.find((id) => id !== first.sessionId);
+  assert.ok(replacementId !== undefined);
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
   assert.equal(workspaceListenerCount(env.workspace), 1);
   assert.equal(host.statusOf('fresh')?.rest, true);
@@ -475,8 +484,8 @@ test('a failed flush blocks unload and keeps sessions and routing open', async (
   honey.failSave = false;
   assert.equal(await host.unload('blocked'), true);
   assert.equal(host.statusOf('blocked'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
-  assert.deepEqual(env.registry.list(), []);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 1);
   assert.equal(workspaceListenerCount(env.workspace), 0);
 });
 
@@ -676,8 +685,9 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
   assert.deepEqual(report.unloaded, ['sweep-counter']);
   assert.deepEqual(report.failed, []);
   assert.equal(host.statusOf('sweep-counter'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1', 'native-2', 'native-3']);
-  assert.deepEqual(env.registry.list(), []);
+  // A sweep releases the graph but retains every session it created.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 3);
   assert.equal(workspaceListenerCount(env.workspace), 0);
   // Sweep flushed before releasing: the counter state is durable.
   assert.equal(counterCount(honey.load()), 1);
@@ -774,7 +784,7 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
   assert.deepEqual(env.registry.list(), []);
 });
 
-test('a revision mismatch fails restore, releases fresh sessions and is not registered', async (t) => {
+test('a revision mismatch fails restore, releases only the session it created and is not registered', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-revision-'));
@@ -799,6 +809,10 @@ test('a revision mismatch fails restore, releases fresh sessions and is not regi
   const triggered = await host.trigger('revision', 'only', text('one'));
   assert.equal(triggered.persisted, true);
   assert.equal(await host.unload('revision'), true);
+  // The first load's session is retained by the unload; the failed reload must
+  // leave it alone.
+  const retainedSessionIds = env.registry.list().map((record) => record.sessionId);
+  assert.equal(retainedSessionIds.length, 1);
 
   const nextDefinition = runnableForagerGraph('revision', 'new {{input}}');
   assert.notEqual(nextDefinition.graphRevision, firstDefinition.graphRevision);
@@ -821,11 +835,14 @@ test('a revision mismatch fails restore, releases fresh sessions and is not regi
   assert.equal(host.statusOf('revision'), undefined);
   assert.deepEqual(host.status(), []);
   assert.equal(workspaceListenerCount(env.workspace), 0);
-  assert.deepEqual(env.registry.list(), []);
-  // Any fresh session created for the failed attempt was released again.
+  assert.deepEqual(
+    env.registry.list().map((record) => record.sessionId),
+    retainedSessionIds,
+  );
+  // Only the fresh session created for the failed attempt was released again.
   assert.deepEqual(
     env.adapter.closedNativeIds,
-    env.adapter.createdNativeIds.slice(0, createdBefore + 1),
+    env.adapter.createdNativeIds.slice(createdBefore),
   );
   // The rejected load never overwrote the persisted field.
   assert.equal(honey.load()?.graphRevision, firstDefinition.graphRevision);
@@ -1018,7 +1035,7 @@ function userNode(prompt = 'say something'): Record<string, unknown> {
   return { kind: 'user', config: { modality: 'text', prompt } };
 }
 
-/** A user hover plus a forager whose fresh session unload can close. */
+/** A user hover plus a forager whose fresh session survives unload. */
 function userAndForagerDefinition(id: string): CompositionDefinition {
   return fastDefinition(id, {
     idle: forager('idle {{input}}'),
@@ -1052,10 +1069,11 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   assert.equal(triggered.hovered, true);
   assert.equal(triggered.persisted, true);
 
-  // The hover-only unload flushes the parked hover before releasing sessions.
+  // The hover-only unload flushes the parked hover before releasing routing.
   assert.equal(await host.unload('hover-reload'), true);
   assert.equal(host.statusOf('hover-reload'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 1);
   const saved = honey.load();
   assert.ok(saved !== undefined);
   assert.equal(saved.rest, false);
@@ -1067,6 +1085,7 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   assert.equal(reloaded.hovered, true);
   assert.deepEqual(reloaded.recovery?.resumedHovers, ['ask']);
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
+  assert.equal(env.registry.list().length, 2);
 
   const answered = await host.answer('hover-reload', 'ask', text('answered'));
   assert.equal(answered.rest, true);
@@ -1078,7 +1097,8 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   assert.equal(after.nodes['ask']?.hover, undefined);
 
   assert.equal(await host.unload('hover-reload'), true);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1', 'native-2']);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 2);
 });
 
 test('a failed Honey flush blocks a hover-only unload and keeps it loaded', async (t) => {

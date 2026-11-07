@@ -182,6 +182,26 @@ class FailingCloseAdapter extends RecordingAdapter {
   }
 }
 
+/**
+ * A create that can be parked, so a dispose can race an in-flight load and
+ * force the load-rollback path. Close failures are driven by `failClose`.
+ */
+class GatedCloseFailureAdapter extends FailingCloseAdapter {
+  private readonly created = deferred();
+  private readonly gate = deferred();
+  readonly createStarted = this.created.promise;
+
+  override async createConversation(project: Project): Promise<string> {
+    this.created.resolve();
+    await this.gate.promise;
+    return super.createConversation(project);
+  }
+
+  release(): void {
+    this.gate.resolve();
+  }
+}
+
 let projectSeq = 0;
 
 function makeEnv(adapter: RecordingAdapter = new RecordingAdapter()): TestEnv {
@@ -525,7 +545,9 @@ test('two loaded graphs stay independent through trigger and unload', async (t) 
 
   assert.equal(await host.unload('graph-a'), true);
   assert.equal(host.statusOf('graph-a'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  // Unload releases routing only: graph-a's session is retained.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 2);
   assert.equal(host.statusOf('graph-b')?.rest, true);
 
   const third = await host.trigger('graph-b', 'only', text('three'));
@@ -617,7 +639,9 @@ test('a user hover is not unloaded or swept until it reaches Rest', async (t) =>
 
   assert.equal(await host.unload('hover'), true);
   assert.equal(host.statusOf('hover'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  // A normal unload retains the session and closes nothing.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.get(sessionId)?.sessionId, sessionId);
   assert.equal(workspaceListenerCount(env.workspace), 0);
 });
 
@@ -682,7 +706,7 @@ test('duplicate load, invalid bindings and an unknown graph are rejected explici
   );
 });
 
-test('unload closes fresh sessions, keeps borrowed sessions and disposes routing', async (t) => {
+test('unload retains fresh and borrowed sessions and disposes routing', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
@@ -721,10 +745,10 @@ test('unload closes fresh sessions, keeps borrowed sessions and disposes routing
 
   assert.equal(await host.unload('mixed'), true);
   assert.equal(host.statusOf('mixed'), undefined);
-  // Only the created session is closed; the borrowed one stays registered and
-  // usable, and every executor subscription is gone.
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-2']);
-  assert.equal(env.registry.list().length, 1);
+  // Sessions are decoupled from graphs: the created fresh session and the
+  // borrowed one both survive, while every executor subscription is gone.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 2);
   assert.equal(env.registry.get(borrowed.sessionId)?.sessionId, borrowed.sessionId);
   assert.ok(env.workspace.getConversation(borrowed.sessionId) !== undefined);
   assert.equal(workspaceListenerCount(env.workspace), 0);
@@ -737,8 +761,57 @@ test('unload closes fresh sessions, keeps borrowed sessions and disposes routing
   assert.equal(env.adapter.allPrompts.length, promptsBefore);
 });
 
-test('a failed fresh-session close is reported but does not block unload', async (t) => {
-  const adapter = new FailingCloseAdapter();
+test('loadedSessionIds reports only sessions bound to currently loaded graphs', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const borrowed = await env.registry.create(env.project, {
+    displayName: 'borrowed-session',
+  });
+  const stranger = await env.registry.create(env.project, {
+    displayName: 'unbound-session',
+  });
+  const definition = fastDefinition('ids', {
+    fresh: forager('fresh {{input}}'),
+    reuse: forager('reuse {{input}}'),
+  });
+  const bindings: GraphBindings = {
+    fresh: { kind: 'fresh' },
+    reuse: { kind: 'session', sessionId: borrowed.sessionId },
+  };
+  await host.loadGraph({ definition, bindings, project: env.project });
+
+  const freshSession = env.registry
+    .list()
+    .find(
+      (record) =>
+        record.sessionId !== borrowed.sessionId && record.sessionId !== stranger.sessionId,
+    );
+  assert.ok(freshSession !== undefined);
+  assert.deepEqual(
+    [...host.loadedSessionIds()].sort(),
+    [borrowed.sessionId, freshSession.sessionId].sort(),
+  );
+  assert.equal(host.loadedSessionIds().has(stranger.sessionId), false);
+
+  assert.equal(await host.unload('ids'), true);
+  assert.equal(host.loadedSessionIds().size, 0);
+  // All three sessions are still registered after the graph is unloaded.
+  assert.equal(env.registry.list().length, 3);
+});
+
+test('a failed close during load rollback is reported and the load is not registered', async (t) => {
+  const adapter = new GatedCloseFailureAdapter();
+  adapter.failClose = true;
   const env = makeEnv(adapter);
   const events: GraphHostEvent[] = [];
   const clock = new FakeClock(1_000);
@@ -749,36 +822,40 @@ test('a failed fresh-session close is reported but does not block unload', async
     onEvent: (event) => events.push(event),
   });
   t.after(async () => {
+    adapter.release();
     await host.dispose();
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('cleanup', 'cleanup {{input}}');
-  await host.loadGraph({
+  const definition = runnableForagerGraph('rollback-close', 'rollback {{input}}');
+  const load = host.loadGraph({
     definition,
     bindings: allFresh(definition),
     project: env.project,
   });
+  await adapter.createStarted;
+  // Dispose while instantiation is in flight: the load must not become visible,
+  // and the session it created must be rolled back.
+  const disposal = host.dispose();
+  adapter.release();
+  await assert.rejects(load, GraphHostDisposedError);
+  await disposal;
+
+  assert.equal(host.statusOf('rollback-close'), undefined);
   const sessionId = env.registry.list()[0]?.sessionId;
   assert.ok(sessionId !== undefined);
-
-  adapter.failClose = true;
-  // A failed close is best effort: the graph must still be forgotten, and the
-  // failure is surfaced as metadata instead of breaking residency.
-  assert.equal(await host.unload('cleanup'), true);
-  assert.equal(host.statusOf('cleanup'), undefined);
   assert.equal(workspaceListenerCount(env.workspace), 0);
   assert.deepEqual(events, [
     {
       type: 'graph.cleanup-failed',
-      graphId: 'cleanup',
+      graphId: 'rollback-close',
       phase: 'session',
       sessionId,
       error: 'close failed for native-1',
     },
   ]);
-  // The WAX record survives because the native close failed; this test records
-  // the leak rather than pretending cleanup succeeded.
+  // The close failed, so the record survives: rollback does not pretend it
+  // succeeded, and no graph is loaded that would hide the session.
   assert.ok(env.registry.get(sessionId) !== undefined);
 });
 
@@ -816,7 +893,9 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   report = await host.sweep();
   assert.deepEqual(report.unloaded, ['idle']);
   assert.equal(host.statusOf('idle'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  // A TTL sweep is a normal release: the session is retained.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 1);
 
   const renew = runnableForagerGraph('renew', 'renew {{input}}');
   await host.loadGraph({
@@ -842,7 +921,8 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   clock.advance(40); // 1260: exactly the renewed deadline
   report = await host.sweep();
   assert.deepEqual(report.unloaded, ['renew']);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1', 'native-2']);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 2);
 });
 
 test('a busy graph is neither unloaded nor swept while its trigger is in flight', async (t) => {
@@ -895,7 +975,8 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
   // Once the active execution settles, the graph is Rest and unload succeeds.
   assert.equal(await host.unload('busy'), true);
   assert.equal(host.statusOf('busy'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 1);
   assert.equal(workspaceListenerCount(env.workspace), 0);
 });
 
@@ -983,11 +1064,16 @@ test('dispose unloads every Rest graph, is idempotent and refuses later work', a
   await host.dispose();
   assert.deepEqual(host.status(), []);
   assert.equal(host.statusOf('graph-a'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1', 'native-2']);
+  // dispose unloads both graphs but closes neither session.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
   assert.equal(workspaceListenerCount(env.workspace), 0);
+  assert.equal(env.registry.list().length, 2);
+  for (const record of env.registry.list()) {
+    assert.ok(env.workspace.getConversation(record.sessionId) !== undefined);
+  }
 
   await host.dispose();
-  assert.equal(env.adapter.closedNativeIds.length, 2);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
 
   await assert.rejects(
     host.trigger('graph-a', 'only', text('after')),
@@ -1341,7 +1427,7 @@ test('fresh_once keeps its session and mapping across unload and reuses it on re
   assert.equal(bindingStore.get('once', 'only')?.sessionId, session.sessionId);
 });
 
-test('fresh_always closes on unload and creates a new session on reload', async (t) => {
+test('fresh_always is retained on unload and a reload creates a new session', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const bindingStore = makeBindingStore();
@@ -1363,16 +1449,23 @@ test('fresh_always closes on unload and creates a new session on reload', async 
   assert.ok(first !== undefined);
   assert.equal(await host.unload('always'), true);
 
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
-  assert.deepEqual(env.registry.list(), []);
+  // fresh_always is no longer graph-owned: the session outlives the graph.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.deepEqual(
+    env.registry.list().map((record) => record.sessionId),
+    [first.sessionId],
+  );
+  assert.equal(env.registry.get(first.sessionId)?.sessionId, first.sessionId);
   assert.deepEqual(bindingStore.snapshot(), []);
 
   await host.loadGraph({ definition, bindings, project: env.project });
-  const second = env.registry.list()[0];
-  assert.ok(second !== undefined);
-  assert.notEqual(second.sessionId, first.sessionId);
+  const sessionIds = env.registry.list().map((record) => record.sessionId);
+  assert.equal(sessionIds.length, 2);
+  assert.ok(sessionIds.includes(first.sessionId));
+  const secondSessionId = sessionIds.find((id) => id !== first.sessionId);
+  assert.ok(secondSessionId !== undefined);
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
   assert.deepEqual(bindingStore.snapshot(), []);
 
   const result = await host.trigger('always', 'only', text('go'));
@@ -1424,7 +1517,7 @@ test('an idle sweep retains a fresh_once session and the reload still reuses it'
   assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['run one', 'run two']);
 });
 
-test('allowHoverUnload unloads a quiescent hover and releases its fresh session', async (t) => {
+test('allowHoverUnload unloads a quiescent hover and retains its fresh session', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
@@ -1456,13 +1549,16 @@ test('allowHoverUnload unloads a quiescent hover and releases its fresh session'
 
   assert.equal(await host.unload('hover-unload'), true);
   assert.equal(host.statusOf('hover-unload'), undefined);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  // A hover-only unload is still a normal release: the session is retained.
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 1);
   assert.equal(workspaceListenerCount(env.workspace), 0);
 
   // A reload creates a fresh forager session; the hover itself is in-memory
   // only here (no Honey), which is why this no-Honey case simply starts empty.
   await host.loadGraph({ definition, bindings, project: env.project });
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
+  assert.equal(env.registry.list().length, 2);
   assert.equal(workspaceListenerCount(env.workspace), 1);
   assert.equal(host.statusOf('hover-unload')?.rest, true);
 });
@@ -1624,7 +1720,7 @@ test('allowHoverUnload still refuses a hover while another node is active', asyn
   await pumping;
   // The execution is gone and only the hover remains: now it is unloadable.
   assert.equal(await host.unload('hover-active'), true);
-  assert.deepEqual(env.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
 });
 
 test('answer resolves an open user hover and rejects invalid targets and tokens', async (t) => {

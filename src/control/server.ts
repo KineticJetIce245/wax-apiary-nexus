@@ -34,7 +34,11 @@ import {
   type Value,
 } from '../runtime/index.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
-import type { SessionRegistry } from '../session/session-registry.js';
+import {
+  SessionBusyError,
+  SessionNotFoundError,
+  type SessionRegistry,
+} from '../session/session-registry.js';
 import type { Workspace } from '../session/workspace.js';
 import { expandHomePath } from '../storage/conversation-store.js';
 import { HoneyStore } from '../storage/honey.js';
@@ -143,7 +147,9 @@ type RouteKind =
   | 'trigger'
   | 'answer'
   | 'unload'
-  | 'sweep';
+  | 'sweep'
+  | 'sessions'
+  | 'session-close';
 
 interface Route {
   readonly kind: RouteKind;
@@ -836,6 +842,53 @@ export class ControlServer {
         const report = await host.sweep();
         return { ok: true, report };
       }
+      case 'sessions': {
+        // Registry list order is insertion order and is stable for a running
+        // registry. Only routing metadata leaves the daemon: never a native id,
+        // project directory, prompt, output or token.
+        const registry = this.options.registry;
+        const bound = host.loadedSessionIds();
+        return {
+          ok: true,
+          sessions: registry.list().map((record) => ({
+            sessionId: record.sessionId,
+            harness: record.harness,
+            projectId: record.projectId,
+            busy: registry.isBusy(record.sessionId),
+            bound: bound.has(record.sessionId),
+          })),
+        };
+      }
+      case 'session-close': {
+        const sessionId = this.parseSessionCloseBody(requirePayload(payload));
+        const registry = this.options.registry;
+        if (!registry.has(sessionId)) {
+          throw new HttpError(404, 'not-found', 'unknown session');
+        }
+        // A busy session is executing; a bound one is still routed to by a
+        // loaded graph. Neither may be closed behind the graph's back.
+        if (registry.isBusy(sessionId)) {
+          throw new HttpError(409, 'conflict', 'session is busy');
+        }
+        if (host.loadedSessionIds().has(sessionId)) {
+          throw new HttpError(409, 'conflict', 'session is bound to a loaded graph');
+        }
+        try {
+          await registry.close(sessionId);
+        } catch (error) {
+          // The registry already refuses busy/unknown sessions; a close that
+          // fails here (for example the native close) is a server-side failure.
+          // Its message and body are never forwarded.
+          if (error instanceof SessionNotFoundError) {
+            throw new HttpError(404, 'not-found', 'unknown session');
+          }
+          if (error instanceof SessionBusyError) {
+            throw new HttpError(409, 'conflict', 'session is busy');
+          }
+          throw new HttpError(500, 'internal', 'internal error');
+        }
+        return { ok: true, closed: true };
+      }
     }
   }
 
@@ -986,6 +1039,11 @@ export class ControlServer {
   private parseUnloadBody(body: Record<string, unknown>): string {
     assertExactFields(body, ['graphId'], 'unload request');
     return requireStringField(body, 'graphId', 'graphId', MAX_ID_LENGTH);
+  }
+
+  private parseSessionCloseBody(body: Record<string, unknown>): string {
+    assertExactFields(body, ['sessionId'], 'session close request');
+    return requireStringField(body, 'sessionId', 'sessionId', MAX_ID_LENGTH);
   }
 
   private toHttpError(error: unknown): HttpError {
@@ -1238,6 +1296,8 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
         return { kind: 'answer', methods: ['POST'] };
       case 'sweep':
         return { kind: 'sweep', methods: ['POST'] };
+      case 'sessions':
+        return { kind: 'sessions', methods: ['GET'] };
       default:
         return undefined;
     }
@@ -1260,6 +1320,9 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
     }
     if (first === 'graphs' && second === 'unload') {
       return { kind: 'unload', methods: ['POST'] };
+    }
+    if (first === 'sessions' && second === 'close') {
+      return { kind: 'session-close', methods: ['POST'] };
     }
   }
 

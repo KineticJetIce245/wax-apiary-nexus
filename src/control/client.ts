@@ -39,6 +39,19 @@ export interface DaemonDiscovery {
   readonly tokenPath: string;
 }
 
+/**
+ * One session as exposed by the control channel. It is deliberately routing
+ * metadata only: a native id, project directory, prompt, output or token is
+ * never part of this shape.
+ */
+export interface SessionSummary {
+  readonly sessionId: string;
+  readonly harness: string;
+  readonly projectId: string;
+  readonly busy: boolean;
+  readonly bound: boolean;
+}
+
 export interface ControlClientErrorOptions {
   /** Server error code, or `network` | `timeout` | `discovery` | `protocol`. */
   readonly code: string;
@@ -279,6 +292,46 @@ export class ControlClient {
   async sweep(): Promise<unknown> {
     const body = await this.request('POST', '/sweep', {});
     return requireField(body, 'report');
+  }
+
+  /**
+   * Session summaries in the daemon's registry order. Each entry carries only
+   * `sessionId`, `harness`, `projectId`, `busy` and `bound`; a malformed entry
+   * is a protocol error, never a partially trusted object.
+   */
+  async listSessions(): Promise<readonly SessionSummary[]> {
+    const body = await this.request('GET', '/sessions');
+    const value = body['sessions'];
+    if (!Array.isArray(value)) {
+      throw protocolError("control response missing 'sessions' array");
+    }
+    return value.map((entry) => parseSessionSummary(entry));
+  }
+
+  /**
+   * Close one idle session that is not bound to a loaded graph.
+   *
+   * 404 means the session is unknown or already closed and resolves `false`,
+   * matching `unload`; a busy or graph-bound session is a 409 and is thrown.
+   * The attempt is never retried.
+   */
+  async closeSession(sessionId: string): Promise<boolean> {
+    const id = requireId(sessionId, 'sessionId');
+    try {
+      const body = await this.request('POST', '/sessions/close', {
+        sessionId: id,
+      });
+      const closed = body['closed'];
+      if (typeof closed !== 'boolean') {
+        throw protocolError("control response missing boolean 'closed'");
+      }
+      return closed;
+    } catch (error) {
+      if (error instanceof ControlClientError && error.status === 404) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   private async request(
@@ -553,17 +606,43 @@ function requireField(
 }
 
 function requireId(value: unknown, field: string): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > MAX_ID_LENGTH ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
+  if (!isBoundedString(value, MAX_ID_LENGTH)) {
     throw new TypeError(
       `${field} must be a non-empty string of at most ${String(MAX_ID_LENGTH)} characters`,
     );
   }
   return value;
+}
+
+function parseSessionSummary(value: unknown): SessionSummary {
+  if (!isRecord(value)) {
+    throw protocolError('control response contained an invalid session summary');
+  }
+  const sessionId = value['sessionId'];
+  const harness = value['harness'];
+  const projectId = value['projectId'];
+  const busy = value['busy'];
+  const bound = value['bound'];
+  if (
+    !isBoundedString(sessionId, MAX_ID_LENGTH) ||
+    !isBoundedString(harness, 128) ||
+    !isBoundedString(projectId, MAX_ID_LENGTH) ||
+    typeof busy !== 'boolean' ||
+    typeof bound !== 'boolean'
+  ) {
+    // The message is static: a malformed summary is never echoed.
+    throw protocolError('control response contained an invalid session summary');
+  }
+  return { sessionId, harness, projectId, busy, bound };
+}
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= maxLength &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
 }
 
 function requireToken(value: unknown): string {

@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import { runAnswerCli } from './answer-cli.js';
 import { runDaemon } from '../daemon/daemon.js';
-import { runGraphCli, runTriggerCli } from './control-cli.js';
+import { runGraphCli, runSessionCli, runTriggerCli } from './control-cli.js';
 import { runInspectCli } from './inspect-cli.js';
 import type { HarnessAdapter } from '../adapters/harness.js';
 import { runCompositionCli } from './composition-cli.js';
@@ -341,6 +341,9 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
   }
   if (argv[0] === 'trigger') {
     return runTriggerCli(argv, deps);
+  }
+  if (argv[0] === 'session') {
+    return runSessionCli(argv, deps);
   }
   if (argv[0] === 'status' || argv[0] === 'log' || argv[0] === 'honey') {
     // Read-only Honey inspection lives in its own module; it never starts the

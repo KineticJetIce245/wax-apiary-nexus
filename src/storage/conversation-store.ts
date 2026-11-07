@@ -22,6 +22,11 @@ export interface ConversationRecord {
   readonly projectId: string;
   readonly projectDirectory: string;
   readonly updatedAt: string;
+  /** Optional presentation metadata; old records may omit all of it. */
+  readonly displayName?: string;
+  readonly createdAt?: string;
+  readonly model?: string;
+  readonly reasoning?: string;
 }
 
 const LOCK_TIMEOUT_MS = 2_000;
@@ -58,6 +63,10 @@ export function sameProjectPath(left: string, right: string): boolean {
   return normalize(left) === normalize(right);
 }
 
+function isOptionalString(record: Record<string, unknown>, field: string): boolean {
+  return record[field] === undefined || typeof record[field] === 'string';
+}
+
 function isRecord(value: unknown): value is ConversationRecord {
   if (typeof value !== 'object' || value === null) {
     return false;
@@ -69,7 +78,14 @@ function isRecord(value: unknown): value is ConversationRecord {
     typeof record.nativeId === 'string' &&
     typeof record.projectId === 'string' &&
     typeof record.projectDirectory === 'string' &&
-    typeof record.updatedAt === 'string'
+    typeof record.updatedAt === 'string' &&
+    // Optional metadata is either absent (old records) or a string. A record
+    // with a non-string value is treated like any other malformed entry and
+    // filtered out by load(), matching the existing tolerance policy.
+    isOptionalString(record, 'displayName') &&
+    isOptionalString(record, 'createdAt') &&
+    isOptionalString(record, 'model') &&
+    isOptionalString(record, 'reasoning')
   );
 }
 
@@ -140,6 +156,24 @@ export class ConversationStore {
         merged.set(entry.conversationId, entry);
       }
       this.write([...merged.values()]);
+    } finally {
+      release();
+    }
+  }
+
+  /** Remove one mapping under the same lock/atomic-write path as upsert. */
+  remove(conversationId: string): void {
+    const release = this.acquireLock();
+    try {
+      this.cleanupStaleTemps();
+      // Read the latest committed records while holding the lock so a writer
+      // that races this removal cannot be overwritten with a stale snapshot.
+      const current = this.readUnlocked();
+      const remaining = current.filter((entry) => entry.conversationId !== conversationId);
+      if (remaining.length === current.length) {
+        return;
+      }
+      this.write(remaining);
     } finally {
       release();
     }

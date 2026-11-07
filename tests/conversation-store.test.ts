@@ -24,6 +24,11 @@ function record(overrides: Partial<ConversationRecord> = {}): ConversationRecord
   };
 }
 
+/** Raw JSON row for malformed-input tests; bypasses the record type. */
+function malformed(overrides: Record<string, unknown>): Record<string, unknown> {
+  return { ...record(), ...overrides };
+}
+
 test('returns an empty list when the store file does not exist', () => {
   assert.deepEqual(store().load(), []);
 });
@@ -60,6 +65,139 @@ test('writes the file as JSON and ignores malformed entries', () => {
 
   writeFileSync(conversations.filePath, JSON.stringify([record(), { bad: true }]), 'utf8');
   assert.equal(conversations.load().length, 1);
+});
+
+test('loads old records without optional metadata and round-trips new fields', () => {
+  const conversations = store();
+  // Old record: exactly the original six fields.
+  conversations.upsert(record());
+  const old = conversations.find('conversation-1');
+  assert.ok(old !== undefined);
+  assert.equal(old.displayName, undefined);
+  assert.equal(old.createdAt, undefined);
+  assert.equal(old.model, undefined);
+  assert.equal(old.reasoning, undefined);
+
+  conversations.upsert(
+    record({
+      displayName: 'wax-session',
+      createdAt: '2026-11-02T00:00:00.000Z',
+      model: 'deepseek-chat',
+      reasoning: 'high',
+    }),
+  );
+  const loaded = conversations.load();
+  assert.equal(loaded.length, 1);
+  assert.deepEqual(loaded[0], {
+    conversationId: 'conversation-1',
+    harness: 'codex',
+    nativeId: 'native-1',
+    projectId: 'project-1',
+    projectDirectory: 'C:/work/project',
+    updatedAt: '2026-11-02T00:00:00.000Z',
+    displayName: 'wax-session',
+    createdAt: '2026-11-02T00:00:00.000Z',
+    model: 'deepseek-chat',
+    reasoning: 'high',
+  });
+});
+
+test('filters records whose optional metadata has the wrong type', () => {
+  const conversations = store();
+  writeFileSync(
+    conversations.filePath,
+    JSON.stringify([
+      record(),
+      malformed({ conversationId: 'bad-display', displayName: 7 }),
+      malformed({ conversationId: 'bad-created', createdAt: null }),
+      malformed({ conversationId: 'bad-model', model: { name: 'x' } }),
+      malformed({ conversationId: 'bad-reasoning', reasoning: false }),
+    ]),
+    'utf8',
+  );
+
+  // Same policy as any other malformed entry: the whole record is ignored,
+  // instead of silently loading a partially usable mapping.
+  assert.deepEqual(
+    conversations.load().map((entry) => entry.conversationId),
+    ['conversation-1'],
+  );
+});
+
+test('remove deletes only the named record and is a no-op when absent', () => {
+  const conversations = store();
+  conversations.upsert(record({ conversationId: 'keep' }));
+  conversations.upsert(record({ conversationId: 'drop' }));
+
+  conversations.remove('drop');
+  assert.deepEqual(
+    conversations.load().map((entry) => entry.conversationId),
+    ['keep'],
+  );
+
+  const before = readFileSync(conversations.filePath, 'utf8');
+  conversations.remove('missing');
+  assert.equal(readFileSync(conversations.filePath, 'utf8'), before);
+  assert.deepEqual(
+    conversations.load().map((entry) => entry.conversationId),
+    ['keep'],
+  );
+});
+
+test('remove preserves a record written by a concurrent upsert', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uw-conv-remove-race-'));
+  const filePath = join(dir, 'conversations.json');
+  const startedPath = join(dir, 'writer.started');
+  const conversations = new ConversationStore(filePath);
+  conversations.upsert(record({ conversationId: 'keep' }));
+  conversations.upsert(record({ conversationId: 'drop' }));
+
+  const storePath = fileURLToPath(new URL('../src/storage/conversation-store.js', import.meta.url));
+  const storeUrl = pathToFileURL(storePath).href;
+  const script =
+    `import { writeFileSync } from 'node:fs';\n` +
+    `import { ConversationStore } from ${JSON.stringify(storeUrl)};\n` +
+    `writeFileSync(process.argv[3], 'started');\n` +
+    `new ConversationStore(process.argv[1], { lockTimeoutMs: 10_000 }).upsert(JSON.parse(process.argv[2]));`;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      script,
+      filePath,
+      JSON.stringify(record({ conversationId: 'writer', nativeId: 'native-writer' })),
+      startedPath,
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString('utf8');
+  });
+  const exitPromise = new Promise<number | null>((resolveExit) => {
+    child.once('exit', (code) => resolveExit(code));
+  });
+
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(startedPath)) {
+    if (Date.now() >= deadline) {
+      child.kill();
+      assert.fail(`writer never started; stderr=${stderr}`);
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+  }
+  // Whatever the interleaving, the lock makes remove read the latest committed
+  // file, so the writer's record must survive and the named record must not.
+  conversations.remove('drop');
+  const exitCode = await exitPromise;
+  assert.equal(exitCode, 0, `writer failed; stderr=${stderr}`);
+
+  const ids = new ConversationStore(filePath)
+    .load()
+    .map((entry) => entry.conversationId)
+    .sort();
+  assert.deepEqual(ids, ['keep', 'writer']);
 });
 
 test('throws on a file that is not a JSON array', () => {

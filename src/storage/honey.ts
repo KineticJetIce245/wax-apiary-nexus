@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -7,10 +6,10 @@ import {
   renameSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { atomicWriteJson } from './atomic-write.js';
 import { expandHomePath } from './conversation-store.js';
 import { assertJsonValue } from '../runtime/json-value.js';
 import type {
@@ -498,11 +497,11 @@ export class HoneyStore {
   }
 
   save(field: PersistedField): void {
-    this.writeJsonAtomic(this.paths.field, field);
+    atomicWriteJson(this.paths.field, field);
   }
 
   saveScheduler(state: SchedulerState): void {
-    this.writeJsonAtomic(this.paths.scheduler, state);
+    atomicWriteJson(this.paths.scheduler, state);
   }
 
   loadScheduler(): SchedulerState | undefined {
@@ -524,14 +523,6 @@ export class HoneyStore {
         `scheduler state is invalid: ${this.paths.scheduler} (${error instanceof Error ? error.message : String(error)})`,
       );
     }
-  }
-
-  private writeJsonAtomic(path: string, value: unknown): void {
-    mkdirSync(dirname(path), { recursive: true });
-    const temp = `${path}.tmp-${String(process.pid)}-${randomUUID()}`;
-    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    // Same-directory rename is atomic on both NTFS and POSIX filesystems.
-    renameSync(temp, path);
   }
 
   load(): PersistedField | undefined {

@@ -748,3 +748,18 @@ test('concurrent duplicate resume rejects one caller', async (t) => {
   assert.equal(resumed.id, 'dup-id');
   assert.equal(adapter.resumes.length, 1);
 });
+
+test('reports whether a conversation has an active execution', async (t) => {
+  const { adapter, workspace, conversation } = await setup();
+  t.after(() => workspace.stop());
+
+  assert.equal(workspace.isConversationBusy(conversation.id), false);
+  assert.equal(workspace.isConversationBusy('missing-conversation'), false);
+
+  const execution = await workspace.submit(conversation.id, 'busy');
+  assert.equal(workspace.isConversationBusy(conversation.id), true);
+  assert.equal(workspace.isConversationBusy('missing-conversation'), false);
+
+  adapter.emit({ type: 'execution/completed', executionId: execution.id, stopReason: 'end_turn' });
+  assert.equal(workspace.isConversationBusy(conversation.id), false);
+});

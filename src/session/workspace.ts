@@ -514,6 +514,15 @@ export class Workspace {
     return conversation === undefined ? undefined : snapshotConversation(conversation);
   }
 
+  /**
+   * Read-only busy query. It reports whether an execution is currently
+   * associated with the conversation; it does not reserve the conversation or
+   * change execution state. Unknown conversations are not busy.
+   */
+  isConversationBusy(conversationId: string): boolean {
+    return this.activeExecutionByConversation.has(conversationId);
+  }
+
   getExecution(executionId: string): Execution | undefined {
     const execution = this.executions.get(executionId);
     return execution === undefined ? undefined : snapshot(execution);

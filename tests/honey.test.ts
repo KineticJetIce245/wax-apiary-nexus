@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
@@ -152,6 +152,19 @@ test('save then load returns the same field', () => {
   store.save(field);
 
   assert.deepEqual(store.load(), field);
+});
+
+test('save leaves no temporary field file behind', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
+  const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor(), now: () => START });
+
+  runtime.trigger('start', { kind: 'text', text: 'one' });
+  store.save(runtime.exportField());
+
+  assert.deepEqual(
+    readdirSync(dirname(store.paths.field)).filter((entry) => entry.includes('.tmp-')),
+    [],
+  );
 });
 
 test('load returns undefined for a missing field and rejects broken JSON', () => {

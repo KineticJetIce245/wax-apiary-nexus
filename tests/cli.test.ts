@@ -840,6 +840,150 @@ test('run waits for nextWakeAt when no hover is left, then expires the join', as
   assert.match(log, /merge\.failed/);
 });
 
+test('parses --engine, defaults to a, and rejects unknown or duplicate values', () => {
+  const base = ['run', 'c.json', '--project', 'p', '--harness', 'codex', '--trigger', 's'];
+
+  assert.equal(parseRunArgs(base).engine, 'a');
+  assert.equal(parseRunArgs([...base, '--engine', 'a']).engine, 'a');
+  assert.equal(parseRunArgs([...base, '--engine', 'b-core']).engine, 'b-core');
+
+  assert.throws(
+    () => parseRunArgs([...base, '--engine', 'b']),
+    /--engine must be 'a' or 'b-core'/,
+  );
+  assert.throws(
+    () => parseRunArgs([...base, '--engine', 'a', '--engine', 'a']),
+    /more than once/,
+  );
+  assert.throws(() => parseRunArgs([...base, '--json']), /unknown option '--json'/);
+});
+
+test('runs a headless graph through --engine b-core', async () => {
+  const adapter = new FakeAdapter({ output: 'B-CORE-OUT' });
+  const captureResult = capture();
+  const state = stateDirectory();
+  const project = projectDirectory();
+
+  const code = await runCli(
+    [
+      ...baseArgs(compositionFile(), project, state),
+      '--trigger',
+      'start',
+      '--input',
+      'hi',
+      '--engine',
+      'b-core',
+    ],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 0);
+  assert.ok(captureResult.stdout.includes('composition  cli-demo'));
+  assert.ok(captureResult.stdout.includes('rest         true'));
+  assert.ok(captureResult.stdout.includes('output       B-CORE-OUT'));
+  assert.ok(captureResult.stdout.some((line) => line.startsWith('node         start')));
+  assert.deepEqual(adapter.prompts, ['reply to hi']);
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1);
+
+  const paths = honeyPaths(state, apiaryForProject(project), 'cli-demo');
+  assert.ok(existsSync(paths.field));
+  const field = JSON.parse(readFileSync(paths.field, 'utf8')) as { rest: boolean };
+  assert.equal(field.rest, true);
+});
+
+test('b-core usage errors are rejected before any adapter is created', async () => {
+  const cases: readonly {
+    readonly name: string;
+    readonly composition: unknown;
+    readonly args: readonly string[];
+  }[] = [
+    { name: 'resume', composition: COMPOSITION, args: ['--resume'] },
+    {
+      name: 'composition tools',
+      composition: COMPOSITION,
+      args: ['--trigger', 'start', '--composition-tools'],
+    },
+    { name: 'user node', composition: ASK_COMPOSITION, args: ['--trigger', 'start'] },
+    {
+      name: 'condition trigger',
+      composition: BRANCHING_COMPOSITION,
+      args: ['--trigger', 'check'],
+    },
+  ];
+
+  for (const entry of cases) {
+    let created = 0;
+    const captureResult = capture();
+    const code = await runCli(
+      [
+        'run',
+        compositionFile(entry.composition),
+        '--project',
+        projectDirectory(),
+        '--harness',
+        'codex',
+        '--state-dir',
+        stateDirectory(),
+        '--engine',
+        'b-core',
+        ...entry.args,
+      ],
+      {
+        ...captureResult.deps,
+        createAdapter: async () => {
+          created += 1;
+          return new FakeAdapter();
+        },
+      },
+    );
+
+    assert.equal(code, 2, `${entry.name} is a usage error`);
+    assert.equal(created, 0, `${entry.name} must not create an adapter`);
+    assert.ok(captureResult.stderr.length > 0, `${entry.name} reports a message`);
+  }
+});
+
+test('a failed b-core execution exits 1 and stops the adapter', async () => {
+  const adapter = new FakeAdapter({ terminal: 'failed', error: 'b-core exploded' });
+  const captureResult = capture();
+
+  const code = await runCli(
+    [
+      ...baseArgs(compositionFile(), projectDirectory(), stateDirectory()),
+      '--trigger',
+      'start',
+      '--engine',
+      'b-core',
+    ],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 1);
+  assert.match(captureResult.stderr.join('\n'), /b-core exploded/);
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1);
+});
+
+test('defaults to the A engine and keeps the A one-shot path', async () => {
+  const adapter = new FakeAdapter({ output: 'A-OUT' });
+  const captureResult = capture();
+
+  const code = await runCli(
+    [...baseArgs(compositionFile(), projectDirectory(), stateDirectory()), '--trigger', 'start'],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 0);
+  assert.ok(captureResult.stdout.includes('output       A-OUT'));
+  assert.ok(
+    captureResult.stdout.some((line) => line.startsWith('log          ')),
+    'the A path prints its runtime log summary',
+  );
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1);
+});
+
 test('a queue-full trigger exits cleanly with the rejection reason', async () => {
   const state = stateDirectory();
   const project = projectDirectory();

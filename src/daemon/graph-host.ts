@@ -55,6 +55,12 @@ export interface GraphHostOptions {
    */
   readonly honeyForGraph?: (graphId: string) => HoneyStore;
   /**
+   * Whether load restores the existing Honey field. Default true. `false`
+   * starts from an empty field even when Honey exists, while the store is
+   * still used for trigger/unload flushes (the ephemeral b-core run).
+   */
+  readonly restoreHoney?: boolean;
+  /**
    * Durable `fresh_once` reuse mappings. Required whenever a loaded graph uses
    * `fresh_once`; the instantiation layer rejects that mode without a store.
    */
@@ -257,6 +263,7 @@ export class GraphHost {
   private readonly now: () => number;
   private readonly defaultIdleTtlMs: number;
   private readonly honeyForGraph: ((graphId: string) => HoneyStore) | undefined;
+  private readonly restoreHoney: boolean;
   private readonly bindingStore: GraphBindingStore | undefined;
   private readonly maxPumps: number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -276,6 +283,10 @@ export class GraphHost {
     }
     this.now = options.now ?? (() => Date.now());
     this.honeyForGraph = options.honeyForGraph;
+    this.restoreHoney = options.restoreHoney ?? true;
+    if (typeof this.restoreHoney !== 'boolean') {
+      throw new TypeError('restoreHoney must be a boolean');
+    }
     this.bindingStore = options.bindingStore;
     this.defaultIdleTtlMs =
       options.defaultIdleTtlMs ??
@@ -316,7 +327,9 @@ export class GraphHost {
 
     const honey = this.honeyForGraph?.(graphId);
     let persisted: PersistedField | undefined;
-    if (honey !== undefined) {
+    // A host that does not restore still keeps `honey` for trigger/unload
+    // flushes; only the load read is skipped.
+    if (honey !== undefined && this.restoreHoney) {
       try {
         // Load before creating any session: a corrupt or unsupported Honey
         // file must not leave a fresh session behind.
@@ -526,6 +539,24 @@ export class GraphHost {
       }
     }
     return ids;
+  }
+
+  /**
+   * Last completed text Value of every forager in every loaded graph, keyed by
+   * node id. It is a read-only snapshot for one-shot reporting and never
+   * exposes a prompt, token or transcript. Unloaded graphs contribute nothing.
+   */
+  lastOutputs(): ReadonlyMap<NodeId, Value> {
+    const outputs = new Map<NodeId, Value>();
+    for (const entry of this.graphs.list()) {
+      for (const [nodeId, executor] of entry.value.instantiated.executors) {
+        const output = executor.lastOutput;
+        if (output !== undefined) {
+          outputs.set(nodeId, output);
+        }
+      }
+    }
+    return outputs;
   }
 
   /**

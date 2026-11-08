@@ -3,6 +3,12 @@ import { pathToFileURL } from 'node:url';
 
 import { runAnswerCli } from './answer-cli.js';
 import { runDaemon } from '../daemon/daemon.js';
+import {
+  EphemeralRunUnsupportedError,
+  assertEphemeralGraphSupported,
+  runEphemeralGraph,
+  type EphemeralRunResult,
+} from '../daemon/ephemeral-run.js';
 import { runGraphCli, runSessionCli, runTriggerCli } from './control-cli.js';
 import { runInspectCli } from './inspect-cli.js';
 import type { HarnessAdapter } from '../adapters/harness.js';
@@ -21,7 +27,7 @@ import {
 import type { HarnessKind } from '../session/connection.js';
 import { WorkspaceForagerExecutor } from '../session/forager.js';
 import { HoneyStore } from '../storage/honey.js';
-import { createKernel } from '../project/kernel.js';
+import { createKernel, type Project } from '../project/kernel.js';
 import { runMcpCommand } from './mcp-server.js';
 import {
   createMemoryLog,
@@ -58,7 +64,14 @@ export interface RunCommand {
   readonly resume: boolean;
   /** Opt-in `wax_composition` MCP server for the selected harness. */
   readonly compositionTools: boolean;
+  /**
+   * Runtime selected with `--engine`. `a` is the original one-shot path;
+   * `b-core` is the transitional headless GraphHost + Honey path.
+   */
+  readonly engine: RunEngine;
 }
+
+export type RunEngine = 'a' | 'b-core';
 
 /** Interactive answer for a hovering user node. */
 export type UserAnswerHandler = (node: UserNode, hover: HoverSpec) => Promise<Value>;
@@ -89,6 +102,7 @@ const VALUE_FLAGS = new Set([
   '--codex-exe',
   '--state-dir',
   '--apiary',
+  '--engine',
 ]);
 const BOOLEAN_FLAGS = new Set(['--resume', '--composition-tools']);
 
@@ -113,7 +127,7 @@ export function parseRunArgs(
     throw new CliUsageError(
       'usage: wax run <composition.json> --project <dir> --harness <codex|dsh> ' +
         '[--trigger <node>] [--input <text>] [--resume] [--composition-tools] ' +
-        '[--state-dir <dir>] [--apiary <id>] ' +
+        '[--state-dir <dir>] [--apiary <id>] [--engine a|b-core] ' +
         '[--codex-exe <path>] [--dsh-root <path>]',
     );
   }
@@ -179,6 +193,10 @@ export function parseRunArgs(
     env,
   );
   const apiary = flags.get('--apiary');
+  const rawEngine = flags.get('--engine') ?? 'a';
+  if (rawEngine !== 'a' && rawEngine !== 'b-core') {
+    throw new CliUsageError(`--engine must be 'a' or 'b-core', got '${rawEngine}'`);
+  }
 
   return {
     compositionPath,
@@ -192,6 +210,7 @@ export function parseRunArgs(
     ...(apiary === undefined ? {} : { apiary }),
     resume,
     compositionTools: booleans.has('--composition-tools'),
+    engine: rawEngine,
   };
 }
 
@@ -365,8 +384,29 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
   try {
     command = parseRunArgs(argv, deps.env);
     definition = loadCompositionFile(command.compositionPath);
+    if (command.engine === 'b-core') {
+      // b-core is a headless ephemeral entry point: resuming and the
+      // composition tools are out of scope, and the graph must be entirely
+      // non-interactive. Reject locally, before any adapter is created.
+      if (command.resume) {
+        throw new CliUsageError('--resume is not supported with --engine b-core');
+      }
+      if (command.compositionTools) {
+        throw new CliUsageError('--composition-tools is not supported with --engine b-core');
+      }
+    }
     if (command.trigger !== undefined) {
       validateTrigger(definition, command.trigger);
+    }
+    if (command.engine === 'b-core') {
+      try {
+        assertEphemeralGraphSupported(definition, command.trigger);
+      } catch (error) {
+        if (error instanceof EphemeralRunUnsupportedError) {
+          throw new CliUsageError(error.message);
+        }
+        throw error;
+      }
     }
 
     apiary = command.apiary ?? apiaryForProject(command.projectDirectory);
@@ -387,6 +427,10 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
       return 2;
     }
     throw error;
+  }
+
+  if (command.engine === 'b-core') {
+    return runBcoreCommand(command, definition, apiary, deps, out, err);
   }
 
   const createAdapter = deps.createAdapter ?? createDefaultAdapter;
@@ -623,6 +667,120 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
   }
 
   return code;
+}
+
+/**
+ * The transitional headless b-core `wax run`: one ephemeral graph execution
+ * through GraphHost + Honey. The A path below is untouched and remains the
+ * default; this path has no session store, no daemon, no resume and no
+ * interactive approval.
+ */
+async function runBcoreCommand(
+  command: RunCommand,
+  definition: CompositionDefinition,
+  apiary: string,
+  deps: CliDependencies,
+  out: (line: string) => void,
+  err: (line: string) => void,
+): Promise<number> {
+  let project: Project;
+  try {
+    project = createKernel().registerProject(command.projectDirectory);
+  } catch (error) {
+    err(`error: ${messageOf(error)}`);
+    return 1;
+  }
+
+  const bindings: Record<string, { readonly kind: 'fresh' }> = {};
+  for (const node of definition.nodes.values()) {
+    if (node.kind === 'forager') {
+      bindings[node.id] = { kind: 'fresh' };
+    }
+  }
+
+  const createAdapter = deps.createAdapter ?? createDefaultAdapter;
+  let adapter: HarnessAdapter;
+  try {
+    adapter = await createAdapter({
+      harness: command.harness,
+      ...(command.codexExe === undefined ? {} : { executable: command.codexExe }),
+      ...(command.dshRoot === undefined ? {} : { dshRoot: command.dshRoot }),
+    });
+  } catch (error) {
+    err(`error: ${messageOf(error)}`);
+    return 1;
+  }
+
+  try {
+    const result = await runEphemeralGraph({
+      adapter,
+      definition,
+      project,
+      bindings,
+      ...(command.trigger === undefined ? {} : { trigger: command.trigger }),
+      input: command.input,
+      stateRoot: command.stateDir,
+      apiary,
+      harness: command.harness,
+      now: deps.now ?? (() => Date.now()),
+      ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
+    });
+    printEphemeralSummary(out, definition, result);
+    if (result.status.hovered) {
+      err(`error: graph '${definition.id}' is hovering; b-core never answers a hover`);
+      return 1;
+    }
+    if (!result.status.rest) {
+      err(`error: graph '${definition.id}' did not reach Rest`);
+      return 1;
+    }
+    return 0;
+  } catch (error) {
+    if (error instanceof EphemeralRunUnsupportedError) {
+      err(error.message);
+      return 2;
+    }
+    err(`error: ${messageOf(error)}`);
+    return 1;
+  }
+}
+
+function printEphemeralSummary(
+  out: (line: string) => void,
+  definition: CompositionDefinition,
+  result: EphemeralRunResult,
+): void {
+  out(`composition  ${definition.id}`);
+  out(`revision     ${definition.graphRevision}`);
+  out(`rest         ${String(result.status.rest)}`);
+  for (const node of result.status.nodes) {
+    out(
+      `node         ${node.nodeId} kind=${node.kind} queue=${String(node.queue)} ` +
+        `pending=${node.pending ? 'yes' : 'no'} ` +
+        `active=${node.active ? 'yes' : 'no'} ` +
+        `hover=${node.hovered ? 'yes' : 'no'}`,
+    );
+  }
+  const output = lastForagerOutput(definition, result.outputs);
+  out(`output       ${output?.kind === 'text' ? output.text : ''}`);
+}
+
+/** The last forager output in definition order; an empty line when none ran. */
+function lastForagerOutput(
+  definition: CompositionDefinition,
+  outputs: ReadonlyMap<NodeId, Value>,
+): Value | undefined {
+  let last: Value | undefined;
+  for (const [id, node] of definition.nodes) {
+    if (node.kind !== 'forager') {
+      continue;
+    }
+    const output = outputs.get(id);
+    if (output !== undefined) {
+      last = output;
+    }
+  }
+  return last;
 }
 
 function printSummary(

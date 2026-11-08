@@ -21,7 +21,10 @@ import {
 } from '../src/control/server.js';
 import { DaemonLockError } from '../src/daemon/daemon-lock.js';
 import type { Project } from '../src/project/kernel.js';
-import { SessionRegistry } from '../src/session/session-registry.js';
+import {
+  SessionRegistry,
+  type SweepSessionsReport,
+} from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions } from './support/fake-adapter.js';
 
@@ -72,7 +75,10 @@ function makeEnv(adapterOptions: FakeAdapterOptions = {}): TestEnv {
   return makeEnvWithAdapter(new FakeAdapter(adapterOptions));
 }
 
-function makeEnvWithAdapter(adapter: FakeAdapter): TestEnv {
+function makeEnvWithAdapter(
+  adapter: FakeAdapter,
+  registryNow: () => string = () => FIXED_NOW,
+): TestEnv {
   const workspace = new Workspace(adapter);
   projectSeq += 1;
   const project: Project = {
@@ -82,7 +88,7 @@ function makeEnvWithAdapter(adapter: FakeAdapter): TestEnv {
   const registry = new SessionRegistry({
     workspace,
     harness: 'fake-harness',
-    now: () => FIXED_NOW,
+    now: registryNow,
   });
   const stateRoot = mkdtempSync(join(tmpdir(), 'wax-control-state-'));
   return {
@@ -301,6 +307,16 @@ class HoldingFakeAdapter extends TrackingFakeAdapter {
 class FailingCloseFakeAdapter extends FakeAdapter {
   override async closeConversation(_nativeId: string): Promise<void> {
     throw new Error('native close failed: NATIVE_CLOSE_SECRET');
+  }
+}
+
+/** A registry whose automatic sweep always fails, for daemon-resilience tests. */
+class ThrowingSweepRegistry extends SessionRegistry {
+  sweepCalls = 0;
+
+  override async sweepIdle(): Promise<SweepSessionsReport> {
+    this.sweepCalls += 1;
+    throw new Error('SWEEP_SECRET');
   }
 }
 
@@ -2342,4 +2358,202 @@ test('a hover-only graph is swept only when allowHoverUnload is enabled', async 
   assert.equal(unloadB.status, 409);
   assert.equal(unloadB.body?.['code'], 'conflict');
   assert.equal(unloadB.body?.['status']?.['hovered'], true);
+});
+
+test('session TTL options are validated and disabled by default', async (t) => {
+  const env = makeEnv();
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+
+  assert.throws(() => makeServer(env, { sessionIdleTtlMs: -1 }), TypeError);
+  assert.throws(() => makeServer(env, { sessionIdleTtlMs: 1.5 }), TypeError);
+  assert.throws(() => makeServer(env, { sessionIdleTtlMs: Number.NaN }), TypeError);
+  assert.throws(() => makeServer(env, { sessionSweepIntervalMs: -1 }), TypeError);
+  assert.throws(
+    () => makeServer(env, { sessionIdleTtlMs: 10, sessionSweepIntervalMs: 0 }),
+    TypeError,
+  );
+  // A zero interval is accepted when the TTL itself is disabled.
+  const disabled = makeServer(env, { sessionIdleTtlMs: 0, sessionSweepIntervalMs: 0 });
+  assert.equal(disabled instanceof ControlServer, true);
+});
+
+test('POST /sessions/sweep closes orphan idle sessions but never bound or busy ones', async (t) => {
+  const clock = new FakeClock(1_000);
+  const adapter = new HoldingFakeAdapter();
+  const env = makeEnvWithAdapter(adapter, () => new Date(clock.time).toISOString());
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env, { sessionIdleTtlMs: 1_000 });
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+
+  const busy = await env.registry.create(env.project);
+  // The holding fake never emits a terminal event, so this stays busy.
+  await env.workspace.submit(busy.sessionId, 'hold');
+  const idle = await env.registry.create(env.project);
+
+  const definition = foragerDefinition('session-sweep-graph', 'run {{input}}');
+  const loaded = await postJson(
+    info.url,
+    token,
+    '/graphs/load',
+    loadBody(definition, env.project, { only: { kind: 'fresh' } }),
+  );
+  assert.equal(loaded.status, 200);
+  const bound = env.registry.list().find((record) => record.nativeId === 'native-3');
+  assert.ok(bound !== undefined);
+
+  // Nothing is idle long enough yet: every session is skipped.
+  clock.advance(500);
+  const early = await postJson(info.url, token, '/sessions/sweep', {});
+  assert.equal(early.status, 200);
+  assert.deepEqual(early.body?.['report'], {
+    closed: [],
+    skipped: [busy.sessionId, idle.sessionId, bound.sessionId],
+    failed: [],
+  });
+
+  clock.advance(600);
+  const expired = await postJson(info.url, token, '/sessions/sweep', {});
+  assert.equal(expired.status, 200);
+  assert.deepEqual(expired.body?.['report'], {
+    closed: [idle.sessionId],
+    skipped: [busy.sessionId, bound.sessionId],
+    failed: [],
+  });
+  // The orphan closed; the busy and graph-bound sessions survive.
+  assert.equal(env.registry.has(idle.sessionId), false);
+  assert.equal(env.registry.has(busy.sessionId), true);
+  assert.equal(env.registry.has(bound.sessionId), true);
+  assert.deepEqual(adapter.closedNativeIds, ['native-2']);
+  // The loaded graph is untouched and its session still bound.
+  assert.equal((await getJson(info.url, token, '/status/session-sweep-graph')).status, 200);
+
+  // The explicit session list still exposes only the five documented fields.
+  const list = await getJson(info.url, token, '/sessions');
+  const summaries = list.body?.['sessions'] as Record<string, unknown>[];
+  assert.deepEqual(Object.keys(summaries[0] ?? {}).sort(), [
+    'bound',
+    'busy',
+    'harness',
+    'projectId',
+    'sessionId',
+  ]);
+  assert.equal(list.text.includes('lastAccessAt'), false);
+  assertNoSecrets(`${early.text}\n${expired.text}`, token);
+
+  // Malformed sweeps never reach the registry.
+  const getSweep = await getJson(info.url, token, '/sessions/sweep');
+  assert.equal(getSweep.status, 405);
+  assert.match(getSweep.headers.get('allow') ?? '', /POST/);
+  const unknownField = await postJson(info.url, token, '/sessions/sweep', { extra: true });
+  assert.equal(unknownField.status, 400);
+  assert.equal(unknownField.body?.['code'], 'bad-request');
+});
+
+test('the automatic session sweep closes idle sessions, is unrefed and stops with the server', async (t) => {
+  const clock = new FakeClock(1_000);
+  const env = makeEnvWithAdapter(new FakeAdapter(), () => new Date(clock.time).toISOString());
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env, {
+    sessionIdleTtlMs: 100,
+    sessionSweepIntervalMs: 10,
+  });
+  t.after(async () => {
+    await running.server.stop();
+  });
+
+  const timer = (running.server as unknown as { sweepTimer?: NodeJS.Timeout }).sweepTimer;
+  assert.ok(timer !== undefined, 'enabled TTL must start a sweep timer');
+  // Cleanup must never keep the daemon process alive.
+  assert.equal(timer.hasRef(), false);
+
+  const idle = await env.registry.create(env.project);
+  clock.advance(1_000);
+  const deadline = Date.now() + 2_000;
+  while (env.registry.has(idle.sessionId) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(env.registry.has(idle.sessionId), false);
+
+  await running.server.stop();
+  const afterStop = (running.server as unknown as { sweepTimer?: NodeJS.Timeout }).sweepTimer;
+  assert.equal(afterStop, undefined, 'stop must clear the sweep timer');
+});
+
+test('session sweep is disabled by default: no timer and a no-op manual sweep', async (t) => {
+  const env = makeEnv();
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const running = await startServer(env);
+  t.after(async () => {
+    await running.server.stop();
+  });
+
+  assert.equal(
+    (running.server as unknown as { sweepTimer?: NodeJS.Timeout }).sweepTimer,
+    undefined,
+  );
+  const idle = await env.registry.create(env.project);
+  const sweep = await postJson(running.info.url, running.token, '/sessions/sweep', {});
+  assert.equal(sweep.status, 200);
+  assert.deepEqual(sweep.body?.['report'], { closed: [], skipped: [], failed: [] });
+  assert.equal(env.registry.has(idle.sessionId), true);
+});
+
+test('an automatic sweep failure is metadata-only and does not crash the server', async (t) => {
+  const adapter = new FakeAdapter();
+  const workspace = new Workspace(adapter);
+  const clock = new FakeClock(1_000);
+  const registry = new ThrowingSweepRegistry({
+    workspace,
+    harness: 'fake-harness',
+    now: () => new Date(clock.time).toISOString(),
+  });
+  const stateRoot = mkdtempSync(join(tmpdir(), 'wax-control-sweep-failure-'));
+  const env: TestEnv = {
+    adapter,
+    workspace,
+    registry,
+    project: {
+      id: 'project-sweep-failure',
+      directory: mkdtempSync(join(tmpdir(), 'wax-control-project-')),
+    },
+    stateRoot,
+    daemonDir: join(stateRoot, 'waxd'),
+  };
+  t.after(async () => {
+    await workspace.stop();
+  });
+  const logs: string[] = [];
+  const running = await startServer(env, {
+    sessionIdleTtlMs: 100,
+    sessionSweepIntervalMs: 10,
+    logger: (line) => logs.push(line),
+  });
+  t.after(async () => {
+    await running.server.stop();
+  });
+
+  const deadline = Date.now() + 2_000;
+  while (registry.sweepCalls === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(registry.sweepCalls > 0, 'the automatic sweep never ran');
+
+  const health = await getJson(running.info.url, running.token, '/health');
+  assert.equal(health.status, 200);
+  const sweepLog = logs.find((line) => line.includes('event=session-sweep-failed'));
+  assert.ok(sweepLog !== undefined, `no failure metadata was logged: ${logs.join(' | ')}`);
+  // Only the error name is logged; a message could carry sensitive text.
+  assert.equal(sweepLog.includes('SWEEP_SECRET'), false);
+  assert.match(sweepLog, /error=Error/);
 });

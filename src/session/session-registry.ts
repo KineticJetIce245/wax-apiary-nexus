@@ -17,6 +17,12 @@ export interface SessionRecord {
   readonly projectDirectory: string;
   readonly displayName: string;
   readonly createdAt: string;
+  /**
+   * Last time the session was created, resumed, attached or used by a graph.
+   * It is the idle-TTL clock; the durable form of this value is
+   * `ConversationRecord.updatedAt` (there is no separate store field).
+   */
+  readonly lastAccessAt: string;
   readonly model?: string;
   readonly reasoning?: string;
 }
@@ -65,6 +71,25 @@ export interface SessionRegistryOptions {
   readonly store?: ConversationStore;
   /** ISO timestamp source; tests inject a fixed clock. */
   readonly now?: () => string;
+}
+
+export interface SweepSessionsOptions {
+  /** Sessions idle for at least this long are closed; `<= 0` is a no-op. */
+  readonly idleTtlMs: number;
+  /** Session ids the caller must not close (for example graph-bound ones). */
+  readonly exclude?: ReadonlySet<string>;
+  /** ISO timestamp source for this pass; defaults to the registry clock. */
+  readonly now?: () => string;
+}
+
+/**
+ * Outcome of one idle-session sweep. `failed` carries a static, sanitized
+ * message only: a native close error is never forwarded to a control caller.
+ */
+export interface SweepSessionsReport {
+  readonly closed: readonly string[];
+  readonly skipped: readonly string[];
+  readonly failed: readonly { readonly sessionId: string; readonly error: string }[];
 }
 
 /** Metadata stored next to a session; it is not forwarded to the adapter. */
@@ -199,7 +224,7 @@ export class SessionRegistry implements BindingLookup {
       throw new SessionNotFoundError(sessionId);
     }
     if (this.workspace.getConversation(sessionId) !== undefined) {
-      return snapshotRecord(record);
+      return this.recordAccess(record);
     }
     const inFlight = this.attaching.get(sessionId);
     if (inFlight !== undefined) {
@@ -215,6 +240,79 @@ export class SessionRegistry implements BindingLookup {
         this.attaching.delete(sessionId);
       }
     }
+  }
+
+  /**
+   * Refresh a session's `lastAccessAt` (memory and, best effort, its durable
+   * mapping). Graph usage calls this, so a session that just finished a run is
+   * not closed by the next idle sweep.
+   *
+   * Persistence is deliberately best effort: a store failure must not turn a
+   * completed trigger/answer into an error, and the in-memory clock is what an
+   * idle sweep reads. An unknown session still throws.
+   */
+  touch(sessionId: string): void {
+    const record = this.records.get(sessionId);
+    if (record === undefined) {
+      throw new SessionNotFoundError(sessionId);
+    }
+    this.recordAccess(record);
+  }
+
+  /**
+   * One idle sweep. It iterates a snapshot in insertion order and closes every
+   * session that is not excluded, not busy and idle for at least `idleTtlMs`.
+   * A close failure is collected and never aborts the rest of the pass, and an
+   * unparsable timestamp is skipped rather than treated as expired.
+   *
+   * Bound sessions are not known here: the caller passes them in `exclude`.
+   * `fresh_once` mappings are untouched; a stale mapping self-heals on the next
+   * load (existing behavior).
+   */
+  async sweepIdle(options: SweepSessionsOptions): Promise<SweepSessionsReport> {
+    const closed: string[] = [];
+    const skipped: string[] = [];
+    const failed: { sessionId: string; error: string }[] = [];
+    if (!Number.isFinite(options.idleTtlMs) || options.idleTtlMs <= 0) {
+      return { closed, skipped, failed };
+    }
+
+    const nowIso = (options.now ?? this.now)();
+    const nowMs = Date.parse(nowIso);
+    const exclude = options.exclude;
+
+    // Snapshot first: `close` mutates the map. The snapshot keeps the pass's
+    // decision order stable and lets a concurrent close surface as a failure.
+    for (const record of [...this.records.values()]) {
+      const sessionId = record.sessionId;
+      if (exclude?.has(sessionId) === true) {
+        skipped.push(sessionId);
+        continue;
+      }
+      // Busy is checked before the TTL so a running session is never a
+      // candidate, even if `close` would also refuse it.
+      if (this.isBusy(sessionId)) {
+        skipped.push(sessionId);
+        continue;
+      }
+      const lastAccessMs = Date.parse(record.lastAccessAt);
+      if (!Number.isFinite(nowMs) || !Number.isFinite(lastAccessMs)) {
+        skipped.push(sessionId);
+        continue;
+      }
+      if (nowMs - lastAccessMs < options.idleTtlMs) {
+        skipped.push(sessionId);
+        continue;
+      }
+      try {
+        await this.close(sessionId);
+        closed.push(sessionId);
+      } catch (error) {
+        failed.push({ sessionId, error: sweepErrorMessage(error) });
+      }
+    }
+
+    return { closed, skipped, failed };
   }
 
   get(sessionId: string): SessionRecord | undefined {
@@ -261,6 +359,7 @@ export class SessionRegistry implements BindingLookup {
   }
 
   private register(conversation: Conversation, metadata: SessionMetadataOptions): SessionRecord {
+    const accessedAt = this.now();
     const record: SessionRecord = {
       sessionId: conversation.id,
       nativeId: conversation.nativeId,
@@ -268,7 +367,8 @@ export class SessionRegistry implements BindingLookup {
       projectId: conversation.project.id,
       projectDirectory: conversation.project.directory,
       displayName: conversation.displayName,
-      createdAt: this.now(),
+      createdAt: accessedAt,
+      lastAccessAt: accessedAt,
       ...(metadata.model === undefined ? {} : { model: metadata.model }),
       ...(metadata.reasoning === undefined ? {} : { reasoning: metadata.reasoning }),
     };
@@ -279,9 +379,32 @@ export class SessionRegistry implements BindingLookup {
     return snapshotRecord(record);
   }
 
+  /**
+   * Update the access clock in memory and persist best effort. A close that
+   * races this call wins: the record is not resurrected and no write happens.
+   */
+  private recordAccess(record: SessionRecord): SessionRecord {
+    const current = this.records.get(record.sessionId);
+    if (current === undefined) {
+      // Closed concurrently; return the last known snapshot rather than
+      // re-inserting a session nobody can address.
+      return snapshotRecord(record);
+    }
+    const updated: SessionRecord = { ...current, lastAccessAt: this.now() };
+    this.records.set(updated.sessionId, updated);
+    try {
+      this.persist(updated);
+    } catch {
+      // Best effort: the in-memory clock drives sweepIdle, and callers using a
+      // session must not fail because the durable timestamp could not be
+      // rewritten.
+    }
+    return snapshotRecord(updated);
+  }
+
   /** Persist the current mapping; a no-op for a memory-only registry. */
   private persist(record: SessionRecord): void {
-    this.store?.upsert(recordForStore(record, this.now()));
+    this.store?.upsert(recordForStore(record));
   }
 
   private async attach(record: SessionRecord): Promise<SessionRecord> {
@@ -294,7 +417,7 @@ export class SessionRegistry implements BindingLookup {
     } catch (error) {
       throw new SessionAttachError(record.sessionId, record.nativeId, { cause: error });
     }
-    return snapshotRecord(record);
+    return this.recordAccess(record);
   }
 
   private async closeBestEffort(conversationId: string): Promise<void> {
@@ -331,20 +454,25 @@ function snapshotRecord(record: SessionRecord): SessionRecord {
     projectDirectory: record.projectDirectory,
     displayName: record.displayName,
     createdAt: record.createdAt,
+    lastAccessAt: record.lastAccessAt,
     ...(record.model === undefined ? {} : { model: record.model }),
     ...(record.reasoning === undefined ? {} : { reasoning: record.reasoning }),
   };
 }
 
-/** The durable form of a session record. */
-function recordForStore(record: SessionRecord, updatedAt: string): ConversationRecord {
+/**
+ * The durable form of a session record. `updatedAt` is the store's clock and
+ * carries `lastAccessAt`, so a restart resumes the idle TTL from the last use
+ * instead of the creation time. No separate store field is needed.
+ */
+function recordForStore(record: SessionRecord): ConversationRecord {
   return {
     conversationId: record.sessionId,
     harness: record.harness,
     nativeId: record.nativeId,
     projectId: record.projectId,
     projectDirectory: record.projectDirectory,
-    updatedAt,
+    updatedAt: record.lastAccessAt,
     displayName: record.displayName,
     createdAt: record.createdAt,
     ...(record.model === undefined ? {} : { model: record.model }),
@@ -354,8 +482,8 @@ function recordForStore(record: SessionRecord, updatedAt: string): ConversationR
 
 /**
  * Rebuild a session record from its durable form. The conversation is not
- * resumed here; `displayName`/`createdAt` have documented fallbacks so records
- * written before those fields existed remain usable.
+ * resumed here; `displayName`/`createdAt`/`lastAccessAt` have documented
+ * fallbacks so records written before those fields existed remain usable.
  */
 function hydratedRecord(entry: ConversationRecord): SessionRecord {
   return {
@@ -366,7 +494,23 @@ function hydratedRecord(entry: ConversationRecord): SessionRecord {
     projectDirectory: entry.projectDirectory,
     displayName: entry.displayName ?? entry.nativeId,
     createdAt: entry.createdAt ?? entry.updatedAt,
+    lastAccessAt: entry.updatedAt,
     ...(entry.model === undefined ? {} : { model: entry.model }),
     ...(entry.reasoning === undefined ? {} : { reasoning: entry.reasoning }),
   };
+}
+
+/**
+ * Static sweep-failure text. A close error may come from the native adapter,
+ * so its message is never forwarded: a control caller only learns that this
+ * session could not be closed, not anything a native process said.
+ */
+function sweepErrorMessage(error: unknown): string {
+  if (error instanceof SessionBusyError) {
+    return 'session is busy';
+  }
+  if (error instanceof SessionNotFoundError) {
+    return 'session not found';
+  }
+  return 'close failed';
 }

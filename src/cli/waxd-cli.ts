@@ -26,6 +26,10 @@ interface WaxdCommonCommand {
   readonly daemonDir: string;
   /** 0 lets the operating system choose a loopback port. */
   readonly port: number;
+  /** Idle TTL for sessions; 0 disables automatic session cleanup. */
+  readonly sessionTtlMs: number;
+  /** Sweep period; only used when `sessionTtlMs > 0`. */
+  readonly sessionSweepIntervalMs: number;
 }
 
 /** One harness keeps the original `<root>` layout. */
@@ -67,7 +71,8 @@ export interface WaxdDependencies {
 const WAXD_USAGE =
   'usage: waxd (--harness <codex|dsh> | --harnesses <codex,dsh>) ' +
   '[--codex-exe <path>] [--dsh-root <path>] [--state-root <dir>] ' +
-  '[--apiary <id>] [--daemon-dir <dir>] [--port <n>]';
+  '[--apiary <id>] [--daemon-dir <dir>] [--port <n>] ' +
+  '[--session-ttl-ms <n>] [--session-sweep-interval-ms <n>]';
 
 const WAXD_VALUE_FLAGS = new Set([
   '--harness',
@@ -78,11 +83,16 @@ const WAXD_VALUE_FLAGS = new Set([
   '--apiary',
   '--daemon-dir',
   '--port',
+  '--session-ttl-ms',
+  '--session-sweep-interval-ms',
 ]);
 
 const DEFAULT_STATE_ROOT = '~/.wax';
 const DEFAULT_DAEMON_DIR = '~/.wax/waxd';
 const DEFAULT_APIARY = 'default';
+/** Two hours, matching the daemon's idle-session cleanup policy. */
+const DEFAULT_SESSION_TTL_MS = 7_200_000;
+const DEFAULT_SESSION_SWEEP_INTERVAL_MS = 60_000;
 
 export function parseWaxdArgs(
   argv: readonly string[],
@@ -113,6 +123,22 @@ export function parseWaxdArgs(
   const apiary = parsed.flags.get('--apiary') ?? DEFAULT_APIARY;
   const daemonDir = parsed.flags.get('--daemon-dir') ?? DEFAULT_DAEMON_DIR;
   const port = rawPort === undefined ? 0 : parsePort(rawPort);
+  const rawSessionTtlMs = parsed.flags.get('--session-ttl-ms');
+  const rawSessionSweepIntervalMs = parsed.flags.get('--session-sweep-interval-ms');
+  const sessionTtlMs =
+    rawSessionTtlMs === undefined
+      ? DEFAULT_SESSION_TTL_MS
+      : parseNonNegativeInteger(rawSessionTtlMs, '--session-ttl-ms');
+  const sessionSweepIntervalMs =
+    rawSessionSweepIntervalMs === undefined
+      ? DEFAULT_SESSION_SWEEP_INTERVAL_MS
+      : parseNonNegativeInteger(rawSessionSweepIntervalMs, '--session-sweep-interval-ms');
+  if (sessionTtlMs > 0 && sessionSweepIntervalMs === 0) {
+    throw new CliUsageError(
+      '--session-sweep-interval-ms must be positive when --session-ttl-ms is enabled',
+    );
+  }
+  const sessionOptions = { sessionTtlMs, sessionSweepIntervalMs };
 
   if (rawHarnesses !== undefined) {
     const harnesses = parseHarnessList(rawHarnesses);
@@ -141,6 +167,7 @@ export function parseWaxdArgs(
       apiary,
       daemonDir,
       port,
+      ...sessionOptions,
     };
   }
 
@@ -161,6 +188,7 @@ export function parseWaxdArgs(
     apiary,
     daemonDir,
     port,
+    ...sessionOptions,
   };
 }
 
@@ -192,6 +220,17 @@ function parsePort(raw: string): number {
     throw new CliUsageError('--port must be an integer between 0 and 65535');
   }
   return port;
+}
+
+function parseNonNegativeInteger(raw: string, flag: string): number {
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new CliUsageError(`${flag} must be a non-negative integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new CliUsageError(`${flag} must be a non-negative integer`);
+  }
+  return value;
 }
 
 interface HarnessPlan {
@@ -283,6 +322,10 @@ async function startHarness(
       daemonDir: plan.daemonDir,
       port: command.port,
       bindingStore,
+      // Idle sessions are closed only when the operator enabled a TTL (2h by
+      // default); bound and busy sessions are never swept.
+      sessionIdleTtlMs: command.sessionTtlMs,
+      sessionSweepIntervalMs: command.sessionSweepIntervalMs,
       // A local daemon reclaims a field parked on hover(s) once its TTL
       // expires; Honey keeps the hover replayable for a later answer.
       allowHoverUnload: true,

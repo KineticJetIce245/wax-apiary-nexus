@@ -202,9 +202,19 @@ class GatedCloseFailureAdapter extends FailingCloseAdapter {
   }
 }
 
+/** A registry whose access-clock refresh always fails. */
+class ThrowingTouchRegistry extends SessionRegistry {
+  override touch(): void {
+    throw new Error('touch failed');
+  }
+}
+
 let projectSeq = 0;
 
-function makeEnv(adapter: RecordingAdapter = new RecordingAdapter()): TestEnv {
+function makeEnv(
+  adapter: RecordingAdapter = new RecordingAdapter(),
+  registryNow: () => string = () => FIXED_NOW,
+): TestEnv {
   const workspace = new Workspace(adapter);
   projectSeq += 1;
   const project: Project = {
@@ -215,7 +225,7 @@ function makeEnv(adapter: RecordingAdapter = new RecordingAdapter()): TestEnv {
   const registry = new SessionRegistry({
     workspace,
     harness: 'fake-harness',
-    now: () => FIXED_NOW,
+    now: registryNow,
   });
   return { adapter, workspace, registry, project };
 }
@@ -1829,6 +1839,111 @@ test('answer reports rest=false without retrying when maxPumps cannot drain it',
   const idle = nodeStatus(answered.status, 'idle');
   assert.equal(idle.queue, 1);
   assert.equal(host.statusOf('answer-nonrest') !== undefined, true);
+});
+
+test('trigger refreshes the lastAccessAt of every bound session', async (t) => {
+  const clock = new FakeClock(1_000);
+  const env = makeEnv(new RecordingAdapter(), () => new Date(clock.time).toISOString());
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = fastDefinition('touch-trigger', {
+    first: forager('first {{input}}'),
+    second: forager('second {{input}}'),
+  });
+  await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
+  const sessions = env.registry.list();
+  assert.equal(sessions.length, 2);
+  for (const record of sessions) {
+    assert.equal(record.lastAccessAt, new Date(1_000).toISOString());
+  }
+
+  clock.advance(5_000);
+  const result = await host.trigger('touch-trigger', 'first', text('go'));
+  assert.equal(result.rest, true);
+  // Only one node ran, but every session the loaded graph is bound to was used
+  // by that run, so all of them must be protected from the next idle sweep.
+  for (const record of sessions) {
+    assert.equal(
+      env.registry.get(record.sessionId)?.lastAccessAt,
+      new Date(6_000).toISOString(),
+    );
+  }
+});
+
+test('answer refreshes the lastAccessAt of every bound session', async (t) => {
+  const clock = new FakeClock(1_000);
+  const env = makeEnv(new RecordingAdapter(), () => new Date(clock.time).toISOString());
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = userAndForagerGraph('touch-answer');
+  await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
+  const sessions = env.registry.list();
+
+  clock.advance(1_000);
+  const triggered = await host.trigger('touch-answer', 'ask', text('waiting'));
+  assert.equal(triggered.hovered, true);
+
+  clock.advance(2_000);
+  const token = hoverTokenOf(host, 'touch-answer', 'ask');
+  const answered = await host.answer('touch-answer', 'ask', text('yes'), token);
+  assert.equal(answered.rest, true);
+  for (const record of sessions) {
+    assert.equal(
+      env.registry.get(record.sessionId)?.lastAccessAt,
+      new Date(4_000).toISOString(),
+    );
+  }
+});
+
+test('a failing touch does not change a trigger or answer result', async (t) => {
+  const adapter = new RecordingAdapter();
+  const workspace = new Workspace(adapter);
+  const registry = new ThrowingTouchRegistry({
+    workspace,
+    harness: 'fake-harness',
+    now: () => FIXED_NOW,
+  });
+  const project: Project = {
+    id: 'project-touch-failure',
+    directory: process.cwd(),
+  };
+  const host = new GraphHost({ workspace, registry, now: () => 1_000 });
+  t.after(async () => {
+    await host.dispose();
+    await workspace.stop();
+  });
+
+  const definition = fastDefinition(
+    'touch-failure',
+    { ask: userNode(), run: forager('run {{input}}') },
+    [{ id: 'e', from: 'ask', to: 'run' }],
+  );
+  await host.loadGraph({ definition, bindings: allFresh(definition), project });
+
+  const triggered = await host.trigger('touch-failure', 'ask', text('waiting'));
+  assert.equal(triggered.hovered, true);
+  const token = hoverTokenOf(host, 'touch-failure', 'ask');
+  const answered = await host.answer('touch-failure', 'ask', text('answered'), token);
+  assert.equal(answered.rest, true);
+  assert.equal(answered.persisted, true);
+  // The answer still reached the downstream forager despite every touch failing.
+  assert.deepEqual(adapter.allPrompts, ['run answered']);
 });
 
 function messageOfTest(error: unknown): string {

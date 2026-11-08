@@ -38,6 +38,7 @@ import {
   SessionBusyError,
   SessionNotFoundError,
   type SessionRegistry,
+  type SweepSessionsReport,
 } from '../session/session-registry.js';
 import type { Workspace } from '../session/workspace.js';
 import { expandHomePath } from '../storage/conversation-store.js';
@@ -46,6 +47,7 @@ import { HoneyStore } from '../storage/honey.js';
 const LOOPBACK_HOST = '127.0.0.1';
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_DAEMON_DIR = join(expandHomePath('~/.wax'), 'waxd');
+const DEFAULT_SESSION_SWEEP_INTERVAL_MS = 60_000;
 const MAX_ID_LENGTH = 512;
 const MAX_PATH_LENGTH = 2_048;
 /** Bound for the bearer token and the optional `/answer` hover token. */
@@ -93,6 +95,18 @@ export interface ControlServerOptions {
    * that is waiting for an answer. Honey is flushed before release.
    */
   readonly allowHoverUnload?: boolean;
+  /**
+   * Idle TTL for WAX sessions; default 0 (disabled). When positive, the server
+   * periodically closes sessions that have not been used for this long and are
+   * neither busy nor bound to a loaded graph.
+   */
+  readonly sessionIdleTtlMs?: number;
+  /**
+   * Sweep period; default 60_000. Only started when `sessionIdleTtlMs > 0`.
+   * `0` is accepted when the TTL is disabled so a caller can express "no timer";
+   * a positive TTL requires a positive interval.
+   */
+  readonly sessionSweepIntervalMs?: number;
   readonly now?: () => number;
   /**
    * Metadata-only request log. It never receives a body, prompt, output or
@@ -149,7 +163,8 @@ type RouteKind =
   | 'unload'
   | 'sweep'
   | 'sessions'
-  | 'session-close';
+  | 'session-close'
+  | 'session-sweep';
 
 interface Route {
   readonly kind: RouteKind;
@@ -215,6 +230,8 @@ export class ControlServer {
   private readonly logger: (line: string) => void;
   private readonly honeyForGraph: (graphId: string) => HoneyStore;
   private readonly configuredToken: string | undefined;
+  private readonly sessionIdleTtlMs: number;
+  private readonly sessionSweepIntervalMs: number;
 
   private state: 'idle' | 'starting' | 'running' | 'stopping' = 'idle';
   private server: Server | undefined;
@@ -224,6 +241,9 @@ export class ControlServer {
   private currentInfo: ControlServerInfo | undefined;
   private startPromise: Promise<ControlServerInfo> | undefined;
   private stopPromise: Promise<void> | undefined;
+  private sweepTimer: NodeJS.Timeout | undefined;
+  /** Prevents a slow automatic sweep from piling up on the next tick. */
+  private sweepingSessions = false;
 
   constructor(options: ControlServerOptions) {
     if (typeof options !== 'object' || options === null) {
@@ -300,6 +320,20 @@ export class ControlServer {
     this.honeyForGraph =
       options.honeyForGraph ??
       ((graphId: string) => HoneyStore.forComposition(options.stateRoot, options.apiary, graphId));
+
+    this.sessionIdleTtlMs = validateNonNegativeInteger(
+      options.sessionIdleTtlMs ?? 0,
+      'sessionIdleTtlMs',
+    );
+    this.sessionSweepIntervalMs = validateNonNegativeInteger(
+      options.sessionSweepIntervalMs ?? DEFAULT_SESSION_SWEEP_INTERVAL_MS,
+      'sessionSweepIntervalMs',
+    );
+    if (this.sessionIdleTtlMs > 0 && this.sessionSweepIntervalMs <= 0) {
+      throw new TypeError(
+        'sessionSweepIntervalMs must be positive when sessionIdleTtlMs is enabled',
+      );
+    }
 
     if (options.token !== undefined) {
       if (
@@ -436,8 +470,10 @@ export class ControlServer {
       this.tokenValue = token;
       this.currentInfo = info;
       this.state = 'running';
+      this.startSessionSweep();
       return info;
     } catch (error) {
+      this.stopSessionSweep();
       await closeServer(server).catch(() => undefined);
       if (graphHost !== undefined) {
         await graphHost.dispose().catch(() => undefined);
@@ -481,6 +517,9 @@ export class ControlServer {
     const lock = this.lock;
     const hadResources = server !== undefined || graphHost !== undefined || lock !== undefined;
 
+    // Stop the sweep timer before disposing the host: a late tick must not
+    // observe a half-stopped server, and a timer must never outlive the daemon.
+    this.stopSessionSweep();
     this.state = 'stopping';
     this.server = undefined;
     this.graphHost = undefined;
@@ -889,6 +928,73 @@ export class ControlServer {
         }
         return { ok: true, closed: true };
       }
+      case 'session-sweep': {
+        // The body is an empty JSON object; the TTL comes from server options
+        // so a caller can never choose an aggressive close policy remotely.
+        const body = requirePayload(payload);
+        assertExactFields(body, [], 'session sweep request');
+        const report = await this.sweepIdleSessions();
+        return { ok: true, report };
+      }
+    }
+  }
+
+  /**
+   * One idle-session pass, shared by `POST /sessions/sweep` and the timer.
+   * Sessions bound to a loaded graph are excluded by the caller-supplied set:
+   * a sweep must never close a session the graph still routes to. A TTL of 0
+   * is a no-op inside the registry.
+   */
+  private sweepIdleSessions(): Promise<SweepSessionsReport> {
+    const host = this.graphHost;
+    if (host === undefined) {
+      throw new HttpError(500, 'internal', 'internal error');
+    }
+    return this.options.registry.sweepIdle({
+      idleTtlMs: this.sessionIdleTtlMs,
+      exclude: host.loadedSessionIds(),
+    });
+  }
+
+  /** Start the automatic sweep only when the TTL is enabled. */
+  private startSessionSweep(): void {
+    if (this.sessionIdleTtlMs <= 0 || this.sessionSweepIntervalMs <= 0) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void this.runAutomaticSessionSweep();
+    }, this.sessionSweepIntervalMs);
+    // Cleanup must never keep the daemon process alive on its own.
+    timer.unref();
+    this.sweepTimer = timer;
+  }
+
+  private stopSessionSweep(): void {
+    const timer = this.sweepTimer;
+    this.sweepTimer = undefined;
+    if (timer !== undefined) {
+      clearInterval(timer);
+    }
+  }
+
+  /**
+   * Timer callback. A sweep failure (including a registry that throws) is
+   * metadata-only: it is logged and never crashes the daemon. Overlapping ticks
+   * are skipped rather than queued.
+   */
+  private async runAutomaticSessionSweep(): Promise<void> {
+    if (this.sweepingSessions) {
+      return;
+    }
+    this.sweepingSessions = true;
+    try {
+      await this.sweepIdleSessions();
+    } catch (error) {
+      // Static line: only the error name is logged, never a message that could
+      // contain a prompt, output or token.
+      this.logger(`event=session-sweep-failed error=${errorName(error)}`);
+    } finally {
+      this.sweepingSessions = false;
     }
   }
 
@@ -1324,6 +1430,9 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
     if (first === 'sessions' && second === 'close') {
       return { kind: 'session-close', methods: ['POST'] };
     }
+    if (first === 'sessions' && second === 'sweep') {
+      return { kind: 'session-sweep', methods: ['POST'] };
+    }
   }
 
   return undefined;
@@ -1501,6 +1610,21 @@ function validateMaxBodyBytes(value: number): number {
     throw new TypeError('maxBodyBytes must be a positive integer');
   }
   return value;
+}
+
+function validateNonNegativeInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${field} must be a non-negative integer`);
+  }
+  return value;
+}
+
+/** Sanitized error name for a metadata-only automatic-sweep failure line. */
+function errorName(error: unknown): string {
+  if (error instanceof Error && error.name !== '') {
+    return sanitizeLogText(error.name, 80);
+  }
+  return 'error';
 }
 
 function requireConfigString(value: unknown, field: string, maxLength: number): string {

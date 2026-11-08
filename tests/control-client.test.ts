@@ -27,6 +27,20 @@ import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions } from './support/fake-adapter.js';
 
 const FIXED_NOW = '2026-11-06T22:00:00.000Z';
+
+class FakeClock {
+  time: number;
+
+  constructor(time = 1_000) {
+    this.time = time;
+  }
+
+  readonly now = (): number => this.time;
+
+  advance(ms: number): void {
+    this.time += ms;
+  }
+}
 const VALID_TOKEN = 'a'.repeat(64);
 const PROMPT_MARKER = 'PROMPT_MARKER_c2a1';
 const OUTPUT_MARKER = 'OUTPUT_MARKER_e4b7';
@@ -56,7 +70,10 @@ interface RawServer {
 
 let projectSeq = 0;
 
-function makeEnv(adapterOptions: FakeAdapterOptions = {}): TestEnv {
+function makeEnv(
+  adapterOptions: FakeAdapterOptions = {},
+  registryNow: () => string = () => FIXED_NOW,
+): TestEnv {
   const adapter = new FakeAdapter(adapterOptions);
   const workspace = new Workspace(adapter);
   projectSeq += 1;
@@ -67,7 +84,7 @@ function makeEnv(adapterOptions: FakeAdapterOptions = {}): TestEnv {
   const registry = new SessionRegistry({
     workspace,
     harness: 'fake-harness',
-    now: () => FIXED_NOW,
+    now: registryNow,
   });
   const stateRoot = mkdtempSync(join(tmpdir(), 'wax-client-state-'));
   return {
@@ -85,8 +102,9 @@ async function startDaemon(
   adapterOptions: FakeAdapterOptions = {},
   harness = 'fake-harness',
   overrides: Partial<ControlServerOptions> = {},
+  registryNow: () => string = () => FIXED_NOW,
 ): Promise<TestDaemon> {
-  const env = makeEnv(adapterOptions);
+  const env = makeEnv(adapterOptions, registryNow);
   t.after(async () => {
     await env.workspace.stop();
   });
@@ -1187,4 +1205,116 @@ test('answer with a graphRef lazily loads the manifest and restores a flushed ho
   assert.equal(daemon.env.adapter.prompts.length, 0);
   // The retained session and the reload's replacement are both registered.
   assert.equal(daemon.env.registry.list().length, 2);
+});
+
+test('sweepSessions closes orphan sessions over real HTTP and skips bound ones', async (t) => {
+  const clock = new FakeClock(1_000);
+  const daemon = await startDaemon(
+    t,
+    {},
+    'fake-harness',
+    { sessionIdleTtlMs: 1_000 },
+    () => new Date(clock.time).toISOString(),
+  );
+
+  const definition = foragerDefinition('client-sweep', `run {{input}} ${PROMPT_MARKER}`);
+  await daemon.client.load({
+    definition,
+    bindings: { only: { kind: 'fresh' } },
+    project: daemon.env.project,
+  });
+  const record = daemon.env.registry.list()[0];
+  assert.ok(record !== undefined);
+  assert.equal(record.lastAccessAt, new Date(1_000).toISOString());
+
+  // Bound to a loaded graph: excluded, never closed.
+  clock.advance(1_500);
+  assert.deepEqual(await daemon.client.sweepSessions(), {
+    closed: [],
+    skipped: [record.sessionId],
+    failed: [],
+  });
+  assert.equal(daemon.env.registry.has(record.sessionId), true);
+
+  // Unloading makes it an orphan; the next sweep closes it.
+  assert.equal(await daemon.client.unload('client-sweep'), true);
+  assert.deepEqual(await daemon.client.sweepSessions(), {
+    closed: [record.sessionId],
+    skipped: [],
+    failed: [],
+  });
+  assert.equal(daemon.env.registry.has(record.sessionId), false);
+  assert.deepEqual(await daemon.client.listSessions(), []);
+  // Nothing left: a repeated sweep is an empty report, never a retry/error.
+  assert.deepEqual(await daemon.client.sweepSessions(), {
+    closed: [],
+    skipped: [],
+    failed: [],
+  });
+});
+
+test('sweepSessions is one POST with an empty object and no retry', async (t) => {
+  let calls = 0;
+  let method: string | undefined;
+  let url: string | undefined;
+  let body = '';
+  const raw = await startRawServer((request, response) => {
+    calls += 1;
+    method = request.method;
+    url = request.url;
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      body = Buffer.concat(chunks).toString('utf8');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          report: { closed: ['a'], skipped: ['b'], failed: [{ sessionId: 'c', error: 'close failed' }] },
+        }),
+      );
+    });
+  });
+  t.after(async () => {
+    await raw.close();
+  });
+
+  const client = new ControlClient({ baseUrl: raw.baseUrl, token: VALID_TOKEN });
+  assert.deepEqual(await client.sweepSessions(), {
+    closed: ['a'],
+    skipped: ['b'],
+    failed: [{ sessionId: 'c', error: 'close failed' }],
+  });
+  assert.equal(calls, 1);
+  assert.equal(method, 'POST');
+  assert.equal(url, '/sessions/sweep');
+  assert.deepEqual(JSON.parse(body), {});
+});
+
+test('sweepSessions rejects malformed reports as protocol errors', async (t) => {
+  const malformed: unknown[] = [
+    undefined,
+    {},
+    { closed: [], skipped: [] },
+    { closed: [], skipped: [], failed: 'nope' },
+    { closed: [1], skipped: [], failed: [] },
+    { closed: [], skipped: [''], failed: [] },
+    { closed: [], skipped: [], failed: [{}] },
+    { closed: [], skipped: [], failed: [{ sessionId: 's', error: 1 }] },
+    { closed: [], skipped: [], failed: [{ sessionId: 's', error: 'x'.repeat(201) }] },
+  ];
+  for (const report of malformed) {
+    const raw = await startRawServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true, report }));
+    });
+    try {
+      const client = new ControlClient({ baseUrl: raw.baseUrl, token: VALID_TOKEN });
+      await assert.rejects(client.sweepSessions(), isControlError('protocol'));
+    } finally {
+      // Close even when an assertion fails, so a failed case cannot leave the
+      // test process alive on an open listener.
+      await raw.close();
+    }
+  }
 });

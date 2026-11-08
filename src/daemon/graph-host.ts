@@ -434,6 +434,9 @@ export class GraphHost {
       const live = lease.value;
       live.runtime.trigger(nodeId, value);
       outcome = await this.pumpToQuiescence(live);
+      // A completed run touched every session the graph is bound to. The
+      // lease is still held, so the bound set cannot change under us.
+      this.touchSessions(live);
     } finally {
       // The lease spans `trigger`, the whole pump loop, every pacing wait and
       // the final Honey flush.
@@ -470,6 +473,9 @@ export class GraphHost {
       this.assertAnswerable(live, graphId, nodeId, token);
       live.runtime.answerHover(nodeId, value, token);
       outcome = await this.pumpToQuiescence(live);
+      // Same as trigger: a settled answer refreshes every bound session's
+      // idle clock while the lease still protects the bound set.
+      this.touchSessions(live);
     } finally {
       // The lease spans the answer, the whole pump loop, every pacing wait and
       // the final Honey flush.
@@ -563,6 +569,28 @@ export class GraphHost {
       } catch {
         // Registry unload reports failures itself; this is a defensive guard
         // so one broken graph cannot stop the others.
+      }
+    }
+  }
+
+  /**
+   * Refresh the idle clock of every session bound to a graph that just ran.
+   *
+   * Sessions are otherwise protected while bound (the control server excludes
+   * `loadedSessionIds()`), but their `lastAccessAt` must still reflect the run:
+   * once the graph is unloaded the session becomes an orphan and would
+   * otherwise look as idle as it was when the graph was loaded.
+   *
+   * Best effort by design: touching is observability for idle cleanup and must
+   * never turn a completed trigger/answer into a failure.
+   */
+  private touchSessions(live: LiveGraph): void {
+    for (const record of live.instantiated.sessions.values()) {
+      try {
+        this.sessionRegistry.touch(record.sessionId);
+      } catch {
+        // The session may have been closed concurrently or its store write may
+        // have failed; neither changes the run's result.
       }
     }
   }

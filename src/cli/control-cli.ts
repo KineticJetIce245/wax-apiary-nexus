@@ -7,6 +7,7 @@ import {
   ControlClientError,
   discoverDaemon,
   type SessionSummary,
+  type SweepSessionsReport,
 } from '../control/client.js';
 import type { GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
 import { GraphManifestError, loadGraphManifest } from '../graph/manifest.js';
@@ -24,7 +25,7 @@ const TRIGGER_USAGE =
   'usage: wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>] [--json] ' +
   '[--daemon-dir <dir>] [--harness <codex|dsh>]';
 const SESSION_USAGE =
-  'usage: wax session <list|close <sessionId>> [--json] [--daemon-dir <dir>] ' +
+  'usage: wax session <list|close <sessionId>|sweep> [--json] [--daemon-dir <dir>] ' +
   '[--harness <codex|dsh>]';
 /** Same bound as the control server's trigger/answer `graphRef`. */
 const MAX_GRAPH_REF_LENGTH = 4_096;
@@ -198,7 +199,8 @@ export interface TriggerCommand {
 
 export type SessionCommand =
   | (GraphCommon & { readonly kind: 'list' })
-  | (GraphCommon & { readonly kind: 'close'; readonly sessionId: string });
+  | (GraphCommon & { readonly kind: 'close'; readonly sessionId: string })
+  | (GraphCommon & { readonly kind: 'sweep' });
 
 function harnessOf(parsed: ParsedCliTokens): { readonly harness?: HarnessKind } {
   const value = parsed.flags.get('--harness');
@@ -459,6 +461,12 @@ export function parseSessionArgs(argv: readonly string[]): SessionCommand {
       json: parsed.json,
       ...commonOf(parsed),
     };
+  }
+
+  if (subcommand === 'sweep') {
+    const parsed = parseCliTokens(rest, SESSION_FLAGS);
+    requirePositionals(parsed, 0, 'expected no arguments after "wax session sweep"');
+    return { kind: 'sweep', json: parsed.json, ...commonOf(parsed) };
   }
 
   if (subcommand === undefined) {
@@ -784,6 +792,16 @@ export async function runSessionCli(
         }
         return 0;
       }
+      case 'sweep': {
+        const report = await client.sweepSessions();
+        if (command.json) {
+          // One object, exactly the report shape; no wrapper.
+          writeJson(out, report);
+        } else {
+          printSessionSweep(out, report);
+        }
+        return 0;
+      }
     }
   } catch (error) {
     return reportCliError(error, err, { harnessHint });
@@ -845,6 +863,27 @@ function sessionLine(session: SessionSummary): string {
     `project=${session.projectId} busy=${yesNo(session.busy)} ` +
     `bound=${yesNo(session.bound)}`
   );
+}
+
+/**
+ * Human `wax session sweep` output: one count line, then one line per non-empty
+ * id list. It never prints a native id, project directory, prompt, output or
+ * token — the control report contains none of them.
+ */
+function printSessionSweep(out: Writer, report: SweepSessionsReport): void {
+  out(
+    `session sweep closed=${String(report.closed.length)} ` +
+      `skipped=${String(report.skipped.length)} failed=${String(report.failed.length)}`,
+  );
+  if (report.closed.length > 0) {
+    out(`closed ${report.closed.join(', ')}`);
+  }
+  if (report.skipped.length > 0) {
+    out(`skipped ${report.skipped.join(', ')}`);
+  }
+  for (const failure of report.failed) {
+    out(`failed ${failure.sessionId}: ${failure.error}`);
+  }
 }
 
 function printStatus(out: Writer, status: GraphStatus, label: string): void {

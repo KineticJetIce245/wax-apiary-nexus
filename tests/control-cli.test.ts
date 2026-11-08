@@ -249,7 +249,10 @@ function writeManifestVariant(root: string, name: string, value: unknown): strin
   return path;
 }
 
-async function startWaxd(t: TestContext): Promise<TestDaemon> {
+async function startWaxd(
+  t: TestContext,
+  extraArgs: readonly string[] = [],
+): Promise<TestDaemon> {
   const adapter = new TrackingFakeAdapter();
   const stateRoot = tempDir('wax-control-cli-state-');
   const daemonDir = join(stateRoot, 'waxd');
@@ -268,6 +271,7 @@ async function startWaxd(t: TestContext): Promise<TestDaemon> {
       daemonDir,
       '--apiary',
       'apiary',
+      ...extraArgs,
     ],
     {
       createAdapter: async () => adapter,
@@ -453,6 +457,8 @@ test('parseWaxdArgs applies defaults and rejects usage errors', () => {
     apiary: 'default',
     daemonDir: '~/.wax/waxd',
     port: 0,
+    sessionTtlMs: 7_200_000,
+    sessionSweepIntervalMs: 60_000,
   });
 
   const codex = parseWaxdArgs([
@@ -477,6 +483,31 @@ test('parseWaxdArgs applies defaults and rejects usage errors', () => {
   assert.equal(codex.apiary, 'demo');
   assert.equal(codex.daemonDir, 'C:/daemon');
   assert.equal(codex.port, 4321);
+  assert.equal(codex.sessionTtlMs, 7_200_000);
+  assert.equal(codex.sessionSweepIntervalMs, 60_000);
+
+  const customSession = parseWaxdArgs([
+    '--harness',
+    'codex',
+    '--session-ttl-ms',
+    '500',
+    '--session-sweep-interval-ms',
+    '25',
+  ]);
+  assert.equal(customSession.sessionTtlMs, 500);
+  assert.equal(customSession.sessionSweepIntervalMs, 25);
+
+  // TTL 0 disables automatic cleanup; a 0 interval is then irrelevant but valid.
+  const disabled = parseWaxdArgs([
+    '--harness',
+    'codex',
+    '--session-ttl-ms',
+    '0',
+    '--session-sweep-interval-ms',
+    '0',
+  ]);
+  assert.equal(disabled.sessionTtlMs, 0);
+  assert.equal(disabled.sessionSweepIntervalMs, 0);
 
   const dsh = parseWaxdArgs(['--harness', 'dsh', '--dsh-root', 'C:/dsh']);
   assert.ok('harness' in dsh);
@@ -499,6 +530,14 @@ test('parseWaxdArgs applies defaults and rejects usage errors', () => {
   assertUsage(() =>
     parseWaxdArgs(['--harness', 'dsh', '--dsh-root', 'C:/dsh', '--codex-exe', 'x']),
   );
+  assertUsage(() => parseWaxdArgs(['--harness', 'codex', '--session-ttl-ms', '-1']));
+  assertUsage(() => parseWaxdArgs(['--harness', 'codex', '--session-ttl-ms', '1.5']));
+  assertUsage(() => parseWaxdArgs(['--harness', 'codex', '--session-ttl-ms', 'abc']));
+  assertUsage(() => parseWaxdArgs(['--harness', 'codex', '--session-sweep-interval-ms', '-1']));
+  // A positive TTL requires a positive sweep interval.
+  assertUsage(() =>
+    parseWaxdArgs(['--harness', 'codex', '--session-ttl-ms', '1000', '--session-sweep-interval-ms', '0']),
+  );
 });
 
 test('parseWaxdArgs parses --harnesses strictly and preserves order', () => {
@@ -518,6 +557,8 @@ test('parseWaxdArgs parses --harnesses strictly and preserves order', () => {
   assert.equal(multi.apiary, 'default');
   assert.equal(multi.daemonDir, '~/.wax/waxd');
   assert.equal(multi.port, 0);
+  assert.equal(multi.sessionTtlMs, 7_200_000);
+  assert.equal(multi.sessionSweepIntervalMs, 60_000);
 
   const codexOnly = parseWaxdArgs(['--harnesses', 'codex']);
   assert.ok('harnesses' in codexOnly);
@@ -1166,6 +1207,81 @@ test('wax session list/close work over real HTTP and never print a token', async
   }
 });
 
+test('wax session sweep closes orphan idle sessions over real HTTP', async (t) => {
+  const daemon = await startWaxd(t, ['--session-ttl-ms', '20']);
+  const token = readFileSync(daemon.started.tokenPath, 'utf8').trim();
+  const sessionsPath = join(daemon.daemonDir, 'sessions.json');
+  const bindings = tempJson(freshBindings());
+  const project = tempDir('wax-control-cli-sweep-project-');
+  const composition = tempJson(foragerComposition('sweep-cli'));
+
+  const load = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(load.code, 0, load.stderr.join(' | '));
+
+  const listed = singleJson(
+    await invokeControl(runSessionCli, ['session', 'list', '--json'], {
+      daemonDir: daemon.daemonDir,
+    }),
+  );
+  const summaries = listed['sessions'] as Record<string, unknown>[];
+  const sessionId = summaries[0]?.['sessionId'];
+  assert.equal(typeof sessionId, 'string');
+
+  // Bound to a loaded graph: the sweep reports it as skipped, never closes it.
+  const boundSweep = await invokeControl(runSessionCli, ['session', 'sweep', '--json'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.equal(boundSweep.code, 0, boundSweep.stderr.join(' | '));
+  const boundReport = singleJson(boundSweep);
+  assert.deepEqual(boundReport['closed'], []);
+  assert.deepEqual(boundReport['skipped'], [sessionId]);
+  assert.deepEqual(boundReport['failed'], []);
+
+  const unload = await invokeControl(
+    runGraphCli,
+    ['graph', 'unload', 'sweep-cli', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(unload.code, 0, unload.stderr.join(' | '));
+
+  // The session is now an orphan; let the 20ms TTL expire.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const sweep = await invokeControl(runSessionCli, ['session', 'sweep', '--json'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.equal(sweep.code, 0, sweep.stderr.join(' | '));
+  assert.deepEqual(singleJson(sweep), {
+    closed: [sessionId],
+    skipped: [],
+    failed: [],
+  });
+  assert.deepEqual(daemon.adapter.closedNativeIds, ['native-1']);
+  assert.deepEqual(JSON.parse(readFileSync(sessionsPath, 'utf8')), []);
+  assertNoSecret(sweep.stdout, token);
+
+  // An empty sweep prints one count line; nothing is echoed beyond ids.
+  const human = await invokeControl(runSessionCli, ['session', 'sweep'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.equal(human.code, 0, human.stderr.join(' | '));
+  assert.deepEqual(human.stdout, ['session sweep closed=0 skipped=0 failed=0']);
+  assert.equal(human.stdout[0]?.includes('native-'), false);
+  assertNoSecret(human.stdout, token);
+
+  // Local usage errors exit 2 before discovery or any HTTP request.
+  for (const argv of [['session', 'sweep', 'extra'], ['session', 'sweep', '--wat']]) {
+    const invocation = await invokeControl(runSessionCli, argv, {
+      daemonDir: daemon.daemonDir,
+    });
+    assert.equal(invocation.code, 2, argv.join(' '));
+    assert.equal(invocation.stdout.length, 0);
+  }
+});
+
 test('wax session list follows --harness on a multi-harness daemon', async (t) => {
   const daemon = await startMultiWaxd(t);
   const bindings = tempJson(freshBindings());
@@ -1783,6 +1899,11 @@ test('every --json command writes exactly one parseable JSON object', async (t) 
   );
   invocations.push(
     await invokeControl(runGraphCli, ['graph', 'sweep', '--json'], {
+      daemonDir: daemon.daemonDir,
+    }),
+  );
+  invocations.push(
+    await invokeControl(runSessionCli, ['session', 'sweep', '--json'], {
       daemonDir: daemon.daemonDir,
     }),
   );

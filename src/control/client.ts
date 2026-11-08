@@ -3,7 +3,10 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import type { GraphRunResult } from '../daemon/graph-host.js';
+import type { SweepSessionsReport } from '../session/session-registry.js';
 import { expandHomePath } from '../storage/conversation-store.js';
+
+export type { SweepSessionsReport };
 
 const LOOPBACK_HOST = '127.0.0.1';
 const DEFAULT_DAEMON_PARTS = ['.wax', 'waxd'] as const;
@@ -334,6 +337,19 @@ export class ControlClient {
     }
   }
 
+  /**
+   * Run one idle-session sweep over the real control API.
+   *
+   * The server owns the configured TTL; the request carries no policy. The
+   * report contains session ids and a static failure reason only, never a
+   * native id, prompt, output or token. The request has side effects and is
+   * never retried.
+   */
+  async sweepSessions(): Promise<SweepSessionsReport> {
+    const body = await this.request('POST', '/sessions/sweep', {});
+    return parseSweepSessionsReport(requireField(body, 'report'));
+  }
+
   private async request(
     method: 'GET' | 'POST',
     path: string,
@@ -612,6 +628,59 @@ function requireId(value: unknown, field: string): string {
     );
   }
   return value;
+}
+
+/**
+ * Parse one sweep report from a control response. Every list and every field is
+ * validated; a malformed entry is a protocol error, never a partially trusted
+ * object. Ids and the static failure text are the only accepted content.
+ */
+function parseSweepSessionsReport(value: unknown): SweepSessionsReport {
+  if (!isRecord(value)) {
+    throw invalidSweepReport();
+  }
+  const closed = parseSessionIdList(value['closed']);
+  const skipped = parseSessionIdList(value['skipped']);
+  const failedValue = value['failed'];
+  if (!Array.isArray(failedValue)) {
+    throw invalidSweepReport();
+  }
+  const failed: { sessionId: string; error: string }[] = [];
+  for (const entry of failedValue) {
+    if (!isRecord(entry)) {
+      throw invalidSweepReport();
+    }
+    const sessionId = entry['sessionId'];
+    const error = entry['error'];
+    if (
+      !isBoundedString(sessionId, MAX_ID_LENGTH) ||
+      typeof error !== 'string' ||
+      error.length > 200 ||
+      /[\u0000-\u001f\u007f]/.test(error)
+    ) {
+      throw invalidSweepReport();
+    }
+    failed.push({ sessionId, error });
+  }
+  return { closed, skipped, failed };
+}
+
+function parseSessionIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw invalidSweepReport();
+  }
+  const ids: string[] = [];
+  for (const entry of value) {
+    if (!isBoundedString(entry, MAX_ID_LENGTH)) {
+      throw invalidSweepReport();
+    }
+    ids.push(entry);
+  }
+  return ids;
+}
+
+function invalidSweepReport(): ControlClientError {
+  return protocolError('control response contained an invalid session sweep report');
 }
 
 function parseSessionSummary(value: unknown): SessionSummary {

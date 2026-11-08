@@ -100,6 +100,19 @@ class FailingUpsertStore extends ConversationStore {
   }
 }
 
+/** Fails a native close only for one chosen native session. */
+class SelectiveCloseFailureAdapter extends ResumableFakeAdapter {
+  failNativeId: string | undefined;
+
+  override async closeConversation(nativeId: string): Promise<void> {
+    if (this.failNativeId === nativeId) {
+      this.closed.push(nativeId);
+      throw new Error('NATIVE_CLOSE_SECRET');
+    }
+    await super.closeConversation(nativeId);
+  }
+}
+
 interface Harness {
   readonly adapter: ResumableFakeAdapter;
   readonly workspace: Workspace;
@@ -107,14 +120,17 @@ interface Harness {
   readonly project: Project;
 }
 
-function setup(store?: ConversationStore): Harness {
+function setup(
+  store?: ConversationStore,
+  now: () => string = () => FIXED_NOW,
+): Harness {
   const adapter = new ResumableFakeAdapter();
   const workspace = new Workspace(adapter);
   const project = makeProject();
   const registry = new SessionRegistry({
     workspace,
     harness: 'dsh-acp',
-    now: () => FIXED_NOW,
+    now,
     ...(store === undefined ? {} : { store }),
   });
   return { adapter, workspace, registry, project };
@@ -130,16 +146,28 @@ function makeStore(): ConversationStore {
 function rehydrate(
   store: ConversationStore,
   project: Project,
+  now: () => string = () => FIXED_NOW,
 ): Harness {
   const adapter = new ResumableFakeAdapter();
   const workspace = new Workspace(adapter);
   const registry = new SessionRegistry({
     workspace,
     harness: 'dsh-acp',
-    now: () => FIXED_NOW,
+    now,
     store,
   });
   return { adapter, workspace, registry, project };
+}
+
+/** Mutable ISO clock: advance it between registry calls. */
+function isoClock(start = FIXED_NOW): { now: () => string; set: (value: string) => void } {
+  let current = start;
+  return {
+    now: () => current,
+    set: (value: string) => {
+      current = value;
+    },
+  };
 }
 
 function waitForExecutionSettled(workspace: Workspace, executionId: string): Promise<void> {
@@ -186,6 +214,7 @@ test('create records the conversation identity and injected metadata', async (t)
   assert.equal(record.projectDirectory, project.directory);
   assert.equal(record.displayName, 'wax-session-apiary');
   assert.equal(record.createdAt, FIXED_NOW);
+  assert.equal(record.lastAccessAt, FIXED_NOW);
   assert.equal(record.model, 'deepseek-chat');
   assert.equal(record.reasoning, 'high');
   assert.equal(workspace.getConversation(record.sessionId)?.displayName, 'wax-session-apiary');
@@ -284,6 +313,7 @@ test('resume reattaches a native id and records the preserved WAX id', async (t)
   assert.equal(record.projectId, project.id);
   assert.equal(record.projectDirectory, project.directory);
   assert.equal(record.createdAt, FIXED_NOW);
+  assert.equal(record.lastAccessAt, FIXED_NOW);
   assert.equal(record.model, 'deepseek-reasoner');
   assert.equal(record.reasoning, 'low');
   assert.deepEqual(adapter.resumes, [{ nativeId: 'native-old', cwd: project.directory }]);
@@ -498,6 +528,7 @@ test('hydrates persisted sessions without resuming them and keeps them idle', as
   assert.equal(record.nativeId, created.nativeId);
   assert.equal(record.displayName, 'persisted-session');
   assert.equal(record.createdAt, FIXED_NOW);
+  assert.equal(record.lastAccessAt, FIXED_NOW);
   assert.equal(record.model, 'deepseek-chat');
   assert.equal(record.reasoning, 'high');
   assert.equal(second.registry.list().length, 1);
@@ -525,6 +556,7 @@ test('hydrates old records using nativeId and updatedAt as fallbacks', async (t)
   assert.ok(record !== undefined);
   assert.equal(record.displayName, 'legacy-native');
   assert.equal(record.createdAt, '2026-01-02T03:04:05.000Z');
+  assert.equal(record.lastAccessAt, '2026-01-02T03:04:05.000Z');
 });
 
 test('skips hydrated records from another harness', async (t) => {
@@ -714,4 +746,223 @@ test('a resume whose mapping cannot be persisted closes the conversation and reg
   assert.equal(registry.has('session-old'), false);
   assert.deepEqual(store.load(), []);
   assert.deepEqual(adapter.closed, ['native-old']);
+});
+
+test('create, resume and ensureAttached stamp lastAccessAt from the registry clock', async (t) => {
+  const clock = isoClock();
+  const store = makeStore();
+  const { workspace, registry, project } = setup(store, clock.now);
+  t.after(() => workspace.stop());
+
+  const created = await registry.create(project);
+  assert.equal(created.lastAccessAt, FIXED_NOW);
+  assert.equal(store.find(created.sessionId)?.updatedAt, FIXED_NOW);
+
+  clock.set('2026-11-06T22:00:30.000Z');
+  const resumed = await registry.resume(project, 'native-old', { sessionId: 'session-old' });
+  assert.equal(resumed.lastAccessAt, '2026-11-06T22:00:30.000Z');
+  assert.equal(store.find('session-old')?.updatedAt, '2026-11-06T22:00:30.000Z');
+
+  // Already attached: ensureAttached still refreshes the access clock.
+  clock.set('2026-11-06T22:01:00.000Z');
+  const attached = await registry.ensureAttached(created.sessionId);
+  assert.equal(attached.lastAccessAt, '2026-11-06T22:01:00.000Z');
+  assert.equal(store.find(created.sessionId)?.updatedAt, '2026-11-06T22:01:00.000Z');
+});
+
+test('ensureAttached refreshes lastAccessAt after a lazy native resume', async (t) => {
+  const store = makeStore();
+  const first = setup(store);
+  const created = await first.registry.create(first.project);
+  await first.workspace.stop();
+
+  const clock = isoClock('2026-11-06T23:00:00.000Z');
+  const second = rehydrate(store, first.project, clock.now);
+  t.after(() => second.workspace.stop());
+  // Hydration itself does not access the session.
+  assert.equal(second.registry.get(created.sessionId)?.lastAccessAt, FIXED_NOW);
+
+  clock.set('2026-11-06T23:30:00.000Z');
+  const attached = await second.registry.ensureAttached(created.sessionId);
+  assert.equal(attached.lastAccessAt, '2026-11-06T23:30:00.000Z');
+  assert.equal(second.adapter.resumes.length, 1);
+  assert.equal(store.find(created.sessionId)?.updatedAt, '2026-11-06T23:30:00.000Z');
+});
+
+test('touch refreshes lastAccessAt in memory and in the store', async (t) => {
+  const clock = isoClock();
+  const store = makeStore();
+  const { workspace, registry, project } = setup(store, clock.now);
+  t.after(() => workspace.stop());
+
+  const record = await registry.create(project);
+  clock.set('2026-11-06T22:05:00.000Z');
+  registry.touch(record.sessionId);
+
+  assert.equal(registry.get(record.sessionId)?.lastAccessAt, '2026-11-06T22:05:00.000Z');
+  assert.equal(store.find(record.sessionId)?.updatedAt, '2026-11-06T22:05:00.000Z');
+  assert.equal(registry.get(record.sessionId)?.createdAt, FIXED_NOW);
+
+  assert.throws(
+    () => registry.touch('missing-session'),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionNotFoundError);
+      assert.equal(error.sessionId, 'missing-session');
+      return true;
+    },
+  );
+});
+
+test('a touch whose store write fails is best effort and keeps the new in-memory clock', async (t) => {
+  const store = new FailingUpsertStore(
+    join(mkdtempSync(join(tmpdir(), 'wax-m4c2c1-touch-')), 'sessions.json'),
+  );
+  const clock = isoClock();
+  const { workspace, registry, project } = setup(store, clock.now);
+  t.after(() => workspace.stop());
+
+  const record = await registry.create(project);
+  store.failUpsert = true;
+  clock.set('2026-11-06T22:10:00.000Z');
+
+  assert.doesNotThrow(() => registry.touch(record.sessionId));
+  assert.equal(registry.get(record.sessionId)?.lastAccessAt, '2026-11-06T22:10:00.000Z');
+  // The durable timestamp could not be rewritten; the old one remains.
+  assert.equal(store.find(record.sessionId)?.updatedAt, FIXED_NOW);
+});
+
+test('sweepIdle closes sessions idle past the TTL and leaves recent ones', async (t) => {
+  const clock = isoClock();
+  const store = makeStore();
+  const { adapter, workspace, registry, project } = setup(store, clock.now);
+  t.after(() => workspace.stop());
+
+  const old = await registry.create(project);
+  clock.set('2026-11-06T22:00:01.000Z');
+  const fresh = await registry.create(project);
+
+  clock.set('2026-11-06T22:00:02.000Z');
+  const report = await registry.sweepIdle({ idleTtlMs: 1_500 });
+
+  assert.deepEqual(report, {
+    closed: [old.sessionId],
+    skipped: [fresh.sessionId],
+    failed: [],
+  });
+  assert.equal(registry.has(old.sessionId), false);
+  assert.deepEqual(adapter.closed, [old.nativeId]);
+  assert.deepEqual(
+    registry.list().map((record) => record.sessionId),
+    [fresh.sessionId],
+  );
+  assert.deepEqual(
+    store.load().map((entry) => entry.conversationId),
+    [fresh.sessionId],
+  );
+});
+
+test('sweepIdle skips excluded, busy and invalid-timestamp sessions', async (t) => {
+  const clock = isoClock();
+  const { adapter, workspace, registry, project } = setup(undefined, clock.now);
+  t.after(() => workspace.stop());
+
+  // Busy first: its check is synchronous and must not be expired by the await
+  // that closes the idle session later in the pass.
+  const busy = await registry.create(project);
+  await workspace.submit(busy.sessionId, 'hold');
+  const idle = await registry.create(project);
+  const excluded = await registry.create(project);
+  assert.equal(registry.isBusy(busy.sessionId), true);
+
+  const invalidStore = makeStore();
+  invalidStore.upsert({
+    conversationId: 'invalid-session',
+    harness: 'dsh-acp',
+    nativeId: 'invalid-native',
+    projectId: project.id,
+    projectDirectory: project.directory,
+    updatedAt: 'not-a-timestamp',
+  });
+  const invalidHarness = rehydrate(invalidStore, project, clock.now);
+  t.after(() => invalidHarness.workspace.stop());
+
+  clock.set('2026-11-07T22:00:00.000Z');
+  const report = await registry.sweepIdle({
+    idleTtlMs: 1,
+    exclude: new Set([excluded.sessionId]),
+  });
+  assert.deepEqual(report.closed, [idle.sessionId]);
+  assert.deepEqual(report.skipped, [busy.sessionId, excluded.sessionId]);
+  assert.deepEqual(report.failed, []);
+  assert.equal(adapter.closed.length, 1);
+
+  const invalidReport = await invalidHarness.registry.sweepIdle({
+    idleTtlMs: 1,
+    now: () => '2026-11-07T22:00:00.000Z',
+  });
+  assert.deepEqual(invalidReport, {
+    closed: [],
+    skipped: ['invalid-session'],
+    failed: [],
+  });
+  assert.equal(invalidHarness.registry.has('invalid-session'), true);
+});
+
+test('sweepIdle reports a close failure without aborting the pass', async (t) => {
+  const clock = isoClock();
+  const adapter = new SelectiveCloseFailureAdapter();
+  const workspace = new Workspace(adapter);
+  const project = makeProject();
+  const registry = new SessionRegistry({ workspace, harness: 'dsh-acp', now: clock.now });
+  t.after(() => workspace.stop());
+
+  const failing = await registry.create(project);
+  const closing = await registry.create(project);
+  adapter.failNativeId = failing.nativeId;
+  clock.set('2026-11-07T22:00:00.000Z');
+
+  const report = await registry.sweepIdle({ idleTtlMs: 1 });
+
+  // The first close fails and is kept; the second still closes.
+  assert.deepEqual(report.closed, [closing.sessionId]);
+  assert.deepEqual(report.skipped, []);
+  assert.deepEqual(report.failed, [{ sessionId: failing.sessionId, error: 'close failed' }]);
+  assert.equal(JSON.stringify(report).includes('NATIVE_CLOSE_SECRET'), false);
+  assert.equal(registry.has(failing.sessionId), true);
+  assert.equal(registry.has(closing.sessionId), false);
+  assert.deepEqual(adapter.closed, [failing.nativeId, closing.nativeId]);
+});
+
+test('sweepIdle is a no-op for a disabled TTL and never writes the store', async (t) => {
+  const clock = isoClock();
+  const store = new FailingUpsertStore(
+    join(mkdtempSync(join(tmpdir(), 'wax-m4c2c1-sweep-')), 'sessions.json'),
+  );
+  const { adapter, workspace, registry, project } = setup(store, clock.now);
+  t.after(() => workspace.stop());
+
+  const record = await registry.create(project);
+  store.failUpsert = true;
+  clock.set('2027-01-01T00:00:00.000Z');
+
+  for (const idleTtlMs of [0, -1]) {
+    const report = await registry.sweepIdle({ idleTtlMs });
+    assert.deepEqual(report, { closed: [], skipped: [], failed: [] });
+  }
+  assert.equal(registry.has(record.sessionId), true);
+  assert.deepEqual(adapter.closed, []);
+});
+
+test('sweepIdle uses an explicit pass clock over the registry clock', async (t) => {
+  const { adapter, workspace, registry, project } = setup();
+  t.after(() => workspace.stop());
+
+  const record = await registry.create(project);
+  const report = await registry.sweepIdle({
+    idleTtlMs: 1,
+    now: () => '2026-11-06T22:00:01.000Z',
+  });
+
+  assert.deepEqual(report.closed, [record.sessionId]);
+  assert.deepEqual(adapter.closed, [record.nativeId]);
 });

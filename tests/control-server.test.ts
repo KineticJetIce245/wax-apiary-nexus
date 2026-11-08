@@ -715,6 +715,103 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   }
 });
 
+test('GET /graphs/<id>/output returns sorted forager output and never logs values', async (t) => {
+  const env = makeEnv({ output: OUTPUT_SECRET });
+  t.after(async () => {
+    await env.workspace.stop();
+  });
+  const logs: string[] = [];
+  const running = await startServer(env, { logger: (line) => logs.push(line) });
+  t.after(async () => {
+    await running.server.stop();
+  });
+  const { info, token } = running;
+
+  const definition = {
+    schemaVersion: 1,
+    id: 'outputs',
+    nodes: {
+      zeta: {
+        kind: 'forager',
+        config: { connection: 'fake', prompt: `zeta ${PROMPT_SECRET} {{input}}` },
+      },
+      alpha: {
+        kind: 'forager',
+        config: { connection: 'fake', prompt: `alpha ${PROMPT_SECRET} {{input}}` },
+      },
+    },
+    edges: [],
+  };
+  const load = await postJson(info.url, token, '/graphs/load', {
+    ...loadBody(
+      definition,
+      env.project,
+      { zeta: { kind: 'fresh' }, alpha: { kind: 'fresh' } },
+      60_000,
+    ),
+  });
+  assert.equal(load.status, 200);
+
+  // Loaded but no completed execution: an empty array, never a 404.
+  const empty = await getJson(info.url, token, '/graphs/outputs/output');
+  assert.equal(empty.status, 200);
+  assert.equal(empty.body?.['ok'], true);
+  assert.equal(empty.body?.['graphId'], 'outputs');
+  assert.deepEqual(empty.body?.['outputs'], []);
+
+  for (const nodeId of ['zeta', 'alpha']) {
+    const trigger = await postJson(info.url, token, '/trigger', {
+      graphId: 'outputs',
+      nodeId,
+      value: { kind: 'text', text: `${nodeId}-input` },
+    });
+    assert.equal(trigger.status, 200);
+  }
+
+  const response = await getJson(info.url, token, '/graphs/outputs/output');
+  assert.equal(response.status, 200);
+  assert.equal(response.body?.['ok'], true);
+  assert.equal(response.body?.['graphId'], 'outputs');
+  assert.deepEqual(response.body?.['outputs'], [
+    { nodeId: 'alpha', value: { kind: 'text', text: OUTPUT_SECRET } },
+    { nodeId: 'zeta', value: { kind: 'text', text: OUTPUT_SECRET } },
+  ]);
+  // The graph-scoped route is separate from the existing status route.
+  const status = await getJson(info.url, token, '/status/outputs');
+  assert.equal(status.status, 200);
+
+  const unknown = await getJson(info.url, token, '/graphs/missing/output');
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.body?.['code'], 'not-found');
+
+  const tooLong = await getJson(info.url, token, `/graphs/${'a'.repeat(513)}/output`);
+  assert.equal(tooLong.status, 404);
+
+  const wrongMethod = await postJson(info.url, token, '/graphs/outputs/output', {});
+  assert.equal(wrongMethod.status, 405);
+  assert.equal(wrongMethod.body?.['code'], 'method-not-allowed');
+
+  // An unloaded graph has no readable output: the snapshot is not persisted.
+  const unload = await postJson(info.url, token, '/graphs/unload', { graphId: 'outputs' });
+  assert.equal(unload.status, 200);
+  const gone = await getJson(info.url, token, '/graphs/outputs/output');
+  assert.equal(gone.status, 404);
+  assert.equal(gone.body?.['code'], 'not-found');
+
+  // Metadata-only logging: no output value, prompt or bearer token.
+  const logText = logs.join('\n');
+  assert.equal(logText.includes(OUTPUT_SECRET), false);
+  assert.equal(logText.includes(PROMPT_SECRET), false);
+  assert.equal(logText.includes(token), false);
+  assert.match(logText, /path=\/graphs\/outputs\/output status=200/);
+  for (const line of logs) {
+    assert.match(
+      line,
+      /^control method=[A-Z]+ path=\S+ status=[0-9]+ durationMs=[0-9]+ code=[a-z-]+$/,
+    );
+  }
+});
+
 test('unknown graphs return 404 and a duplicate load returns 409 with current status', async (t) => {
   const env = makeEnv();
   t.after(async () => {

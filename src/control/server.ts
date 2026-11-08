@@ -157,6 +157,7 @@ type RouteKind =
   | 'health'
   | 'status'
   | 'graph-status'
+  | 'graph-output'
   | 'load'
   | 'trigger'
   | 'answer'
@@ -728,6 +729,21 @@ export class ControlServer {
           throw new HttpError(404, 'not-found', 'graph is not loaded');
         }
         return { ok: true, status };
+      }
+      case 'graph-output': {
+        const graphId = route.graphId;
+        if (graphId === undefined) {
+          throw new HttpError(404, 'not-found', 'not found');
+        }
+        // `outputsOf` is a pure registry read. It throws GraphNotFoundError for
+        // an unloaded graph, which `toHttpError` maps to the same static 404 as
+        // the status route. Output ordering is normalized here so the wire
+        // shape never depends on executor-map insertion order.
+        const outputs = host.outputsOf(graphId);
+        const ordered = [...outputs.entries()]
+          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+          .map(([nodeId, value]) => ({ nodeId, value }));
+        return { ok: true, graphId, outputs: ordered };
       }
       case 'load': {
         const loadOptions = this.parseLoadBody(requirePayload(payload));
@@ -1432,6 +1448,22 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
     }
     if (first === 'sessions' && second === 'sweep') {
       return { kind: 'session-sweep', methods: ['POST'] };
+    }
+  }
+
+  if (parts.length === 3) {
+    const first = parts[0];
+    const second = parts[1];
+    const third = parts[2];
+    if (first === undefined || second === undefined || third === undefined) {
+      return undefined;
+    }
+    if (
+      first === 'graphs' &&
+      third === 'output' &&
+      second.length <= MAX_ID_LENGTH
+    ) {
+      return { kind: 'graph-output', methods: ['GET'], graphId: second };
     }
   }
 

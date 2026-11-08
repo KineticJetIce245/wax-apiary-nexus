@@ -17,9 +17,10 @@ import type { HarnessKind } from '../session/connection.js';
 import { CliUsageError, messageOf } from './cli-shared.js';
 
 const GRAPH_USAGE =
-  'usage: wax graph <list|status <graphId>|load <composition.json>|load --manifest <file>|' +
-  'unload <graphId>|sweep|answer <graphId> <nodeId> [--input <text>] [--token <hv_...>] ' +
-  '[--graph <manifest>]> [--json] [--daemon-dir <dir>] [--harness <codex|dsh>] ' +
+  'usage: wax graph <list|status <graphId>|output <graphId>|load <composition.json>|' +
+  'load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId> ' +
+  '[--input <text>] [--token <hv_...>] [--graph <manifest>]> [--json] ' +
+  '[--daemon-dir <dir>] [--harness <codex|dsh>] ' +
   '(load also needs --project <dir> --bindings <file> [--idle-ttl-ms <n>], or --manifest)';
 const TRIGGER_USAGE =
   'usage: wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>] [--json] ' +
@@ -124,6 +125,7 @@ export function parseCliTokens(
 
 const LIST_FLAGS = new Set(['--daemon-dir', '--harness']);
 const STATUS_FLAGS = new Set(['--daemon-dir', '--harness']);
+const OUTPUT_FLAGS = new Set(['--daemon-dir', '--harness']);
 const LOAD_FLAGS = new Set([
   '--manifest',
   '--project',
@@ -166,6 +168,7 @@ export type GraphLoadSource =
 export type GraphCommand =
   | (GraphCommon & { readonly kind: 'list' })
   | (GraphCommon & { readonly kind: 'status'; readonly graphId: string })
+  | (GraphCommon & { readonly kind: 'output'; readonly graphId: string })
   | (GraphCommon & { readonly kind: 'load'; readonly source: GraphLoadSource })
   | (GraphCommon & { readonly kind: 'unload'; readonly graphId: string })
   | (GraphCommon & { readonly kind: 'sweep' })
@@ -307,6 +310,17 @@ export function parseGraphArgs(argv: readonly string[]): GraphCommand {
     requirePositionals(parsed, 1, 'expected exactly one graph id after "wax graph status"');
     return {
       kind: 'status',
+      graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
+      json: parsed.json,
+      ...commonOf(parsed),
+    };
+  }
+
+  if (subcommand === 'output') {
+    const parsed = parseCliTokens(rest, OUTPUT_FLAGS);
+    requirePositionals(parsed, 1, 'expected exactly one graph id after "wax graph output"');
+    return {
+      kind: 'output',
       graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
       json: parsed.json,
       ...commonOf(parsed),
@@ -641,6 +655,22 @@ export async function runGraphCli(
         }
         return 0;
       }
+      case 'output': {
+        const outputs = await client.outputs(command.graphId);
+        if (outputs === undefined) {
+          err(`error: graph '${command.graphId}' is not loaded`);
+          return 1;
+        }
+        if (command.json) {
+          // One object, exactly the wire shape: no wrapper and no extra fields.
+          writeJson(out, { graphId: command.graphId, outputs: [...outputs] });
+        } else {
+          for (const entry of outputs) {
+            out(`${entry.nodeId}: ${renderOutputValue(entry.value)}`);
+          }
+        }
+        return 0;
+      }
       case 'load': {
         if (prepared === undefined) {
           throw new Error('load command was not prepared');
@@ -912,6 +942,21 @@ function printStatus(out: Writer, status: GraphStatus, label: string): void {
         `stuck=${status.recovery.stuckActive.join(',') || '-'}`,
     );
   }
+}
+
+/**
+ * Human rendering of one graph output Value. A text Value prints its text
+ * directly; every other shape prints stable compact JSON. Newlines are folded
+ * so the documented "one line per node" contract always holds.
+ */
+function renderOutputValue(value: unknown): string {
+  if (isRecord(value) && value['kind'] === 'text' && typeof value['text'] === 'string') {
+    // Text is printed as-is apart from folding embedded newlines, so the
+    // documented one-line-per-node contract always holds.
+    return value['text'].replace(/[\r\n]+/g, ' ');
+  }
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? '' : serialized;
 }
 
 function yesNo(value: boolean): string {

@@ -55,6 +55,16 @@ export interface SessionSummary {
   readonly bound: boolean;
 }
 
+/**
+ * One forager's last completed output as exposed by the control channel. The
+ * value is the runtime Value itself; it never includes a prompt, hover token or
+ * transcript because those are not part of the graph output snapshot.
+ */
+export interface GraphOutputEntry {
+  readonly nodeId: string;
+  readonly value: unknown;
+}
+
 export interface ControlClientErrorOptions {
   /** Server error code, or `network` | `timeout` | `discovery` | `protocol`. */
   readonly code: string;
@@ -211,6 +221,26 @@ export class ControlClient {
     } catch (error) {
       // An unloaded graph is a normal answer, not a failure. Every other
       // non-2xx response still propagates as a typed error.
+      if (error instanceof ControlClientError && error.status === 404) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Last completed output of every forager in one loaded graph, in the order
+   * the server returned them (node-id sorted). A 404 means the graph is not
+   * loaded and resolves `undefined`, matching `statusOf`; every other failure
+   * throws. Read-only and never retried, so a failed read cannot prolong a
+   * graph's residency.
+   */
+  async outputs(graphId: string): Promise<readonly GraphOutputEntry[] | undefined> {
+    const id = requireId(graphId, 'graphId');
+    try {
+      const body = await this.request('GET', `/graphs/${encodeURIComponent(id)}/output`);
+      return parseGraphOutputs(body, id);
+    } catch (error) {
       if (error instanceof ControlClientError && error.status === 404) {
         return undefined;
       }
@@ -628,6 +658,43 @@ function requireId(value: unknown, field: string): string {
     );
   }
   return value;
+}
+
+/**
+ * Strict parser for the graph output response. The graph id must match the one
+ * requested and every entry must carry a bounded node id plus an own `value`
+ * property. The message is static: a malformed body is never echoed.
+ */
+function parseGraphOutputs(
+  body: Record<string, unknown>,
+  expectedGraphId: string,
+): readonly GraphOutputEntry[] {
+  const graphId = body['graphId'];
+  if (!isBoundedString(graphId, MAX_ID_LENGTH) || graphId !== expectedGraphId) {
+    throw protocolError('control response contained an invalid graph output');
+  }
+  const outputs = body['outputs'];
+  if (!Array.isArray(outputs)) {
+    throw protocolError('control response contained an invalid graph output');
+  }
+  const entries: GraphOutputEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of outputs) {
+    if (!isRecord(entry)) {
+      throw protocolError('control response contained an invalid graph output');
+    }
+    const nodeId = entry['nodeId'];
+    if (
+      !isBoundedString(nodeId, MAX_ID_LENGTH) ||
+      seen.has(nodeId) ||
+      !Object.hasOwn(entry, 'value')
+    ) {
+      throw protocolError('control response contained an invalid graph output');
+    }
+    seen.add(nodeId);
+    entries.push({ nodeId, value: entry['value'] });
+  }
+  return entries;
 }
 
 /**

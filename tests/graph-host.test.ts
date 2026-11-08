@@ -1198,6 +1198,98 @@ test('status and statusOf are pure reads and M4a defaults idle TTL to 0', async 
   assert.equal(host.statusOf('graph') !== undefined, true);
 });
 
+test('outputsOf snapshots one graph without touching residency or taking a lease', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = fastDefinition('output-graph', {
+    zeta: forager('zeta {{input}}'),
+    alpha: forager('alpha {{input}}'),
+  });
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+    idleTtlMs: 10_000,
+  });
+
+  // A loaded graph with no completed execution yet has an empty snapshot.
+  assert.deepEqual([...host.outputsOf('output-graph')], []);
+  assert.equal(host.lastOutputs().size, 0);
+
+  const triggered = await host.trigger('output-graph', 'zeta', text('z'));
+  assert.equal(triggered.rest, true);
+  assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['zeta z']);
+  assert.equal(env.adapter.promptsByNative.has('native-2'), false);
+
+  // Spy on the internal registry: outputsOf must call neither acquire nor
+  // touch. Only a peek-based read leaves both counters at zero.
+  const graphRegistry = (
+    host as unknown as {
+      readonly graphs: {
+        acquire(id: string): unknown;
+        touch(id: string): void;
+      };
+    }
+  ).graphs;
+  let leases = 0;
+  let touches = 0;
+  const originalAcquire = graphRegistry.acquire.bind(graphRegistry);
+  const originalTouch = graphRegistry.touch.bind(graphRegistry);
+  graphRegistry.acquire = (id: string) => {
+    leases += 1;
+    return originalAcquire(id);
+  };
+  graphRegistry.touch = (id: string) => {
+    touches += 1;
+    originalTouch(id);
+  };
+
+  const outputs = host.outputsOf('output-graph');
+  assert.equal(leases, 0, 'reading output must not take a residency lease');
+  assert.equal(touches, 0, 'reading output must not refresh the idle clock');
+  assert.deepEqual(
+    [...outputs.entries()],
+    [['zeta', { kind: 'text', text: 'reply(native-1):zeta z' }]],
+  );
+  // It is a snapshot: mutating the returned Map cannot touch the host.
+  (outputs as Map<NodeId, Value>).clear();
+  assert.equal(host.outputsOf('output-graph').size, 1);
+
+  const before = host.statusOf('output-graph');
+  assert.ok(before !== undefined);
+  assert.equal(before.residency.lastAccessAt, 1_000);
+  assert.equal(before.residency.refCount, 0);
+
+  // Exactly at the deadline, an output read must still leave the graph
+  // evictable. A TTL refresh here would make the sweep skip it.
+  clock.advance(10_000);
+  assert.equal(host.outputsOf('output-graph').size, 1);
+  assert.equal(host.statusOf('output-graph')?.residency.lastAccessAt, 1_000);
+  const sweep = await host.sweep();
+  assert.deepEqual(sweep.unloaded, ['output-graph']);
+  assert.deepEqual(sweep.skipped, []);
+  assert.throws(() => host.outputsOf('output-graph'), GraphNotFoundError);
+
+  // The lastOutputs() aggregate still works and remains graph-independent.
+  const other = runnableForagerGraph('other-graph');
+  await host.loadGraph({ definition: other, bindings: allFresh(other), project: env.project });
+  await host.trigger('other-graph', 'only', text('o'));
+  assert.deepEqual([...host.lastOutputs().keys()], ['only']);
+
+  await host.dispose();
+  assert.throws(() => host.outputsOf('other-graph'), GraphHostDisposedError);
+});
+
 test('an unknown trigger node rethrows the runtime error and releases the lease', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);

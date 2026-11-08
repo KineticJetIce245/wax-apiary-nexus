@@ -601,6 +601,29 @@ export class GraphHost {
   }
 
   /**
+   * Last completed Value of every forager in one loaded graph, keyed by node
+   * id. It is a read-only snapshot: `peek` never refreshes the idle TTL, takes
+   * a lease or changes residency, so reading output cannot extend a graph's
+   * life. An unknown graph throws `GraphNotFoundError`; an unloaded graph's
+   * output is deliberately not persisted and therefore unreadable.
+   */
+  outputsOf(graphId: GraphId): ReadonlyMap<NodeId, Value> {
+    this.assertNotDisposed();
+    const entry = this.graphs.peek(graphId);
+    if (entry === undefined) {
+      throw new GraphNotFoundError(graphId);
+    }
+    const outputs = new Map<NodeId, Value>();
+    for (const [nodeId, executor] of entry.value.instantiated.executors) {
+      const output = executor.lastOutput;
+      if (output !== undefined) {
+        outputs.set(nodeId, output);
+      }
+    }
+    return outputs;
+  }
+
+  /**
    * Last completed text Value of every forager in every loaded graph, keyed by
    * node id. It is a read-only snapshot for one-shot reporting and never
    * exposes a prompt, token or transcript. Unloaded graphs contribute nothing.

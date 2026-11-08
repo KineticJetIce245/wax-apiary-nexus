@@ -20,7 +20,7 @@ import {
 } from '../src/cli/waxd-cli.js';
 import { ControlClient, discoverDaemon } from '../src/control/client.js';
 import type { HarnessKind } from '../src/session/connection.js';
-import { FakeAdapter } from './support/fake-adapter.js';
+import { FakeAdapter, type FakeAdapterOptions } from './support/fake-adapter.js';
 
 interface Invocation {
   readonly code: number;
@@ -252,8 +252,9 @@ function writeManifestVariant(root: string, name: string, value: unknown): strin
 async function startWaxd(
   t: TestContext,
   extraArgs: readonly string[] = [],
+  adapterOptions: FakeAdapterOptions = {},
 ): Promise<TestDaemon> {
-  const adapter = new TrackingFakeAdapter();
+  const adapter = new TrackingFakeAdapter(adapterOptions);
   const stateRoot = tempDir('wax-control-cli-state-');
   const daemonDir = join(stateRoot, 'waxd');
   const stdout: string[] = [];
@@ -1045,6 +1046,98 @@ test('graph commands round-trip load, status, list, trigger, unload and sweep ov
   assert.deepEqual(sweep['unloaded'], []);
   assert.deepEqual(sweep['skipped'], []);
   assert.deepEqual(sweep['failed'], []);
+});
+
+test('wax graph output reads real HTTP output, renders human values and exits 1 when unknown', async (t) => {
+  const outputText = 'GRAPH_OUTPUT_7c1d';
+  const daemon = await startWaxd(t, [], { output: outputText });
+  const composition = tempJson(foragerComposition('output-graph'));
+  const bindings = tempJson(freshBindings());
+  const project = tempDir('wax-control-cli-output-project-');
+
+  const load = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(load.code, 0, `stderr: ${load.stderr.join(' | ')}`);
+
+  // Loaded but not yet executed: one JSON object with an empty list, not 404.
+  const empty = singleJson(
+    await invokeControl(runGraphCli, ['graph', 'output', 'output-graph', '--json'], {
+      daemonDir: daemon.daemonDir,
+    }),
+  );
+  assert.deepEqual(empty, { graphId: 'output-graph', outputs: [] });
+  assert.deepEqual(Object.keys(empty), ['graphId', 'outputs']);
+
+  const trigger = await invokeControl(
+    runTriggerCli,
+    ['trigger', 'output-graph', 'only', '--input', 'hello output', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(trigger.code, 0, `stderr: ${trigger.stderr.join(' | ')}`);
+
+  const outputInvocation = await invokeControl(
+    runGraphCli,
+    ['graph', 'output', 'output-graph', '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  const outputJson = singleJson(outputInvocation);
+  assert.deepEqual(outputJson, {
+    graphId: 'output-graph',
+    outputs: [{ nodeId: 'only', value: { kind: 'text', text: outputText } }],
+  });
+
+  const human = await invokeControl(runGraphCli, ['graph', 'output', 'output-graph'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.equal(human.code, 0);
+  assert.deepEqual(human.stderr, []);
+  assert.deepEqual(human.stdout, [`only: ${outputText}`]);
+
+  const token = readFileSync(daemon.started.tokenPath, 'utf8').trim();
+  assertNoSecret([...human.stdout, ...human.stderr, ...outputInvocation.stdout], token);
+
+  // Structured values use stable compact JSON. Discovery still talks to the
+  // real daemon; only the control response is injected so the CLI's non-text
+  // rendering path is exercised without inventing a structured forager.
+  const structured = await invokeControl(runGraphCli, ['graph', 'output', 'output-graph'], {
+    daemonDir: daemon.daemonDir,
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          graphId: 'output-graph',
+          outputs: [
+            { nodeId: 'only', value: { kind: 'structured', value: { b: 2, a: 1 } } },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+  });
+  assert.equal(structured.code, 0);
+  assert.deepEqual(structured.stdout, [
+    'only: {"kind":"structured","value":{"b":2,"a":1}}',
+  ]);
+
+  const unknown = await invokeControl(runGraphCli, ['graph', 'output', 'missing'], {
+    daemonDir: daemon.daemonDir,
+  });
+  assert.equal(unknown.code, 1);
+  assert.deepEqual(unknown.stdout, []);
+  assert.equal(unknown.stderr.length, 1);
+  assert.match(unknown.stderr[0] as string, /graph 'missing' is not loaded/);
+
+  for (const argv of [
+    ['graph', 'output'],
+    ['graph', 'output', 'a', 'b'],
+    ['graph', 'output', 'a', '--bogus'],
+  ]) {
+    const usage = await invokeControl(runGraphCli, argv, { daemonDir: daemon.daemonDir });
+    assert.equal(usage.code, 2, `expected usage exit for ${argv.join(' ')}`);
+    assert.deepEqual(usage.stdout, []);
+  }
 });
 
 test('wax session list/close work over real HTTP and never print a token', async (t) => {

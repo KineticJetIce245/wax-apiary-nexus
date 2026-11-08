@@ -434,6 +434,66 @@ test('load, status, trigger, statusOf, sweep and unload round-trip over real HTT
   assert.equal((await daemon.client.status()).length, 0);
 });
 
+test('outputs round-trips over real HTTP and maps 404 to undefined', async (t) => {
+  const daemon = await startDaemon(t, { output: OUTPUT_MARKER });
+  const project = daemon.env.project;
+  await daemon.client.load({
+    definition: foragerDefinition('main', `run {{input}} ${PROMPT_MARKER}`),
+    bindings: { only: { kind: 'fresh' } },
+    project,
+  });
+
+  // Loaded but never executed is an empty list, distinct from "not loaded".
+  assert.deepEqual(await daemon.client.outputs('main'), []);
+
+  await daemon.client.trigger('main', 'only', { kind: 'text', text: 'client input' });
+  const outputs = await daemon.client.outputs('main');
+  assert.deepEqual(outputs, [
+    { nodeId: 'only', value: { kind: 'text', text: OUTPUT_MARKER } },
+  ]);
+  const serialized = JSON.stringify(outputs);
+  assert.equal(serialized.includes(PROMPT_MARKER), false);
+  assert.equal(serialized.includes(daemon.discovery.token), false);
+
+  assert.equal(await daemon.client.outputs('missing'), undefined);
+  await daemon.client.unload('main');
+  assert.equal(await daemon.client.outputs('main'), undefined);
+});
+
+test('outputs rejects malformed responses as protocol errors without echoing them', async (t) => {
+  let calls = 0;
+  let body = '';
+  const raw = await startRawServer((_request, response) => {
+    calls += 1;
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(body);
+  });
+  t.after(async () => {
+    await raw.close();
+  });
+  const client = new ControlClient({ baseUrl: raw.baseUrl, token: VALID_TOKEN });
+
+  const malformed = [
+    JSON.stringify({ ok: true, graphId: 'x', outputs: 'not-an-array' }),
+    JSON.stringify({ ok: true, graphId: 'x', outputs: [{ nodeId: 'only' }] }),
+    JSON.stringify({ ok: true, graphId: 'x', outputs: [{ value: 'orphan' }] }),
+    JSON.stringify({ ok: true, graphId: 'x', outputs: [{ nodeId: 'only', value: 1 }, { nodeId: 'only', value: 2 }] }),
+    JSON.stringify({ ok: true, graphId: 'other', outputs: [] }),
+    JSON.stringify({ ok: true, graphId: 'x', outputs: [LEAK_MARKER] }),
+  ];
+  for (const candidate of malformed) {
+    body = candidate;
+    const before = calls;
+    await assert.rejects(client.outputs('x'), (error: unknown) => {
+      assert.ok(error instanceof ControlClientError);
+      assert.equal(error.code, 'protocol');
+      assert.equal(error.message.includes(LEAK_MARKER), false);
+      return true;
+    });
+    assert.equal(calls, before + 1, 'outputs must be attempted exactly once');
+  }
+});
+
 test('listSessions and closeSession round-trip and report bound/busy state', async (t) => {
   const daemon = await startDaemon(t, { output: OUTPUT_MARKER });
   assert.deepEqual(await daemon.client.listSessions(), []);

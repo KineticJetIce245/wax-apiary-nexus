@@ -1007,11 +1007,15 @@ test('b-core usage errors are rejected before any adapter is created', async () 
     readonly composition: unknown;
     readonly args: readonly string[];
   }[] = [
-    { name: 'resume', composition: COMPOSITION, args: ['--resume'] },
     {
       name: 'composition tools',
       composition: COMPOSITION,
       args: ['--trigger', 'start', '--composition-tools'],
+    },
+    {
+      name: 'resume with composition tools',
+      composition: COMPOSITION,
+      args: ['--resume', '--composition-tools'],
     },
     {
       name: 'condition trigger',
@@ -1071,6 +1075,128 @@ test('a failed b-core execution exits 1 and stops the adapter', async () => {
   assert.match(captureResult.stderr.join('\n'), /b-core exploded/);
   assert.equal(adapter.startCalls, 1);
   assert.equal(adapter.stopCalls, 1);
+});
+
+test('b-core --resume drains the persisted field instead of re-triggering', async () => {
+  const state = stateDirectory();
+  const project = projectDirectory();
+  const compositionPath = compositionFile(COMPOSITION);
+  const definition = parseComposition(COMPOSITION);
+  const store = HoneyStore.forComposition(state, apiaryForProject(project), definition.id);
+  store.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: definition.graphRevision,
+    rest: false,
+    nodes: {
+      start: {
+        queue: [
+          {
+            id: 'ph_resume',
+            traceId: 'tr_resume',
+            value: { kind: 'text', text: 'queued' },
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    },
+  });
+
+  const adapter = new FakeAdapter({ output: 'RESUMED' });
+  const captureResult = capture();
+  const code = await runCli(
+    [
+      ...baseArgs(compositionPath, project, state),
+      '--engine',
+      'b-core',
+      '--resume',
+      '--input',
+      'not-used',
+    ],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 0);
+  assert.deepEqual(adapter.prompts, ['reply to queued'], 'drained input, not --input');
+  assert.ok(captureResult.stdout.includes('rest         true'));
+  assert.ok(captureResult.stdout.includes('output       RESUMED'));
+  assert.ok(
+    captureResult.stdout.some((line) => line.startsWith('recovered    hovers=-')),
+  );
+  const saved = store.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, true);
+});
+
+test('b-core --resume without a persisted field is a usage error before start', async () => {
+  let created = 0;
+  const adapter = new FakeAdapter();
+  const captureResult = capture();
+  const code = await runCli(
+    [
+      ...baseArgs(compositionFile(), projectDirectory(), stateDirectory()),
+      '--engine',
+      'b-core',
+      '--resume',
+    ],
+    {
+      ...captureResult.deps,
+      createAdapter: async () => {
+        created += 1;
+        return adapter;
+      },
+    },
+  );
+
+  assert.equal(code, 2);
+  assert.match(captureResult.stderr.join('\n'), /nothing to resume/);
+  assert.equal(created, 0, 'the field is checked before the adapter factory runs');
+  assert.equal(adapter.startCalls, 0);
+});
+
+test('b-core --resume answers a persisted user hover through askUser', async () => {
+  const state = stateDirectory();
+  const project = projectDirectory();
+  const compositionPath = compositionFile(ASK_COMPOSITION);
+
+  const failed = capture();
+  const first = await runCli(
+    [
+      ...baseArgs(compositionPath, project, state),
+      '--trigger',
+      'start',
+      '--engine',
+      'b-core',
+    ],
+    withAdapter(new FakeAdapter({ output: 'OUT' }), failed, {
+      askUser: async () => {
+        throw new Error('no tty');
+      },
+    }),
+  );
+  assert.equal(first, 1);
+  assert.match(failed.stderr.join('\n'), /no tty/);
+
+  const adapter = new FakeAdapter({ output: 'OUT' });
+  const resumed = capture();
+  const asked: string[] = [];
+  const second = await runCli(
+    [...baseArgs(compositionPath, project, state), '--engine', 'b-core', '--resume'],
+    withAdapter(adapter, resumed, {
+      askUser: async (node) => {
+        asked.push(node.id);
+        return { kind: 'text', text: 'HUMAN' } satisfies Value;
+      },
+    }),
+  );
+
+  assert.equal(second, 0);
+  assert.deepEqual(asked, ['ask']);
+  assert.deepEqual(adapter.prompts, ['finish'], 'only the resumed downstream work ran');
+  assert.ok(
+    resumed.stdout.some((line) => line.startsWith('recovered    hovers=ask')),
+  );
+  assert.ok(resumed.stdout.includes('rest         true'));
 });
 
 test('defaults to the A engine and keeps the A one-shot path', async () => {

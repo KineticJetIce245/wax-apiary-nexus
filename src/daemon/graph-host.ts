@@ -262,8 +262,8 @@ interface QuiescenceOutcome {
  * In-memory graph host with optional Honey persistence.
  *
  * It composes the pieces landed in M1-M3b. Load creates fresh sessions through
- * `instantiateForagers`; trigger and answer hold a residency lease across pumps,
- * pacing waits and the final Honey flush.
+ * `instantiateForagers`; trigger, answer and drain hold a residency lease across
+ * pumps, pacing waits and the final Honey flush.
  *
  * Sessions are decoupled from graphs. A normal unload, TTL sweep or dispose
  * releases routing but never closes a session and never removes a `fresh_once`
@@ -520,6 +520,37 @@ export class GraphHost {
     } finally {
       // The lease spans the answer, the whole pump loop, every pacing wait and
       // the final Honey flush.
+      lease.release();
+    }
+
+    if (outcome === undefined) {
+      // Unreachable: `pumpToQuiescence` either returns or throws.
+      throw new GraphNotFoundError(graphId);
+    }
+    return this.resultOf(graphId, outcome);
+  }
+
+  /**
+   * Drains an already-loaded field without creating work.
+   *
+   * A restored field may contain work accepted before the process stopped (a
+   * queue, a pending Pheromone, an unfinished Merge join or a parked hover).
+   * Drain pumps exactly that existing work to Rest or the next hover and then
+   * flushes Honey; a field already at Rest or on a hover is flushed without
+   * pumping. It never calls `runtime.trigger`, so a resume cannot replay the
+   * run that produced the field.
+   *
+   * The whole run holds the residency lease across pumps, pacing waits and the
+   * final Honey flush, exactly like `trigger` and `answer`. A failed save is
+   * reported in the result, never retried and never replayed.
+   */
+  async drain(graphId: GraphId): Promise<GraphRunResult> {
+    this.assertNotDisposed();
+    const lease = this.acquireLease(graphId);
+    let outcome: QuiescenceOutcome | undefined;
+    try {
+      outcome = await this.pumpToQuiescence(lease.value);
+    } finally {
       lease.release();
     }
 

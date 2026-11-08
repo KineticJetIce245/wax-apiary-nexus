@@ -32,6 +32,7 @@ import {
   type GuardRequest,
   type NodeDefinition,
   type NodeId,
+  type PersistedField,
   type PheromoneFieldSnapshot,
   type Value,
 } from '../src/runtime/index.js';
@@ -41,6 +42,7 @@ import {
 } from '../src/session/instantiate-foragers.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
+import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
 
 const FIXED_NOW = '2026-11-06T22:00:00.000Z';
 
@@ -248,6 +250,16 @@ class GatedCloseFailureAdapter extends FailingCloseAdapter {
 class ThrowingTouchRegistry extends SessionRegistry {
   override touch(): void {
     throw new Error('touch failed');
+  }
+}
+
+/** Honey wrapper that counts saves, so a flush is observable even at Rest. */
+class CountingHoneyStore extends HoneyStore {
+  saveCalls = 0;
+
+  override save(field: PersistedField): void {
+    this.saveCalls += 1;
+    super.save(field);
   }
 }
 
@@ -2097,4 +2109,150 @@ test('firstHover exposes the first parked hover without any body', async (t) => 
   const answered = await host.answer('first-hover', 'ask-a', text('A'), first.token);
   assert.equal(answered.hovered, true);
   assert.equal(host.firstHover()?.nodeId, 'ask-b');
+});
+
+test('drain flushes a Rest field without pumping or creating work', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-drain-rest-'));
+  const honey = new CountingHoneyStore(honeyPaths(root, 'apiary', 'drain-rest'));
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('drain-rest', 'run {{input}}');
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+  });
+  assert.equal(honey.saveCalls, 0, 'load does not flush');
+
+  const result = await host.drain('drain-rest');
+
+  assert.equal(result.rest, true);
+  assert.equal(result.hovered, false);
+  assert.equal(result.pumps, 0, 'an already Rest field is not pumped');
+  assert.equal(result.persisted, true);
+  assert.equal(result.status.residency.refCount, 0);
+  assert.equal(honey.saveCalls, 1, 'drain flushed the field');
+  assert.deepEqual(env.adapter.allPrompts, [], 'drain never creates a Pheromone');
+  const saved = honey.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, true);
+});
+
+test('drain pumps existing queued work to Rest and flushes it', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-drain-queued-'));
+  const honey = new CountingHoneyStore(honeyPaths(root, 'apiary', 'drain-queued'));
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('drain-queued', 'run {{input}}');
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+  });
+
+  // Queue work without a host pump, as a restored field would carry it.
+  runtimeOf(host, 'drain-queued').trigger('only', text('queued'));
+  assert.equal(host.statusOf('drain-queued')?.rest, false);
+  assert.deepEqual(env.adapter.allPrompts, []);
+
+  const result = await host.drain('drain-queued');
+
+  assert.equal(result.rest, true);
+  assert.equal(result.hovered, false);
+  assert.ok(result.pumps >= 1, 'drain must pump the queued Pheromone');
+  assert.deepEqual(env.adapter.allPrompts, ['run queued']);
+  assert.equal(result.persisted, true);
+  assert.equal(honey.saveCalls, 1, 'drain flushed the drained field');
+  const saved = honey.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, true);
+  const queue = saved.nodes['only']?.queue ?? [];
+  assert.deepEqual(queue, [], 'the queued work was drained, not left behind');
+});
+
+test('drain flushes a hovered field without pumping the hover away', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-drain-hover-'));
+  const honey = new CountingHoneyStore(honeyPaths(root, 'apiary', 'drain-hover'));
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = userAndForagerGraph('drain-hover');
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+  });
+  const triggered = await host.trigger('drain-hover', 'ask', text('waiting'));
+  assert.equal(triggered.hovered, true);
+  const savesAfterTrigger = honey.saveCalls;
+  const promptsAfterTrigger = [...env.adapter.allPrompts];
+
+  const result = await host.drain('drain-hover');
+
+  assert.equal(result.hovered, true);
+  assert.equal(result.rest, false);
+  assert.equal(result.pumps, 0, 'a parked hover is not pumped');
+  assert.equal(result.persisted, true);
+  assert.equal(honey.saveCalls, savesAfterTrigger + 1);
+  assert.deepEqual(env.adapter.allPrompts, promptsAfterTrigger);
+  const saved = honey.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.nodes['ask']?.hover?.kind, 'user');
+});
+
+test('drain rejects an unknown graph and a disposed host explicitly', async (t) => {
+  const env = makeEnv();
+  const host = new GraphHost({ workspace: env.workspace, registry: env.registry });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  await assert.rejects(host.drain('missing'), (error: unknown) => {
+    assert.ok(error instanceof GraphNotFoundError);
+    assert.equal(error.graphId, 'missing');
+    return true;
+  });
+
+  const definition = runnableForagerGraph('drain-disposed');
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+  });
+  await host.dispose();
+
+  await assert.rejects(host.drain('drain-disposed'), GraphHostDisposedError);
 });

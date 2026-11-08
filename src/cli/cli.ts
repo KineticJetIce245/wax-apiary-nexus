@@ -387,13 +387,10 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
     command = parseRunArgs(argv, deps.env);
     definition = loadCompositionFile(command.compositionPath);
     if (command.engine === 'b-core') {
-      // b-core is a headless ephemeral entry point: resuming and the
-      // composition tools are out of scope. User hovers and native approvals
-      // are supported through the same interactive handlers as the A path.
-      // Reject local usage errors before any adapter is created.
-      if (command.resume) {
-        throw new CliUsageError('--resume is not supported with --engine b-core');
-      }
+      // b-core is a headless ephemeral entry point; the composition tools
+      // remain out of scope. Resume restores the persisted Honey field and
+      // drains it, using the same `nothing to resume` usage rule as the A
+      // path. Reject local usage errors before any adapter is created.
       if (command.compositionTools) {
         throw new CliUsageError('--composition-tools is not supported with --engine b-core');
       }
@@ -675,8 +672,9 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 /**
  * The transitional headless b-core `wax run`: one ephemeral graph execution
  * through GraphHost + Honey. The A path below is untouched and remains the
- * default; this path has no session store, no daemon and no resume. User
- * hovers and native Guard approvals use the same interactive handlers as A.
+ * default; this path has no session store and no daemon. `--resume` restores
+ * the persisted field and drains it instead of starting fresh. User hovers and
+ * native Guard approvals use the same interactive handlers as A.
  */
 async function runBcoreCommand(
   command: RunCommand,
@@ -721,6 +719,7 @@ async function runBcoreCommand(
       project,
       bindings,
       ...(command.trigger === undefined ? {} : { trigger: command.trigger }),
+      ...(command.resume ? { resume: true } : {}),
       input: command.input,
       stateRoot: command.stateDir,
       apiary,
@@ -766,6 +765,13 @@ function printEphemeralSummary(
         `pending=${node.pending ? 'yes' : 'no'} ` +
         `active=${node.active ? 'yes' : 'no'} ` +
         `hover=${node.hovered ? 'yes' : 'no'}`,
+    );
+  }
+  if (result.recovery !== undefined) {
+    out(
+      `recovered    hovers=${result.recovery.resumedHovers.join(',') || '-'} ` +
+        `unknown=${result.recovery.unknownActive.join(',') || '-'} ` +
+        `stuck=${result.recovery.stuckActive.join(',') || '-'}`,
     );
   }
   const output = lastForagerOutput(definition, result.outputs);

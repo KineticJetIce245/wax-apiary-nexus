@@ -549,3 +549,196 @@ test('keeps each ephemeral run isolated from the previous one', async () => {
   assert.equal(second.outputs.size, 1, 'the second run does not inherit the first output');
   assert.deepEqual(adapter.prompts, ['go', 'go']);
 });
+
+test('resume drains the restored field instead of replaying a trigger', async () => {
+  const adapter = new RecordingAdapter({ output: 'RESUMED-OUT' });
+  const definition = fastDefinition('eph-resume-drain', { start: forager('go {{input}}') });
+  const env = makeEnv(adapter, definition);
+  const store = HoneyStore.forComposition(env.stateRoot, env.apiary, definition.id);
+  store.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: definition.graphRevision,
+    rest: false,
+    nodes: {
+      start: {
+        queue: [
+          {
+            id: 'ph_resume',
+            traceId: 'tr_resume',
+            value: { kind: 'text', text: 'queued' },
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+    },
+  });
+
+  const result = await runEphemeralGraph({ ...env.options, resume: true });
+
+  assert.equal(result.status.rest, true);
+  assert.equal(result.status.hovered, false);
+  assert.deepEqual(adapter.prompts, ['go queued'], 'the restored work ran, no trigger');
+  assert.deepEqual(result.outputs.get('start'), {
+    kind: 'text',
+    text: 'RESUMED-OUT',
+  });
+  assert.equal(result.persisted, true);
+  assert.deepEqual(result.recovery, {
+    resumedHovers: [],
+    unknownActive: [],
+    stuckActive: [],
+  });
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1);
+  assert.equal(adapter.createdNativeIds.length, 1);
+  assert.deepEqual(adapter.closedNativeIds, adapter.createdNativeIds);
+
+  const saved = store.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, true);
+  assert.deepEqual(saved.nodes['start']?.queue, [], 'the queued work was drained');
+});
+
+test('resume without a Honey field fails before the adapter starts', async () => {
+  const adapter = new RecordingAdapter();
+  const definition = fastDefinition('eph-resume-missing', { start: forager('go') });
+  const env = makeEnv(adapter, definition);
+
+  await assert.rejects(
+    runEphemeralGraph({ ...env.options, resume: true }),
+    (error: unknown) => {
+      assert.ok(error instanceof EphemeralRunUnsupportedError);
+      assert.equal(error.reason, 'resume');
+      assert.match(error.message, /nothing to resume/);
+      assert.equal(error.message.includes('go'), false, 'no prompt in the error');
+      return true;
+    },
+  );
+
+  assert.equal(adapter.startCalls, 0);
+  assert.equal(adapter.stopCalls, 0);
+  assert.equal(adapter.createdNativeIds.length, 0);
+});
+
+test('resume answers a persisted user hover and reaches Rest', async () => {
+  const adapter = new RecordingAdapter({ output: 'OUT' });
+  const definition = askDefinition('eph-resume-hover');
+  const env = makeEnv(adapter, definition);
+
+  // Leave a parked user hover in Honey: the run starts and fails only when
+  // the interactive answer is missing, and cleanup flushes the hover.
+  await assert.rejects(
+    runEphemeralGraph({
+      ...env.options,
+      trigger: 'start',
+      askUser: async () => {
+        throw new Error('no tty');
+      },
+    }),
+    /no tty/,
+  );
+  const store = HoneyStore.forComposition(env.stateRoot, env.apiary, definition.id);
+  const parked = store.load();
+  assert.ok(parked !== undefined);
+  assert.equal(parked.nodes['ask']?.hover?.kind, 'user');
+  assert.deepEqual(adapter.prompts, ['start hello']);
+
+  const asked: NodeId[] = [];
+  const result = await runEphemeralGraph({
+    ...env.options,
+    resume: true,
+    askUser: async (node) => {
+      asked.push(node.id);
+      return { kind: 'text', text: 'HUMAN' };
+    },
+  });
+
+  assert.deepEqual(asked, ['ask']);
+  assert.equal(result.status.rest, true);
+  assert.equal(result.status.hovered, false);
+  assert.deepEqual(result.recovery?.resumedHovers, ['ask']);
+  assert.deepEqual(adapter.prompts, ['start hello', 'done HUMAN']);
+  assert.equal(adapter.startCalls, 2);
+  assert.equal(adapter.stopCalls, 2);
+  assert.deepEqual(adapter.closedNativeIds, adapter.createdNativeIds);
+});
+
+test('resume with a trigger restores the field and then triggers', async () => {
+  const adapter = new RecordingAdapter({ output: 'OUT' });
+  const definition = counterDefinition('eph-resume-trigger');
+  const env = makeEnv(adapter, definition);
+  const store = HoneyStore.forComposition(env.stateRoot, env.apiary, definition.id);
+  store.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: definition.graphRevision,
+    rest: true,
+    nodes: { count: { queue: [], state: { count: 7 } } },
+  });
+
+  const result = await runEphemeralGraph({
+    ...env.options,
+    resume: true,
+    trigger: 'start',
+  });
+
+  assert.equal(result.status.rest, true);
+  assert.deepEqual(result.recovery, {
+    resumedHovers: [],
+    unknownActive: [],
+    stuckActive: [],
+  });
+  assert.deepEqual(adapter.prompts, ['start hello', 'done OUT']);
+  const saved = store.load();
+  assert.ok(saved !== undefined);
+  assert.equal(
+    saved.nodes['count']?.state?.['count'],
+    8,
+    'the counter resumed at 7 and the explicit trigger advanced it',
+  );
+});
+
+test('resume reports an unknown active forager and never replays it', async () => {
+  const adapter = new RecordingAdapter({ output: 'REPLAYED' });
+  const definition = fastDefinition('eph-resume-unknown', {
+    only: forager('secret {{input}}'),
+  });
+  const env = makeEnv(adapter, definition);
+  const store = HoneyStore.forComposition(env.stateRoot, env.apiary, definition.id);
+  store.save({
+    schemaVersion: 1,
+    compositionId: definition.id,
+    graphRevision: definition.graphRevision,
+    rest: false,
+    nodes: {
+      only: {
+        queue: [],
+        active: {
+          id: 'ph_live',
+          traceId: 'tr_live',
+          at: '2026-11-06T22:00:00.000Z',
+          value: { kind: 'text', text: 'SECRET-BODY' },
+        },
+      },
+    },
+  });
+
+  const result = await runEphemeralGraph({ ...env.options, resume: true });
+
+  assert.deepEqual(result.recovery, {
+    resumedHovers: [],
+    unknownActive: ['only'],
+    stuckActive: [],
+  });
+  assert.equal(result.status.rest, true);
+  assert.deepEqual(adapter.prompts, [], 'the active execution was never replayed');
+  assert.equal(result.outputs.size, 0);
+  const serialized = JSON.stringify(result);
+  for (const secret of ['SECRET-BODY', 'ph_live', 'tr_live']) {
+    assert.equal(serialized.includes(secret), false, `result leaked '${secret}'`);
+  }
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1);
+  assert.deepEqual(adapter.closedNativeIds, adapter.createdNativeIds);
+});

@@ -13,6 +13,7 @@ import type {
   GuardRequest,
   HoverSpec,
   NodeId,
+  RecoveryReport,
   UserNode,
   Value,
 } from '../runtime/index.js';
@@ -24,7 +25,8 @@ export type EphemeralRunUnsupportedReason =
   | 'empty-graph-id'
   | 'user-node'
   | 'trigger'
-  | 'missing-binding';
+  | 'missing-binding'
+  | 'resume';
 
 /**
  * A graph or run the headless b-core runner deliberately cannot execute. The
@@ -32,8 +34,9 @@ export type EphemeralRunUnsupportedReason =
  * input value or hover token.
  *
  * The CLI translates this into exit code 2 (usage) when it is raised before
- * the adapter starts. `user-node` can also be raised after a trigger, when a
- * user hover arrives without an `askUser` handler.
+ * the adapter starts (`empty-graph-id`, `trigger`, `missing-binding`, `resume`)
+ * or after it starts for `user-node`, when a user hover arrives without an
+ * `askUser` handler.
  */
 export class EphemeralRunUnsupportedError extends Error {
   constructor(
@@ -58,6 +61,13 @@ export interface EphemeralRunOptions {
   readonly project: Project;
   readonly bindings: GraphBindings;
   readonly trigger?: string;
+  /**
+   * Restore the persisted Honey field before running. A missing field is a
+   * typed `resume` failure before the adapter starts; with a field, the run
+   * drains the restored work (or triggers again when `trigger` is given)
+   * instead of starting from an empty field.
+   */
+  readonly resume?: boolean;
   readonly input: string;
   readonly stateRoot: string;
   readonly apiary: string;
@@ -86,6 +96,11 @@ export interface EphemeralRunResult {
   readonly run: GraphRunResult;
   readonly outputs: ReadonlyMap<NodeId, Value>;
   readonly persisted: boolean;
+  /**
+   * What the restored Honey field could not keep running. Present only for a
+   * resume; it carries node ids, never a prompt, output or Pheromone body.
+   */
+  readonly recovery?: RecoveryReport;
 }
 
 /**
@@ -143,10 +158,12 @@ function assertBindings(
  * One-shot headless b-core run.
  *
  * The adapter is started and stopped by this function; sessions are created
- * for this run only and closed afterwards. Load always starts from a fresh
+ * for this run only and closed afterwards. A normal run starts from a fresh
  * field (`restoreHoney: false`) and every mutation is flushed to Honey, so a
- * later normal run can restore what this run left behind. There is no session
- * store, no scheduling and no resume.
+ * later run can restore what this run left behind. With `resume: true` the
+ * persisted field is restored instead: the run either drains the existing
+ * pending/queued work or triggers again when a trigger is supplied. There is
+ * no session store and no scheduling.
  *
  * A user hover is answered through `askUser` (one at a time, up to
  * `MAX_USER_HOVERS` per run) and a native Guard request is decided through
@@ -167,6 +184,17 @@ export async function runEphemeralGraph(
   const graphId = definition.id;
   const now = options.now ?? (() => Date.now());
   const honey = HoneyStore.forComposition(options.stateRoot, options.apiary, graphId);
+  const resume = options.resume === true;
+
+  // A resume with no persisted field is a usage error, not an empty-field run.
+  // It is checked before `adapter.start` so nothing native is spawned; the host
+  // loads the same field again for the actual restore.
+  if (resume && honey.load() === undefined) {
+    throw new EphemeralRunUnsupportedError(
+      'resume',
+      `nothing to resume for graph '${graphId}'`,
+    );
+  }
 
   let workspace: Workspace | undefined;
   let registry: SessionRegistry | undefined;
@@ -189,8 +217,9 @@ export async function runEphemeralGraph(
       registry,
       now,
       honeyForGraph: () => honey,
-      // A run starts a new field; the store is still used for flushes.
-      restoreHoney: false,
+      // A normal run starts a new field; resume restores the persisted one.
+      // The store is still used for flushes in both cases.
+      restoreHoney: resume,
       allowHoverUnload: false,
       ...(options.onGuard === undefined ? {} : { onGuard: options.onGuard }),
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
@@ -208,7 +237,18 @@ export async function runEphemeralGraph(
     sessionIds = [...host.loadedSessionIds()];
 
     let run: GraphRunResult;
-    if (options.trigger === undefined) {
+    if (resume) {
+      // The field was restored by loadGraph. Drain the work that was already
+      // accepted before the process stopped; an explicit trigger starts new
+      // work on top of the restored field instead.
+      run =
+        options.trigger === undefined
+          ? await host.drain(graphId)
+          : await host.trigger(graphId, options.trigger, {
+              kind: 'text',
+              text: options.input,
+            });
+    } else if (options.trigger === undefined) {
       const status = host.statusOf(graphId);
       if (status === undefined) {
         throw new Error(`graph '${graphId}' is not loaded`);
@@ -226,52 +266,59 @@ export async function runEphemeralGraph(
         kind: 'text',
         text: options.input,
       });
+    }
 
-      // Service consecutive user hovers. After every answer the host pumps to
-      // Rest or to the next hover, so the loop sees the freshest field. A Guard
-      // request never reaches this loop: `onGuard` settles it during the pump.
-      let answeredHovers = 0;
-      while (run.hovered) {
-        if (answeredHovers >= MAX_USER_HOVERS) {
-          throw new Error(
-            `graph '${graphId}' did not settle after ${String(MAX_USER_HOVERS)} user hovers`,
-          );
-        }
-        const first = host.firstHover();
-        if (first === undefined) {
-          throw new Error(`graph '${graphId}' is hovering but no loaded hover was found`);
-        }
-        const node = definition.nodes.get(first.nodeId);
-        if (node === undefined || node.kind !== 'user') {
-          throw new Error(
-            `graph '${graphId}' is hovered on non-user node '${first.nodeId}'`,
-          );
-        }
-        const askUser = options.askUser;
-        if (askUser === undefined) {
-          // Typed and explicit: an unanswered user hover must never fall back
-          // to an automatic empty answer.
-          throw new EphemeralRunUnsupportedError(
-            'user-node',
-            `user node '${node.id}' needs an interactive answer, but no askUser handler was provided`,
-          );
-        }
-        const value = await askUser(node, first.hover);
-        run = await host.answer(graphId, node.id, value, first.token);
-        answeredHovers += 1;
+    // Service consecutive user hovers for both a trigger and a resumed drain.
+    // After every answer the host pumps to Rest or to the next hover, so the
+    // loop sees the freshest field. A Guard request never reaches this loop:
+    // `onGuard` settles it during the pump.
+    let answeredHovers = 0;
+    while (run.hovered) {
+      if (answeredHovers >= MAX_USER_HOVERS) {
+        throw new Error(
+          `graph '${graphId}' did not settle after ${String(MAX_USER_HOVERS)} user hovers`,
+        );
       }
+      const first = host.firstHover();
+      if (first === undefined) {
+        throw new Error(`graph '${graphId}' is hovering but no loaded hover was found`);
+      }
+      const node = definition.nodes.get(first.nodeId);
+      if (node === undefined || node.kind !== 'user') {
+        throw new Error(
+          `graph '${graphId}' is hovered on non-user node '${first.nodeId}'`,
+        );
+      }
+      const askUser = options.askUser;
+      if (askUser === undefined) {
+        // Typed and explicit: an unanswered user hover must never fall back
+        // to an automatic empty answer.
+        throw new EphemeralRunUnsupportedError(
+          'user-node',
+          `user node '${node.id}' needs an interactive answer, but no askUser handler was provided`,
+        );
+      }
+      const value = await askUser(node, first.hover);
+      run = await host.answer(graphId, node.id, value, first.token);
+      answeredHovers += 1;
     }
 
     // Read the outputs before unload disposes the executors.
     const outputs = host.lastOutputs();
     unloaded = await host.unload(graphId);
-    const persisted = options.trigger === undefined ? unloaded : run.persisted;
+    // A non-resumed no-trigger run never pumped, so its flush happens on
+    // unload. Every other run already flushed as part of the run itself.
+    const persisted =
+      options.trigger === undefined && !resume ? unloaded : run.persisted;
     const finalRun: GraphRunResult = { ...run, persisted };
     result = {
       status: finalRun.status,
       run: finalRun,
       outputs,
       persisted,
+      ...(finalRun.status.recovery === undefined
+        ? {}
+        : { recovery: finalRun.status.recovery }),
     };
   } catch (error) {
     failure = error;

@@ -436,8 +436,8 @@ function requireSessionId(value: string | undefined): string {
 }
 
 /**
- * The explicit session surface is separate from `wax status|log|honey` (Honey
- * inspection) and from the graph commands: `list` is read-only and `close`
+ * The explicit session surface is separate from the graph commands: `list` is
+ * read-only and `close`
  * names exactly one session.
  */
 export function parseSessionArgs(argv: readonly string[]): SessionCommand {

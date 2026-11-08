@@ -31,7 +31,7 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 
 ## Progress
 
-**M1–M7b2 are complete**. M1–M5 are pushed; M6a–M6c2, M7a, M7b1, and M7b2 are committed locally and not yet pushed. The B-core baseline is `3a6054f`; the manifest load slice is `dad5d4f`.
+**M1–M7b2 are complete**. M1–M5 are pushed; M6a–M6c2, M7a, M7b1, and M7b2 are committed locally and not yet pushed. M7c2 (removing the A-only command surface) is implemented in the working tree and not yet committed. The B-core baseline is `3a6054f`; the manifest load slice is `dad5d4f`.
 
 | Milestone | State |
 | --- | --- |
@@ -50,33 +50,45 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 | M6b Hover unload + answer | Hover-only unload/sweep; Honey-restored hover; `POST /answer`, `ControlClient.answer`, `wax graph answer`; answer graphRef |
 | M6c1 Session retention | Graph unload/sweep/dispose keep every session; `GET /sessions`, `POST /sessions/close`, `wax session list/close`; close refuses busy/bound |
 | M6c2 Session TTL | `lastAccessAt`, `sweepIdle`, `POST /sessions/sweep`, `wax session sweep`; waxd 2h TTL and 60s sweep, `0` disables |
-| M7a B-core ephemeral run | `wax run --engine b-core` for headless graphs; Honey persistence, session cleanup, A remains default |
+| M7a B-core ephemeral run | `wax run --engine b-core` for headless graphs; Honey persistence, session cleanup (later removed with the A surface in M7c2) |
 | M7b1 B-core user/guard | `user` hover loop and Guard approval through `askUser`/`askApproval`; no auto-allow, no empty answer |
 | M7b2 B-core resume | `GraphHost.drain`; `--engine b-core --resume` restores Honey and drains without replaying a trigger |
+| M7c2 Command surface | A-only `wax run`, `wax daemon`, `wax answer`, `wax status/log/honey`, `wax composition` and `wax mcp` removed; only `waxd`, `wax graph`, `wax trigger` and `wax session` remain |
+
+## Commands
+
+```text
+wax waxd (--harness <codex|dsh> | --harnesses <codex,dsh>) [options]
+wax graph list|status <graphId>|load <composition.json>|load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId>
+wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>]
+wax session list|close <sessionId>|sweep
+```
+
+`wax run` and the rest of the A command surface were removed in M7c2. There is no in-process ephemeral runner or second host: one-shot/headless execution goes through `waxd` plus `wax graph`/`wax trigger`/`wax session` (or the control HTTP API). Typing a removed command is a usage error (exit 2).
 
 Current verification:
 
-- full suite: **900 tests — 899 pass, 1 platform-skipped**
-- native DSH/Codex integration: **11/11** (last full run after M3a)
+- full suite: **669 tests — 668 pass, 1 platform-skipped**
+- native DSH/Codex integration: **11/11** (last full run after M3a; not rerun for M7c2)
 - real native smokes: session create/busy/close, multi-session fork/merge, GraphHost, Honey unload/reload, HTTP control, ControlClient, `waxd` CLI, session resume after restart, dual-harness `waxd`
-- A-mode tests remain green; the `wax run` path was not rewritten
+- the shared B-core suite (control, graph, session, runtime, Honey, adapters) stays green after the A-only tests were removed
 
 ## Next
 
 | Milestone | Planned |
 | --- | --- |
-| M7c | Make B-core the default and remove A-only command surface |
+| M7c2 | Completed in the working tree: B-core is the only command surface |
 | M8 | Edit API + six-stage validation + CAS/lease + atomic graph write |
 
-M7b2 is complete. M7c — make B-core the default and remove the A-only command surface — is next.
+M7c2 is complete in the working tree. M8 — edit API and six-stage validation — is next.
 
 ## Known limits
 
 - No edit API or structural validation/CAS yet; graph edits are still offline.
-- A is still exposed as a separate command surface; pruning has not started.
+- The shared runtime still contains code that originated in A; only A's separate command surface was removed.
 - Graph definitions and bindings are not auto-restored today; only sessions and Honey are persisted. M6b/M6c address the remaining reload semantics.
 - `graphRef` currently accepts a manifest path only; graph id-only lookup needs a catalog.
-- `wax run --engine b-core` supports user hover, Guard approval, and `--resume`, but not `--composition-tools`. It writes Honey field but not `log.jsonl`/transcript. A remains the default engine.
+- There is no in-process ephemeral runner and no composition-tools MCP server; headless work goes through `waxd` and the control API.
 - Loaded graphs ignore an incoming `graphRef`; there is no revision or hot-swap check.
 - Idle unload is Rest-only by default; `waxd` enables hover-only unload.
 - Session TTL defaults to 2h in `waxd` with a 60s sweep; `--session-ttl-ms 0` disables it. Sessions bound to loaded graphs or busy are skipped.

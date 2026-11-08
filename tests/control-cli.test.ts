@@ -2320,7 +2320,7 @@ test('graph load --manifest accepts a matching --harness and stays on that daemo
   assert.equal(daemon.adapters.get('dsh')?.displayNames.length, 0);
 });
 
-test('runCli dispatches graph, trigger, session and waxd without changing wax run', async (t) => {
+test('runCli dispatches graph, trigger, session and waxd', async (t) => {
   const daemon = await startWaxd(t);
 
   const graphStdout: string[] = [];

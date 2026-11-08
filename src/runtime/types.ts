@@ -255,7 +255,7 @@ export type TriggerSchedule =
 
 /**
  * A scheduled trigger names a task node: forager, worker, or user. A scheduled
- * user target opens a Hover; `wax answer` completes it without a TTY.
+ * user target opens a Hover; the control answer surface completes it without a TTY.
  */
 export interface TriggerDefinition {
   id: string;

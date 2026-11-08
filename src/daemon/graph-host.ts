@@ -15,6 +15,9 @@ import type { Project } from '../project/kernel.js';
 import {
   PheromoneRuntime,
   type CompositionDefinition,
+  type GuardDecision,
+  type GuardRequest,
+  type HoverSpec,
   type NodeId,
   type PersistedField,
   type PheromoneFieldSnapshot,
@@ -77,6 +80,12 @@ export interface GraphHostOptions {
    * integer; 0 means no waiting (only the immediate pump rounds run).
    */
   readonly maxWaitMs?: number;
+  /**
+   * Native approval handler, passed straight to every runtime this host loads
+   * (same seam as the A path's `runComposition`). Without it the runtime
+   * rejects a Guard request; a Guard is never allowed automatically.
+   */
+  readonly onGuard?: (request: GuardRequest) => Promise<GuardDecision>;
   /**
    * Optional observability for cleanup failures. Cleanup itself never rejects:
    * a failed close must not turn an unload into a residency failure.
@@ -142,6 +151,19 @@ export interface GraphRunResult {
   readonly persisted: boolean;
   /** Honey save failure message; never contains a prompt or output body. */
   readonly persistError?: string;
+}
+
+/**
+ * One parked hover, located without exposing any body.
+ *
+ * It carries the node id, the hover token needed to answer it and the hover
+ * metadata (`kind`, token, ids). It never carries a prompt, output, Pheromone
+ * value or transcript.
+ */
+export interface FirstHover {
+  readonly nodeId: NodeId;
+  readonly token: string;
+  readonly hover: HoverSpec;
 }
 
 /**
@@ -268,6 +290,7 @@ export class GraphHost {
   private readonly maxPumps: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxWaitMs: number;
+  private readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
   private readonly onEvent: ((event: GraphHostEvent) => void) | undefined;
   private readonly graphs: GraphRegistry<LiveGraph>;
   private readonly loading = new Set<GraphId>();
@@ -300,6 +323,10 @@ export class GraphHost {
     }
     this.maxWaitMs = options.maxWaitMs ?? 30_000;
     assertNonNegativeInteger(this.maxWaitMs, 'maxWaitMs');
+    this.onGuard = options.onGuard;
+    if (this.onGuard !== undefined && typeof this.onGuard !== 'function') {
+      throw new TypeError('onGuard must be a function');
+    }
     this.onEvent = options.onEvent;
     this.graphs = new GraphRegistry<LiveGraph>({
       now: this.now,
@@ -368,6 +395,7 @@ export class GraphHost {
         executeForager: instantiated.routing,
         projectDirectory: options.project.directory,
         now: this.now,
+        ...(this.onGuard === undefined ? {} : { onGuard: this.onGuard }),
       };
       let runtime: PheromoneRuntime;
       let recovery: RecoveryReport | undefined;
@@ -557,6 +585,31 @@ export class GraphHost {
       }
     }
     return outputs;
+  }
+
+  /**
+   * The first parked hover in the loaded field, in graph load order and then
+   * the composition's node iteration order (`definition.nodes` insertion
+   * order). A read-only snapshot: it never loads, answers or mutates a graph,
+   * and it exposes only the node id, hover token and hover metadata, never a
+   * prompt, output, Pheromone value or transcript.
+   *
+   * No loaded graph, or no hover in any of them, yields `undefined`. A Guard
+   * hover is returned like any other hover; the ephemeral caller is expected to
+   * reject a non-user node because guards are settled by `onGuard` during the
+   * pump and must not be answered as user input.
+   */
+  firstHover(): FirstHover | undefined {
+    for (const entry of this.graphs.list()) {
+      const snapshot = entry.value.runtime.snapshot();
+      for (const node of entry.value.definition.nodes.values()) {
+        const hover = snapshot.nodes[node.id]?.hover;
+        if (hover !== undefined) {
+          return { nodeId: node.id, token: hover.token, hover };
+        }
+      }
+    }
+    return undefined;
   }
 
   /**

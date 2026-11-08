@@ -7,7 +7,15 @@ import {
   type GraphRunResult,
   type GraphStatus,
 } from './graph-host.js';
-import type { CompositionDefinition, NodeId, Value } from '../runtime/index.js';
+import type {
+  CompositionDefinition,
+  GuardDecision,
+  GuardRequest,
+  HoverSpec,
+  NodeId,
+  UserNode,
+  Value,
+} from '../runtime/index.js';
 import { SessionRegistry } from '../session/session-registry.js';
 import { Workspace } from '../session/workspace.js';
 
@@ -19,11 +27,13 @@ export type EphemeralRunUnsupportedReason =
   | 'missing-binding';
 
 /**
- * A graph the headless b-core runner deliberately refuses. The message carries
- * ids only: it never contains a prompt, output or approval body.
+ * A graph or run the headless b-core runner deliberately cannot execute. The
+ * message carries ids only: it never contains a prompt, output, approval body,
+ * input value or hover token.
  *
- * The CLI translates this into exit code 2 (usage) and does so before it
- * creates or starts an adapter.
+ * The CLI translates this into exit code 2 (usage) when it is raised before
+ * the adapter starts. `user-node` can also be raised after a trigger, when a
+ * user hover arrives without an `askUser` handler.
  */
 export class EphemeralRunUnsupportedError extends Error {
   constructor(
@@ -34,6 +44,13 @@ export class EphemeralRunUnsupportedError extends Error {
     this.name = 'EphemeralRunUnsupportedError';
   }
 }
+
+/**
+ * Hard cap on consecutive user hovers answered by one ephemeral run. A graph
+ * that keeps re-hovering without external progress would otherwise spin
+ * forever; the run fails instead of guessing another answer.
+ */
+const MAX_USER_HOVERS = 16;
 
 export interface EphemeralRunOptions {
   readonly adapter: HarnessAdapter;
@@ -49,6 +66,16 @@ export interface EphemeralRunOptions {
    * kind, so the CLI passes its selection; the default is a stable placeholder.
    */
   readonly harness?: string;
+  /**
+   * Interactive answer for a hovering user node. Without it a user hover is a
+   * typed unsupported failure: the run never supplies an empty default answer.
+   */
+  readonly askUser?: (node: UserNode, hover: HoverSpec) => Promise<Value>;
+  /**
+   * Native approval handler. Without it the runtime rejects a Guard request;
+   * an approval is never allowed automatically.
+   */
+  readonly onGuard?: (request: GuardRequest) => Promise<GuardDecision>;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly maxWaitMs?: number;
@@ -62,9 +89,10 @@ export interface EphemeralRunResult {
 }
 
 /**
- * Refuse a graph the headless runner cannot faithfully execute: a user node
- * would need interactive input, and only foragers/workers are triggerable.
- * Runs before the adapter starts, so a usage rejection spawns nothing.
+ * Refuse a graph the headless runner cannot faithfully execute at all: a graph
+ * without an id, or a trigger that is unknown or cannot start a run. A user
+ * node is supported (it is answered through `askUser`), so it is not rejected
+ * here. Runs before the adapter starts, so a usage rejection spawns nothing.
  */
 export function assertEphemeralGraphSupported(
   definition: CompositionDefinition,
@@ -76,14 +104,6 @@ export function assertEphemeralGraphSupported(
       'b-core run requires a composition with a non-empty graph id',
     );
   }
-  for (const node of definition.nodes.values()) {
-    if (node.kind === 'user') {
-      throw new EphemeralRunUnsupportedError(
-        'user-node',
-        `b-core run does not support user node '${node.id}'`,
-      );
-    }
-  }
   if (trigger === undefined) {
     return;
   }
@@ -94,10 +114,10 @@ export function assertEphemeralGraphSupported(
       `unknown trigger node '${trigger}'`,
     );
   }
-  if (node.kind !== 'forager' && node.kind !== 'worker') {
+  if (node.kind !== 'forager' && node.kind !== 'worker' && node.kind !== 'user') {
     throw new EphemeralRunUnsupportedError(
       'trigger',
-      `b-core trigger target '${trigger}' must be a forager or worker node, got '${node.kind}'`,
+      `b-core trigger target '${trigger}' must be a forager, worker or user node, got '${node.kind}'`,
     );
   }
 }
@@ -126,8 +146,13 @@ function assertBindings(
  * for this run only and closed afterwards. Load always starts from a fresh
  * field (`restoreHoney: false`) and every mutation is flushed to Honey, so a
  * later normal run can restore what this run left behind. There is no session
- * store, no scheduling, no resume and no automatic Guard approval: a native
- * approval is rejected by the runtime's default decision.
+ * store, no scheduling and no resume.
+ *
+ * A user hover is answered through `askUser` (one at a time, up to
+ * `MAX_USER_HOVERS` per run) and a native Guard request is decided through
+ * `onGuard`. Without `askUser` a user hover fails instead of getting an empty
+ * default answer; without `onGuard` the runtime rejects a Guard. No approval is
+ * ever granted automatically.
  *
  * Cleanup is best effort and never hides the original failure. A successful
  * run returns exit-worthy values; the caller decides the process code.
@@ -167,6 +192,7 @@ export async function runEphemeralGraph(
       // A run starts a new field; the store is still used for flushes.
       restoreHoney: false,
       allowHoverUnload: false,
+      ...(options.onGuard === undefined ? {} : { onGuard: options.onGuard }),
       ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
       ...(options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs }),
     });
@@ -200,6 +226,40 @@ export async function runEphemeralGraph(
         kind: 'text',
         text: options.input,
       });
+
+      // Service consecutive user hovers. After every answer the host pumps to
+      // Rest or to the next hover, so the loop sees the freshest field. A Guard
+      // request never reaches this loop: `onGuard` settles it during the pump.
+      let answeredHovers = 0;
+      while (run.hovered) {
+        if (answeredHovers >= MAX_USER_HOVERS) {
+          throw new Error(
+            `graph '${graphId}' did not settle after ${String(MAX_USER_HOVERS)} user hovers`,
+          );
+        }
+        const first = host.firstHover();
+        if (first === undefined) {
+          throw new Error(`graph '${graphId}' is hovering but no loaded hover was found`);
+        }
+        const node = definition.nodes.get(first.nodeId);
+        if (node === undefined || node.kind !== 'user') {
+          throw new Error(
+            `graph '${graphId}' is hovered on non-user node '${first.nodeId}'`,
+          );
+        }
+        const askUser = options.askUser;
+        if (askUser === undefined) {
+          // Typed and explicit: an unanswered user hover must never fall back
+          // to an automatic empty answer.
+          throw new EphemeralRunUnsupportedError(
+            'user-node',
+            `user node '${node.id}' needs an interactive answer, but no askUser handler was provided`,
+          );
+        }
+        const value = await askUser(node, first.hover);
+        run = await host.answer(graphId, node.id, value, first.token);
+        answeredHovers += 1;
+      }
     }
 
     // Read the outputs before unload disposes the executors.

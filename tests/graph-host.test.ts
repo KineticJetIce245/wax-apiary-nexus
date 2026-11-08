@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import type {
+  ApprovalDecision,
+  ApprovalOption,
+  ApprovalRequest,
   HarnessAdapter,
   HarnessCapabilities,
   HarnessEvent,
@@ -25,6 +28,8 @@ import type { Project } from '../src/project/kernel.js';
 import {
   parseComposition,
   type CompositionDefinition,
+  type GuardDecision,
+  type GuardRequest,
   type NodeDefinition,
   type NodeId,
   type PheromoneFieldSnapshot,
@@ -38,6 +43,11 @@ import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 
 const FIXED_NOW = '2026-11-06T22:00:00.000Z';
+
+const APPROVAL_OPTIONS: readonly ApprovalOption[] = [
+  { id: 'accept', kind: 'allow_once', label: 'Allow once' },
+  { id: 'decline', kind: 'reject_once', label: 'Reject' },
+];
 
 class FakeClock {
   time: number;
@@ -58,6 +68,9 @@ class FakeClock {
  * or parks the execution until `releaseHeld()` when `holdSubmissions` is set.
  * It never uses timers, and records prompts per native session as well as every
  * close, so tests can prove which session actually ran or was closed.
+ *
+ * With `askApproval`, a submit parks an approval request instead of finishing;
+ * `respondToApproval` records the decision and then completes the execution.
  */
 class RecordingAdapter implements HarnessAdapter {
   readonly capabilities: HarnessCapabilities = {
@@ -72,8 +85,14 @@ class RecordingAdapter implements HarnessAdapter {
   readonly promptsByNative = new Map<string, string[]>();
   readonly createdNativeIds: string[] = [];
   readonly closedNativeIds: string[] = [];
+  readonly approvals: ApprovalDecision[] = [];
   holdSubmissions = false;
 
+  private readonly askApproval: boolean;
+  private readonly pendingApprovals = new Map<
+    string,
+    { readonly nativeId: string; readonly executionId: string; readonly prompt: string }
+  >();
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   private readonly held = new Map<
     string,
@@ -81,6 +100,10 @@ class RecordingAdapter implements HarnessAdapter {
   >();
   private readonly submitWaiters: Array<() => void> = [];
   private nativeSeq = 0;
+
+  constructor(options: { readonly askApproval?: boolean } = {}) {
+    this.askApproval = options.askApproval ?? false;
+  }
 
   async start(): Promise<void> {}
 
@@ -112,12 +135,31 @@ class RecordingAdapter implements HarnessAdapter {
       this.held.set(executionId, { nativeId, prompt: text, executionId });
       return;
     }
+    if (this.askApproval) {
+      const request: ApprovalRequest = {
+        requestId: `req-${executionId}`,
+        executionId,
+        summary: 'run a command',
+        options: APPROVAL_OPTIONS,
+      };
+      this.pendingApprovals.set(request.requestId, { nativeId, executionId, prompt: text });
+      this.emit({ type: 'execution/approval-requested', executionId, request });
+      return;
+    }
     this.finish(nativeId, executionId, text);
   }
 
   async cancel(_nativeId: string): Promise<void> {}
 
-  async respondToApproval(): Promise<void> {}
+  async respondToApproval(decision: ApprovalDecision): Promise<void> {
+    this.approvals.push(decision);
+    const pending = this.pendingApprovals.get(decision.requestId);
+    if (pending === undefined) {
+      throw new Error(`Unknown approval request: ${decision.requestId}`);
+    }
+    this.pendingApprovals.delete(decision.requestId);
+    this.finish(pending.nativeId, pending.executionId, pending.prompt);
+  }
 
   async closeConversation(nativeId: string): Promise<void> {
     this.closedNativeIds.push(nativeId);
@@ -1949,3 +1991,110 @@ test('a failing touch does not change a trigger or answer result', async (t) => 
 function messageOfTest(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+test('onGuard is passed to the runtime and decides native approvals', async (t) => {
+  const adapter = new RecordingAdapter({ askApproval: true });
+  const env = makeEnv(adapter);
+  const seen: GuardRequest[] = [];
+  const decisions: readonly GuardDecision[] = ['allow_once', 'reject_once'];
+  const host = new GraphHost({
+    workspace: env.workspace,
+    registry: env.registry,
+    onGuard: async (request) => {
+      seen.push(request);
+      return decisions[seen.length - 1] ?? 'cancelled';
+    },
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('guard-decisions');
+  await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
+
+  const allowed = await host.trigger('guard-decisions', 'only', text('one'));
+  const rejected = await host.trigger('guard-decisions', 'only', text('two'));
+
+  assert.equal(allowed.rest, true);
+  assert.equal(rejected.rest, true);
+  assert.equal(seen.length, 2, 'every native approval went through onGuard');
+  assert.deepEqual(
+    adapter.approvals.map((decision) => decision.kind),
+    ['allow_once', 'reject_once'],
+    'both decisions reached the native adapter',
+  );
+  assert.equal(seen[0]?.summary, 'run a command');
+});
+
+test('a native approval is rejected when no onGuard handler is configured', async (t) => {
+  const adapter = new RecordingAdapter({ askApproval: true });
+  const env = makeEnv(adapter);
+  const host = new GraphHost({ workspace: env.workspace, registry: env.registry });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('guard-default');
+  await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
+
+  const result = await host.trigger('guard-default', 'only', text('go'));
+
+  assert.equal(result.rest, true);
+  assert.equal(result.hovered, false);
+  assert.deepEqual(
+    adapter.approvals.map((decision) => decision.kind),
+    ['reject_once'],
+    'the runtime rejected instead of auto-allowing the guard',
+  );
+});
+
+test('firstHover exposes the first parked hover without any body', async (t) => {
+  const env = makeEnv();
+  const host = new GraphHost({ workspace: env.workspace, registry: env.registry });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  assert.equal(host.firstHover(), undefined, 'no loaded graph has no hover');
+
+  const definition = fastDefinition('first-hover', {
+    'ask-a': userNode('TOP-SECRET-PROMPT'),
+    'ask-b': userNode('second prompt'),
+  });
+  await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
+  assert.equal(host.firstHover(), undefined, 'a loaded graph without hover has none');
+
+  const triggered = await host.trigger('first-hover', 'ask-a', text('SECRET-INPUT'));
+  assert.equal(triggered.hovered, true);
+
+  const first = host.firstHover();
+  assert.ok(first !== undefined);
+  assert.equal(first.nodeId, 'ask-a');
+  assert.equal(first.token, hoverTokenOf(host, 'first-hover', 'ask-a'));
+  assert.equal(first.hover.kind, 'user');
+  assert.equal(first.hover.nodeId, 'ask-a');
+  assert.equal(first.hover.compositionId, 'first-hover');
+
+  // No body leaks: neither the definition prompt nor the trigger value is in
+  // the returned object, and no transcript/output field exists at all.
+  const serialized = JSON.stringify(first);
+  assert.equal(serialized.includes('TOP-SECRET-PROMPT'), false);
+  assert.equal(serialized.includes('SECRET-INPUT'), false);
+  const keys = collectKeys(first);
+  for (const forbidden of ['prompt', 'output', 'transcript', 'value', 'pheromones']) {
+    assert.equal(keys.includes(forbidden), false, `firstHover leaked '${forbidden}'`);
+  }
+
+  // Node iteration order decides: ask-a stays first while ask-b also hovers.
+  const runtime = runtimeOf(host, 'first-hover');
+  runtime.trigger('ask-b', text('SECRET-B'));
+  await runtime.pump();
+  assert.equal(host.firstHover()?.nodeId, 'ask-a');
+
+  const answered = await host.answer('first-hover', 'ask-a', text('A'), first.token);
+  assert.equal(answered.hovered, true);
+  assert.equal(host.firstHover()?.nodeId, 'ask-b');
+});

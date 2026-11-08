@@ -264,10 +264,12 @@ async function askApprovalInteractively(request: GuardRequest): Promise<GuardDec
   }
 }
 
-async function askUserInteractively(node: UserNode, hover: HoverSpec): Promise<Value> {
+async function askUserInteractively(node: UserNode, _hover: HoverSpec): Promise<Value> {
   if (process.stdin.isTTY !== true) {
+    // Node id only: the error is printed by the CLI, so it must not carry the
+    // hover token, a prompt or an input value.
     throw new Error(
-      `user node '${node.id}' is waiting for input, but stdin is not interactive (hover ${hover.token})`,
+      `user node '${node.id}' is waiting for input, but stdin is not interactive`,
     );
   }
   const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -386,8 +388,9 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
     definition = loadCompositionFile(command.compositionPath);
     if (command.engine === 'b-core') {
       // b-core is a headless ephemeral entry point: resuming and the
-      // composition tools are out of scope, and the graph must be entirely
-      // non-interactive. Reject locally, before any adapter is created.
+      // composition tools are out of scope. User hovers and native approvals
+      // are supported through the same interactive handlers as the A path.
+      // Reject local usage errors before any adapter is created.
       if (command.resume) {
         throw new CliUsageError('--resume is not supported with --engine b-core');
       }
@@ -672,8 +675,8 @@ export async function runCli(argv: readonly string[], deps: CliDependencies = {}
 /**
  * The transitional headless b-core `wax run`: one ephemeral graph execution
  * through GraphHost + Honey. The A path below is untouched and remains the
- * default; this path has no session store, no daemon, no resume and no
- * interactive approval.
+ * default; this path has no session store, no daemon and no resume. User
+ * hovers and native Guard approvals use the same interactive handlers as A.
  */
 async function runBcoreCommand(
   command: RunCommand,
@@ -722,12 +725,16 @@ async function runBcoreCommand(
       stateRoot: command.stateDir,
       apiary,
       harness: command.harness,
+      askUser: deps.askUser ?? askUserInteractively,
+      onGuard: deps.askApproval ?? askApprovalInteractively,
       now: deps.now ?? (() => Date.now()),
       ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
     });
     printEphemeralSummary(out, definition, result);
     if (result.status.hovered) {
-      err(`error: graph '${definition.id}' is hovering; b-core never answers a hover`);
+      // runEphemeralGraph answers user hovers and rejects guard hovers, so a
+      // leftover hover is an unexpected state, never something to auto-answer.
+      err(`error: graph '${definition.id}' is still hovering after the b-core run`);
       return 1;
     }
     if (!result.status.rest) {

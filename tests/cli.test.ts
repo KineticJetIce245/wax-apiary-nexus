@@ -9,7 +9,7 @@ import { apiaryForProject, CliUsageError, parseRunArgs, runCli, type CliDependen
 import { createDefaultAdapter, findDshPluginPatch, type AdapterRequest } from '../src/cli/cli-shared.js';
 import { HoneyStore, honeyPaths } from '../src/storage/honey.js';
 import { parseComposition, PheromoneRuntime } from '../src/runtime/index.js';
-import type { HoverSpec, UserNode, Value } from '../src/runtime/index.js';
+import type { GuardRequest, HoverSpec, UserNode, Value } from '../src/runtime/index.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 
 const COMPOSITION = {
@@ -892,6 +892,115 @@ test('runs a headless graph through --engine b-core', async () => {
   assert.equal(field.rest, true);
 });
 
+test('b-core answers a user hover through the injected askUser handler', async () => {
+  const adapter = new FakeAdapter({ output: 'B-CORE-OUT' });
+  const captureResult = capture();
+  const asked: { readonly node: UserNode; readonly hover: HoverSpec }[] = [];
+
+  const code = await runCli(
+    [
+      ...baseArgs(compositionFile(ASK_COMPOSITION), projectDirectory(), stateDirectory()),
+      '--trigger',
+      'start',
+      '--engine',
+      'b-core',
+    ],
+    withAdapter(adapter, captureResult, {
+      askUser: async (node, hover) => {
+        asked.push({ node, hover });
+        return { kind: 'text', text: 'yes' } satisfies Value;
+      },
+    }),
+  );
+
+  assert.equal(code, 0);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]?.node.id, 'ask');
+  assert.match(asked[0]?.hover.token ?? '', /^hv_/);
+  assert.deepEqual(adapter.prompts, ['plan ', 'finish']);
+  assert.ok(captureResult.stdout.includes('rest         true'));
+  assert.ok(
+    captureResult.stdout.some((line) => line.includes('node         ask') && line.includes('hover=no')),
+  );
+});
+
+test('b-core refuses a user hover on a non-interactive stdin', async () => {
+  const adapter = new FakeAdapter({ output: 'OUT' });
+  const captureResult = capture();
+
+  const code = await runCli(
+    [
+      ...baseArgs(compositionFile(ASK_COMPOSITION), projectDirectory(), stateDirectory()),
+      '--trigger',
+      'start',
+      '--engine',
+      'b-core',
+    ],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 1);
+  const stderr = captureResult.stderr.join('\n');
+  assert.match(stderr, /stdin is not interactive/);
+  assert.equal(stderr.includes('hv_'), false, 'the error never carries the hover token');
+  assert.equal(stderr.includes('Approve?'), false, 'the error never carries the prompt');
+  assert.equal(adapter.prompts.length, 1, 'only the first forager ran');
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1);
+});
+
+test('b-core uses the injected approval handler for a Guard', async () => {
+  const adapter = new FakeAdapter({ askApproval: true, output: 'APPROVED' });
+  const captureResult = capture();
+  const seen: GuardRequest[] = [];
+
+  const code = await runCli(
+    [
+      ...baseArgs(compositionFile(), projectDirectory(), stateDirectory()),
+      '--trigger',
+      'start',
+      '--engine',
+      'b-core',
+    ],
+    withAdapter(adapter, captureResult, {
+      askApproval: async (request) => {
+        seen.push(request);
+        return 'allow_once';
+      },
+    }),
+  );
+
+  assert.equal(code, 0);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.summary, 'run a command');
+  assert.deepEqual(adapter.approvals.map((decision) => decision.kind), ['allow_once']);
+  assert.ok(captureResult.stdout.includes('rest         true'));
+});
+
+test('b-core rejects a Guard by default on a non-interactive stdin', async () => {
+  const adapter = new FakeAdapter({ askApproval: true, output: 'REJECTED' });
+  const captureResult = capture();
+
+  const code = await runCli(
+    [
+      ...baseArgs(compositionFile(), projectDirectory(), stateDirectory()),
+      '--trigger',
+      'start',
+      '--engine',
+      'b-core',
+    ],
+    withAdapter(adapter, captureResult),
+  );
+
+  assert.equal(code, 0);
+  assert.deepEqual(
+    adapter.approvals.map((decision) => decision.kind),
+    ['reject_once'],
+    'a non-interactive Guard is rejected, never allowed',
+  );
+  assert.ok(captureResult.stdout.includes('rest         true'));
+});
+
 test('b-core usage errors are rejected before any adapter is created', async () => {
   const cases: readonly {
     readonly name: string;
@@ -904,7 +1013,6 @@ test('b-core usage errors are rejected before any adapter is created', async () 
       composition: COMPOSITION,
       args: ['--trigger', 'start', '--composition-tools'],
     },
-    { name: 'user node', composition: ASK_COMPOSITION, args: ['--trigger', 'start'] },
     {
       name: 'condition trigger',
       composition: BRANCHING_COMPOSITION,

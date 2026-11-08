@@ -15,8 +15,11 @@ import { createKernel, type Project } from '../src/project/kernel.js';
 import {
   parseComposition,
   type CompositionDefinition,
+  type GuardDecision,
+  type HoverSpec,
   type NodeDefinition,
   type NodeId,
+  type UserNode,
 } from '../src/runtime/index.js';
 import { HoneyStore } from '../src/storage/honey.js';
 import { FakeAdapter } from './support/fake-adapter.js';
@@ -260,23 +263,194 @@ test('stops the adapter when load fails before any session is created', async ()
   assert.equal(adapter.createdNativeIds.length, 0);
 });
 
-test('rejects a user node before the adapter starts', async () => {
-  const adapter = new RecordingAdapter();
-  const definition = fastDefinition('eph-user', {
-    ask: { kind: 'user', config: { modality: 'text', prompt: 'Approve?' } },
+/** start -> ask (user) -> done. The answer is the `done` prompt input. */
+function askDefinition(id: string): CompositionDefinition {
+  return fastDefinition(
+    id,
+    {
+      start: forager('start {{input}}'),
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'Approve?' } },
+      done: forager('done {{input}}'),
+    },
+    [
+      { id: 'e1', from: 'start', to: 'ask' },
+      { id: 'e2', from: 'ask', to: 'done' },
+    ],
+  );
+}
+
+/** start -> ask1 -> ask2 -> done: two consecutive user hovers. */
+function twoHoverDefinition(id: string): CompositionDefinition {
+  return fastDefinition(
+    id,
+    {
+      start: forager('start {{input}}'),
+      ask1: { kind: 'user', config: { modality: 'text', prompt: 'First?' } },
+      ask2: { kind: 'user', config: { modality: 'text', prompt: 'Second?' } },
+      done: forager('done {{input}}'),
+    },
+    [
+      { id: 'e1', from: 'start', to: 'ask1' },
+      { id: 'e2', from: 'ask1', to: 'ask2' },
+      { id: 'e3', from: 'ask2', to: 'done' },
+    ],
+  );
+}
+
+/** ask loops through a counter `max` times, producing one user hover each round. */
+function hoverLoopDefinition(id: string, max: number): CompositionDefinition {
+  return fastDefinition(
+    id,
+    {
+      ask: { kind: 'user', config: { modality: 'text', prompt: 'Again?' } },
+      count: { kind: 'counter', config: { max, step: 1 } },
+      done: forager('done {{input}}'),
+    },
+    [
+      { id: 'e1', from: 'ask', to: 'count' },
+      { id: 'e2', from: 'count', to: 'ask', when: 'continue' },
+      { id: 'e3', from: 'count', to: 'done', when: 'done' },
+    ],
+  );
+}
+
+test('answers a user hover through askUser and reaches Rest', async () => {
+  const adapter = new RecordingAdapter({ output: 'OUT' });
+  const definition = askDefinition('eph-user-answer');
+  const env = makeEnv(adapter, definition);
+  const asked: { readonly node: UserNode; readonly hover: HoverSpec }[] = [];
+
+  const result = await runEphemeralGraph({
+    ...env.options,
+    trigger: 'start',
+    askUser: async (node, hover) => {
+      asked.push({ node, hover });
+      return { kind: 'text', text: 'HUMAN' };
+    },
   });
+
+  assert.equal(result.status.rest, true);
+  assert.equal(result.status.hovered, false);
+  assert.equal(result.persisted, true);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]?.node.id, 'ask');
+  assert.equal(asked[0]?.node.config.prompt, 'Approve?');
+  assert.equal(asked[0]?.hover.kind, 'user');
+  assert.equal(asked[0]?.hover.nodeId, 'ask');
+  assert.match(asked[0]?.hover.token ?? '', /^hv_/);
+  assert.deepEqual(adapter.prompts, ['start hello', 'done HUMAN']);
+  assert.equal(adapter.approvals.length, 0);
+  assert.equal(adapter.createdNativeIds.length, 2);
+  assert.deepEqual(adapter.closedNativeIds, adapter.createdNativeIds);
+
+  const saved = HoneyStore.forComposition(env.stateRoot, env.apiary, definition.id).load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, true);
+  assert.equal(saved.nodes['ask']?.hover, undefined);
+});
+
+test('answers consecutive user hovers one at a time', async () => {
+  const adapter = new RecordingAdapter({ output: 'OUT' });
+  const definition = twoHoverDefinition('eph-two-hovers');
+  const env = makeEnv(adapter, definition);
+  const askedNodeIds: string[] = [];
+
+  const result = await runEphemeralGraph({
+    ...env.options,
+    trigger: 'start',
+    askUser: async (node) => {
+      askedNodeIds.push(node.id);
+      return { kind: 'text', text: node.id === 'ask1' ? 'ONE' : 'TWO' };
+    },
+  });
+
+  assert.equal(result.status.rest, true);
+  assert.equal(result.status.hovered, false);
+  assert.deepEqual(askedNodeIds, ['ask1', 'ask2']);
+  assert.deepEqual(adapter.prompts, ['start hello', 'done TWO']);
+});
+
+test('fails instead of auto-answering a user hover when askUser is missing', async () => {
+  const adapter = new RecordingAdapter({ output: 'OUT' });
+  const definition = askDefinition('eph-user-no-handler');
   const env = makeEnv(adapter, definition);
 
   await assert.rejects(
-    runEphemeralGraph({ ...env.options, trigger: 'ask' }),
-    (error: unknown) =>
-      error instanceof EphemeralRunUnsupportedError && error.reason === 'user-node',
+    runEphemeralGraph({ ...env.options, trigger: 'start' }),
+    (error: unknown) => {
+      assert.ok(error instanceof EphemeralRunUnsupportedError);
+      assert.equal(error.reason, 'user-node');
+      assert.match(error.message, /'ask'/);
+      assert.equal(error.message.includes('Approve?'), false, 'no prompt in the error');
+      assert.equal(error.message.includes('hello'), false, 'no input value in the error');
+      return true;
+    },
   );
-  assert.equal(adapter.startCalls, 0);
-  assert.equal(adapter.createdNativeIds.length, 0);
+
+  // The run started, could not answer, and cleaned up without guessing a value.
+  assert.equal(adapter.startCalls, 1);
+  assert.equal(adapter.stopCalls, 1);
+  assert.deepEqual(adapter.prompts, ['start hello']);
+  assert.deepEqual(adapter.closedNativeIds, adapter.createdNativeIds);
+  const saved = HoneyStore.forComposition(env.stateRoot, env.apiary, definition.id).load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.nodes['ask']?.hover?.kind, 'user', 'the hover is preserved, not answered');
+  assert.equal(saved.rest, false);
 });
 
-test('rejects non-forager/worker triggers and missing bindings before start', async () => {
+test('decides a Guard through onGuard instead of rejecting it', async () => {
+  const adapter = new RecordingAdapter({ askApproval: true, output: 'GUARDED' });
+  const definition = fastDefinition('eph-guard-handler', { start: forager('go') });
+  const env = makeEnv(adapter, definition);
+  const decisions: GuardDecision[] = ['allow_once', 'reject_once'];
+
+  const runOnce = async (): Promise<void> => {
+    const result = await runEphemeralGraph({
+      ...env.options,
+      trigger: 'start',
+      onGuard: async () => decisions.shift() ?? 'cancelled',
+    });
+    assert.equal(result.status.rest, true);
+    assert.equal(result.status.hovered, false);
+  };
+
+  await runOnce();
+  await runOnce();
+
+  assert.deepEqual(
+    adapter.approvals.map((decision) => decision.kind),
+    ['allow_once', 'reject_once'],
+  );
+});
+
+test('stops a graph that keeps re-hovering after the user-hover limit', async () => {
+  const adapter = new RecordingAdapter({ output: 'OUT' });
+  const definition = hoverLoopDefinition('eph-hover-loop', 20);
+  const env = makeEnv(adapter, definition);
+  let asked = 0;
+
+  await assert.rejects(
+    runEphemeralGraph({
+      ...env.options,
+      trigger: 'ask',
+      askUser: async () => {
+        asked += 1;
+        return { kind: 'text', text: 'again' };
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /did not settle after 16 user hovers/);
+      assert.equal(error.message.includes('Again?'), false, 'no prompt in the error');
+      assert.equal(error.message.includes('again'), false, 'no answer value in the error');
+      return true;
+    },
+  );
+
+  assert.equal(asked, 16, 'the limit is checked before asking a 17th time');
+});
+
+test('rejects a condition trigger and missing bindings before start', async () => {
   const adapter = new RecordingAdapter();
   const definition = fastDefinition(
     'eph-trigger',

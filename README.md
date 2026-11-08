@@ -31,7 +31,7 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 
 ## Progress
 
-**M1–M7b2 are complete**. M1–M5 are pushed; M6a–M6c2, M7a, M7b1, and M7b2 are committed locally and not yet pushed. M7c2 (removing the A-only command surface) is implemented in the working tree and not yet committed. The B-core baseline is `3a6054f`; the manifest load slice is `dad5d4f`.
+**M1–M7c3 are complete**. M1–M5 are pushed; M6a–M6c2 and M7a–M7c3 are committed locally and not yet pushed. The B-core baseline is `3a6054f`; the manifest load slice is `dad5d4f`.
 
 | Milestone | State |
 | --- | --- |
@@ -54,12 +54,13 @@ The full Agent Network direction — Agent identity, CompositionTemplate, Live b
 | M7b1 B-core user/guard | `user` hover loop and Guard approval through `askUser`/`askApproval`; no auto-allow, no empty answer |
 | M7b2 B-core resume | `GraphHost.drain`; `--engine b-core --resume` restores Honey and drains without replaying a trigger |
 | M7c2 Command surface | A-only `wax run`, `wax daemon`, `wax answer`, `wax status/log/honey`, `wax composition` and `wax mcp` removed; only `waxd`, `wax graph`, `wax trigger` and `wax session` remain |
+| M7c3 Graph output | `GET /graphs/<id>/output`, `ControlClient.outputs`, `wax graph output`; read-only, does not refresh idle TTL |
 
 ## Commands
 
 ```text
 wax waxd (--harness <codex|dsh> | --harnesses <codex,dsh>) [options]
-wax graph list|status <graphId>|load <composition.json>|load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId>
+wax graph list|status <graphId>|output <graphId>|load <composition.json>|load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId>
 wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>]
 wax session list|close <sessionId>|sweep
 ```
@@ -68,8 +69,8 @@ wax session list|close <sessionId>|sweep
 
 Current verification:
 
-- full suite: **669 tests — 668 pass, 1 platform-skipped**
-- native DSH/Codex integration: **11/11** (last full run after M3a; not rerun for M7c2)
+- full suite: **674 tests — 673 pass, 1 platform-skipped**
+- native DSH/Codex integration: **11/11** (last full run after M3a; not rerun for M7c3)
 - real native smokes: session create/busy/close, multi-session fork/merge, GraphHost, Honey unload/reload, HTTP control, ControlClient, `waxd` CLI, session resume after restart, dual-harness `waxd`
 - the shared B-core suite (control, graph, session, runtime, Honey, adapters) stays green after the A-only tests were removed
 
@@ -77,10 +78,9 @@ Current verification:
 
 | Milestone | Planned |
 | --- | --- |
-| M7c2 | Completed in the working tree: B-core is the only command surface |
 | M8 | Edit API + six-stage validation + CAS/lease + atomic graph write |
 
-M7c2 is complete in the working tree. M8 — edit API and six-stage validation — is next.
+M7c3 is complete. M8 — edit API and six-stage validation — is next.
 
 ## Known limits
 
@@ -90,6 +90,8 @@ M7c2 is complete in the working tree. M8 — edit API and six-stage validation �
 - `graphRef` currently accepts a manifest path only; graph id-only lookup needs a catalog.
 - There is no in-process ephemeral runner and no composition-tools MCP server; headless work goes through `waxd` and the control API.
 - Loaded graphs ignore an incoming `graphRef`; there is no revision or hot-swap check.
+- `wax graph output` reads only loaded graphs; after unload the visible output is gone.
+- The B-core daemon does not persist a metadata log or transcript for `wax graph` runs yet; the old A log/transcript surfaces were removed with the A command surface.
 - Idle unload is Rest-only by default; `waxd` enables hover-only unload.
 - Session TTL defaults to 2h in `waxd` with a 60s sweep; `--session-ttl-ms 0` disables it. Sessions bound to loaded graphs or busy are skipped.
 - OS SIGTERM graceful cleanup, `close` after a failed session-store removal, and the single-endpoint multi-host model remain unverified or unfinished.

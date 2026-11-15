@@ -8,6 +8,12 @@ import {
 } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 
+import {
+  DEFAULT_GUARD_TIMEOUT_MS,
+  GuardAlreadySettledError,
+  GuardBroker,
+  GuardNotFoundError,
+} from './guard-broker.js';
 import { DaemonLock } from '../daemon/daemon-lock.js';
 import {
   GraphAnswerError,
@@ -32,6 +38,7 @@ import {
   CompositionValidationError,
   parseComposition,
   QueueFullError,
+  type GuardDecision,
   type Value,
 } from '../runtime/index.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
@@ -43,6 +50,7 @@ import {
 } from '../session/session-registry.js';
 import { expandHomePath } from '../storage/conversation-store.js';
 import { HoneyStore } from '../storage/honey.js';
+import { RunStore, type RunRecord } from '../storage/run-store.js';
 
 const LOOPBACK_HOST = '127.0.0.1';
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -113,6 +121,8 @@ export interface ControlServerOptions {
   readonly graphSweepIntervalMs?: number;
   /** Optional durable LiveHive identity index, shared by host and `/catalog`. */
   readonly catalog?: LiveHiveCatalog;
+  /** Native guard decision timeout; defaults to one hour. */
+  readonly guardTimeoutMs?: number;
   readonly now?: () => number;
   /**
    * Metadata-only request log. It never receives a body, prompt, output or
@@ -170,6 +180,8 @@ type RouteKind =
   | 'unload'
   | 'sweep'
   | 'catalog'
+  | 'guards'
+  | 'guard-decide'
   | 'sessions'
   | 'session-close'
   | 'session-sweep';
@@ -241,11 +253,14 @@ export class ControlServer {
   private readonly sessionIdleTtlMs: number;
   private readonly sessionSweepIntervalMs: number;
   private readonly graphSweepIntervalMs: number;
+  private readonly guardTimeoutMs: number;
 
   private state: 'idle' | 'starting' | 'running' | 'stopping' = 'idle';
   private server: Server | undefined;
   private lock: DaemonLock | undefined;
   private graphHost: GraphHost | undefined;
+  private runStore: RunStore | undefined;
+  private guardBroker: GuardBroker | undefined;
   private tokenValue: string | undefined;
   private currentInfo: ControlServerInfo | undefined;
   private startPromise: Promise<ControlServerInfo> | undefined;
@@ -345,6 +360,10 @@ export class ControlServer {
       options.graphSweepIntervalMs ?? DEFAULT_GRAPH_SWEEP_INTERVAL_MS,
       'graphSweepIntervalMs',
     );
+    this.guardTimeoutMs = validatePositiveInteger(
+      options.guardTimeoutMs ?? DEFAULT_GUARD_TIMEOUT_MS,
+      'guardTimeoutMs',
+    );
 
     if (options.token !== undefined) {
       if (
@@ -399,6 +418,8 @@ export class ControlServer {
     let lock: DaemonLock | undefined;
     let server: Server | undefined;
     let graphHost: GraphHost | undefined;
+    let runStore: RunStore | undefined;
+    let guardBroker: GuardBroker | undefined;
     let tokenAttempted = false;
     let infoAttempted = false;
 
@@ -416,8 +437,14 @@ export class ControlServer {
       tokenAttempted = true;
       writeSecretFile(this.tokenPath, token);
 
+      runStore = new RunStore(join(this.daemonDir, 'runs'));
+      guardBroker = new GuardBroker({ timeoutMs: this.guardTimeoutMs });
+      const broker = guardBroker;
       graphHost = new GraphHost({
         registry: this.options.registry,
+        runStore,
+        guardTimeoutMs: this.guardTimeoutMs,
+        onGuard: (request) => broker.request(request),
         ...(this.options.catalog === undefined ? {} : { catalog: this.options.catalog }),
         ...(this.options.allowHoverUnload === undefined
           ? {}
@@ -478,6 +505,8 @@ export class ControlServer {
       this.server = server;
       this.lock = lock;
       this.graphHost = graphHost;
+      this.runStore = runStore;
+      this.guardBroker = guardBroker;
       this.tokenValue = token;
       this.currentInfo = info;
       this.state = 'running';
@@ -487,6 +516,8 @@ export class ControlServer {
     } catch (error) {
       this.stopSessionSweep();
       this.stopGraphSweep();
+      guardBroker?.cancelAll();
+      guardBroker = undefined;
       await closeServer(server).catch(() => undefined);
       if (graphHost !== undefined) {
         await graphHost.dispose().catch(() => undefined);
@@ -507,6 +538,8 @@ export class ControlServer {
       this.server = undefined;
       this.lock = undefined;
       this.graphHost = undefined;
+      this.guardBroker = undefined;
+      this.runStore = undefined;
       this.tokenValue = undefined;
       this.currentInfo = undefined;
       this.state = 'idle';
@@ -528,15 +561,19 @@ export class ControlServer {
     const server = this.server;
     const graphHost = this.graphHost;
     const lock = this.lock;
+    const guardBroker = this.guardBroker;
     const hadResources = server !== undefined || graphHost !== undefined || lock !== undefined;
 
-    // Stop both sweep timers before disposing the host: a late tick must not
-    // observe a half-stopped server, and a timer must never outlive the daemon.
+    // Stop both sweep timers and cancel pending guards before disposing the
+    // host. A pending guard resolves cancelled, never allowed.
     this.stopSessionSweep();
     this.stopGraphSweep();
+    guardBroker?.cancelAll();
     this.state = 'stopping';
     this.server = undefined;
     this.graphHost = undefined;
+    this.guardBroker = undefined;
+    this.runStore = undefined;
     this.lock = undefined;
     this.tokenValue = undefined;
     this.currentInfo = undefined;
@@ -597,7 +634,7 @@ export class ControlServer {
         rejectBodyOnGet(request);
       }
 
-      const responseBody = await this.dispatch(route, payload);
+      const responseBody = await this.dispatch(route, payload, request.url);
       status = 200;
       code = 'ok';
       sendJson(response, status, responseBody);
@@ -711,6 +748,7 @@ export class ControlServer {
   private async dispatch(
     route: Route,
     payload: Record<string, unknown> | undefined,
+    rawUrl?: string,
   ): Promise<Record<string, unknown>> {
     const host = this.graphHost;
     if (host === undefined) {
@@ -748,10 +786,20 @@ export class ControlServer {
         if (graphId === undefined) {
           throw new HttpError(404, 'not-found', 'not found');
         }
-        // `outputsOf` is a pure registry read. It throws GraphNotFoundError for
-        // an unloaded graph, which `toHttpError` maps to the same static 404 as
-        // the status route. Output ordering is normalized here so the wire
-        // shape never depends on executor-map insertion order.
+        const runId = queryParam(rawUrl, 'runId');
+        if (runId !== undefined) {
+          const record = this.runStore?.get(runId);
+          if (record === undefined || record.liveId !== graphId) {
+            throw new HttpError(404, 'not-found', 'unknown run');
+          }
+          return outputBody(record);
+        }
+        const latest = this.runStore?.latestForLive(graphId);
+        if (latest !== undefined) {
+          return outputBody(latest);
+        }
+        // No run has been written yet. A loaded graph still exposes its live
+        // snapshot; an unloaded graph without a run is a 404 as before.
         const outputs = host.outputsOf(graphId);
         const ordered = [...outputs.entries()]
           .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
@@ -912,6 +960,27 @@ export class ControlServer {
       }
       case 'catalog':
         return { ok: true, entries: host.catalogEntries() };
+      case 'guards':
+        return { ok: true, guards: this.guardBroker?.list() ?? [] };
+      case 'guard-decide': {
+        const broker = this.guardBroker;
+        if (broker === undefined) {
+          throw new HttpError(500, 'internal', 'internal error');
+        }
+        const { requestId, decision } = this.parseGuardDecision(requirePayload(payload));
+        try {
+          broker.decide(requestId, decision);
+        } catch (error) {
+          if (error instanceof GuardNotFoundError) {
+            throw new HttpError(404, 'not-found', 'unknown guard request');
+          }
+          if (error instanceof GuardAlreadySettledError) {
+            throw new HttpError(409, 'conflict', 'guard request already settled');
+          }
+          throw error;
+        }
+        return { ok: true, requestId, decision };
+      }
       case 'sessions': {
         // Registry list order is insertion order and is stable for a running
         // registry. Only routing metadata leaves the daemon: never a native id,
@@ -1136,6 +1205,32 @@ export class ControlServer {
       }
       throw error;
     }
+  }
+
+  private parseGuardDecision(body: Record<string, unknown>): {
+    readonly requestId: string;
+    readonly decision: GuardDecision;
+  } {
+    assertExactFields(body, ['requestId', 'decision'], 'guard decision');
+    const requestId = requireStringField(
+      body,
+      'requestId',
+      'requestId',
+      MAX_ID_LENGTH,
+    );
+    const decision = body['decision'];
+    if (
+      decision !== 'allow_once' &&
+      decision !== 'reject_once' &&
+      decision !== 'cancelled'
+    ) {
+      throw new HttpError(
+        400,
+        'bad-request',
+        'decision must be allow_once, reject_once or cancelled',
+      );
+    }
+    return { requestId, decision };
   }
 
   private parseLoadBody(body: Record<string, unknown>): LoadGraphOptions {
@@ -1488,6 +1583,8 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
         return { kind: 'sweep', methods: ['POST'] };
       case 'catalog':
         return { kind: 'catalog', methods: ['GET'] };
+      case 'guards':
+        return { kind: 'guards', methods: ['GET'] };
       case 'sessions':
         return { kind: 'sessions', methods: ['GET'] };
       default:
@@ -1519,6 +1616,9 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
     if (first === 'sessions' && second === 'sweep') {
       return { kind: 'session-sweep', methods: ['POST'] };
     }
+    if (first === 'guard' && second === 'decide') {
+      return { kind: 'guard-decide', methods: ['POST'] };
+    }
   }
 
   if (parts.length === 3) {
@@ -1538,6 +1638,31 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
   }
 
   return undefined;
+}
+
+function queryParam(rawUrl: string | undefined, name: string): string | undefined {
+  if (rawUrl === undefined) {
+    return undefined;
+  }
+  const queryIndex = rawUrl.indexOf('?');
+  if (queryIndex === -1) {
+    return undefined;
+  }
+  const value = new URLSearchParams(rawUrl.slice(queryIndex + 1)).get(name);
+  return value === null || value === '' ? undefined : value;
+}
+
+function outputBody(record: RunRecord): Record<string, unknown> {
+  return {
+    ok: true,
+    graphId: record.liveId,
+    runId: record.runId,
+    requestId: record.requestId,
+    outputs: record.outputs.map((output) => ({
+      nodeId: output.nodeId,
+      value: output.value,
+    })),
+  };
 }
 
 function requestPathForLog(rawUrl: string | undefined): string {
@@ -1717,6 +1842,13 @@ function validateMaxBodyBytes(value: number): number {
 function validateNonNegativeInteger(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${field} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function validatePositiveInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${field} must be a positive integer`);
   }
   return value;
 }

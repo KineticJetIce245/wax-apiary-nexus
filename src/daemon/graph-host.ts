@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { GraphBindings } from '../graph/binding.js';
 import type { GraphBindingStore } from '../graph/binding-store.js';
 import {
@@ -31,10 +33,19 @@ import {
 import type { SessionRegistry } from '../session/session-registry.js';
 import type { HoneyStore } from '../storage/honey.js';
 import type {
+  RunOperation,
+  RunOutput,
+  RunRecord,
+  RunStatus,
+  RunStore,
+} from '../storage/run-store.js';
+import type {
   LiveHiveCatalog,
   LiveHiveCatalogEntry,
 } from './live-hive-catalog.js';
 import { LiveHiveLock } from './live-hive-lock.js';
+import type { SchedulerState, SchedulerTimers } from './scheduler.js';
+import { SchedulerService } from './scheduler-service.js';
 
 export interface GraphHostOptions {
   readonly registry: SessionRegistry;
@@ -44,6 +55,12 @@ export interface GraphHostOptions {
    * failure is reported as metadata and never changes residency.
    */
   readonly catalog?: LiveHiveCatalog;
+  /** Durable run records; when omitted run ids are generated but not stored. */
+  readonly runStore?: RunStore;
+  /** Native guard timeout, shared with the control broker; default 1h. */
+  readonly guardTimeoutMs?: number;
+  /** Test seam for scheduler timers. */
+  readonly schedulerTimers?: SchedulerTimers;
   /**
    * Allow an explicit unload or TTL sweep of a graph whose only non-Rest state
    * is quiescent hover(s): at least one user or guard hover and no active,
@@ -154,6 +171,8 @@ export interface GraphStatus {
 
 export interface GraphRunResult {
   readonly graphId: string;
+  readonly runId: string;
+  readonly requestId: string;
   readonly rest: boolean;
   readonly hovered: boolean;
   readonly pumps: number;
@@ -167,6 +186,8 @@ export interface GraphRunResult {
   /** Honey save failure message; never contains a prompt or output body. */
   readonly persistError?: string;
 }
+
+type GraphRunCore = Omit<GraphRunResult, 'runId' | 'requestId'>;
 
 /**
  * One parked hover, located without exposing any body.
@@ -204,6 +225,24 @@ export type GraphHostEvent =
       readonly graphId: GraphId;
       readonly phase: 'load' | 'access' | 'unload' | 'sweep' | 'dispose';
       readonly error: string;
+    }
+  | {
+      readonly type: 'graph.run-store-failed';
+      readonly graphId: GraphId;
+      readonly runId: string;
+      readonly error: string;
+    }
+  | {
+      readonly type: 'scheduler.trigger-failed';
+      readonly graphId: GraphId;
+      readonly triggerId: string;
+      readonly error: string;
+    }
+  | {
+      readonly type: 'scheduler.unconfirmed';
+      readonly graphId: GraphId;
+      readonly triggerId: string;
+      readonly scheduledFor: string;
     };
 
 export class GraphNotFoundError extends Error {
@@ -307,6 +346,9 @@ interface QuiescenceOutcome {
 export class GraphHost {
   private readonly sessionRegistry: SessionRegistry;
   private readonly catalog: LiveHiveCatalog | undefined;
+  private readonly runStore: RunStore | undefined;
+  private readonly guardTimeoutMs: number | undefined;
+  private readonly schedulers: SchedulerService;
   private readonly allowHoverUnload: boolean;
   private readonly now: () => number;
   private readonly defaultIdleTtlMs: number;
@@ -328,6 +370,13 @@ export class GraphHost {
   constructor(options: GraphHostOptions) {
     this.sessionRegistry = options.registry;
     this.catalog = options.catalog;
+    this.runStore = options.runStore;
+    if (options.guardTimeoutMs !== undefined) {
+      if (!Number.isInteger(options.guardTimeoutMs) || options.guardTimeoutMs <= 0) {
+        throw new TypeError('guardTimeoutMs must be a positive integer');
+      }
+    }
+    this.guardTimeoutMs = options.guardTimeoutMs;
     this.allowHoverUnload = options.allowHoverUnload ?? false;
     if (typeof this.allowHoverUnload !== 'boolean') {
       throw new TypeError('allowHoverUnload must be a boolean');
@@ -356,6 +405,28 @@ export class GraphHost {
       throw new TypeError('onGuard must be a function');
     }
     this.onEvent = options.onEvent;
+    this.schedulers = new SchedulerService({
+      now: this.now,
+      ...(options.schedulerTimers === undefined
+        ? {}
+        : { timers: options.schedulerTimers }),
+      onError: (graphId, error, trigger) => {
+        this.reportCleanupFailure({
+          type: 'scheduler.trigger-failed',
+          graphId,
+          triggerId: trigger?.id ?? '<unknown>',
+          error: messageOf(error),
+        });
+      },
+      onUnconfirmed: (graphId, trigger, occurrence) => {
+        this.reportCleanupFailure({
+          type: 'scheduler.unconfirmed',
+          graphId,
+          triggerId: trigger.id,
+          scheduledFor: occurrence.scheduledFor,
+        });
+      },
+    });
     this.graphs = new GraphRegistry<LiveGraph>({
       now: this.now,
       defaultIdleTtlMs: this.defaultIdleTtlMs,
@@ -398,6 +469,7 @@ export class GraphHost {
 
     const honey = this.honeyForGraph?.(graphId);
     let persisted: PersistedField | undefined;
+    let schedulerState: SchedulerState | undefined;
     // A host that does not restore still keeps `honey` for trigger/unload
     // flushes; only the load read is skipped.
     if (honey !== undefined && this.restoreHoney) {
@@ -405,6 +477,9 @@ export class GraphHost {
         // Load before creating any session: a corrupt or unsupported Honey
         // file must not leave a fresh session behind.
         persisted = honey.load();
+        if (options.definition.triggers.length > 0) {
+          schedulerState = honey.loadScheduler();
+        }
       } catch (error) {
         throw new GraphLoadError(
           graphId,
@@ -416,6 +491,7 @@ export class GraphHost {
 
     this.loading.add(graphId);
     let instantiated: InstantiatedForagers | undefined;
+    let schedulerStarted = false;
     try {
       const harnesses = this.sessionRegistry.harnesses();
       const defaultHarness =
@@ -443,6 +519,9 @@ export class GraphHost {
         projectDirectory: options.project.directory,
         now: this.now,
         ...(this.onGuard === undefined ? {} : { onGuard: this.onGuard }),
+        ...(this.guardTimeoutMs === undefined
+          ? {}
+          : { guardTimeoutMs: this.guardTimeoutMs }),
       };
       let runtime: PheromoneRuntime;
       let recovery: RecoveryReport | undefined;
@@ -475,6 +554,27 @@ export class GraphHost {
         honey,
         recovery,
       };
+      // Start the scheduler before the registry load. Its fire callback is
+      // deferred through a microtask, so it cannot run before the graph is
+      // registered; a start/persist failure still rolls back the load.
+      this.schedulers.start(
+        graphId,
+        options.definition,
+        {
+          ...(schedulerState === undefined ? {} : { state: schedulerState }),
+          persist: (state) => {
+            if (honey !== undefined) {
+              honey.saveScheduler(state);
+            }
+          },
+        },
+        (trigger) =>
+          this.trigger(graphId, trigger.target, { kind: 'text', text: '' }).then(
+            () => undefined,
+          ),
+      );
+      schedulerStarted = true;
+
       const residency =
         options.idleTtlMs === undefined ? {} : { idleTtlMs: options.idleTtlMs };
       try {
@@ -500,6 +600,9 @@ export class GraphHost {
       this.updateCatalog(graphId, 'load', (catalog) => catalog.markLoaded(graphId));
       return status;
     } catch (error) {
+      if (schedulerStarted) {
+        this.schedulers.stop(graphId);
+      }
       if (instantiated !== undefined) {
         await this.releaseGraphResources(graphId, instantiated, options.bindings, 'rollback');
         instantiated = undefined;
@@ -519,14 +622,16 @@ export class GraphHost {
     if (this.disposed) {
       return Promise.reject(new GraphHostDisposedError());
     }
-    return this.lock.run(graphId, () => this.triggerLocked(graphId, nodeId, value));
+    return this.lock.run(graphId, () =>
+      this.runRecorded(graphId, 'trigger', () => this.triggerLocked(graphId, nodeId, value)),
+    );
   }
 
   private async triggerLocked(
     graphId: GraphId,
     nodeId: NodeId,
     value: Value,
-  ): Promise<GraphRunResult> {
+  ): Promise<GraphRunCore> {
     this.assertNotDisposed();
     const lease = this.acquireLease(graphId);
     let outcome: QuiescenceOutcome | undefined;
@@ -569,7 +674,11 @@ export class GraphHost {
     if (this.disposed) {
       return Promise.reject(new GraphHostDisposedError());
     }
-    return this.lock.run(graphId, () => this.answerLocked(graphId, nodeId, value, token));
+    return this.lock.run(graphId, () =>
+      this.runRecorded(graphId, 'answer', () =>
+        this.answerLocked(graphId, nodeId, value, token),
+      ),
+    );
   }
 
   private async answerLocked(
@@ -577,7 +686,7 @@ export class GraphHost {
     nodeId: NodeId,
     value: Value,
     token?: string,
-  ): Promise<GraphRunResult> {
+  ): Promise<GraphRunCore> {
     this.assertNotDisposed();
     const lease = this.acquireLease(graphId);
     let outcome: QuiescenceOutcome | undefined;
@@ -621,10 +730,12 @@ export class GraphHost {
     if (this.disposed) {
       return Promise.reject(new GraphHostDisposedError());
     }
-    return this.lock.run(graphId, () => this.drainLocked(graphId));
+    return this.lock.run(graphId, () =>
+      this.runRecorded(graphId, 'drain', () => this.drainLocked(graphId)),
+    );
   }
 
-  private async drainLocked(graphId: GraphId): Promise<GraphRunResult> {
+  private async drainLocked(graphId: GraphId): Promise<GraphRunCore> {
     this.assertNotDisposed();
     const lease = this.acquireLease(graphId);
     let outcome: QuiescenceOutcome | undefined;
@@ -812,6 +923,8 @@ export class GraphHost {
       return this.disposePromise;
     }
     this.disposed = true;
+    // Stop timers even for a non-Rest graph that dispose cannot unload.
+    this.schedulers.stopAll();
     this.disposePromise = this.disposeAll();
     return this.disposePromise;
   }
@@ -943,7 +1056,81 @@ export class GraphHost {
    * Build the public result after the lease is released, so the embedded
    * residency snapshot reports `refCount: 0`.
    */
-  private resultOf(graphId: GraphId, outcome: QuiescenceOutcome): GraphRunResult {
+  /**
+   * One mutating run's identity and durable record. The identifiers are
+   * generated under the per-live lock, so two concurrent callers can never
+   * share a run/request id.
+   */
+  private async runRecorded(
+    graphId: GraphId,
+    operation: RunOperation,
+    execute: () => Promise<GraphRunCore>,
+  ): Promise<GraphRunResult> {
+    const runId = randomUUID();
+    const requestId = randomUUID();
+    const startedAt = this.isoNow();
+    try {
+      const core = await execute();
+      const result: GraphRunResult = { ...core, runId, requestId };
+      this.saveRun({
+        runId,
+        requestId,
+        liveId: graphId,
+        operation,
+        status: runStatus(core),
+        outputs: this.snapshotOutputs(graphId),
+        startedAt,
+        finishedAt: this.isoNow(),
+      });
+      return result;
+    } catch (error) {
+      this.saveRun({
+        runId,
+        requestId,
+        liveId: graphId,
+        operation,
+        status: 'failed',
+        outputs: [],
+        startedAt,
+        finishedAt: this.isoNow(),
+        error: 'run failed',
+      });
+      throw error;
+    }
+  }
+
+  private saveRun(record: Omit<RunRecord, 'schemaVersion'>): void {
+    const runStore = this.runStore;
+    if (runStore === undefined) {
+      return;
+    }
+    try {
+      runStore.save({ schemaVersion: 1, ...record });
+    } catch (error) {
+      this.reportCleanupFailure({
+        type: 'graph.run-store-failed',
+        graphId: record.liveId,
+        runId: record.runId,
+        error: messageOf(error),
+      });
+    }
+  }
+
+  private snapshotOutputs(graphId: GraphId): readonly RunOutput[] {
+    try {
+      return [...this.outputsOf(graphId).entries()]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([nodeId, value]) => ({ nodeId, value }));
+    } catch {
+      return [];
+    }
+  }
+
+  private isoNow(): string {
+    return new Date(this.now()).toISOString();
+  }
+
+  private resultOf(graphId: GraphId, outcome: QuiescenceOutcome): GraphRunCore {
     const status = this.statusOf(graphId);
     if (status === undefined) {
       throw new GraphNotFoundError(graphId);
@@ -1051,6 +1238,9 @@ export class GraphHost {
     if (live.honey !== undefined) {
       await live.honey.save(live.runtime.exportField());
     }
+    // The flush succeeded (or there was none); no further scheduled occurrence
+    // may target a graph that is about to disappear.
+    this.schedulers.stop(graphId);
     await this.releaseGraphResources(graphId, live.instantiated, live.bindings, 'retain');
   }
 
@@ -1274,6 +1464,13 @@ function assertNonNegativeInteger(value: number, name: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new TypeError(`${name} must be a non-negative integer: ${String(value)}`);
   }
+}
+
+function runStatus(result: GraphRunCore): RunStatus {
+  if (result.rest) {
+    return 'completed';
+  }
+  return result.hovered ? 'hovered' : 'incomplete';
 }
 
 function messageOf(error: unknown): string {

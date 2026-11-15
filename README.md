@@ -25,13 +25,14 @@ waxd
 
 ## Current status
 
-The code is a B-core prototype with the M9c single-daemon shape; it does **not** yet implement the full target above.
+The code is a B-core prototype with the M9c single-daemon shape and M9d scheduler/guard/run wiring; it does **not** yet implement the full target above.
 
-- **M9a/M9b/M9c (uncommitted)** are wired together: one `AdapterPool`, one global `SessionRegistry`, one `GraphHost`, one `ControlServer`, one endpoint. A graph can mix Codex and DSH sessions.
+- **M9a/M9b/M9c (committed in `3eb24b0`)** are wired together: one `AdapterPool`, one global `SessionRegistry`, one `GraphHost`, one `ControlServer`, one endpoint. A graph can mix Codex and DSH sessions.
 - **M9b** added `LiveHiveCatalog`, per-live `LiveHiveLock`, a graph TTL timer, and `GET /catalog`; unloaded LiveHives keep their identity. `status` still reports loaded graphs only.
+- **M9d (uncommitted)** added the per-LiveHive scheduler, `GET /guards` + `POST /guard/decide`, and durable `RunStore` output (`runId`/`requestId`, readable after unload).
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 712 tests (711 pass + 1 Windows skip after M9c; one DSH adapter timeout flake was observed earlier, then passed on targeted and full rerun). Real integration now includes a mixed Codex+DSH `waxd` graph through one HTTP endpoint and a DSH/Codex product check; the full `npm run test:integration` suite was not run as a whole.
+- The regression suite is 734 tests (733 pass + 1 Windows skip after M9d). Real integration now includes a mixed Codex+DSH `waxd` graph, a DSH/Codex product check, a scheduled Codex graph, and a real DSH guard approval; the full `npm run test:integration` suite was not run as a whole.
 
 ## Current commands
 
@@ -62,12 +63,13 @@ The code still uses the old names; renames happen during the M9 refactor.
 - `GET /catalog` exposes unloaded identity, but `GET /status` still only reports loaded graphs.
 - Per-live lock covers load/trigger/answer/drain; the multi-live `sweep` pass is not per-live locked (it relies on registry busy/refCount guards).
 - Idle TTL has a daemon timer (default 60s, 0 disables), but `GraphStatus`/catalog API merging is still pending.
-- The scheduler module is not instantiated; `triggers` parse but never fire.
-- No Guard decision endpoint; `ControlServer` never passes `onGuard`, so native tool use is rejected by default.
-- Output is the in-memory `lastOutput`; no `runId`/`requestId`, and unload makes it unreadable.
+- Scheduler triggers pass an empty text Value because `TriggerDefinition` has no `input` field.
+- Guard requests are exposed/decided by `requestId`; they are not RunStore records because `GuardRequest` has no `liveId`.
+- RunStore has 1000-record / 1 MiB defaults and is used by trigger/answer/drain.
 - Same session can be bound to two loaded graphs; the conflict is only detected on trigger.
 - `fresh_once` compares `projectId` (directory basename), not the project directory.
-- Real mixed Codex+DSH `waxd` test passes; full `npm run test:integration`, native partial-failure, and daemon restart-after-exit remain unverified.
+- Real mixed Codex+DSH `waxd`, scheduler, and DSH guard tests pass; full `npm run test:integration`, native partial-failure, and daemon restart-after-exit remain unverified.
+- `GraphHost`/`ControlServer` remain over Rule 11 budgets; M9f split is still planned.
 - OS SIGTERM graceful cleanup, Windows token ACL, and physical power-loss durability are not verified.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

@@ -755,6 +755,7 @@ test('GET /graphs/<id>/output returns sorted forager output and never logs value
   assert.equal(empty.body?.['graphId'], 'outputs');
   assert.deepEqual(empty.body?.['outputs'], []);
 
+  let latestRunId = '';
   for (const nodeId of ['zeta', 'alpha']) {
     const trigger = await postJson(info.url, token, '/trigger', {
       graphId: 'outputs',
@@ -762,16 +763,31 @@ test('GET /graphs/<id>/output returns sorted forager output and never logs value
       value: { kind: 'text', text: `${nodeId}-input` },
     });
     assert.equal(trigger.status, 200);
+    assert.equal(typeof trigger.body?.['result']?.['runId'], 'string');
+    assert.equal(typeof trigger.body?.['result']?.['requestId'], 'string');
+    latestRunId = trigger.body?.['result']?.['runId'] as string;
   }
 
   const response = await getJson(info.url, token, '/graphs/outputs/output');
   assert.equal(response.status, 200);
   assert.equal(response.body?.['ok'], true);
   assert.equal(response.body?.['graphId'], 'outputs');
+  assert.equal(response.body?.['runId'], latestRunId);
   assert.deepEqual(response.body?.['outputs'], [
     { nodeId: 'alpha', value: { kind: 'text', text: OUTPUT_SECRET } },
     { nodeId: 'zeta', value: { kind: 'text', text: OUTPUT_SECRET } },
   ]);
+  // An explicit runId reads that run; an unknown one is a 404.
+  const explicitRun = await getJson(
+    info.url,
+    token,
+    `/graphs/outputs/output?runId=${latestRunId}`,
+  );
+  assert.equal(explicitRun.status, 200);
+  assert.deepEqual(explicitRun.body?.['outputs'], response.body?.['outputs']);
+  const unknownRun = await getJson(info.url, token, '/graphs/outputs/output?runId=missing');
+  assert.equal(unknownRun.status, 404);
+
   // The graph-scoped route is separate from the existing status route.
   const status = await getJson(info.url, token, '/status/outputs');
   assert.equal(status.status, 200);
@@ -787,12 +803,20 @@ test('GET /graphs/<id>/output returns sorted forager output and never logs value
   assert.equal(wrongMethod.status, 405);
   assert.equal(wrongMethod.body?.['code'], 'method-not-allowed');
 
-  // An unloaded graph has no readable output: the snapshot is not persisted.
+  // Run output survives unload; the durable run is the default after unload.
   const unload = await postJson(info.url, token, '/graphs/unload', { graphId: 'outputs' });
   assert.equal(unload.status, 200);
-  const gone = await getJson(info.url, token, '/graphs/outputs/output');
-  assert.equal(gone.status, 404);
-  assert.equal(gone.body?.['code'], 'not-found');
+  const afterUnload = await getJson(info.url, token, '/graphs/outputs/output');
+  assert.equal(afterUnload.status, 200);
+  assert.equal(afterUnload.body?.['runId'], latestRunId);
+  assert.deepEqual(afterUnload.body?.['outputs'], response.body?.['outputs']);
+  const retainedRun = await getJson(
+    info.url,
+    token,
+    `/graphs/outputs/output?runId=${latestRunId}`,
+  );
+  assert.equal(retainedRun.status, 200);
+  assert.deepEqual(retainedRun.body?.['outputs'], response.body?.['outputs']);
 
   // Metadata-only logging: no output value, prompt or bearer token.
   const logText = logs.join('\n');
@@ -2188,6 +2212,8 @@ test('answer resolves an open user hover over real HTTP and rejects invalid targ
   assert.equal(answered.body?.['result']?.['rest'], true);
   assert.equal(answered.body?.['result']?.['hovered'], false);
   assert.equal(answered.body?.['result']?.['persisted'], true);
+  assert.equal(typeof answered.body?.['result']?.['runId'], 'string');
+  assert.equal(typeof answered.body?.['result']?.['requestId'], 'string');
   assert.equal(answered.body?.['result']?.['status']?.['rest'], true);
 
   const again = await postJson(info.url, token, '/answer', {

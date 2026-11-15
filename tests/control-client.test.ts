@@ -452,7 +452,10 @@ test('outputs round-trips over real HTTP and maps 404 to undefined', async (t) =
 
   assert.equal(await daemon.client.outputs('missing'), undefined);
   await daemon.client.unload('main');
-  assert.equal(await daemon.client.outputs('main'), undefined);
+  // Run output is durable: unload retains the latest run's readable outputs.
+  assert.deepEqual(await daemon.client.outputs('main'), [
+    { nodeId: 'only', value: { kind: 'text', text: OUTPUT_MARKER } },
+  ]);
 });
 
 test('outputs rejects malformed responses as protocol errors without echoing them', async (t) => {

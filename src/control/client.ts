@@ -253,12 +253,17 @@ export class ControlClient {
     bindings: unknown;
     project: { id: string; directory: string };
     idleTtlMs?: number;
+    /** Manifest harness used for fresh bindings without an explicit harness. */
+    defaultHarness?: string;
   }): Promise<unknown> {
     const response = await this.request('POST', '/graphs/load', {
       definition: body.definition,
       bindings: body.bindings,
       project: body.project,
       ...(body.idleTtlMs === undefined ? {} : { idleTtlMs: body.idleTtlMs }),
+      ...(body.defaultHarness === undefined
+        ? {}
+        : { defaultHarness: body.defaultHarness }),
     });
     return requireField(response, 'status');
   }

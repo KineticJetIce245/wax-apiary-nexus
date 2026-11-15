@@ -3,10 +3,11 @@ import { join, resolve } from 'node:path';
 import type { HarnessAdapter } from '../adapters/harness.js';
 import type { ControlServerInfo } from '../control/server.js';
 import { ControlServer } from '../control/server.js';
+import { LiveHiveCatalog } from '../daemon/live-hive-catalog.js';
 import { GraphBindingStore } from '../graph/binding-store.js';
+import { AdapterPool } from '../session/adapter-pool.js';
 import type { HarnessKind } from '../session/connection.js';
 import { SessionRegistry } from '../session/session-registry.js';
-import { Workspace } from '../session/workspace.js';
 import { ConversationStore, expandHomePath } from '../storage/conversation-store.js';
 import {
   CliUsageError,
@@ -32,22 +33,16 @@ interface WaxdCommonCommand {
   readonly sessionSweepIntervalMs: number;
 }
 
-/** One harness keeps the original `<root>` layout. */
-export interface WaxdSingleCommand extends WaxdCommonCommand {
-  readonly harness: HarnessKind;
-}
-
-/** Two or more harnesses each get `<root>/<harness>`. */
-export interface WaxdMultiCommand extends WaxdCommonCommand {
+/** One daemon serving one or more harnesses from one state root. */
+export interface WaxdCommand extends WaxdCommonCommand {
   readonly harnesses: readonly HarnessKind[];
 }
-
-export type WaxdCommand = WaxdSingleCommand | WaxdMultiCommand;
 
 /** Metadata handed to `deps.onStarted`; it never contains the token value. */
 export interface WaxdStartedInfo {
   readonly url: string;
-  readonly harness: HarnessKind;
+  /** Harnesses that started successfully, in configured order. */
+  readonly harnesses: readonly HarnessKind[];
   readonly stateRoot: string;
   readonly daemonDir: string;
   readonly tokenPath: string;
@@ -64,7 +59,7 @@ export interface WaxdDependencies {
   readonly signal?: AbortSignal;
   /** Default true; tests inject `signal` and disable this. */
   readonly installSignalHandlers?: boolean;
-  /** Tests wait on this; production output is the five stdout lines per harness. */
+  /** Tests wait on this; production output is the five stdout lines. */
   readonly onStarted?: (info: WaxdStartedInfo) => void;
 }
 
@@ -181,7 +176,7 @@ export function parseWaxdArgs(
   );
 
   return {
-    harness: selection.harness,
+    harnesses: [selection.harness],
     ...(selection.codexExe === undefined ? {} : { codexExe: selection.codexExe }),
     ...(selection.dshRoot === undefined ? {} : { dshRoot: selection.dshRoot }),
     stateRoot,
@@ -233,190 +228,28 @@ function parseNonNegativeInteger(raw: string, flag: string): number {
   return value;
 }
 
-interface HarnessPlan {
-  readonly harness: HarnessKind;
-  /** `<root>` for a single harness, `<root>/<harness>` for a multi-harness run. */
-  readonly daemonDir: string;
-  /** `<stateRoot>` for a single harness, `<stateRoot>/<harness>` for a multi run. */
-  readonly stateRoot: string;
-  readonly codexExe?: string;
-  readonly dshRoot?: string;
-}
-
-function harnessPlans(command: WaxdCommand): readonly HarnessPlan[] {
-  const harnesses = 'harnesses' in command ? command.harnesses : [command.harness];
-  const multi = harnesses.length > 1;
-  return harnesses.map((harness) => ({
+function adapterRequest(
+  harness: HarnessKind,
+  command: WaxdCommand,
+): AdapterRequest {
+  return {
     harness,
-    daemonDir: multi ? join(command.daemonDir, harness) : command.daemonDir,
-    // Honey (field, scheduler and graph log) lives under the state root.
-    // Multi-harness runs give each harness its own subtree so two graphs with
-    // the same composition id can never share those files. The `~` is left in
-    // place; ControlServer and HoneyStore expand it.
-    stateRoot: multi ? join(command.stateRoot, harness) : command.stateRoot,
     ...(harness === 'codex' && command.codexExe !== undefined
-      ? { codexExe: command.codexExe }
+      ? { executable: command.codexExe }
       : {}),
     ...(harness === 'dsh' && command.dshRoot !== undefined
       ? { dshRoot: command.dshRoot }
       : {}),
-  }));
-}
-
-interface RunningHarness {
-  readonly plan: HarnessPlan;
-  readonly workspace: Workspace;
-  readonly server: ControlServer;
-  readonly info: ControlServerInfo;
-}
-
-/**
- * Start one harness. The adapter, workspace/session registry and control
- * server are independent per harness, so a failure here only has to unwind
- * this harness's own partial state; already-running harnesses are unwound by
- * the caller.
- */
-async function startHarness(
-  plan: HarnessPlan,
-  command: WaxdCommand,
-  deps: WaxdDependencies,
-): Promise<RunningHarness> {
-  const createAdapter = deps.createAdapter ?? createDefaultAdapter;
-  const request: AdapterRequest = {
-    harness: plan.harness,
-    ...(plan.codexExe === undefined ? {} : { executable: plan.codexExe }),
-    ...(plan.dshRoot === undefined ? {} : { dshRoot: plan.dshRoot }),
   };
-
-  let adapter: HarnessAdapter | undefined;
-  let workspace: Workspace | undefined;
-  let server: ControlServer | undefined;
-
-  try {
-    adapter = await createAdapter(request);
-    await adapter.start();
-
-    workspace = new Workspace(adapter);
-    // Resolve the daemon directory exactly like ControlServer does so the
-    // session store and the daemon's own files live side by side even when the
-    // flag contains `~`. Construction loads and validates the store; a corrupt
-    // file fails here, before ControlServer.start creates a token or lock.
-    const daemonDirectory = resolve(expandHomePath(plan.daemonDir));
-    const sessionStore = new ConversationStore(join(daemonDirectory, 'sessions.json'));
-    // Construction validates the file. A corrupt resolved-binding store fails
-    // here, before ControlServer.start creates a token or a daemon lock.
-    const bindingStore = new GraphBindingStore(
-      join(daemonDirectory, 'graph-bindings.json'),
-    );
-    const registry = new SessionRegistry({
-      workspace,
-      harness: plan.harness,
-      store: sessionStore,
-    });
-    server = new ControlServer({
-      workspace,
-      registry,
-      harness: plan.harness,
-      stateRoot: plan.stateRoot,
-      apiary: command.apiary,
-      daemonDir: plan.daemonDir,
-      port: command.port,
-      bindingStore,
-      // Idle sessions are closed only when the operator enabled a TTL (2h by
-      // default); bound and busy sessions are never swept.
-      sessionIdleTtlMs: command.sessionTtlMs,
-      sessionSweepIntervalMs: command.sessionSweepIntervalMs,
-      // A local daemon reclaims a field parked on hover(s) once its TTL
-      // expires; Honey keeps the hover replayable for a later answer.
-      allowHoverUnload: true,
-    });
-
-    const info = await server.start();
-    return { plan, workspace, server, info };
-  } catch (error) {
-    await server?.stop().catch(() => undefined);
-    if (workspace !== undefined) {
-      await workspace.stop().catch(() => undefined);
-    } else if (adapter !== undefined) {
-      // adapter.start() may have failed after reserving resources.
-      await adapter.stop().catch(() => undefined);
-    }
-    throw error;
-  }
-}
-
-/** Best-effort rollback: every server, then every workspace, always reversed. */
-async function unwindHarnesses(running: readonly RunningHarness[]): Promise<void> {
-  const reverse = [...running].reverse();
-  for (const item of reverse) {
-    await item.server.stop().catch(() => undefined);
-  }
-  for (const item of reverse) {
-    await item.workspace.stop().catch(() => undefined);
-  }
-}
-
-/** Graceful stop: report each failure but keep cleaning up everything else. */
-async function stopHarnesses(
-  running: readonly RunningHarness[],
-  err: (line: string) => void,
-  multi: boolean,
-): Promise<number> {
-  const reverse = [...running].reverse();
-  let code = 0;
-
-  for (const item of reverse) {
-    try {
-      await item.server.stop();
-    } catch (error) {
-      err(harnessErrorLine(item.plan.harness, error, multi));
-      code = 1;
-    }
-  }
-  for (const item of reverse) {
-    try {
-      await item.workspace.stop();
-    } catch (error) {
-      err(harnessErrorLine(item.plan.harness, error, multi));
-      code = 1;
-    }
-  }
-  return code;
-}
-
-function harnessErrorLine(
-  harness: HarnessKind,
-  error: unknown,
-  multi: boolean,
-): string {
-  const prefix = multi ? `harness ${harness}: ` : '';
-  return `error: ${prefix}${oneLine(messageOf(error))}`;
-}
-
-function printHarness(
-  out: (line: string) => void,
-  running: RunningHarness,
-  multi: boolean,
-): void {
-  if (multi) {
-    out(`harness ${running.plan.harness}`);
-  }
-  out(`waxd listening ${running.info.url}`);
-  out(`harness  ${running.plan.harness}`);
-  out(`state    ${running.plan.stateRoot}`);
-  out(`daemon   ${running.plan.daemonDir}`);
-  out(`token    ${running.info.tokenPath}`);
 }
 
 /**
  * Foreground daemon for one or more harnesses.
  *
- * Each harness owns its adapter, Workspace, SessionRegistry, ControlServer,
- * token, lock and port. A single harness keeps the original `<root>` layout;
- * multiple harnesses use `<root>/<harness>` so their daemon files never
- * collide. Startup is ordered; any failure unwinds every harness that had
- * already started. Signal handling stops servers in reverse start order and
- * then workspaces in reverse start order, continuing after individual errors.
+ * There is exactly one AdapterPool, SessionRegistry, GraphHost, ControlServer,
+ * daemon directory, state root, token and endpoint. A harness whose adapter
+ * fails is marked unavailable by the pool; the daemon starts if at least one
+ * harness is available. Stop releases the server/host and then the pool once.
  */
 export async function runWaxdCli(
   argv: readonly string[],
@@ -435,9 +268,6 @@ export async function runWaxdCli(
     }
     throw error;
   }
-
-  const plans = harnessPlans(command);
-  const multi = plans.length > 1;
 
   const controller = new AbortController();
   const onSignal = (): void => {
@@ -458,41 +288,85 @@ export async function runWaxdCli(
     process.once('SIGTERM', onSignal);
   }
 
-  const running: RunningHarness[] = [];
-  try {
-    for (const plan of plans) {
+  const createAdapter = deps.createAdapter ?? createDefaultAdapter;
+  const pool = new AdapterPool({
+    createAdapter: (harness) => createAdapter(adapterRequest(harness as HarnessKind, command)),
+  });
+  let server: ControlServer | undefined;
+  let runningHarnesses: readonly HarnessKind[] = [];
+
+  const stopAll = async (): Promise<number> => {
+    let code = 0;
+    if (server !== undefined) {
+      const current = server;
+      server = undefined;
       try {
-        running.push(await startHarness(plan, command, deps));
+        await current.stop();
       } catch (error) {
-        // The failing harness cleaned its own partial state inside
-        // startHarness; this only unwinds earlier harnesses.
-        await unwindHarnesses(running);
-        err(harnessErrorLine(plan.harness, error, multi));
-        return 1;
+        err(`error: ${oneLine(messageOf(error))}`);
+        code = 1;
       }
     }
+    try {
+      await pool.stop();
+    } catch (error) {
+      err(`error: ${oneLine(messageOf(error))}`);
+      code = 1;
+    }
+    return code;
+  };
 
-    // Print only after every harness is up, so a startup failure never leaves
-    // a misleading "listening" block behind.
-    for (const item of running) {
-      printHarness(out, item, multi);
+  try {
+    await pool.start(command.harnesses);
+    runningHarnesses = pool.harnesses() as readonly HarnessKind[];
+    if (runningHarnesses.length === 0) {
+      await stopAll();
+      err('error: no harness available');
+      return 1;
     }
-    for (const item of running) {
-      deps.onStarted?.({
-        url: item.info.url,
-        harness: item.plan.harness,
-        stateRoot: item.plan.stateRoot,
-        daemonDir: item.plan.daemonDir,
-        tokenPath: item.info.tokenPath,
-      });
-    }
+
+    const daemonDirectory = resolve(expandHomePath(command.daemonDir));
+    const workspaces = new Map(
+      runningHarnesses.map((harness) => [harness, pool.workspaceFor(harness)] as const),
+    );
+    const sessionStore = new ConversationStore(join(daemonDirectory, 'sessions.json'));
+    const bindingStore = new GraphBindingStore(
+      join(daemonDirectory, 'graph-bindings.json'),
+    );
+    const catalog = new LiveHiveCatalog(join(daemonDirectory, 'live-catalog.json'));
+    const registry = new SessionRegistry({ workspaces, store: sessionStore });
+
+    server = new ControlServer({
+      registry,
+      stateRoot: command.stateRoot,
+      apiary: command.apiary,
+      daemonDir: command.daemonDir,
+      port: command.port,
+      bindingStore,
+      catalog,
+      sessionIdleTtlMs: command.sessionTtlMs,
+      sessionSweepIntervalMs: command.sessionSweepIntervalMs,
+      allowHoverUnload: true,
+    });
+
+    const info = await server.start();
+    out(`waxd listening ${info.url}`);
+    out(`harnesses ${runningHarnesses.join(',')}`);
+    out(`state    ${command.stateRoot}`);
+    out(`daemon   ${command.daemonDir}`);
+    out(`token    ${info.tokenPath}`);
+    deps.onStarted?.({
+      url: info.url,
+      harnesses: runningHarnesses,
+      stateRoot: command.stateRoot,
+      daemonDir: command.daemonDir,
+      tokenPath: info.tokenPath,
+    });
 
     await waitForAbort(controller.signal);
-    return await stopHarnesses(running, err, multi);
+    return await stopAll();
   } catch (error) {
-    // A failure in output or an onStarted callback still tears down every
-    // harness that had started.
-    await unwindHarnesses(running);
+    await stopAll();
     err(`error: ${oneLine(messageOf(error))}`);
     return 1;
   } finally {

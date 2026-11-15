@@ -276,9 +276,7 @@ function makeEnv(
     // A real, existing directory is required by Workspace; no test writes here.
     directory: process.cwd(),
   };
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'fake-harness',
+  const registry = new SessionRegistry({ workspaces: new Map([['fake-harness', workspace]]),
     now: registryNow,
   });
   return { adapter, workspace, registry, project };
@@ -465,7 +463,6 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -564,7 +561,6 @@ test('two loaded graphs stay independent through trigger and unload', async (t) 
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -624,7 +620,6 @@ test('a user hover is not unloaded or swept until it reaches Rest', async (t) =>
   const clock = new FakeClock(1_000);
   const cleanupEvents: GraphHostEvent[] = [];
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     onEvent: (event) => cleanupEvents.push(event),
@@ -713,7 +708,6 @@ test('duplicate load, invalid bindings and an unknown graph are rejected explici
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -774,7 +768,6 @@ test('unload retains fresh and borrowed sessions and disposes routing', async (t
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -829,7 +822,6 @@ test('loadedSessionIds reports only sessions bound to currently loaded graphs', 
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -880,7 +872,6 @@ test('a failed close during load rollback is reported and the load is not regist
   const events: GraphHostEvent[] = [];
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     onEvent: (event) => events.push(event),
@@ -927,7 +918,6 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -994,7 +984,6 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
   env.adapter.holdSubmissions = true;
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -1048,7 +1037,6 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     maxPumps: 1,
@@ -1107,7 +1095,6 @@ test('dispose unloads every Rest graph, is idempotent and refuses later work', a
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -1159,7 +1146,6 @@ test('status and statusOf are pure reads and M4a defaults idle TTL to 0', async 
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -1202,7 +1188,6 @@ test('outputsOf snapshots one graph without touching residency or taking a lease
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -1294,7 +1279,6 @@ test('an unknown trigger node rethrows the runtime error and releases the lease'
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -1332,7 +1316,6 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
   const clock = new FakeClock(1_000);
   const waits: number[] = [];
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     sleep: async (ms) => {
@@ -1376,7 +1359,6 @@ test('the trigger lease covers pacing waits, not only pump calls', async (t) => 
   const releaseSleep = deferred();
   const waits: number[] = [];
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     sleep: async (ms) => {
@@ -1423,7 +1405,6 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
   const clock = new FakeClock(1_000);
   const zeroWaits: number[] = [];
   const zeroHost = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     maxWaitMs: 0,
@@ -1434,7 +1415,6 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
   });
   const shortWaits: number[] = [];
   const shortHost = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     maxWaitMs: 250,
@@ -1488,7 +1468,6 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     maxPumps: 1,
@@ -1535,7 +1514,6 @@ test('fresh_once keeps its session and mapping across unload and reuses it on re
   const clock = new FakeClock(1_000);
   const bindingStore = makeBindingStore();
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     bindingStore,
@@ -1588,7 +1566,6 @@ test('fresh_always is retained on unload and a reload creates a new session', as
   const clock = new FakeClock(1_000);
   const bindingStore = makeBindingStore();
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     bindingStore,
@@ -1634,7 +1611,6 @@ test('an idle sweep retains a fresh_once session and the reload still reuses it'
   const clock = new FakeClock(1_000);
   const bindingStore = makeBindingStore();
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     bindingStore,
@@ -1677,7 +1653,6 @@ test('allowHoverUnload unloads a quiescent hover and retains its fresh session',
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -1723,7 +1698,6 @@ test('allowHoverUnload still refuses a hover while another node has queued work'
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -1768,7 +1742,6 @@ test('allowHoverUnload still refuses a hover while a node has a pending Pheromon
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -1827,7 +1800,6 @@ test('allowHoverUnload still refuses a hover while another node is active', asyn
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -1883,7 +1855,6 @@ test('answer resolves an open user hover and rejects invalid targets and tokens'
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -1949,7 +1920,6 @@ test('answer reports rest=false without retrying when maxPumps cannot drain it',
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     maxPumps: 0,
@@ -1991,7 +1961,6 @@ test('trigger refreshes the lastAccessAt of every bound session', async (t) => {
   const clock = new FakeClock(1_000);
   const env = makeEnv(new RecordingAdapter(), () => new Date(clock.time).toISOString());
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -2028,7 +1997,6 @@ test('answer refreshes the lastAccessAt of every bound session', async (t) => {
   const clock = new FakeClock(1_000);
   const env = makeEnv(new RecordingAdapter(), () => new Date(clock.time).toISOString());
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
@@ -2061,15 +2029,14 @@ test('a failing touch does not change a trigger or answer result', async (t) => 
   const adapter = new RecordingAdapter();
   const workspace = new Workspace(adapter);
   const registry = new ThrowingTouchRegistry({
-    workspace,
-    harness: 'fake-harness',
+    workspaces: new Map([['fake-harness', workspace]]),
     now: () => FIXED_NOW,
   });
   const project: Project = {
     id: 'project-touch-failure',
     directory: process.cwd(),
   };
-  const host = new GraphHost({ workspace, registry, now: () => 1_000 });
+  const host = new GraphHost({ registry, now: () => 1_000 });
   t.after(async () => {
     await host.dispose();
     await workspace.stop();
@@ -2102,7 +2069,6 @@ test('onGuard is passed to the runtime and decides native approvals', async (t) 
   const seen: GuardRequest[] = [];
   const decisions: readonly GuardDecision[] = ['allow_once', 'reject_once'];
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     onGuard: async (request) => {
       seen.push(request);
@@ -2134,7 +2100,7 @@ test('onGuard is passed to the runtime and decides native approvals', async (t) 
 test('a native approval is rejected when no onGuard handler is configured', async (t) => {
   const adapter = new RecordingAdapter({ askApproval: true });
   const env = makeEnv(adapter);
-  const host = new GraphHost({ workspace: env.workspace, registry: env.registry });
+  const host = new GraphHost({ registry: env.registry });
   t.after(async () => {
     await host.dispose();
     await env.workspace.stop();
@@ -2156,7 +2122,7 @@ test('a native approval is rejected when no onGuard handler is configured', asyn
 
 test('firstHover exposes the first parked hover without any body', async (t) => {
   const env = makeEnv();
-  const host = new GraphHost({ workspace: env.workspace, registry: env.registry });
+  const host = new GraphHost({ registry: env.registry });
   t.after(async () => {
     await host.dispose();
     await env.workspace.stop();
@@ -2209,7 +2175,6 @@ test('drain flushes a Rest field without pumping or creating work', async (t) =>
   const root = mkdtempSync(join(tmpdir(), 'wax-drain-rest-'));
   const honey = new CountingHoneyStore(honeyPaths(root, 'apiary', 'drain-rest'));
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -2247,7 +2212,6 @@ test('drain pumps existing queued work to Rest and flushes it', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'wax-drain-queued-'));
   const honey = new CountingHoneyStore(honeyPaths(root, 'apiary', 'drain-queued'));
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -2290,7 +2254,6 @@ test('drain flushes a hovered field without pumping the hover away', async (t) =
   const root = mkdtempSync(join(tmpdir(), 'wax-drain-hover-'));
   const honey = new CountingHoneyStore(honeyPaths(root, 'apiary', 'drain-hover'));
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -2326,7 +2289,7 @@ test('drain flushes a hovered field without pumping the hover away', async (t) =
 
 test('drain rejects an unknown graph and a disposed host explicitly', async (t) => {
   const env = makeEnv();
-  const host = new GraphHost({ workspace: env.workspace, registry: env.registry });
+  const host = new GraphHost({ registry: env.registry });
   t.after(async () => {
     await host.dispose();
     await env.workspace.stop();

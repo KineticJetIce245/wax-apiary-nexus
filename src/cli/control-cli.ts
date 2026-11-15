@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 
 import {
   ControlClient,
@@ -494,6 +493,8 @@ interface PreparedLoad {
   readonly bindings: unknown;
   readonly project: { readonly id: string; readonly directory: string };
   readonly idleTtlMs?: number;
+  /** A manifest's harness; the daemon uses it for fresh bindings. */
+  readonly defaultHarness?: string;
 }
 
 function readJsonFile(path: string, label: string): unknown {
@@ -555,6 +556,7 @@ function prepareLoad(command: Extract<GraphCommand, { kind: 'load' }>): Prepared
       definition: spec.definition,
       bindings: spec.bindings,
       project: spec.project,
+      defaultHarness: spec.harness,
       ...(spec.idleTtlMs === undefined ? {} : { idleTtlMs: spec.idleTtlMs }),
     };
   }
@@ -577,36 +579,17 @@ function prepareLoad(command: Extract<GraphCommand, { kind: 'load' }>): Prepared
   };
 }
 
-function defaultDaemonRoot(env: NodeJS.ProcessEnv | undefined): string {
-  const home = env?.['HOME'] || env?.['USERPROFILE'] || homedir();
-  return join(home, '.wax', 'waxd');
-}
-
 /**
- * A single-harness daemon keeps the original `<root>` layout. A multi-harness
- * daemon puts each harness under `<root>/<harness>`, so the CLI must be told
- * which one it means; it never guesses.
+ * One daemon directory, one endpoint. `--harness` never changes discovery; it
+ * only filters session output or validates a manifest.
  */
-function discoveryDirectory(
-  daemonDir: string | undefined,
-  harness: HarnessKind | undefined,
-  env: NodeJS.ProcessEnv | undefined,
-): string | undefined {
-  if (harness === undefined) {
-    return daemonDir;
-  }
-  return join(daemonDir ?? defaultDaemonRoot(env), harness);
-}
-
 function createClient(
   daemonDir: string | undefined,
-  harness: HarnessKind | undefined,
   deps: ControlCliDependencies,
 ): ControlClient {
-  const directory = discoveryDirectory(daemonDir, harness, deps.env);
   const discovery = discoverDaemon({
-    ...(directory === undefined ? {} : { daemonDir: directory }),
-    ...(directory === undefined && deps.env !== undefined ? { env: deps.env } : {}),
+    ...(daemonDir === undefined ? {} : { daemonDir }),
+    ...(daemonDir === undefined && deps.env !== undefined ? { env: deps.env } : {}),
   });
   return new ControlClient({
     baseUrl: discovery.baseUrl,
@@ -621,14 +604,12 @@ export async function runGraphCli(
 ): Promise<number> {
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
-  let harnessHint = false;
   try {
     const command = parseGraphArgs(argv);
-    harnessHint = command.harness === undefined;
     // Local validation happens before discovery or any HTTP request, so a bad
     // file can never create a session or reach the daemon.
     const prepared = command.kind === 'load' ? prepareLoad(command) : undefined;
-    const client = createClient(command.daemonDir, command.harness, deps);
+    const client = createClient(command.daemonDir, deps);
 
     switch (command.kind) {
       case 'list': {
@@ -735,7 +716,7 @@ export async function runGraphCli(
       }
     }
   } catch (error) {
-    return reportCliError(error, err, { harnessHint });
+    return reportCliError(error, err);
   }
 }
 
@@ -745,11 +726,9 @@ export async function runTriggerCli(
 ): Promise<number> {
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
-  let harnessHint = false;
   try {
     const command = parseTriggerArgs(argv);
-    harnessHint = command.harness === undefined;
-    const client = createClient(command.daemonDir, command.harness, deps);
+    const client = createClient(command.daemonDir, deps);
     // Exactly one attempt. ControlClient never retries, and neither does this
     // CLI: a trigger can have side effects, so a failure is reported as-is.
     const result = (await client.trigger(
@@ -775,7 +754,7 @@ export async function runTriggerCli(
     }
     return 0;
   } catch (error) {
-    return reportCliError(error, err, { harnessHint });
+    return reportCliError(error, err);
   }
 }
 
@@ -789,15 +768,17 @@ export async function runSessionCli(
 ): Promise<number> {
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
-  let harnessHint = false;
   try {
     const command = parseSessionArgs(argv);
-    harnessHint = command.harness === undefined;
-    const client = createClient(command.daemonDir, command.harness, deps);
+    const client = createClient(command.daemonDir, deps);
 
     switch (command.kind) {
       case 'list': {
-        const sessions = await client.listSessions();
+        const allSessions = await client.listSessions();
+        const sessions =
+          command.harness === undefined
+            ? allSessions
+            : allSessions.filter((session) => session.harness === command.harness);
         if (command.json) {
           writeJson(out, { sessions });
         } else {
@@ -834,25 +815,17 @@ export async function runSessionCli(
       }
     }
   } catch (error) {
-    return reportCliError(error, err, { harnessHint });
+    return reportCliError(error, err);
   }
 }
 
-function reportCliError(
-  error: unknown,
-  err: Writer,
-  options: { readonly harnessHint?: boolean } = {},
-): number {
+function reportCliError(error: unknown, err: Writer): number {
   if (error instanceof CliUsageError) {
     err(oneLine(error.message));
     return 2;
   }
   if (error instanceof ControlClientError) {
-    const hint =
-      options.harnessHint === true && error.code === 'discovery'
-        ? '; if this waxd serves per-harness directories, pass --harness <codex|dsh>'
-        : '';
-    err(`${controlErrorLine(error)}${hint}`);
+    err(controlErrorLine(error));
     return 1;
   }
   if (error instanceof ControlCliIoError) {

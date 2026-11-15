@@ -170,7 +170,7 @@ test('fork routes each branch to its own session through merge to Rest', async (
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'fake-harness', now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([['fake-harness', workspace]]), now: () => FIXED_NOW });
   const sessionA = await registry.create(project, { displayName: 'branch-a-session' });
   const sessionB = await registry.create(project, { displayName: 'branch-b-session' });
   const definition = routingDefinition();
@@ -184,7 +184,6 @@ test('fork routes each branch to its own session through merge to Rest', async (
     definition,
     bindings,
     registry,
-    workspace,
     project,
   });
   t.after(() => instantiated.dispose());
@@ -266,7 +265,7 @@ test('a busy session stops instantiation before the graph runs', async (t) => {
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'fake-harness', now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([['fake-harness', workspace]]), now: () => FIXED_NOW });
   const busy = await registry.create(project);
   const execution = await workspace.submit(busy.sessionId, 'hold');
   const settled = waitForExecutionSettled(workspace, execution.id);
@@ -286,7 +285,6 @@ test('a busy session stops instantiation before the graph runs', async (t) => {
 
   try {
     const validation = validateBindings(definition, bindings, registry, {
-      harness: registry.harness,
       projectDirectory: project.directory,
     });
     assert.deepEqual(
@@ -295,7 +293,7 @@ test('a busy session stops instantiation before the graph runs', async (t) => {
     );
 
     await assert.rejects(
-      instantiateForagers({ definition, bindings, registry, workspace, project }),
+      instantiateForagers({ definition, bindings, registry, project }),
       (error: unknown) => {
         assert.ok(error instanceof BindingValidationError);
         assert.deepEqual(

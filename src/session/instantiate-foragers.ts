@@ -25,7 +25,12 @@ export interface InstantiateForagersOptions {
   readonly graphId?: string;
   readonly bindings: GraphBindings;
   readonly registry: SessionRegistry;
-  readonly workspace: Workspace;
+  /**
+   * Harness for fresh bindings that do not name one. When omitted, a
+   * single-workspace registry supplies its only harness; a multi-workspace
+   * registry requires the binding or this option to be explicit.
+   */
+  readonly defaultHarness?: string;
   readonly project: Project;
   /**
    * Required when any `fresh_once` binding is present. Its absence is rejected
@@ -101,12 +106,14 @@ export class SessionBindingUnavailableError extends Error {
 export async function instantiateForagers(
   options: InstantiateForagersOptions,
 ): Promise<InstantiatedForagers> {
-  const { definition, bindings, registry, workspace, project, bindingStore } = options;
+  const { definition, bindings, registry, project, bindingStore } = options;
   const graphId = options.graphId ?? definition.id;
 
+  // A session record's harness is authoritative, so there is no whole-graph
+  // harness context. Fresh bindings may name a harness; it must be routable.
   const validation = validateBindings(definition, bindings, registry, {
-    harness: registry.harness,
     projectDirectory: project.directory,
+    harnesses: registry.harnesses(),
   });
   if (!validation.ok) {
     throw new BindingValidationError(validation.issues);
@@ -137,7 +144,7 @@ export async function instantiateForagers(
   const createdSessionIds: string[] = [];
   /** Node ids whose `fresh_once` mapping this call created. */
   const createdOnceNodes: NodeId[] = [];
-  const conversations = new Map<NodeId, Conversation>();
+  const targets = new Map<NodeId, { workspace: Workspace; conversation: Conversation }>();
   const sessions = new Map<NodeId, SessionRecord>();
   const executors = new Map<NodeId, WorkspaceForagerExecutor>();
 
@@ -171,7 +178,8 @@ export async function instantiateForagers(
           // custom registry is still an attach failure for the binding layer.
           throw new SessionBindingUnavailableError(node.id, binding.sessionId, 'attach-failed');
         }
-        const conversation = workspace.getConversation(record.sessionId);
+        const nodeWorkspace = requireBindingWorkspace(registry, node.id, record.harness);
+        const conversation = nodeWorkspace.getConversation(record.sessionId);
         if (conversation === undefined) {
           throw new SessionBindingUnavailableError(
             node.id,
@@ -179,11 +187,13 @@ export async function instantiateForagers(
             'missing-conversation',
           );
         }
-        conversations.set(node.id, conversation);
+        targets.set(node.id, { workspace: nodeWorkspace, conversation });
         sessions.set(node.id, record);
         continue;
       }
 
+      const harness = resolveFreshHarness(node.id, binding, options, registry);
+      const workspace = requireBindingWorkspace(registry, node.id, harness);
       const mode = binding.mode ?? 'always';
       if (mode === 'once') {
         // The precheck above guarantees a store for every fresh_once binding.
@@ -194,7 +204,7 @@ export async function instantiateForagers(
         let resolved = bindingStore.get(graphId, node.id);
         if (
           resolved !== undefined &&
-          (resolved.harness !== registry.harness || resolved.projectId !== project.id)
+          (resolved.harness !== harness || resolved.projectId !== project.id)
         ) {
           // The mapping names a session from another harness/project. It is not
           // usable here, so replace it rather than attaching the wrong session.
@@ -202,7 +212,9 @@ export async function instantiateForagers(
           resolved = undefined;
         }
 
-        let reused: { record: SessionRecord; conversation: Conversation } | undefined;
+        let reused:
+          | { record: SessionRecord; workspace: Workspace; conversation: Conversation }
+          | undefined;
         if (resolved !== undefined) {
           const resolvedSessionId = resolved.sessionId;
           if (registry.isBusy(resolvedSessionId)) {
@@ -210,7 +222,8 @@ export async function instantiateForagers(
           }
           try {
             const record = await registry.ensureAttached(resolvedSessionId);
-            const conversation = workspace.getConversation(record.sessionId);
+            const recordWorkspace = requireBindingWorkspace(registry, node.id, record.harness);
+            const conversation = recordWorkspace.getConversation(record.sessionId);
             if (conversation === undefined) {
               throw new SessionBindingUnavailableError(
                 node.id,
@@ -218,7 +231,7 @@ export async function instantiateForagers(
                 'missing-conversation',
               );
             }
-            reused = { record, conversation };
+            reused = { record, workspace: recordWorkspace, conversation };
           } catch (error) {
             if (error instanceof SessionNotFoundError) {
               // The session vanished since the mapping was written. Delete the
@@ -241,12 +254,18 @@ export async function instantiateForagers(
         }
 
         if (reused !== undefined) {
-          conversations.set(node.id, reused.conversation);
+          targets.set(node.id, {
+            workspace: reused.workspace,
+            conversation: reused.conversation,
+          });
           sessions.set(node.id, reused.record);
           continue;
         }
 
-        const created = await registry.create(project, freshMetadata(binding));
+        const created = await registry.create(project, {
+          ...freshMetadata(binding),
+          harness,
+        });
         createdSessionIds.push(created.sessionId);
         createdOnceNodes.push(node.id);
         const conversation = workspace.getConversation(created.sessionId);
@@ -263,18 +282,21 @@ export async function instantiateForagers(
           graphId,
           nodeId: node.id,
           sessionId: created.sessionId,
-          harness: registry.harness,
+          harness,
           projectId: project.id,
           updatedAt: new Date().toISOString(),
         });
-        conversations.set(node.id, conversation);
+        targets.set(node.id, { workspace, conversation });
         sessions.set(node.id, created);
         continue;
       }
 
       // `fresh_always` (and an absent mode): a new session every load, with no
       // resolved mapping written.
-      const created = await registry.create(project, freshMetadata(binding));
+      const created = await registry.create(project, {
+        ...freshMetadata(binding),
+        harness,
+      });
       createdSessionIds.push(created.sessionId);
       const conversation = workspace.getConversation(created.sessionId);
       if (conversation === undefined) {
@@ -284,12 +306,18 @@ export async function instantiateForagers(
           'missing-conversation',
         );
       }
-      conversations.set(node.id, conversation);
+      targets.set(node.id, { workspace, conversation });
       sessions.set(node.id, created);
     }
 
-    for (const [nodeId, conversation] of conversations) {
-      executors.set(nodeId, new WorkspaceForagerExecutor({ workspace, conversation }));
+    for (const [nodeId, target] of targets) {
+      executors.set(
+        nodeId,
+        new WorkspaceForagerExecutor({
+          workspace: target.workspace,
+          conversation: target.conversation,
+        }),
+      );
     }
 
     const routing = new RoutingForagerExecutor({ executors });
@@ -354,4 +382,49 @@ function freshMetadata(binding: Extract<ForagerBinding, { kind: 'fresh' }>): {
     ...(binding.model === undefined ? {} : { model: binding.model }),
     ...(binding.reasoning === undefined ? {} : { reasoning: binding.reasoning }),
   };
+}
+
+function resolveFreshHarness(
+  nodeId: NodeId,
+  binding: Extract<ForagerBinding, { kind: 'fresh' }>,
+  options: InstantiateForagersOptions,
+  registry: SessionRegistry,
+): string {
+  if (binding.harness !== undefined) {
+    return binding.harness;
+  }
+  if (options.defaultHarness !== undefined) {
+    return options.defaultHarness;
+  }
+  const harnesses = registry.harnesses();
+  const only = harnesses.length === 1 ? harnesses[0] : undefined;
+  if (only === undefined) {
+    throw new BindingValidationError([
+      {
+        code: 'unknown-harness',
+        message: `forager '${nodeId}' fresh binding needs an explicit harness`,
+        nodeId,
+      },
+    ]);
+  }
+  return only;
+}
+
+/** Resolve a binding's harness; a missing workspace is a binding error. */
+function requireBindingWorkspace(
+  registry: SessionRegistry,
+  nodeId: NodeId,
+  harness: string,
+): Workspace {
+  try {
+    return registry.workspaceFor(harness);
+  } catch {
+    throw new BindingValidationError([
+      {
+        code: 'unknown-harness',
+        message: `forager '${nodeId}' fresh binding names unknown harness '${harness}'`,
+        nodeId,
+      },
+    ]);
+  }
 }

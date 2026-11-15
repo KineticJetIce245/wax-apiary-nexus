@@ -81,9 +81,7 @@ function makeEnv(
     id: `client-project-${String(projectSeq)}`,
     directory: mkdtempSync(join(tmpdir(), 'wax-client-project-')),
   };
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'fake-harness',
+  const registry = new SessionRegistry({ workspaces: new Map([['codex', workspace]]),
     now: registryNow,
   });
   const stateRoot = mkdtempSync(join(tmpdir(), 'wax-client-state-'));
@@ -100,7 +98,6 @@ function makeEnv(
 async function startDaemon(
   t: TestContext,
   adapterOptions: FakeAdapterOptions = {},
-  harness = 'fake-harness',
   overrides: Partial<ControlServerOptions> = {},
   registryNow: () => string = () => FIXED_NOW,
 ): Promise<TestDaemon> {
@@ -109,9 +106,7 @@ async function startDaemon(
     await env.workspace.stop();
   });
   const server = new ControlServer({
-    workspace: env.workspace,
     registry: env.registry,
-    harness,
     stateRoot: env.stateRoot,
     apiary: 'apiary',
     daemonDir: env.daemonDir,
@@ -351,7 +346,7 @@ test('discovery finds a running daemon and the client reaches health', async (t)
 
   const health = await daemon.client.health();
   assert.equal(health['ok'], true);
-  assert.equal(health['harness'], 'fake-harness');
+  assert.deepEqual(health['harnesses'], ['codex']);
   assert.equal(health['pid'], process.pid);
   assert.equal(health['startedAt'], info.startedAt);
 });
@@ -511,7 +506,7 @@ test('listSessions and closeSession round-trip and report bound/busy state', asy
   assert.equal(sessions.length, 1);
   assert.deepEqual(sessions[0], {
     sessionId: record.sessionId,
-    harness: 'fake-harness',
+    harness: 'codex',
     projectId: daemon.env.project.id,
     busy: false,
     bound: true,
@@ -1078,7 +1073,7 @@ test('trigger includes graphRef in the body only when it was provided', async ()
 });
 
 test('trigger with a graphRef lazily loads the manifest graph over real HTTP', async (t) => {
-  const daemon = await startDaemon(t, {}, 'codex');
+  const daemon = await startDaemon(t);
   const fixture = clientManifestFixture({ graphId: 'client-lazy' });
 
   const result = asRecord(
@@ -1226,7 +1221,7 @@ test('answer answers an open hover over real HTTP and maps a closed hover to con
 });
 
 test('answer with a graphRef lazily loads the manifest and restores a flushed hover', async (t) => {
-  const daemon = await startDaemon(t, {}, 'codex', { allowHoverUnload: true });
+  const daemon = await startDaemon(t, {}, { allowHoverUnload: true });
   const composition = userForagerDefinition('answer-lazy-client');
   const bindings = { idle: { kind: 'fresh' } };
   const fixture = clientManifestFixture({
@@ -1272,7 +1267,6 @@ test('sweepSessions closes orphan sessions over real HTTP and skips bound ones',
   const daemon = await startDaemon(
     t,
     {},
-    'fake-harness',
     { sessionIdleTtlMs: 1_000 },
     () => new Date(clock.time).toISOString(),
   );
@@ -1294,7 +1288,7 @@ test('sweepSessions closes orphan sessions over real HTTP and skips bound ones',
     skipped: [record.sessionId],
     failed: [],
   });
-  assert.equal(daemon.env.registry.has(record.sessionId), true);
+  assert.ok(daemon.env.registry.get(record.sessionId) !== undefined);
 
   // Unloading makes it an orphan; the next sweep closes it.
   assert.equal(await daemon.client.unload('client-sweep'), true);
@@ -1303,7 +1297,7 @@ test('sweepSessions closes orphan sessions over real HTTP and skips bound ones',
     skipped: [],
     failed: [],
   });
-  assert.equal(daemon.env.registry.has(record.sessionId), false);
+  assert.equal(daemon.env.registry.get(record.sessionId), undefined);
   assert.deepEqual(await daemon.client.listSessions(), []);
   // Nothing left: a repeated sweep is an empty report, never a retry/error.
   assert.deepEqual(await daemon.client.sweepSessions(), {

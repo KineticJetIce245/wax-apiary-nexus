@@ -127,9 +127,7 @@ function setup(
   const adapter = new ResumableFakeAdapter();
   const workspace = new Workspace(adapter);
   const project = makeProject();
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'dsh-acp',
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]),
     now,
     ...(store === undefined ? {} : { store }),
   });
@@ -150,9 +148,7 @@ function rehydrate(
 ): Harness {
   const adapter = new ResumableFakeAdapter();
   const workspace = new Workspace(adapter);
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'dsh-acp',
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]),
     now,
     store,
   });
@@ -225,9 +221,7 @@ test('create rejects a duplicate native id and closes the new conversation', asy
   const adapter = new SharedNativeAdapter();
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'codex',
+  const registry = new SessionRegistry({ workspaces: new Map([['codex', workspace]]),
     now: () => FIXED_NOW,
   });
   const project = makeProject();
@@ -241,7 +235,7 @@ test('create rejects a duplicate native id and closes the new conversation', asy
     return true;
   });
   assert.equal(registry.list().length, 1);
-  assert.equal(registry.has(first.sessionId), true);
+  assert.ok(registry.get(first.sessionId) !== undefined);
   assert.ok(workspace.getConversation(first.sessionId) !== undefined);
   // The duplicate conversation was closed through the workspace; the adapter
   // sees a close for its native id (proving the WAX id, not nativeId, was used).
@@ -379,7 +373,7 @@ test('close removes an idle session from both the registry and the workspace', a
 
   assert.equal(workspace.getConversation(record.sessionId), undefined);
   assert.equal(registry.get(record.sessionId), undefined);
-  assert.equal(registry.has(record.sessionId), false);
+  assert.equal(registry.get(record.sessionId), undefined);
   assert.deepEqual(adapter.closed, [record.nativeId]);
 });
 
@@ -501,7 +495,7 @@ test('createdAt defaults to an ISO timestamp when no clock is injected', async (
   const adapter = new ResumableFakeAdapter();
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
-  const registry = new SessionRegistry({ workspace, harness: 'codex' });
+  const registry = new SessionRegistry({ workspaces: new Map([['codex', workspace]]) });
 
   const record = await registry.create(makeProject());
 
@@ -532,7 +526,7 @@ test('hydrates persisted sessions without resuming them and keeps them idle', as
   assert.equal(record.model, 'deepseek-chat');
   assert.equal(record.reasoning, 'high');
   assert.equal(second.registry.list().length, 1);
-  assert.equal(second.registry.has(created.sessionId), true);
+  assert.ok(second.registry.get(created.sessionId) !== undefined);
   assert.equal(second.workspace.getConversation(created.sessionId), undefined);
   assert.equal(second.registry.isBusy(created.sessionId), false);
 });
@@ -557,30 +551,6 @@ test('hydrates old records using nativeId and updatedAt as fallbacks', async (t)
   assert.equal(record.displayName, 'legacy-native');
   assert.equal(record.createdAt, '2026-01-02T03:04:05.000Z');
   assert.equal(record.lastAccessAt, '2026-01-02T03:04:05.000Z');
-});
-
-test('skips hydrated records from another harness', async (t) => {
-  const store = makeStore();
-  const project = makeProject();
-  store.upsert({
-    conversationId: 'foreign-session',
-    harness: 'codex',
-    nativeId: 'foreign-native',
-    projectId: project.id,
-    projectDirectory: project.directory,
-    updatedAt: FIXED_NOW,
-  });
-
-  const { adapter, workspace, registry } = rehydrate(store, project);
-  t.after(() => workspace.stop());
-
-  assert.equal(registry.get('foreign-session'), undefined);
-  assert.equal(registry.list().length, 0);
-  await assert.rejects(
-    registry.ensureAttached('foreign-session'),
-    (error: unknown) => error instanceof SessionNotFoundError,
-  );
-  assert.equal(adapter.resumes.length, 0);
 });
 
 test('ensureAttached resumes once, then reuses the attached conversation', async (t) => {
@@ -743,7 +713,7 @@ test('a resume whose mapping cannot be persisted closes the conversation and reg
     registry.resume(project, 'native-old', { sessionId: 'session-old' }),
     /store write failed/,
   );
-  assert.equal(registry.has('session-old'), false);
+  assert.equal(registry.get('session-old'), undefined);
   assert.deepEqual(store.load(), []);
   assert.deepEqual(adapter.closed, ['native-old']);
 });
@@ -849,7 +819,7 @@ test('sweepIdle closes sessions idle past the TTL and leaves recent ones', async
     skipped: [fresh.sessionId],
     failed: [],
   });
-  assert.equal(registry.has(old.sessionId), false);
+  assert.equal(registry.get(old.sessionId), undefined);
   assert.deepEqual(adapter.closed, [old.nativeId]);
   assert.deepEqual(
     registry.list().map((record) => record.sessionId),
@@ -905,7 +875,7 @@ test('sweepIdle skips excluded, busy and invalid-timestamp sessions', async (t) 
     skipped: ['invalid-session'],
     failed: [],
   });
-  assert.equal(invalidHarness.registry.has('invalid-session'), true);
+  assert.ok(invalidHarness.registry.get('invalid-session') !== undefined);
 });
 
 test('sweepIdle reports a close failure without aborting the pass', async (t) => {
@@ -913,7 +883,7 @@ test('sweepIdle reports a close failure without aborting the pass', async (t) =>
   const adapter = new SelectiveCloseFailureAdapter();
   const workspace = new Workspace(adapter);
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'dsh-acp', now: clock.now });
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]), now: clock.now });
   t.after(() => workspace.stop());
 
   const failing = await registry.create(project);
@@ -928,8 +898,8 @@ test('sweepIdle reports a close failure without aborting the pass', async (t) =>
   assert.deepEqual(report.skipped, []);
   assert.deepEqual(report.failed, [{ sessionId: failing.sessionId, error: 'close failed' }]);
   assert.equal(JSON.stringify(report).includes('NATIVE_CLOSE_SECRET'), false);
-  assert.equal(registry.has(failing.sessionId), true);
-  assert.equal(registry.has(closing.sessionId), false);
+  assert.ok(registry.get(failing.sessionId) !== undefined);
+  assert.equal(registry.get(closing.sessionId), undefined);
   assert.deepEqual(adapter.closed, [failing.nativeId, closing.nativeId]);
 });
 
@@ -949,7 +919,7 @@ test('sweepIdle is a no-op for a disabled TTL and never writes the store', async
     const report = await registry.sweepIdle({ idleTtlMs });
     assert.deepEqual(report, { closed: [], skipped: [], failed: [] });
   }
-  assert.equal(registry.has(record.sessionId), true);
+  assert.ok(registry.get(record.sessionId) !== undefined);
   assert.deepEqual(adapter.closed, []);
 });
 

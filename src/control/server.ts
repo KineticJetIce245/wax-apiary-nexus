@@ -17,6 +17,7 @@ import {
   GraphNotFoundError,
   type LoadGraphOptions,
 } from '../daemon/graph-host.js';
+import type { LiveHiveCatalog } from '../daemon/live-hive-catalog.js';
 import type { GraphBindings } from '../graph/binding.js';
 import type { GraphBindingStore } from '../graph/binding-store.js';
 import {
@@ -24,7 +25,7 @@ import {
   loadGraphManifest,
   type ManifestLoadSpec,
 } from '../graph/manifest.js';
-import { GraphAlreadyLoadedError } from '../graph/registry.js';
+import { GraphAlreadyLoadedError, type SweepReport } from '../graph/registry.js';
 import type { Project } from '../project/kernel.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
 import {
@@ -40,7 +41,6 @@ import {
   type SessionRegistry,
   type SweepSessionsReport,
 } from '../session/session-registry.js';
-import type { Workspace } from '../session/workspace.js';
 import { expandHomePath } from '../storage/conversation-store.js';
 import { HoneyStore } from '../storage/honey.js';
 
@@ -48,6 +48,7 @@ const LOOPBACK_HOST = '127.0.0.1';
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_DAEMON_DIR = join(expandHomePath('~/.wax'), 'waxd');
 const DEFAULT_SESSION_SWEEP_INTERVAL_MS = 60_000;
+const DEFAULT_GRAPH_SWEEP_INTERVAL_MS = 60_000;
 const MAX_ID_LENGTH = 512;
 const MAX_PATH_LENGTH = 2_048;
 /** Bound for the bearer token and the optional `/answer` hover token. */
@@ -59,9 +60,7 @@ const TRIGGERABLE_NODE_KINDS: readonly string[] = ['forager', 'worker', 'user'];
 const ANSWERABLE_NODE_KINDS: readonly string[] = ['user'];
 
 export interface ControlServerOptions {
-  readonly workspace: Workspace;
   readonly registry: SessionRegistry;
-  readonly harness: string;
   /** WAX state root (`~/.wax` or a test temp directory). */
   readonly stateRoot: string;
   readonly apiary: string;
@@ -107,6 +106,13 @@ export interface ControlServerOptions {
    * a positive TTL requires a positive interval.
    */
   readonly sessionSweepIntervalMs?: number;
+  /**
+   * Period for automatic graph TTL sweeps; default 60_000. `0` disables the
+   * timer. The manual `POST /sweep` route is unaffected.
+   */
+  readonly graphSweepIntervalMs?: number;
+  /** Optional durable LiveHive identity index, shared by host and `/catalog`. */
+  readonly catalog?: LiveHiveCatalog;
   readonly now?: () => number;
   /**
    * Metadata-only request log. It never receives a body, prompt, output or
@@ -163,6 +169,7 @@ type RouteKind =
   | 'answer'
   | 'unload'
   | 'sweep'
+  | 'catalog'
   | 'sessions'
   | 'session-close'
   | 'session-sweep';
@@ -211,7 +218,7 @@ interface LazyLoadRequest {
  *
  * Transport is plain HTTP on loopback only; the token is the authentication
  * boundary. The class owns the GraphHost, the daemon lock and the token/info
- * files, but not the Workspace or SessionRegistry supplied by the caller.
+ * files, but not the SessionRegistry supplied by the caller.
  *
  * `start()` is idempotent while running. A failed start releases the lock,
  * closes the listener and removes the token/info files it wrote. `stop()` is
@@ -233,6 +240,7 @@ export class ControlServer {
   private readonly configuredToken: string | undefined;
   private readonly sessionIdleTtlMs: number;
   private readonly sessionSweepIntervalMs: number;
+  private readonly graphSweepIntervalMs: number;
 
   private state: 'idle' | 'starting' | 'running' | 'stopping' = 'idle';
   private server: Server | undefined;
@@ -243,22 +251,20 @@ export class ControlServer {
   private startPromise: Promise<ControlServerInfo> | undefined;
   private stopPromise: Promise<void> | undefined;
   private sweepTimer: NodeJS.Timeout | undefined;
+  private graphSweepTimer: NodeJS.Timeout | undefined;
   /** Prevents a slow automatic sweep from piling up on the next tick. */
   private sweepingSessions = false;
+  private sweepingGraphs = false;
 
   constructor(options: ControlServerOptions) {
     if (typeof options !== 'object' || options === null) {
       throw new TypeError('ControlServer options are required');
-    }
-    if (typeof options.workspace !== 'object' || options.workspace === null) {
-      throw new TypeError('ControlServer requires a workspace');
     }
     if (typeof options.registry !== 'object' || options.registry === null) {
       throw new TypeError('ControlServer requires a session registry');
     }
     this.options = options;
 
-    requireConfigString(options.harness, 'harness', 128);
     requireConfigString(options.apiary, 'apiary', 128);
     requireConfigString(options.stateRoot, 'stateRoot', 4_096);
 
@@ -335,6 +341,10 @@ export class ControlServer {
         'sessionSweepIntervalMs must be positive when sessionIdleTtlMs is enabled',
       );
     }
+    this.graphSweepIntervalMs = validateNonNegativeInteger(
+      options.graphSweepIntervalMs ?? DEFAULT_GRAPH_SWEEP_INTERVAL_MS,
+      'graphSweepIntervalMs',
+    );
 
     if (options.token !== undefined) {
       if (
@@ -407,8 +417,8 @@ export class ControlServer {
       writeSecretFile(this.tokenPath, token);
 
       graphHost = new GraphHost({
-        workspace: this.options.workspace,
         registry: this.options.registry,
+        ...(this.options.catalog === undefined ? {} : { catalog: this.options.catalog }),
         ...(this.options.allowHoverUnload === undefined
           ? {}
           : { allowHoverUnload: this.options.allowHoverUnload }),
@@ -472,9 +482,11 @@ export class ControlServer {
       this.currentInfo = info;
       this.state = 'running';
       this.startSessionSweep();
+      this.startGraphSweep();
       return info;
     } catch (error) {
       this.stopSessionSweep();
+      this.stopGraphSweep();
       await closeServer(server).catch(() => undefined);
       if (graphHost !== undefined) {
         await graphHost.dispose().catch(() => undefined);
@@ -518,9 +530,10 @@ export class ControlServer {
     const lock = this.lock;
     const hadResources = server !== undefined || graphHost !== undefined || lock !== undefined;
 
-    // Stop the sweep timer before disposing the host: a late tick must not
+    // Stop both sweep timers before disposing the host: a late tick must not
     // observe a half-stopped server, and a timer must never outlive the daemon.
     this.stopSessionSweep();
+    this.stopGraphSweep();
     this.state = 'stopping';
     this.server = undefined;
     this.graphHost = undefined;
@@ -712,7 +725,7 @@ export class ControlServer {
         }
         return {
           ok: true,
-          harness: this.options.harness,
+          harnesses: this.options.registry.harnesses(),
           pid: process.pid,
           startedAt: info.startedAt,
         };
@@ -894,9 +907,11 @@ export class ControlServer {
       case 'sweep': {
         const body = requirePayload(payload);
         assertExactFields(body, [], 'sweep request');
-        const report = await host.sweep();
+        const report = await this.sweepGraphs();
         return { ok: true, report };
       }
+      case 'catalog':
+        return { ok: true, entries: host.catalogEntries() };
       case 'sessions': {
         // Registry list order is insertion order and is stable for a running
         // registry. Only routing metadata leaves the daemon: never a native id,
@@ -917,7 +932,7 @@ export class ControlServer {
       case 'session-close': {
         const sessionId = this.parseSessionCloseBody(requirePayload(payload));
         const registry = this.options.registry;
-        if (!registry.has(sessionId)) {
+        if (registry.get(sessionId) === undefined) {
           throw new HttpError(404, 'not-found', 'unknown session');
         }
         // A busy session is executing; a bound one is still routed to by a
@@ -1014,6 +1029,53 @@ export class ControlServer {
     }
   }
 
+  /** One graph TTL pass shared by `POST /sweep` and the automatic timer. */
+  private sweepGraphs(): Promise<SweepReport> {
+    const host = this.graphHost;
+    if (host === undefined) {
+      throw new HttpError(500, 'internal', 'internal error');
+    }
+    return host.sweep();
+  }
+
+  /** Start the automatic graph sweep; `0` disables it. */
+  private startGraphSweep(): void {
+    if (this.graphSweepIntervalMs <= 0) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void this.runAutomaticGraphSweep();
+    }, this.graphSweepIntervalMs);
+    timer.unref();
+    this.graphSweepTimer = timer;
+  }
+
+  private stopGraphSweep(): void {
+    const timer = this.graphSweepTimer;
+    this.graphSweepTimer = undefined;
+    if (timer !== undefined) {
+      clearInterval(timer);
+    }
+  }
+
+  /**
+   * Timer callback. A slow sweep is skipped rather than stacked; a failure is
+   * metadata-only and never crashes the daemon.
+   */
+  private async runAutomaticGraphSweep(): Promise<void> {
+    if (this.sweepingGraphs) {
+      return;
+    }
+    this.sweepingGraphs = true;
+    try {
+      await this.sweepGraphs();
+    } catch (error) {
+      this.logger(`event=graph-sweep-failed error=${errorName(error)}`);
+    } finally {
+      this.sweepingGraphs = false;
+    }
+  }
+
   /**
    * Lazily load a graph named by a trigger or answer's manifest path.
    *
@@ -1043,10 +1105,6 @@ export class ControlServer {
       throw error;
     }
 
-    if (spec.harness !== this.options.harness) {
-      throw new HttpError(400, 'bad-request', 'manifest harness does not match this server');
-    }
-
     const definition = parseComposition(spec.definition);
     if (definition.id !== graphId) {
       throw new HttpError(400, 'bad-request', 'manifest composition id does not match graphId');
@@ -1062,6 +1120,7 @@ export class ControlServer {
         definition,
         bindings,
         project: spec.project,
+        defaultHarness: spec.harness,
         ...(spec.idleTtlMs === undefined ? {} : { idleTtlMs: spec.idleTtlMs }),
       });
     } catch (error) {
@@ -1080,16 +1139,25 @@ export class ControlServer {
   }
 
   private parseLoadBody(body: Record<string, unknown>): LoadGraphOptions {
-    assertExactFields(body, ['definition', 'bindings', 'project', 'idleTtlMs'], 'load request');
+    assertExactFields(
+      body,
+      ['definition', 'bindings', 'project', 'idleTtlMs', 'defaultHarness'],
+      'load request',
+    );
     const definition = parseComposition(requireBodyField(body, 'definition', 'load request'));
     const bindings = parseBindings(requireBodyField(body, 'bindings', 'load request'));
     const project = parseProject(requireBodyField(body, 'project', 'load request'));
     const idleTtlMs = parseOptionalNonNegativeInteger(body['idleTtlMs'], 'idleTtlMs');
+    const defaultHarness = body['defaultHarness'];
+    if (defaultHarness !== undefined && typeof defaultHarness !== 'string') {
+      throw new HttpError(400, 'bad-request', 'defaultHarness must be a string');
+    }
     return {
       definition,
       bindings,
       project,
       ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
+      ...(defaultHarness === undefined ? {} : { defaultHarness }),
     };
   }
 
@@ -1298,7 +1366,7 @@ function parseBindings(value: unknown): GraphBindings {
     if (kind === 'session') {
       assertExactFields(raw, ['kind', 'sessionId'], 'binding');
     } else if (kind === 'fresh') {
-      assertExactFields(raw, ['kind', 'mode', 'model', 'reasoning'], 'binding');
+      assertExactFields(raw, ['kind', 'mode', 'model', 'reasoning', 'harness'], 'binding');
     } else {
       throw new HttpError(400, 'bad-request', "binding kind must be 'session' or 'fresh'");
     }
@@ -1418,6 +1486,8 @@ function matchRoute(rawUrl: string | undefined): Route | undefined {
         return { kind: 'answer', methods: ['POST'] };
       case 'sweep':
         return { kind: 'sweep', methods: ['POST'] };
+      case 'catalog':
+        return { kind: 'catalog', methods: ['GET'] };
       case 'sessions':
         return { kind: 'sessions', methods: ['GET'] };
       default:

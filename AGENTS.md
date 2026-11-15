@@ -43,6 +43,8 @@ Every completed experiment must provide:
 - Actual commands executed and results.
 - Relevant environment and dependency versions.
 - Test results and limitations.
+- At least one real test (Rule 9) executed against the real entry point and the
+  topology the requirement names, not only unit tests.
 - Observed failures and unresolved risks.
 - Evidence supporting or contradicting the hypothesis.
 
@@ -80,11 +82,85 @@ Stop and request review when:
 - A proposed change crosses an architectural boundary.
 - The next step requires a major irreversible decision.
 
+### 9. Real Tests Are Required
+
+Unit tests with fake adapters are necessary but are not evidence that the
+product works. Every milestone, architecture claim, and cross-harness feature
+must include at least one **real test** that was actually executed.
+
+A real test:
+
+- Drives the real entry point (`waxd`, `wax`, the control HTTP API, or the
+  native adapter) against real native harness processes, not a fake adapter,
+  mock workspace, or in-memory substitute.
+- Uses the topology the requirement names. For cross-harness behavior this
+  means **one graph with at least one Codex session and one DSH session** (or
+  another pair of distinct harnesses). Two per-harness graphs, two daemons, or
+  a unit test with two fake records do not test cross-harness routing and do
+  not count.
+- Exercises a realistic end-to-end case (for example load -> trigger ->
+  fork/merge -> Rest -> unload/reload), not just an internal function call.
+- Uses an unknown-answer prompt (random constraint), never a fixed prompt whose
+  answer is already known; it records the actual output and the constraints it
+  satisfied.
+- Is reproducible: the exact command, non-secret environment assumptions, the
+  expected observable shape, and the observed result.
+
+Unit tests, mock-adapter tests, and per-harness-only tests may support a claim
+but cannot satisfy it. If a required real test cannot run (missing API key,
+missing executable, unavailable harness), report the milestone as unverified
+and stop; do not substitute a unit test. A real test that fails once and passes
+on rerun is a flake: record both runs and the failure; do not report only the
+passing rerun.
+
+### 10. One Progress Code and One Version Name
+
+There is exactly one progress-code scheme: `M<n>` (for example `M8`), with
+sub-slice suffixes such as `M4c2c2`. Every new implementation slice, brief,
+test, commit message, and active document uses it. `Gxxx` is retired historical
+A-era numbering; `Stage n` and `B0-B6` are not progress codes. Do not introduce
+a new alphanumeric progress scheme.
+
+There is exactly one version naming: `A` is the legacy single-composition
+runtime; `B` is the current coordination fabric. `B-core` is the implemented
+core scope of B, not a third version. `B-full` is not a version name; write
+"full B" when that scope is meant. Do not add a new version codename without
+owner approval.
+
+Active documents use the canonical names. Historical G/Stage material is
+removed from `../docs/`; do not recreate a docs archive, review folder, or brief
+pile. If an old file is restored for reference, keep it in `../docs/temp/` and
+mark it historical.
+
+Local docs: keep at most ten core files in `../docs/`; put each small goal in
+`../docs/temp/` and merge or remove it when done.
+
+### 11. Complexity and File Budgets
+
+Source files: 400 lines target, 500 hard. Test files: 600 lines target, 800
+hard. A test file may exceed the soft target only when it is table-driven; split
+by scenario before the hard limit.
+
+Classes: 250 lines of class body, 12 public methods, 8 constructor dependencies;
+one primary responsibility. A class must not combine transport, domain logic,
+and persistence. Extra dependencies must be grouped into a sub-service or an
+options object, not added to the constructor.
+
+Functions and methods: 50 lines, cyclomatic complexity at most 10, nesting at
+most 4, parameters at most 6. Modules: at most 20 exports.
+
+Existing violations may be reduced or left unchanged; new or modified code must
+not create a new violation. Exceptions require explicit approval, a written
+reason, and a removal slice; no permanent exceptions. Enforcement is
+`npm run complexity` once it exists; until then, review manually against these
+budgets. The local repair outline maps every existing violation to a target
+split.
+
 ## Definition of Done
 
-A milestone is complete only when its stated acceptance criteria are demonstrated with reproducible evidence.
+A milestone is complete only when its stated acceptance criteria are demonstrated with reproducible evidence, including at least one real test (Rule 9) executed in this environment.
 
-Code generation alone does not constitute completion.
+Code generation and unit tests alone do not constitute completion.
 
 # WAX Apiary neXus — Anti-Overengineering Rules
 

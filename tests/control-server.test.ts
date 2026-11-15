@@ -85,9 +85,7 @@ function makeEnvWithAdapter(
     id: `project-${String(projectSeq)}`,
     directory: mkdtempSync(join(tmpdir(), 'wax-control-project-')),
   };
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'fake-harness',
+  const registry = new SessionRegistry({ workspaces: new Map([['codex', workspace]]),
     now: registryNow,
   });
   const stateRoot = mkdtempSync(join(tmpdir(), 'wax-control-state-'));
@@ -106,9 +104,7 @@ function makeServer(
   overrides: Partial<ControlServerOptions> = {},
 ): ControlServer {
   return new ControlServer({
-    workspace: env.workspace,
     registry: env.registry,
-    harness: 'fake-harness',
     stateRoot: env.stateRoot,
     apiary: 'apiary',
     daemonDir: env.daemonDir,
@@ -571,7 +567,7 @@ test('start returns loopback info, writes a random token and keeps it out of ser
   const health = await getJson(info.url, token, '/health');
   assert.equal(health.status, 200);
   assert.equal(health.body?.['ok'], true);
-  assert.equal(health.body?.['harness'], 'fake-harness');
+  assert.deepEqual(health.body?.['harnesses'], ['codex']);
   assert.equal(health.body?.['pid'], process.pid);
   assert.equal(health.body?.['startedAt'], info.startedAt);
   assert.equal(health.headers.get('cache-control'), 'no-store');
@@ -1000,7 +996,7 @@ test('session list exposes routing metadata and close refuses busy or bound sess
   ]);
   assert.deepEqual(idleSummary, {
     sessionId: idle.sessionId,
-    harness: 'fake-harness',
+    harness: 'codex',
     projectId: env.project.id,
     busy: false,
     bound: false,
@@ -1619,7 +1615,6 @@ test('trigger with a graphRef lazily loads the manifest graph, then triggers it'
   });
   const logs: string[] = [];
   const running = await startServer(env, {
-    harness: 'codex',
     logger: (line) => logs.push(line),
   });
   t.after(async () => {
@@ -1657,7 +1652,7 @@ test('a graphRef with a missing or untriggerable node is rejected with 0 session
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -1695,28 +1690,76 @@ test('a graphRef with a missing or untriggerable node is rejected with 0 session
   }
 });
 
-test('a graphRef manifest harness must match the server harness', async (t) => {
-  const env = makeEnv();
+test('a manifest harness becomes defaultHarness and an explicit binding wins', async (t) => {
+  const codexAdapter = new FakeAdapter({ output: 'codex' });
+  const dshAdapter = new FakeAdapter({ output: 'dsh' });
+  const codexWorkspace = new Workspace(codexAdapter);
+  const dshWorkspace = new Workspace(dshAdapter);
+  projectSeq += 1;
+  const project: Project = {
+    id: `project-${String(projectSeq)}`,
+    directory: mkdtempSync(join(tmpdir(), 'wax-control-project-')),
+  };
+  const stateRoot = mkdtempSync(join(tmpdir(), 'wax-control-state-'));
+  const env: TestEnv = {
+    adapter: codexAdapter,
+    workspace: codexWorkspace,
+    registry: new SessionRegistry({
+      workspaces: new Map([
+        ['codex', codexWorkspace],
+        ['dsh', dshWorkspace],
+      ]),
+    }),
+    project,
+    stateRoot,
+    daemonDir: join(stateRoot, 'waxd'),
+  };
   t.after(async () => {
-    await env.workspace.stop();
+    await codexWorkspace.stop();
+    await dshWorkspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
   const { info, token } = running;
-  const fixture = writeManifestFixture(env, { graphId: 'wrong-harness', harness: 'dsh' });
 
-  const trigger = await postJson(info.url, token, '/trigger', {
-    graphId: 'wrong-harness',
+  // Manifest harness dsh supplies defaultHarness; the fresh binding has no
+  // explicit harness and therefore uses dsh.
+  const defaultDsh = writeManifestFixture(env, { graphId: 'default-dsh', harness: 'dsh' });
+  const defaultTrigger = await postJson(info.url, token, '/trigger', {
+    graphId: 'default-dsh',
     nodeId: 'only',
-    value: { kind: 'text', text: 'x' },
-    graphRef: fixture.manifestPath,
+    value: { kind: 'text', text: 'default' },
+    graphRef: defaultDsh.manifestPath,
   });
-  assert.equal(trigger.status, 400);
-  assert.equal(trigger.body?.['code'], 'bad-request');
-  assert.equal(env.registry.list().length, 0);
-  assert.equal(env.adapter.displayNames.length, 0);
+  assert.equal(defaultTrigger.status, 200);
+  assert.equal(dshAdapter.prompts.length, 1);
+  assert.equal(codexAdapter.prompts.length, 0);
+  assert.deepEqual(
+    env.registry.list().map((record) => record.harness),
+    ['dsh'],
+  );
+
+  // An explicit fresh-binding harness overrides the manifest default.
+  const explicitDsh = writeManifestFixture(env, {
+    graphId: 'explicit-dsh',
+    harness: 'codex',
+    bindings: { only: { kind: 'fresh', harness: 'dsh' } },
+  });
+  const explicitTrigger = await postJson(info.url, token, '/trigger', {
+    graphId: 'explicit-dsh',
+    nodeId: 'only',
+    value: { kind: 'text', text: 'explicit' },
+    graphRef: explicitDsh.manifestPath,
+  });
+  assert.equal(explicitTrigger.status, 200);
+  assert.equal(dshAdapter.prompts.length, 2);
+  assert.equal(codexAdapter.prompts.length, 0);
+  assert.deepEqual(
+    env.registry.list().map((record) => record.harness),
+    ['dsh', 'dsh'],
+  );
 });
 
 test('a broken or missing graphRef manifest is rejected with 0 sessions', async (t) => {
@@ -1724,7 +1767,7 @@ test('a broken or missing graphRef manifest is rejected with 0 sessions', async 
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -1764,7 +1807,7 @@ test('a graphRef with invalid bindings is rejected before any session is created
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -1812,7 +1855,7 @@ test('a graphRef composition whose id differs from graphId is rejected with 0 se
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -1836,7 +1879,7 @@ test('trigger graphRef must be a bounded, non-blank string without control chara
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -1861,7 +1904,7 @@ test('trigger graphRef is a manifest path, not a composition path', async (t) =>
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -1923,7 +1966,7 @@ test('an already loaded graph is never replaced by a graphRef composition', asyn
   });
   // Harness must match so a replacement bug cannot be masked by the harness
   // check: the only thing that may reject this trigger is the memory-first rule.
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -1984,7 +2027,7 @@ test('a failed graphRef restore rolls back the session it created', async (t) =>
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -2036,7 +2079,7 @@ test('concurrent triggers with the same graphRef load exactly once', async (t) =
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -2205,7 +2248,6 @@ test('answer with a graphRef loads the manifest, restores a flushed hover and an
     await env.workspace.stop();
   });
   const running = await startServer(env, {
-    harness: 'codex',
     allowHoverUnload: true,
     now: clock.now,
   });
@@ -2295,7 +2337,7 @@ test('answer with a graphRef rejects bad manifests, nodes and bindings with 0 se
   t.after(async () => {
     await env.workspace.stop();
   });
-  const running = await startServer(env, { harness: 'codex' });
+  const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();
   });
@@ -2320,20 +2362,6 @@ test('answer with a graphRef rejects bad manifests, nodes and bindings with 0 se
     assert.equal(rejected.status, 400, nodeId);
     assert.equal(rejected.body?.['code'], 'bad-request');
   }
-
-  const wrongHarness = writeManifestFixture(env, {
-    graphId: 'wrong-harness-answer',
-    harness: 'dsh',
-    composition: userAnswerComposition('wrong-harness-answer'),
-    bindings: {},
-  });
-  const harness = await postJson(info.url, token, '/answer', {
-    graphId: 'wrong-harness-answer',
-    nodeId: 'ask',
-    value: { kind: 'text', text: 'x' },
-    graphRef: wrongHarness.manifestPath,
-  });
-  assert.equal(harness.status, 400);
 
   const missingManifest = await postJson(info.url, token, '/answer', {
     graphId: 'missing-manifest',
@@ -2524,9 +2552,9 @@ test('POST /sessions/sweep closes orphan idle sessions but never bound or busy o
     failed: [],
   });
   // The orphan closed; the busy and graph-bound sessions survive.
-  assert.equal(env.registry.has(idle.sessionId), false);
-  assert.equal(env.registry.has(busy.sessionId), true);
-  assert.equal(env.registry.has(bound.sessionId), true);
+  assert.equal(env.registry.get(idle.sessionId), undefined);
+  assert.ok(env.registry.get(busy.sessionId) !== undefined);
+  assert.ok(env.registry.get(bound.sessionId) !== undefined);
   assert.deepEqual(adapter.closedNativeIds, ['native-2']);
   // The loaded graph is untouched and its session still bound.
   assert.equal((await getJson(info.url, token, '/status/session-sweep-graph')).status, 200);
@@ -2575,10 +2603,10 @@ test('the automatic session sweep closes idle sessions, is unrefed and stops wit
   const idle = await env.registry.create(env.project);
   clock.advance(1_000);
   const deadline = Date.now() + 2_000;
-  while (env.registry.has(idle.sessionId) && Date.now() < deadline) {
+  while (env.registry.get(idle.sessionId) !== undefined && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(env.registry.has(idle.sessionId), false);
+  assert.equal(env.registry.get(idle.sessionId), undefined);
 
   await running.server.stop();
   const afterStop = (running.server as unknown as { sweepTimer?: NodeJS.Timeout }).sweepTimer;
@@ -2603,7 +2631,7 @@ test('session sweep is disabled by default: no timer and a no-op manual sweep', 
   const sweep = await postJson(running.info.url, running.token, '/sessions/sweep', {});
   assert.equal(sweep.status, 200);
   assert.deepEqual(sweep.body?.['report'], { closed: [], skipped: [], failed: [] });
-  assert.equal(env.registry.has(idle.sessionId), true);
+  assert.ok(env.registry.get(idle.sessionId) !== undefined);
 });
 
 test('an automatic sweep failure is metadata-only and does not crash the server', async (t) => {
@@ -2611,8 +2639,7 @@ test('an automatic sweep failure is metadata-only and does not crash the server'
   const workspace = new Workspace(adapter);
   const clock = new FakeClock(1_000);
   const registry = new ThrowingSweepRegistry({
-    workspace,
-    harness: 'fake-harness',
+    workspaces: new Map([['codex', workspace]]),
     now: () => new Date(clock.time).toISOString(),
   });
   const stateRoot = mkdtempSync(join(tmpdir(), 'wax-control-sweep-failure-'));

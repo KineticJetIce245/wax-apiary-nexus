@@ -23,6 +23,8 @@ export type ForagerBinding =
       readonly kind: 'fresh';
       /** Absent means `always` (backward compatible). */
       readonly mode?: FreshMode;
+      /** Harness for the new session; absent means the registry default. */
+      readonly harness?: string;
       readonly model?: string;
       readonly reasoning?: string;
     };
@@ -40,7 +42,8 @@ export type BindingIssueCode =
   | 'wrong-project'
   | 'busy-session'
   | 'duplicate-session'
-  | 'invalid-fresh';
+  | 'invalid-fresh'
+  | 'unknown-harness';
 
 export interface BindingIssue {
   readonly code: BindingIssueCode;
@@ -73,6 +76,12 @@ export interface BindingLookup {
 export interface BindingContext {
   readonly harness?: string;
   readonly projectDirectory?: string;
+  /**
+   * Harnesses the registry can route to. When present, an explicit fresh
+   * binding `harness` must be one of them. Session bindings are checked
+   * against their own record instead.
+   */
+  readonly harnesses?: readonly string[];
 }
 
 export interface BindingValidation {
@@ -172,7 +181,7 @@ export function validateBindings(
     }
 
     if (kind === 'fresh') {
-      validateFreshMetadata(node.id, binding, issues);
+      validateFreshMetadata(node.id, binding, issues, context);
     } else {
       // The shape check above guarantees a string for a session binding.
       validateSessionBinding(
@@ -283,6 +292,7 @@ function validateFreshMetadata(
   nodeId: string,
   binding: Record<string, unknown>,
   issues: BindingIssue[],
+  context: BindingContext | undefined,
 ): void {
   const mode = binding['mode'];
   if (mode !== undefined && mode !== 'once' && mode !== 'always') {
@@ -302,5 +312,25 @@ function validateFreshMetadata(
         nodeId,
       });
     }
+  }
+
+  const harness = binding['harness'];
+  if (harness === undefined) {
+    return;
+  }
+  if (typeof harness !== 'string' || harness.trim() === '') {
+    issues.push({
+      code: 'invalid-fresh',
+      message: `forager '${nodeId}' fresh binding has an empty harness`,
+      nodeId,
+    });
+    return;
+  }
+  if (context?.harnesses !== undefined && !context.harnesses.includes(harness)) {
+    issues.push({
+      code: 'unknown-harness',
+      message: `forager '${nodeId}' fresh binding names unknown harness '${harness}'`,
+      nodeId,
+    });
   }
 }

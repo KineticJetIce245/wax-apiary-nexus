@@ -111,21 +111,8 @@ function makeHarness(
 } {
   const workspace = new Workspace(adapter);
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness, now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([[harness, workspace]]), now: () => FIXED_NOW });
   return { adapter, workspace, registry, project };
-}
-
-class ReportedHarnessRegistry extends SessionRegistry {
-  private readonly reportedHarness: string;
-
-  constructor(options: ConstructorParameters<typeof SessionRegistry>[0], reportedHarness: string) {
-    super(options);
-    this.reportedHarness = reportedHarness;
-  }
-
-  override get harness(): string {
-    return this.reportedHarness;
-  }
 }
 
 class TrackingCloseAdapter extends FakeAdapter {
@@ -201,7 +188,6 @@ test('resolves an existing session and a fresh session into two executors', asyn
     definition,
     bindings,
     registry,
-    workspace,
     project,
   });
   t.after(() => instantiated.dispose());
@@ -242,7 +228,6 @@ test('a missing binding rejects before creating any session', async (t) => {
       definition,
       bindings: { one: { kind: 'fresh' } },
       registry,
-      workspace,
       project,
     }),
     (error: unknown) => {
@@ -276,7 +261,6 @@ test('two foragers on one session are rejected before any session is created', a
         two: { kind: 'session', sessionId: existing.sessionId },
       },
       registry,
-      workspace,
       project,
     }),
     (error: unknown) => {
@@ -313,7 +297,6 @@ test('a busy session is rejected before any fresh session is created', async (t)
           fresh: { kind: 'fresh' },
         },
         registry,
-        workspace,
         project,
       }),
       (error: unknown) => {
@@ -335,15 +318,9 @@ test('a busy session is rejected before any fresh session is created', async (t)
   assert.equal(registry.isBusy(existing.sessionId), false);
 });
 
-test('a wrong harness rejects before any fresh session is created', async (t) => {
-  const adapter = new FakeAdapter({ output: 'ok' });
-  const workspace = new Workspace(adapter);
+test('a fresh binding with an unknown harness rejects before creating any session', async (t) => {
+  const { adapter, workspace, registry, project } = makeHarness();
   t.after(() => workspace.stop());
-  const project = makeProject();
-  const registry = new ReportedHarnessRegistry(
-    { workspace, harness: 'codex', now: () => FIXED_NOW },
-    'dsh-acp',
-  );
   const existing = await registry.create(project);
   const definition = makeDefinition({
     reuse: foragerNode('reuse'),
@@ -355,17 +332,16 @@ test('a wrong harness rejects before any fresh session is created', async (t) =>
       definition,
       bindings: {
         reuse: { kind: 'session', sessionId: existing.sessionId },
-        fresh: { kind: 'fresh' },
+        fresh: { kind: 'fresh', harness: 'unknown-harness' },
       },
       registry,
-      workspace,
       project,
     }),
     (error: unknown) => {
       assert.ok(error instanceof BindingValidationError);
       assert.deepEqual(
         error.issues.map((issue) => issue.code),
-        ['wrong-harness'],
+        ['unknown-harness'],
       );
       return true;
     },
@@ -393,7 +369,6 @@ test('a session from another project rejects before any fresh session is created
         fresh: { kind: 'fresh' },
       },
       registry,
-      workspace,
       project: projectB,
     }),
     (error: unknown) => {
@@ -415,7 +390,7 @@ test('a create failure mid-way closes only the fresh sessions created so far', a
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'dsh-acp', now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]), now: () => FIXED_NOW });
   const existing = await registry.create(project);
   // Existing session is create call 1, the first fresh is call 2; fail on the
   // second fresh so one new session was already registered when it happens.
@@ -432,7 +407,7 @@ test('a create failure mid-way closes only the fresh sessions created so far', a
   };
 
   await assert.rejects(
-    instantiateForagers({ definition, bindings, registry, workspace, project }),
+    instantiateForagers({ definition, bindings, registry, project }),
     /create failed on call 3/,
   );
 
@@ -449,7 +424,7 @@ test('a stale session binding cleans up fresh sessions and keeps the existing re
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'dsh-acp', now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]), now: () => FIXED_NOW });
   const stale = await registry.create(project);
   // Close the conversation behind the registry's back: validation still sees a
   // live record, so instantiation tries the lazy attach. This fake cannot
@@ -468,7 +443,7 @@ test('a stale session binding cleans up fresh sessions and keeps the existing re
   };
 
   await assert.rejects(
-    instantiateForagers({ definition, bindings, registry, workspace, project }),
+    instantiateForagers({ definition, bindings, registry, project }),
     (error: unknown) => {
       assert.ok(error instanceof SessionBindingUnavailableError);
       assert.equal(error.nodeId, 'stale');
@@ -495,7 +470,6 @@ test('dispose releases routing and refuses further forager work', async (t) => {
     definition,
     bindings: { reuse: { kind: 'session', sessionId: existing.sessionId } },
     registry,
-    workspace,
     project,
   });
 
@@ -524,8 +498,7 @@ test('a hydrated session binding reattaches through ensureAttached and executes'
   const firstAdapter = new FakeAdapter({ output: 'ok' });
   const firstWorkspace = new Workspace(firstAdapter);
   const firstRegistry = new SessionRegistry({
-    workspace: firstWorkspace,
-    harness: 'dsh-acp',
+    workspaces: new Map([['dsh-acp', firstWorkspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -535,9 +508,7 @@ test('a hydrated session binding reattaches through ensureAttached and executes'
   const adapter = new ResumableAdapter({ output: 'ok' });
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'dsh-acp',
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -554,7 +525,6 @@ test('a hydrated session binding reattaches through ensureAttached and executes'
     definition,
     bindings,
     registry,
-    workspace,
     project,
   });
   t.after(() => instantiated.dispose());
@@ -578,8 +548,7 @@ test('an attach failure reports attach-failed and creates no fresh session', asy
   const firstAdapter = new FakeAdapter({ output: 'ok' });
   const firstWorkspace = new Workspace(firstAdapter);
   const firstRegistry = new SessionRegistry({
-    workspace: firstWorkspace,
-    harness: 'dsh-acp',
+    workspaces: new Map([['dsh-acp', firstWorkspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -590,9 +559,7 @@ test('an attach failure reports attach-failed and creates no fresh session', asy
   adapter.resumeError = new Error('native resume failed');
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'dsh-acp',
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -609,7 +576,6 @@ test('an attach failure reports attach-failed and creates no fresh session', asy
         fresh: { kind: 'fresh' },
       },
       registry,
-      workspace,
       project,
     }),
     (error: unknown) => {
@@ -638,8 +604,7 @@ test('a session that disappears after validation reports unknown-session', async
   const firstAdapter = new FakeAdapter({ output: 'ok' });
   const firstWorkspace = new Workspace(firstAdapter);
   const firstRegistry = new SessionRegistry({
-    workspace: firstWorkspace,
-    harness: 'dsh-acp',
+    workspaces: new Map([['dsh-acp', firstWorkspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -650,8 +615,7 @@ test('a session that disappears after validation reports unknown-session', async
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const registry = new VanishingRegistry({
-    workspace,
-    harness: 'dsh-acp',
+    workspaces: new Map([['dsh-acp', workspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -662,7 +626,6 @@ test('a session that disappears after validation reports unknown-session', async
       definition,
       bindings: { reuse: { kind: 'session', sessionId: existing.sessionId } },
       registry,
-      workspace,
       project,
     }),
     (error: unknown) => {
@@ -681,8 +644,7 @@ test('validation does not attach hydrated sessions', async (t) => {
   const firstAdapter = new FakeAdapter({ output: 'ok' });
   const firstWorkspace = new Workspace(firstAdapter);
   const firstRegistry = new SessionRegistry({
-    workspace: firstWorkspace,
-    harness: 'dsh-acp',
+    workspaces: new Map([['dsh-acp', firstWorkspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -692,9 +654,7 @@ test('validation does not attach hydrated sessions', async (t) => {
   const adapter = new ResumableAdapter({ output: 'ok' });
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'dsh-acp',
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]),
     now: () => FIXED_NOW,
     store,
   });
@@ -713,7 +673,6 @@ test('validation does not attach hydrated sessions', async (t) => {
         two: { kind: 'session', sessionId: existing.sessionId },
       },
       registry,
-      workspace,
       project,
     }),
     (error: unknown) => {
@@ -741,7 +700,6 @@ test('fresh_once creates once, stores the mapping and reuses it on a second inst
     graphId: 'once-graph',
     bindings: { only: { kind: 'fresh', mode: 'once' } } satisfies GraphBindings,
     registry,
-    workspace,
     project,
     bindingStore,
   } as const;
@@ -781,7 +739,6 @@ test('fresh_always and an absent mode both create a new session without writing 
     graphId: 'always-graph',
     bindings: { only: { kind: 'fresh', mode: 'always' } },
     registry,
-    workspace,
     project,
     bindingStore,
   });
@@ -796,7 +753,6 @@ test('fresh_always and an absent mode both create a new session without writing 
     graphId: 'always-graph',
     bindings: { only: { kind: 'fresh', mode: 'always' } },
     registry,
-    workspace,
     project,
     bindingStore,
   });
@@ -812,7 +768,6 @@ test('fresh_always and an absent mode both create a new session without writing 
     graphId: 'legacy-graph',
     bindings: { only: { kind: 'fresh' } },
     registry,
-    workspace,
     project,
     bindingStore,
   });
@@ -837,7 +792,6 @@ test('fresh_once without a binding store fails before creating a session', async
       graphId: 'missing-store',
       bindings: { only: { kind: 'fresh', mode: 'once' } },
       registry,
-      workspace,
       project,
     }),
     (error: unknown) => {
@@ -865,7 +819,6 @@ test('a stored fresh_once session that vanished is replaced and the mapping is r
     graphId: 'vanished-graph',
     bindings: { only: { kind: 'fresh', mode: 'once' } } satisfies GraphBindings,
     registry,
-    workspace,
     project,
     bindingStore,
   } as const;
@@ -912,7 +865,6 @@ test('a busy stored fresh_once session reports busy without creating a replaceme
         graphId: 'busy-graph',
         bindings: { reuse: { kind: 'fresh', mode: 'once' } },
         registry,
-        workspace,
         project,
         bindingStore,
       }),
@@ -939,8 +891,7 @@ test('an attach failure on a stored fresh_once session reports attach-failed and
   const firstAdapter = new FakeAdapter({ output: 'ok' });
   const firstWorkspace = new Workspace(firstAdapter);
   const firstRegistry = new SessionRegistry({
-    workspace: firstWorkspace,
-    harness: 'dsh-acp',
+    workspaces: new Map([['dsh-acp', firstWorkspace]]),
     now: () => FIXED_NOW,
     store: sessionStore,
   });
@@ -961,9 +912,7 @@ test('an attach failure on a stored fresh_once session reports attach-failed and
   adapter.resumeError = new Error('native resume failed');
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'dsh-acp',
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]),
     now: () => FIXED_NOW,
     store: sessionStore,
   });
@@ -975,7 +924,6 @@ test('an attach failure on a stored fresh_once session reports attach-failed and
       graphId: 'attach-graph',
       bindings: { reuse: { kind: 'fresh', mode: 'once' } },
       registry,
-      workspace,
       project,
       bindingStore,
     }),
@@ -1001,7 +949,7 @@ test('a store write failure closes the created session and leaves no record or m
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'dsh-acp', now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]), now: () => FIXED_NOW });
   const bindingStore = new FailingSetBindingStore(
     join(mkdtempSync(join(tmpdir(), 'wax-m5b-failing-bindings-')), 'graph-bindings.json'),
   );
@@ -1013,7 +961,6 @@ test('a store write failure closes the created session and leaves no record or m
       graphId: 'write-failure',
       bindings: { only: { kind: 'fresh', mode: 'once' } },
       registry,
-      workspace,
       project,
       bindingStore,
     }),
@@ -1031,7 +978,7 @@ test('a mid-way failure removes only mappings created by this call', async (t) =
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'dsh-acp', now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]), now: () => FIXED_NOW });
   const bindingStore = makeBindingStore();
   const definition = makeDefinition({
     one: foragerNode('one'),
@@ -1049,7 +996,6 @@ test('a mid-way failure removes only mappings created by this call', async (t) =
         two: { kind: 'fresh', mode: 'once' },
       },
       registry,
-      workspace,
       project,
       bindingStore,
     }),
@@ -1066,7 +1012,7 @@ test('a later failure leaves a reused fresh_once session and its mapping untouch
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
   const project = makeProject();
-  const registry = new SessionRegistry({ workspace, harness: 'dsh-acp', now: () => FIXED_NOW });
+  const registry = new SessionRegistry({ workspaces: new Map([['dsh-acp', workspace]]), now: () => FIXED_NOW });
   const existing = await registry.create(project);
   const bindingStore = makeBindingStore();
   bindingStore.set({
@@ -1093,7 +1039,6 @@ test('a later failure leaves a reused fresh_once session and its mapping untouch
         new: { kind: 'fresh', mode: 'once' },
       },
       registry,
-      workspace,
       project,
       bindingStore,
     }),
@@ -1130,7 +1075,6 @@ test('a stored mapping for another harness is replaced rather than attached', as
     graphId: 'stale-harness',
     bindings: { only: { kind: 'fresh', mode: 'once' } },
     registry,
-    workspace,
     project,
     bindingStore,
   });

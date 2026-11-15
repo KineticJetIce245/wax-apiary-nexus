@@ -1,99 +1,73 @@
 # WAX Apiary neXus
 
-WAX Apiary neXus is a local coordination runtime for composing native AI harnesses — Codex app-server, DeepSeek Harness/ACP, and future harnesses — into live graphs without reimplementing their session logic.
+WAX Apiary neXus is a local coordination runtime for composing native AI harnesses — Codex app-server, DeepSeek Harness/ACP, and future harnesses — into **LiveHive**s without reimplementing their session logic.
 
-It is not a new agent runtime. Each harness stays native; WAX coordinates graphs, sessions, work, waits, and persistence around it.
+It is not a new agent runtime. Each harness stays native; WAX coordinates LiveHives, bees, sessions, work, waits, and persistence around it.
 
-## Vision
-
-The target is **B-core**: one daemon, many live graphs, real native sessions.
+## Target
 
 ```text
 waxd
-  ├─ GraphHost
-  │    ├─ Composition (nodes, edges, triggers)
-  │    ├─ PheromoneField (runtime state)
-  │    └─ Honey (durable field/scheduler/log)
-  ├─ SessionRegistry (native sessions, busy, persistence)
-  └─ Control API (load / trigger / status / unload / sweep)
+  ├─ AdapterPool            codex / dsh → one Workspace each
+  ├─ SessionRegistry        global; session.harness decides the Workspace
+  ├─ LiveHiveHost           load / wake / answer / guard / save / unload
+  │    └─ LiveHive          bees + beelines + PheromoneField
+  └─ ControlServer          one local endpoint, one token
 ```
 
-- **One execution path.** A-mode is not a second engine; it becomes a profile of B-core.
-- **Graphs are live objects.** Load creates a LiveGraph; trigger uses it; unload releases it; idle graphs are evicted.
-- **Sessions are real leases.** A Forager binds a native session or requests a fresh one; session identity is persisted and lazily reattached after restart.
-- **Composition and manifest are separate.** A composition describes the graph; a `<graph>.wax.json` manifest describes how to load it (project, harness, bindings, idle TTL).
-- **Graph references can restore work.** A trigger or hover answer may carry a manifest/address; when the graph is no longer in memory, the daemon can load it again.
-- **Idle and hover graphs can unload.** Honey preserves field and hover state; sessions are decoupled from graph lifetime and have their own lifecycle.
-- **Plugins coordinate across graphs.** A harness plugin owns the session → compositions map and sends triggers one at a time; the daemon does not share nodes across graphs or broadcast to “all graphs for a session”.
-- **Edits are validated and revisioned.** Structural graph changes go through a validated API, not direct mutation of a running Live. This part is still future work.
+- **LiveHive is the first-class object.** A LiveHive is a loaded graph with `bees`, `beelines`, `beeId -> sessionId` bindings, and a `PheromoneField`.
+- **Bee is the execution slot** (previously called node). A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
+- **Beeline is a connection** (previously called edge). Conditions choose outgoing beelines; fork/merge use branches.
+- **`wake` replaces trigger.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps.
+- **Save and unload both write `live.json`.** Load makes memory authoritative; disk changes are ignored until the next save/unload.
+- **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
+- **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 
-The full Agent Network direction — Agent identity, CompositionTemplate, Live binding, dispatch, multi-Live scheduling, native session fork — is **not implemented**. B-core currently stops at graphs, sessions, hosting, persistence, and local control.
+## Current status
 
-## Progress
+The code is a B-core prototype with the M9c single-daemon shape; it does **not** yet implement the full target above.
 
-**M1–M7c3 are complete**. M1–M5 are pushed; M6a–M6c2 and M7a–M7c3 are committed locally and not yet pushed. The B-core baseline is `3a6054f`; the manifest load slice is `dad5d4f`.
+- **M9a/M9b/M9c (uncommitted)** are wired together: one `AdapterPool`, one global `SessionRegistry`, one `GraphHost`, one `ControlServer`, one endpoint. A graph can mix Codex and DSH sessions.
+- **M9b** added `LiveHiveCatalog`, per-live `LiveHiveLock`, a graph TTL timer, and `GET /catalog`; unloaded LiveHives keep their identity. `status` still reports loaded graphs only.
+- `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
+- The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
+- The regression suite is 712 tests (711 pass + 1 Windows skip after M9c; one DSH adapter timeout flake was observed earlier, then passed on targeted and full rerun). Real integration now includes a mixed Codex+DSH `waxd` graph through one HTTP endpoint and a DSH/Codex product check; the full `npm run test:integration` suite was not run as a whole.
 
-| Milestone | State |
-| --- | --- |
-| M1 Honey durability | Atomic write, fsync, temp cleanup, failure-injection tests |
-| M2 Graph registry | Residency, idle TTL, sweep, refCount/lease, Rest-only unload |
-| M3 Session binding | Binding validation, SessionRegistry, routing executor, per-forager sessions |
-| M4a GraphHost | Load / trigger / status / unload / sweep; pacing waits; Rest-only unload |
-| M4b Honey persistence | Restore on load, flush on trigger/unload, flush failure blocks unload |
-| M4c1 Control API | Loopback HTTP, token auth, load/trigger/status/unload/sweep |
-| M4c2a ControlClient | Daemon discovery, loopback-only, timeouts, safe errors |
-| M4c2b CLI | `waxd`, `wax graph`, `wax trigger`; real process smoke |
-| M4c2c1 Session persistence | Store, hydrate, `ensureAttached`, native session resume |
-| M4c2c2 Multi-harness | One `waxd` process, per-harness control servers and state roots |
-| M5 Manifest + fresh modes | Sidecar parser, `wax graph load --manifest`, `fresh_once`/`fresh_always`, resolved bindings, unload retention for fresh_once |
-| M6a graphRef trigger | `wax trigger --graph <manifest>`; memory-first lazy load; no revision gate; node/bindings checked before load |
-| M6b Hover unload + answer | Hover-only unload/sweep; Honey-restored hover; `POST /answer`, `ControlClient.answer`, `wax graph answer`; answer graphRef |
-| M6c1 Session retention | Graph unload/sweep/dispose keep every session; `GET /sessions`, `POST /sessions/close`, `wax session list/close`; close refuses busy/bound |
-| M6c2 Session TTL | `lastAccessAt`, `sweepIdle`, `POST /sessions/sweep`, `wax session sweep`; waxd 2h TTL and 60s sweep, `0` disables |
-| M7a B-core ephemeral run | `wax run --engine b-core` for headless graphs; Honey persistence, session cleanup (later removed with the A surface in M7c2) |
-| M7b1 B-core user/guard | `user` hover loop and Guard approval through `askUser`/`askApproval`; no auto-allow, no empty answer |
-| M7b2 B-core resume | `GraphHost.drain`; `--engine b-core --resume` restores Honey and drains without replaying a trigger |
-| M7c2 Command surface | A-only `wax run`, `wax daemon`, `wax answer`, `wax status/log/honey`, `wax composition` and `wax mcp` removed; only `waxd`, `wax graph`, `wax trigger` and `wax session` remain |
-| M7c3 Graph output | `GET /graphs/<id>/output`, `ControlClient.outputs`, `wax graph output`; read-only, does not refresh idle TTL |
-
-## Commands
+## Current commands
 
 ```text
-wax waxd (--harness <codex|dsh> | --harnesses <codex,dsh>) [options]
-wax graph list|status <graphId>|output <graphId>|load <composition.json>|load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId>
+waxd (--harness <codex|dsh> | --harnesses <codex,dsh>) [options]
+wax graph list|status <graphId>|output <graphId>|load <composition>|load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId>
 wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>]
 wax session list|close <sessionId>|sweep
 ```
 
-`wax run` and the rest of the A command surface were removed in M7c2. There is no in-process ephemeral runner or second host: one-shot/headless execution goes through `waxd` plus `wax graph`/`wax trigger`/`wax session` (or the control HTTP API). Typing a removed command is a usage error (exit 2).
+`wax run`, `wax daemon`, `wax answer`, `wax status/log/honey`, `wax composition` and `wax mcp` are removed. One-shot/headless execution goes through `waxd` plus the control API; there is no second host.
 
-Current verification:
+## Current code names vs target names
 
-- full suite: **674 tests — 673 pass, 1 platform-skipped**
-- native DSH/Codex integration: **11/11** (last full run after M3a; not rerun for M7c3)
-- real native smokes: session create/busy/close, multi-session fork/merge, GraphHost, Honey unload/reload, HTTP control, ControlClient, `waxd` CLI, session resume after restart, dual-harness `waxd`
-- the shared B-core suite (control, graph, session, runtime, Honey, adapters) stays green after the A-only tests were removed
+The code still uses the old names; renames happen during the M9 refactor.
 
-## Next
-
-| Milestone | Planned |
+| Target | Current code |
 | --- | --- |
-| M8 | Edit API + six-stage validation + CAS/lease + atomic graph write |
-
-M7c3 is complete. M8 — edit API and six-stage validation — is next.
+| LiveHive | `LiveGraph` / `Graph` |
+| Bee | `node` / `Node` |
+| Beeline | `edge` |
+| `wake` | `trigger` |
+| LiveHiveHost | `GraphHost` |
+| hive structure | `CompositionDefinition` / `GraphDefinition` |
 
 ## Known limits
 
-- No edit API or structural validation/CAS yet; graph edits are still offline.
-- The shared runtime still contains code that originated in A; only A's separate command surface was removed.
-- Graph definitions and bindings are not auto-restored today; only sessions and Honey are persisted. M6b/M6c address the remaining reload semantics.
-- `graphRef` currently accepts a manifest path only; graph id-only lookup needs a catalog.
-- There is no in-process ephemeral runner and no composition-tools MCP server; headless work goes through `waxd` and the control API.
-- Loaded graphs ignore an incoming `graphRef`; there is no revision or hot-swap check.
-- `wax graph output` reads only loaded graphs; after unload the visible output is gone.
-- The B-core daemon does not persist a metadata log or transcript for `wax graph` runs yet; the old A log/transcript surfaces were removed with the A command surface.
-- Idle unload is Rest-only by default; `waxd` enables hover-only unload.
-- Session TTL defaults to 2h in `waxd` with a 60s sweep; `--session-ttl-ms 0` disables it. Sessions bound to loaded graphs or busy are skipped.
-- OS SIGTERM graceful cleanup, `close` after a failed session-store removal, and the single-endpoint multi-host model remain unverified or unfinished.
-- Native session fork, Agent identity, Template/Live, and multi-Live scheduling are not implemented.
-- Physical power-loss durability and real active-work native process kills are not verified.
+- `GET /catalog` exposes unloaded identity, but `GET /status` still only reports loaded graphs.
+- Per-live lock covers load/trigger/answer/drain; the multi-live `sweep` pass is not per-live locked (it relies on registry busy/refCount guards).
+- Idle TTL has a daemon timer (default 60s, 0 disables), but `GraphStatus`/catalog API merging is still pending.
+- The scheduler module is not instantiated; `triggers` parse but never fire.
+- No Guard decision endpoint; `ControlServer` never passes `onGuard`, so native tool use is rejected by default.
+- Output is the in-memory `lastOutput`; no `runId`/`requestId`, and unload makes it unreadable.
+- Same session can be bound to two loaded graphs; the conflict is only detected on trigger.
+- `fresh_once` compares `projectId` (directory basename), not the project directory.
+- Real mixed Codex+DSH `waxd` test passes; full `npm run test:integration`, native partial-failure, and daemon restart-after-exit remain unverified.
+- OS SIGTERM graceful cleanup, Windows token ACL, and physical power-loss durability are not verified.
+
+Local design documents live outside this repository in `../docs/`; they are not tracked here.

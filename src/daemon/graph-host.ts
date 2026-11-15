@@ -29,12 +29,21 @@ import {
   type InstantiatedForagers,
 } from '../session/instantiate-foragers.js';
 import type { SessionRegistry } from '../session/session-registry.js';
-import type { Workspace } from '../session/workspace.js';
 import type { HoneyStore } from '../storage/honey.js';
+import type {
+  LiveHiveCatalog,
+  LiveHiveCatalogEntry,
+} from './live-hive-catalog.js';
+import { LiveHiveLock } from './live-hive-lock.js';
 
 export interface GraphHostOptions {
-  readonly workspace: Workspace;
   readonly registry: SessionRegistry;
+  /**
+   * Optional identity index. Successful load/unload/sweep/dispose and graph
+   * access are recorded, but catalog persistence is best effort: a write
+   * failure is reported as metadata and never changes residency.
+   */
+  readonly catalog?: LiveHiveCatalog;
   /**
    * Allow an explicit unload or TTL sweep of a graph whose only non-Rest state
    * is quiescent hover(s): at least one user or guard hover and no active,
@@ -98,6 +107,12 @@ export interface LoadGraphOptions {
   readonly bindings: GraphBindings;
   readonly project: Project;
   readonly idleTtlMs?: number;
+  /**
+   * Harness for fresh bindings that do not name one. A manifest's `harness`
+   * supplies this; direct HTTP loads may omit it and rely on a one-workspace
+   * registry.
+   */
+  readonly defaultHarness?: string;
 }
 
 export interface GraphNodeStatus {
@@ -182,6 +197,12 @@ export type GraphHostEvent =
       readonly graphId: GraphId;
       readonly phase: 'session';
       readonly sessionId: string;
+      readonly error: string;
+    }
+  | {
+      readonly type: 'graph.catalog-failed';
+      readonly graphId: GraphId;
+      readonly phase: 'load' | 'access' | 'unload' | 'sweep' | 'dispose';
       readonly error: string;
     };
 
@@ -277,10 +298,15 @@ interface QuiescenceOutcome {
  *
  * `allowHoverUnload` opts a daemon into unloading a field that is parked on
  * quiescent hover(s) only; the default stays Rest-only.
+ *
+ * Mutating operations for one live id (load, unload, trigger, answer, drain)
+ * are serialized by `lock`; read-only status/catalog/output paths bypass it.
+ * `sweep` and `dispose` remain best-effort multi-live registry passes and keep
+ * their existing residency guards instead of waiting on every live id.
  */
 export class GraphHost {
-  private readonly workspace: Workspace;
   private readonly sessionRegistry: SessionRegistry;
+  private readonly catalog: LiveHiveCatalog | undefined;
   private readonly allowHoverUnload: boolean;
   private readonly now: () => number;
   private readonly defaultIdleTtlMs: number;
@@ -293,13 +319,15 @@ export class GraphHost {
   private readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
   private readonly onEvent: ((event: GraphHostEvent) => void) | undefined;
   private readonly graphs: GraphRegistry<LiveGraph>;
+  /** Serializes mutating operations per live id; read paths bypass it. */
+  private readonly lock = new LiveHiveLock();
   private readonly loading = new Set<GraphId>();
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
 
   constructor(options: GraphHostOptions) {
-    this.workspace = options.workspace;
     this.sessionRegistry = options.registry;
+    this.catalog = options.catalog;
     this.allowHoverUnload = options.allowHoverUnload ?? false;
     if (typeof this.allowHoverUnload !== 'boolean') {
       throw new TypeError('allowHoverUnload must be a boolean');
@@ -342,7 +370,23 @@ export class GraphHost {
     });
   }
 
-  async loadGraph(options: LoadGraphOptions): Promise<GraphStatus> {
+  loadGraph(options: LoadGraphOptions): Promise<GraphStatus> {
+    if (this.disposed) {
+      return Promise.reject(new GraphHostDisposedError());
+    }
+    const graphId = options.definition.id;
+    // Preserve the fast duplicate/in-flight refusal contract: a second lazy
+    // load must not queue behind a slow first load. This path mutates nothing,
+    // so bypassing the lock is safe.
+    if (this.loading.has(graphId) || this.graphs.peek(graphId) !== undefined) {
+      return Promise.reject(
+        new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`),
+      );
+    }
+    return this.lock.run(graphId, () => this.loadGraphLocked(options));
+  }
+
+  private async loadGraphLocked(options: LoadGraphOptions): Promise<GraphStatus> {
     this.assertNotDisposed();
     const graphId = options.definition.id;
     if (this.loading.has(graphId) || this.graphs.peek(graphId) !== undefined) {
@@ -373,12 +417,15 @@ export class GraphHost {
     this.loading.add(graphId);
     let instantiated: InstantiatedForagers | undefined;
     try {
+      const harnesses = this.sessionRegistry.harnesses();
+      const defaultHarness =
+        options.defaultHarness ?? (harnesses.length === 1 ? harnesses[0] : undefined);
       instantiated = await instantiateForagers({
         definition: options.definition,
         graphId,
         bindings: options.bindings,
         registry: this.sessionRegistry,
-        workspace: this.workspace,
+        ...(defaultHarness === undefined ? {} : { defaultHarness }),
         project: options.project,
         ...(this.bindingStore === undefined ? {} : { bindingStore: this.bindingStore }),
       });
@@ -450,6 +497,7 @@ export class GraphHost {
       if (status === undefined) {
         throw new GraphLoadError(graphId, `Graph failed to register: ${graphId}`);
       }
+      this.updateCatalog(graphId, 'load', (catalog) => catalog.markLoaded(graphId));
       return status;
     } catch (error) {
       if (instantiated !== undefined) {
@@ -467,7 +515,18 @@ export class GraphHost {
     }
   }
 
-  async trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult> {
+  trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult> {
+    if (this.disposed) {
+      return Promise.reject(new GraphHostDisposedError());
+    }
+    return this.lock.run(graphId, () => this.triggerLocked(graphId, nodeId, value));
+  }
+
+  private async triggerLocked(
+    graphId: GraphId,
+    nodeId: NodeId,
+    value: Value,
+  ): Promise<GraphRunResult> {
     this.assertNotDisposed();
     const lease = this.acquireLease(graphId);
     let outcome: QuiescenceOutcome | undefined;
@@ -478,6 +537,7 @@ export class GraphHost {
       // A completed run touched every session the graph is bound to. The
       // lease is still held, so the bound set cannot change under us.
       this.touchSessions(live);
+      this.updateCatalog(graphId, 'access', (catalog) => catalog.markAccessed(graphId));
     } finally {
       // The lease spans `trigger`, the whole pump loop, every pacing wait and
       // the final Honey flush.
@@ -500,7 +560,19 @@ export class GraphHost {
    * quiescence and flushes Honey exactly like `trigger`; a flush failure is
    * reported, never retried.
    */
-  async answer(
+  answer(
+    graphId: GraphId,
+    nodeId: NodeId,
+    value: Value,
+    token?: string,
+  ): Promise<GraphRunResult> {
+    if (this.disposed) {
+      return Promise.reject(new GraphHostDisposedError());
+    }
+    return this.lock.run(graphId, () => this.answerLocked(graphId, nodeId, value, token));
+  }
+
+  private async answerLocked(
     graphId: GraphId,
     nodeId: NodeId,
     value: Value,
@@ -517,6 +589,7 @@ export class GraphHost {
       // Same as trigger: a settled answer refreshes every bound session's
       // idle clock while the lease still protects the bound set.
       this.touchSessions(live);
+      this.updateCatalog(graphId, 'access', (catalog) => catalog.markAccessed(graphId));
     } finally {
       // The lease spans the answer, the whole pump loop, every pacing wait and
       // the final Honey flush.
@@ -544,12 +617,20 @@ export class GraphHost {
    * final Honey flush, exactly like `trigger` and `answer`. A failed save is
    * reported in the result, never retried and never replayed.
    */
-  async drain(graphId: GraphId): Promise<GraphRunResult> {
+  drain(graphId: GraphId): Promise<GraphRunResult> {
+    if (this.disposed) {
+      return Promise.reject(new GraphHostDisposedError());
+    }
+    return this.lock.run(graphId, () => this.drainLocked(graphId));
+  }
+
+  private async drainLocked(graphId: GraphId): Promise<GraphRunResult> {
     this.assertNotDisposed();
     const lease = this.acquireLease(graphId);
     let outcome: QuiescenceOutcome | undefined;
     try {
       outcome = await this.pumpToQuiescence(lease.value);
+      this.updateCatalog(graphId, 'access', (catalog) => catalog.markAccessed(graphId));
     } finally {
       lease.release();
     }
@@ -580,6 +661,14 @@ export class GraphHost {
       entry.value.runtime.snapshot(),
       entry.residency,
     );
+  }
+
+  /**
+   * Read-only catalog snapshot. An unloaded LiveHive keeps its identity and
+   * last-unload reason; without a catalog this is empty.
+   */
+  catalogEntries(): readonly LiveHiveCatalogEntry[] {
+    return this.catalog?.list() ?? [];
   }
 
   /**
@@ -674,12 +763,37 @@ export class GraphHost {
    * loaded. A successful unload never closes a session.
    */
   async unload(graphId: GraphId): Promise<boolean> {
-    return this.graphs.unload(graphId);
+    // Explicit unload keeps its documented "refused while busy" behavior: it
+    // must not queue behind a running trigger. tryRun still guarantees it can
+    // never run concurrently with another mutating operation for this id.
+    const outcome = await this.lock.tryRun(graphId, () => this.unloadLocked(graphId));
+    return outcome.acquired ? outcome.value : false;
   }
 
-  /** One TTL pass. Unsafe graphs are skipped, never flushed. */
+  private async unloadLocked(graphId: GraphId): Promise<boolean> {
+    const unloaded = await this.graphs.unload(graphId);
+    if (unloaded) {
+      this.updateCatalog(graphId, 'unload', (catalog) =>
+        catalog.markUnloaded(graphId, 'unload'),
+      );
+    }
+    return unloaded;
+  }
+
+  /**
+   * One TTL pass. Unsafe graphs are skipped, never flushed. This is a
+   * multi-live registry pass and stays outside the per-live lock: the registry
+   * already skips busy/unloading entries, and a per-id lock would require a
+   * registry-wide sweep API. Explicit mutating operations still use the lock.
+   */
   async sweep(): Promise<SweepReport> {
-    return this.graphs.sweep();
+    const report = await this.graphs.sweep();
+    for (const graphId of report.unloaded) {
+      this.updateCatalog(graphId, 'sweep', (catalog) =>
+        catalog.markUnloaded(graphId, 'sweep'),
+      );
+    }
+    return report;
   }
 
   /**
@@ -687,7 +801,11 @@ export class GraphHost {
    * unload; a busy or otherwise unsafe graph stays loaded so its field is never
    * silently discarded. A graph whose Honey flush fails also stays loaded.
    * Sessions are retained: dispose releases routing only, exactly like an
-   * explicit unload. The Workspace is not stopped.
+   * explicit unload. The caller's Workspaces are not stopped.
+   *
+   * Like `sweep`, this multi-live shutdown intentionally does not wait on the
+   * per-live lock: a busy graph is retained by the registry, preserving the
+   * existing best-effort dispose semantics.
    */
   dispose(): Promise<void> {
     if (this.disposePromise !== undefined) {
@@ -701,9 +819,19 @@ export class GraphHost {
   private async disposeAll(): Promise<void> {
     for (const entry of this.graphs.list()) {
       try {
-        // A false return means the graph was busy, not Rest or its flush
-        // failed: keep it rather than silently dropping field state.
-        await this.graphs.unload(entry.id);
+        // Use the non-blocking lock: an in-flight mutation keeps the graph
+        // loaded (preserving best-effort dispose), while an idle graph is
+        // unloaded without racing a new mutation. A false registry return
+        // means the graph was busy, not Rest or its flush failed.
+        await this.lock.tryRun(entry.id, async () => {
+          const unloaded = await this.graphs.unload(entry.id);
+          if (unloaded) {
+            this.updateCatalog(entry.id, 'dispose', (catalog) =>
+              catalog.markUnloaded(entry.id, 'dispose'),
+            );
+          }
+          return unloaded;
+        });
       } catch {
         // Registry unload reports failures itself; this is a defensive guard
         // so one broken graph cannot stop the others.
@@ -1004,6 +1132,33 @@ export class GraphHost {
           error: messageOf(error),
         });
       }
+    }
+  }
+
+  /**
+   * Update the catalog and persist it. Catalog persistence is observability,
+   * not residency state: a failed write is reported as metadata and never
+   * changes the result of load/unload/sweep/dispose/trigger.
+   */
+  private updateCatalog(
+    graphId: GraphId,
+    phase: 'load' | 'access' | 'unload' | 'sweep' | 'dispose',
+    update: (catalog: LiveHiveCatalog) => void,
+  ): void {
+    const catalog = this.catalog;
+    if (catalog === undefined) {
+      return;
+    }
+    try {
+      update(catalog);
+      catalog.save();
+    } catch (error) {
+      this.reportCleanupFailure({
+        type: 'graph.catalog-failed',
+        graphId,
+        phase,
+        error: messageOf(error),
+      });
     }
   }
 

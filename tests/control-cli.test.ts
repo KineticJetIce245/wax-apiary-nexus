@@ -49,7 +49,7 @@ interface MultiTestDaemon {
   readonly daemonDir: string;
   readonly stdout: string[];
   readonly stderr: string[];
-  readonly started: readonly WaxdStartedInfo[];
+  readonly started: WaxdStartedInfo;
   stop(): Promise<number>;
 }
 
@@ -67,7 +67,7 @@ class TrackingFakeAdapter extends FakeAdapter {
   }
 }
 
-class FailingStartAdapter extends FakeAdapter {
+class FailingStartAdapter extends TrackingFakeAdapter {
   override async start(): Promise<void> {
     this.startCalls += 1;
     throw new Error('adapter start failed');
@@ -317,8 +317,7 @@ async function startMultiWaxd(
   const daemonDir = join(stateRoot, 'waxd');
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const started: WaxdStartedInfo[] = [];
-  const bothStarted = deferred<readonly WaxdStartedInfo[]>();
+  const started = deferred<WaxdStartedInfo>();
   const controller = new AbortController();
 
   const run = runWaxdCli(
@@ -345,21 +344,12 @@ async function startMultiWaxd(
       stderr: (line) => stderr.push(line),
       signal: controller.signal,
       installSignalHandlers: false,
-      onStarted: (info) => {
-        started.push(info);
-        if (started.length === 2) {
-          bothStarted.resolve([...started]);
-        }
-      },
+      onStarted: (info) => started.resolve(info),
     },
   );
   run.catch(() => undefined);
 
-  const startedInfos = await withTimeout(
-    bothStarted.promise,
-    5_000,
-    'multi waxd start',
-  );
+  const startedInfo = await withTimeout(started.promise, 5_000, 'multi waxd start');
   const stop = async (): Promise<number> => {
     controller.abort();
     return await run;
@@ -375,7 +365,7 @@ async function startMultiWaxd(
     daemonDir,
     stdout,
     stderr,
-    started: startedInfos,
+    started: startedInfo,
     stop,
   };
 }
@@ -453,7 +443,7 @@ async function freePort(): Promise<number> {
 
 test('parseWaxdArgs applies defaults and rejects usage errors', () => {
   assert.deepEqual(parseWaxdArgs(['--harness', 'codex']), {
-    harness: 'codex',
+    harnesses: ['codex'],
     stateRoot: '~/.wax',
     apiary: 'default',
     daemonDir: '~/.wax/waxd',
@@ -477,8 +467,7 @@ test('parseWaxdArgs applies defaults and rejects usage errors', () => {
     '--port',
     '4321',
   ]);
-  assert.ok('harness' in codex);
-  assert.equal(codex.harness, 'codex');
+  assert.deepEqual(codex.harnesses, ['codex']);
   assert.equal(codex.codexExe, 'C:/codex.exe');
   assert.equal(codex.stateRoot, 'C:/state');
   assert.equal(codex.apiary, 'demo');
@@ -511,8 +500,7 @@ test('parseWaxdArgs applies defaults and rejects usage errors', () => {
   assert.equal(disabled.sessionSweepIntervalMs, 0);
 
   const dsh = parseWaxdArgs(['--harness', 'dsh', '--dsh-root', 'C:/dsh']);
-  assert.ok('harness' in dsh);
-  assert.equal(dsh.harness, 'dsh');
+  assert.deepEqual(dsh.harnesses, ['dsh']);
   assert.equal(dsh.dshRoot, 'C:/dsh');
 
   const fromEnv = parseWaxdArgs(['--harness', 'dsh'], { DSH_ROOT: 'C:/dsh-env' });
@@ -602,7 +590,8 @@ test('runWaxdCli starts the control server and aborts cleanly without printing t
 
   assert.equal(daemon.stdout.length, 5);
   assert.equal(daemon.stdout[0], `waxd listening ${daemon.started.url}`);
-  assert.equal(daemon.stdout[1], 'harness  codex');
+  assert.deepEqual(daemon.started.harnesses, ['codex']);
+  assert.equal(daemon.stdout[1], 'harnesses codex');
   assert.equal(daemon.stdout[2], `state    ${daemon.stateRoot}`);
   assert.equal(daemon.stdout[3], `daemon   ${daemon.daemonDir}`);
   assert.equal(daemon.stdout[4], `token    ${daemon.started.tokenPath}`);
@@ -619,7 +608,7 @@ test('runWaxdCli starts the control server and aborts cleanly without printing t
   });
   const health = await client.health();
   assert.equal(health['ok'], true);
-  assert.equal(health['harness'], 'codex');
+  assert.deepEqual(health['harnesses'], ['codex']);
   assert.equal(health['pid'], process.pid);
 
   const code = await daemon.stop();
@@ -693,7 +682,7 @@ test('runWaxdCli exits 1 and stops a partially started adapter when start fails'
   assert.equal(code, 1);
   assert.equal(stdout.length, 0);
   assert.equal(stderr.length, 1);
-  assert.match(stderr[0] as string, /adapter start failed/);
+  assert.match(stderr[0] as string, /no harness available/);
   assert.equal((stderr[0] as string).includes('\n'), false);
   assert.equal(onStartedCalled, false);
   assert.equal(adapter.startCalls, 1);
@@ -753,199 +742,94 @@ test('runWaxdCli exits 1 and releases the workspace when the control port is tak
   }
 });
 
-test('runWaxdCli runs two harnesses as independent daemons and aborts both cleanly', async (t) => {
+test('runWaxdCli serves two harnesses from one daemon and endpoint and stops both once', async (t) => {
   const stopOrder: HarnessKind[] = [];
   const daemon = await startMultiWaxd(t, {
     createAdapter: (harness) => new OrderedStopAdapter(stopOrder, harness),
   });
-  const infos = daemon.started;
+  const info = daemon.started;
 
-  assert.equal(infos.length, 2);
-  assert.deepEqual(
-    infos.map((info) => info.harness),
-    ['codex', 'dsh'],
-  );
-  assert.equal(new Set(infos.map((info) => info.url)).size, 2);
-  assert.equal(new Set(infos.map((info) => info.daemonDir)).size, 2);
+  assert.deepEqual(info.harnesses, ['codex', 'dsh']);
+  assert.equal(info.stateRoot, daemon.stateRoot);
+  assert.equal(info.daemonDir, daemon.daemonDir);
+  assert.equal(existsSync(join(daemon.daemonDir, 'token')), true);
+  assert.equal(existsSync(join(daemon.daemonDir, 'server.json')), true);
+  assert.equal(existsSync(join(daemon.daemonDir, 'daemon.lock')), true);
+  assert.equal(existsSync(join(daemon.daemonDir, 'sessions.json')), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'codex')), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'dsh')), false);
 
-  const tokenValues: string[] = [];
-  for (const info of infos) {
-    assert.equal(info.stateRoot, join(daemon.stateRoot, info.harness));
-    assert.equal(info.daemonDir, join(daemon.daemonDir, info.harness));
-    assert.equal(existsSync(join(info.daemonDir, 'token')), true);
-    assert.equal(existsSync(join(info.daemonDir, 'server.json')), true);
-    assert.equal(existsSync(join(info.daemonDir, 'daemon.lock')), true);
-    assert.equal(existsSync(join(info.daemonDir, 'sessions.json')), false);
+  const discovery = discoverDaemon({ daemonDir: daemon.daemonDir });
+  const token = readFileSync(info.tokenPath, 'utf8').trim();
+  assert.equal(token, discovery.token);
+  const client = new ControlClient({ baseUrl: discovery.baseUrl, token: discovery.token });
+  const health = await client.health();
+  assert.equal(health['ok'], true);
+  assert.deepEqual(health['harnesses'], ['codex', 'dsh']);
+  assert.equal(health['pid'], process.pid);
 
-    const token = readFileSync(info.tokenPath, 'utf8').trim();
-    assert.ok(token.length > 0);
-    tokenValues.push(token);
-    assert.equal(token, discoverDaemon({ daemonDir: info.daemonDir }).token);
-
-    const discovery = discoverDaemon({ daemonDir: info.daemonDir });
-    const client = new ControlClient({
-      baseUrl: discovery.baseUrl,
-      token: discovery.token,
-    });
-    const health = await client.health();
-    assert.equal(health['ok'], true);
-    assert.equal(health['harness'], info.harness);
-    assert.equal(health['pid'], process.pid);
-  }
-
-  assert.equal(daemon.stdout.length, infos.length * 6);
-  assert.deepEqual(
-    daemon.stdout,
-    infos.flatMap((info) => [
-      `harness ${info.harness}`,
-      `waxd listening ${info.url}`,
-      `harness  ${info.harness}`,
-      `state    ${info.stateRoot}`,
-      `daemon   ${info.daemonDir}`,
-      `token    ${info.tokenPath}`,
-    ]),
-  );
-  for (const token of tokenValues) {
-    assertNoSecret(daemon.stdout, token);
-  }
+  assert.deepEqual(daemon.stdout, [
+    `waxd listening ${info.url}`,
+    'harnesses codex,dsh',
+    `state    ${info.stateRoot}`,
+    `daemon   ${info.daemonDir}`,
+    `token    ${info.tokenPath}`,
+  ]);
+  assertNoSecret(daemon.stdout, token);
   assert.equal(daemon.stderr.length, 0);
 
   const code = await daemon.stop();
   assert.equal(code, 0);
   assert.equal(daemon.stderr.length, 0);
-  // Workspaces stop in reverse start order; the failing path is covered below.
+  // AdapterPool stops in reverse start order; one endpoint, one stop each.
   assert.deepEqual(stopOrder, ['dsh', 'codex']);
-
-  for (const info of infos) {
-    assert.equal(daemon.adapters.get(info.harness)?.stopCalls, 1);
-    assert.equal(existsSync(info.tokenPath), false);
-    assert.equal(existsSync(join(info.daemonDir, 'server.json')), false);
-    assert.equal(existsSync(join(info.daemonDir, 'daemon.lock')), false);
-    await assert.rejects(
-      fetch(`${info.url}/health`, { signal: AbortSignal.timeout(2_000) }),
-    );
-  }
+  assert.equal(daemon.adapters.get('codex')?.stopCalls, 1);
+  assert.equal(daemon.adapters.get('dsh')?.stopCalls, 1);
+  assert.equal(existsSync(info.tokenPath), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'server.json')), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'daemon.lock')), false);
+  await assert.rejects(fetch(`${info.url}/health`, { signal: AbortSignal.timeout(2_000) }));
 });
 
-test('runWaxdCli unwinds an already-started harness when a later harness fails to start', async () => {
-  const stateRoot = tempDir('wax-control-cli-multi-fail-state-');
-  const daemonDir = join(stateRoot, 'waxd');
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const adapters = new Map<HarnessKind, FakeAdapter>();
-  let onStartedCalls = 0;
-
-  const code = await runWaxdCli(
-    [
-      '--harnesses',
-      'codex,dsh',
-      '--dsh-root',
-      'C:/unused-dsh-root',
-      '--state-root',
-      stateRoot,
-      '--daemon-dir',
-      daemonDir,
-      '--apiary',
-      'apiary',
-    ],
-    {
-      createAdapter: async (request) => {
-        const adapter =
-          request.harness === 'dsh' ? new FailingStartAdapter() : new TrackingFakeAdapter();
-        adapters.set(request.harness, adapter);
-        return adapter;
-      },
-      stdout: (line) => stdout.push(line),
-      stderr: (line) => stderr.push(line),
-      installSignalHandlers: false,
-      onStarted: () => {
-        onStartedCalls += 1;
-      },
-    },
-  );
-
-  assert.equal(code, 1);
-  assert.equal(stdout.length, 0);
-  assert.equal(stderr.length, 1);
-  assert.equal(stderr[0], 'error: harness dsh: adapter start failed');
-  assert.equal(onStartedCalls, 0);
-  // codex had started and was rolled back; dsh cleaned up its own adapter.
-  assert.equal(adapters.get('codex')?.stopCalls, 1);
-  assert.equal(adapters.get('dsh')?.stopCalls, 1);
-  assert.equal(existsSync(join(daemonDir, 'codex', 'token')), false);
-  assert.equal(existsSync(join(daemonDir, 'codex', 'server.json')), false);
-  assert.equal(existsSync(join(daemonDir, 'codex', 'daemon.lock')), false);
-  assert.equal(existsSync(join(daemonDir, 'dsh')), false);
-});
-
-test('runWaxdCli keeps cleaning up other harnesses when one stop fails', async (t) => {
-  const stateRoot = tempDir('wax-control-cli-multi-stop-state-');
-  const daemonDir = join(stateRoot, 'waxd');
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const adapters = new Map<HarnessKind, TrackingFakeAdapter>();
-  const startedInfos: WaxdStartedInfo[] = [];
-  const bothStarted = deferred<readonly WaxdStartedInfo[]>();
-  const controller = new AbortController();
-
-  const run = runWaxdCli(
-    [
-      '--harnesses',
-      'codex,dsh',
-      '--dsh-root',
-      'C:/unused-dsh-root',
-      '--state-root',
-      stateRoot,
-      '--daemon-dir',
-      daemonDir,
-      '--apiary',
-      'apiary',
-    ],
-    {
-      createAdapter: async (request) => {
-        const adapter =
-          request.harness === 'dsh' ? new FailingStopAdapter() : new TrackingFakeAdapter();
-        adapters.set(request.harness, adapter);
-        return adapter;
-      },
-      stdout: (line) => stdout.push(line),
-      stderr: (line) => stderr.push(line),
-      signal: controller.signal,
-      installSignalHandlers: false,
-      onStarted: (info) => {
-        startedInfos.push(info);
-        if (startedInfos.length === 2) {
-          bothStarted.resolve([...startedInfos]);
-        }
-      },
-    },
-  );
-  run.catch(() => undefined);
-  t.after(async () => {
-    controller.abort();
-    await run.catch(() => undefined);
+test('one failed adapter does not block the daemon; health lists only available harnesses', async (t) => {
+  const daemon = await startMultiWaxd(t, {
+    createAdapter: (harness) =>
+      harness === 'dsh' ? new FailingStartAdapter() : new TrackingFakeAdapter(),
   });
 
-  const infos = await withTimeout(bothStarted.promise, 5_000, 'multi stop start');
-  assert.equal(infos.length, 2);
-  controller.abort();
-  const code = await run;
+  assert.deepEqual(daemon.started.harnesses, ['codex']);
+  assert.equal(daemon.stderr.length, 0);
+  const discovery = discoverDaemon({ daemonDir: daemon.daemonDir });
+  const client = new ControlClient({
+    baseUrl: discovery.baseUrl,
+    token: discovery.token,
+  });
+  assert.deepEqual((await client.health())['harnesses'], ['codex']);
+  assert.equal(daemon.adapters.get('codex')?.startCalls, 1);
+  assert.equal(daemon.adapters.get('dsh')?.startCalls, 1);
+  assert.equal(daemon.adapters.get('dsh')?.stopCalls, 1);
+  assert.equal(existsSync(join(daemon.daemonDir, 'token')), true);
 
-  assert.equal(code, 1);
-  assert.equal(stderr.length, 1);
-  assert.equal(stderr[0], 'error: harness dsh: adapter stop failed');
-  // The dsh failure did not prevent codex workspace cleanup.
-  assert.equal(adapters.get('codex')?.stopCalls, 1);
-  assert.equal(adapters.get('dsh')?.stopCalls, 1);
+  assert.equal(await daemon.stop(), 0);
+  assert.equal(existsSync(join(daemon.daemonDir, 'token')), false);
+});
 
-  for (const info of infos) {
-    assert.equal(existsSync(info.tokenPath), false);
-    assert.equal(existsSync(join(info.daemonDir, 'server.json')), false);
-    assert.equal(existsSync(join(info.daemonDir, 'daemon.lock')), false);
-    await assert.rejects(
-      fetch(`${info.url}/health`, { signal: AbortSignal.timeout(2_000) }),
-    );
-  }
+test('a stop failure still releases the other adapter and the only endpoint', async (t) => {
+  const daemon = await startMultiWaxd(t, {
+    createAdapter: (harness) =>
+      harness === 'dsh' ? new FailingStopAdapter() : new TrackingFakeAdapter(),
+  });
+  const info = daemon.started;
+
+  assert.equal(await daemon.stop(), 1);
+  assert.equal(daemon.stderr.length, 1);
+  assert.equal(daemon.stderr[0], 'error: adapter stop failed');
+  assert.equal(daemon.adapters.get('codex')?.stopCalls, 1);
+  assert.equal(daemon.adapters.get('dsh')?.stopCalls, 1);
+  assert.equal(existsSync(info.tokenPath), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'server.json')), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'daemon.lock')), false);
+  await assert.rejects(fetch(`${info.url}/health`, { signal: AbortSignal.timeout(2_000) }));
 });
 
 test('graph commands round-trip load, status, list, trigger, unload and sweep over real HTTP', async (t) => {
@@ -1375,53 +1259,78 @@ test('wax session sweep closes orphan idle sessions over real HTTP', async (t) =
   }
 });
 
-test('wax session list follows --harness on a multi-harness daemon', async (t) => {
+test('wax session list returns all sessions from one endpoint and --harness only filters', async (t) => {
   const daemon = await startMultiWaxd(t);
-  const bindings = tempJson(freshBindings());
-  const project = tempDir('wax-control-cli-session-multi-project-');
-  const composition = tempJson(foragerComposition('session-multi'));
+  const project = tempDir('wax-control-cli-session-filter-project-');
+  const codexComposition = tempJson(foragerComposition('session-codex'));
+  const dshComposition = tempJson(foragerComposition('session-dsh'));
 
-  const load = await invokeControl(
-    runGraphCli,
-    [
-      'graph',
-      'load',
-      composition,
-      '--project',
-      project,
-      '--bindings',
-      bindings,
-      '--harness',
-      'codex',
-      '--json',
-    ],
-    { daemonDir: daemon.daemonDir },
+  const loads = [
+    await invokeControl(
+      runGraphCli,
+      [
+        'graph',
+        'load',
+        codexComposition,
+        '--project',
+        project,
+        '--bindings',
+        tempJson({ only: { kind: 'fresh', harness: 'codex' } }),
+        '--json',
+      ],
+      { daemonDir: daemon.daemonDir },
+    ),
+    await invokeControl(
+      runGraphCli,
+      [
+        'graph',
+        'load',
+        dshComposition,
+        '--project',
+        project,
+        '--bindings',
+        tempJson({ only: { kind: 'fresh', harness: 'dsh' } }),
+        '--json',
+      ],
+      { daemonDir: daemon.daemonDir },
+    ),
+  ];
+  for (const load of loads) {
+    assert.equal(load.code, 0, load.stderr.join(' | '));
+  }
+
+  const all = singleJson(
+    await invokeControl(runSessionCli, ['session', 'list', '--json'], {
+      daemonDir: daemon.daemonDir,
+    }),
   );
-  assert.equal(load.code, 0, load.stderr.join(' | '));
-
-  const ambiguous = await invokeControl(runSessionCli, ['session', 'list', '--json'], {
-    daemonDir: daemon.daemonDir,
-  });
-  assert.equal(ambiguous.code, 1);
-  assert.equal(ambiguous.stdout.length, 0);
-  assert.equal(ambiguous.stderr.length, 1);
-  assert.match(ambiguous.stderr[0] as string, /--harness/);
-
-  const codex = await invokeControl(
-    runSessionCli,
-    ['session', 'list', '--harness', 'codex', '--json'],
-    { daemonDir: daemon.daemonDir },
+  const allSessions = all['sessions'] as Record<string, unknown>[];
+  assert.deepEqual(
+    allSessions.map((session) => session['harness']).sort(),
+    ['codex', 'dsh'],
   );
-  const codexSessions = singleJson(codex)['sessions'] as Record<string, unknown>[];
+
+  const codex = singleJson(
+    await invokeControl(
+      runSessionCli,
+      ['session', 'list', '--harness', 'codex', '--json'],
+      { daemonDir: daemon.daemonDir },
+    ),
+  );
+  const codexSessions = codex['sessions'] as Record<string, unknown>[];
   assert.equal(codexSessions.length, 1);
   assert.equal(codexSessions[0]?.['harness'], 'codex');
 
-  const dsh = await invokeControl(
-    runSessionCli,
-    ['session', 'list', '--harness', 'dsh', '--json'],
-    { daemonDir: daemon.daemonDir },
+  const dsh = singleJson(
+    await invokeControl(
+      runSessionCli,
+      ['session', 'list', '--harness', 'dsh', '--json'],
+      { daemonDir: daemon.daemonDir },
+    ),
   );
-  assert.deepEqual(singleJson(dsh)['sessions'], []);
+  const dshSessions = dsh['sessions'] as Record<string, unknown>[];
+  assert.equal(dshSessions.length, 1);
+  assert.equal(dshSessions[0]?.['harness'], 'dsh');
 
   const invalidHarness = await invokeControl(
     runSessionCli,
@@ -1429,13 +1338,11 @@ test('wax session list follows --harness on a multi-harness daemon', async (t) =
     { daemonDir: daemon.daemonDir },
   );
   assert.equal(invalidHarness.code, 2);
-  assert.equal(invalidHarness.stderr.length, 1);
   assert.match(invalidHarness.stderr[0] as string, /--harness must be/);
 });
 
-test('graph and trigger --harness address each multi-harness daemon independently', async (t) => {
+test('graph and trigger commands use one endpoint; --harness never selects a directory', async (t) => {
   const daemon = await startMultiWaxd(t);
-  const bindings = tempJson(freshBindings());
   const project = tempDir('wax-control-cli-multi-cli-project-');
   const codexComposition = tempJson(foragerComposition('codex-graph'));
   const dshComposition = tempJson(foragerComposition('dsh-graph'));
@@ -1449,7 +1356,7 @@ test('graph and trigger --harness address each multi-harness daemon independentl
       '--project',
       project,
       '--bindings',
-      bindings,
+      tempJson({ only: { kind: 'fresh', harness: 'codex' } }),
       '--harness',
       'codex',
       '--json',
@@ -1457,7 +1364,6 @@ test('graph and trigger --harness address each multi-harness daemon independentl
     { daemonDir: daemon.daemonDir },
   );
   assert.equal(singleJson(loadCodex)['graphId'], 'codex-graph');
-
   const loadDsh = await invokeControl(
     runGraphCli,
     [
@@ -1467,7 +1373,7 @@ test('graph and trigger --harness address each multi-harness daemon independentl
       '--project',
       project,
       '--bindings',
-      bindings,
+      tempJson({ only: { kind: 'fresh', harness: 'dsh' } }),
       '--harness',
       'dsh',
       '--json',
@@ -1476,34 +1382,15 @@ test('graph and trigger --harness address each multi-harness daemon independentl
   );
   assert.equal(singleJson(loadDsh)['graphId'], 'dsh-graph');
 
-  const codexSessions = JSON.parse(
-    readFileSync(join(daemon.daemonDir, 'codex', 'sessions.json'), 'utf8'),
-  ) as Array<Record<string, unknown>>;
-  const dshSessions = JSON.parse(
-    readFileSync(join(daemon.daemonDir, 'dsh', 'sessions.json'), 'utf8'),
-  ) as Array<Record<string, unknown>>;
-  assert.equal(codexSessions.length, 1);
-  assert.equal(codexSessions[0]?.['harness'], 'codex');
-  assert.equal(dshSessions.length, 1);
-  assert.equal(dshSessions[0]?.['harness'], 'dsh');
-
-  const codexList = singleJson(
+  // graph list ignores --harness: the daemon returns all loaded graphs.
+  const allGraphs = singleJson(
     await invokeControl(runGraphCli, ['graph', 'list', '--harness', 'codex', '--json'], {
       daemonDir: daemon.daemonDir,
     }),
   );
   assert.deepEqual(
-    (codexList['status'] as unknown[]).map((status) => asRecord(status)['graphId']),
-    ['codex-graph'],
-  );
-  const dshList = singleJson(
-    await invokeControl(runGraphCli, ['graph', 'list', '--harness', 'dsh', '--json'], {
-      daemonDir: daemon.daemonDir,
-    }),
-  );
-  assert.deepEqual(
-    (dshList['status'] as unknown[]).map((status) => asRecord(status)['graphId']),
-    ['dsh-graph'],
+    (allGraphs['status'] as unknown[]).map((status) => asRecord(status)['graphId']).sort(),
+    ['codex-graph', 'dsh-graph'],
   );
 
   const codexTrigger = singleJson(
@@ -1524,230 +1411,124 @@ test('graph and trigger --harness address each multi-harness daemon independentl
   assert.equal(dshTrigger['graphId'], 'dsh-graph');
   assert.equal(daemon.adapters.get('codex')?.prompts.length, 1);
   assert.equal(daemon.adapters.get('dsh')?.prompts.length, 1);
-  assert.match(daemon.adapters.get('codex')?.prompts[0] ?? '', /to codex/);
-  assert.match(daemon.adapters.get('dsh')?.prompts[0] ?? '', /to dsh/);
 
-  // A graph id from the other harness is not visible.
-  const wrongHarnessStatus = await invokeControl(
-    runGraphCli,
-    ['graph', 'status', 'dsh-graph', '--harness', 'codex', '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(wrongHarnessStatus.code, 1);
-  assert.equal(wrongHarnessStatus.stdout.length, 0);
-  assert.match(wrongHarnessStatus.stderr[0] as string, /not loaded/);
-
-  const unloadCodex = singleJson(
-    await invokeControl(
-      runGraphCli,
-      ['graph', 'unload', 'codex-graph', '--harness', 'codex', '--json'],
-      { daemonDir: daemon.daemonDir },
-    ),
-  );
-  assert.equal(unloadCodex['unloaded'], true);
-  // Unload retains both harnesses' sessions; nothing was closed.
-  assert.equal(daemon.adapters.get('codex')?.closedNativeIds.length, 0);
-  assert.equal(daemon.adapters.get('dsh')?.closedNativeIds.length, 0);
-
-  const dshStillLoaded = singleJson(
-    await invokeControl(
-      runGraphCli,
-      ['graph', 'status', 'dsh-graph', '--harness', 'dsh', '--json'],
-      { daemonDir: daemon.daemonDir },
-    ),
-  );
-  assert.equal(dshStillLoaded['graphId'], 'dsh-graph');
-  // Each harness keeps its session after unload; the other daemon is untouched.
   assert.equal(
-    (
-      JSON.parse(
-        readFileSync(join(daemon.daemonDir, 'codex', 'sessions.json'), 'utf8'),
-      ) as unknown[]
-    ).length,
-    1,
-  );
-  assert.equal(
-    (
-      JSON.parse(
-        readFileSync(join(daemon.daemonDir, 'dsh', 'sessions.json'), 'utf8'),
-      ) as unknown[]
-    ).length,
-    1,
-  );
-
-  const codexToken = readFileSync(join(daemon.daemonDir, 'codex', 'token'), 'utf8').trim();
-  const dshToken = readFileSync(join(daemon.daemonDir, 'dsh', 'token'), 'utf8').trim();
-  const ambiguousGraph = await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
-    daemonDir: daemon.daemonDir,
-  });
-  assert.equal(ambiguousGraph.code, 1);
-  assert.equal(ambiguousGraph.stdout.length, 0);
-  assert.equal(ambiguousGraph.stderr.length, 1);
-  assert.match(ambiguousGraph.stderr[0] as string, /--harness/);
-  assertNoSecret(ambiguousGraph.stderr, codexToken);
-  assertNoSecret(ambiguousGraph.stderr, dshToken);
-
-  const ambiguousTrigger = await invokeControl(
-    runTriggerCli,
-    ['trigger', 'dsh-graph', 'only', '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(ambiguousTrigger.code, 1);
-  assert.equal(ambiguousTrigger.stdout.length, 0);
-  assert.equal(ambiguousTrigger.stderr.length, 1);
-  assert.match(ambiguousTrigger.stderr[0] as string, /--harness/);
-  assertNoSecret(ambiguousTrigger.stderr, codexToken);
-  assertNoSecret(ambiguousTrigger.stderr, dshToken);
-
-  const invalidHarness = await invokeControl(
-    runGraphCli,
-    ['graph', 'list', '--harness', 'claude', '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(invalidHarness.code, 2);
-  assert.equal(invalidHarness.stdout.length, 0);
-  assert.equal(invalidHarness.stderr.length, 1);
-  assert.match(invalidHarness.stderr[0] as string, /--harness must be/);
-});
-
-test('multi-harness state roots isolate the same graph id and apiary', async (t) => {
-  const daemon = await startMultiWaxd(t, { apiary: 'smoke' });
-  const bindings = tempJson(freshBindings());
-  const project = tempDir('wax-control-cli-honey-project-');
-  const composition = tempJson(foragerComposition('shared-graph'));
-  const harnesses = ['codex', 'dsh'] as const;
-
-  for (const harness of harnesses) {
-    const load = await invokeControl(
-      runGraphCli,
-      [
-        'graph',
-        'load',
-        composition,
-        '--project',
-        project,
-        '--bindings',
-        bindings,
-        '--harness',
-        harness,
-        '--json',
-      ],
-      { daemonDir: daemon.daemonDir },
-    );
-    assert.equal(singleJson(load)['graphId'], 'shared-graph');
-  }
-
-  for (const harness of harnesses) {
-    const trigger = await invokeControl(
-      runTriggerCli,
-      [
-        'trigger',
-        'shared-graph',
-        'only',
-        '--input',
-        `from ${harness}`,
-        '--harness',
-        harness,
-        '--json',
-      ],
-      { daemonDir: daemon.daemonDir },
-    );
-    const result = singleJson(trigger);
-    assert.equal(result['rest'], true);
-    assert.equal(result['persisted'], true);
-  }
-
-  for (const harness of harnesses) {
-    const status = singleJson(
+    singleJson(
       await invokeControl(
         runGraphCli,
-        ['graph', 'status', 'shared-graph', '--harness', harness, '--json'],
+        ['graph', 'unload', 'codex-graph', '--harness', 'codex', '--json'],
         { daemonDir: daemon.daemonDir },
       ),
+    )['unloaded'],
+    true,
+  );
+  assert.equal(daemon.adapters.get('codex')?.closedNativeIds.length, 0);
+  assert.equal(daemon.adapters.get('dsh')?.closedNativeIds.length, 0);
+  assert.equal(
+    singleJson(
+      await invokeControl(
+        runGraphCli,
+        ['graph', 'status', 'dsh-graph', '--harness', 'dsh', '--json'],
+        { daemonDir: daemon.daemonDir },
+      ),
+    )['graphId'],
+    'dsh-graph',
+  );
+
+  assert.equal(existsSync(join(daemon.daemonDir, 'codex')), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'dsh')), false);
+  assert.equal(existsSync(join(daemon.daemonDir, 'token')), true);
+});
+
+test('one daemon stores a mixed-harness graph in one sessions file and one Honey root', async (t) => {
+  const daemon = await startMultiWaxd(t, { apiary: 'smoke' });
+  const project = tempDir('wax-control-cli-honey-project-');
+  const composition = tempJson({
+    schemaVersion: 1,
+    id: 'mixed-graph',
+    nodes: {
+      codex: { kind: 'forager', config: { connection: 'codex', prompt: 'codex {{input}}' } },
+      dsh: { kind: 'forager', config: { connection: 'dsh', prompt: 'dsh {{input}}' } },
+    },
+    edges: [],
+  });
+  const bindings = tempJson({
+    codex: { kind: 'fresh', harness: 'codex' },
+    dsh: { kind: 'fresh', harness: 'dsh' },
+  });
+
+  const load = await invokeControl(
+    runGraphCli,
+    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
+    { daemonDir: daemon.daemonDir },
+  );
+  assert.equal(load.code, 0, load.stderr.join(' | '));
+
+  for (const nodeId of ['codex', 'dsh']) {
+    const trigger = await invokeControl(
+      runTriggerCli,
+      ['trigger', 'mixed-graph', nodeId, '--input', `from ${nodeId}`, '--json'],
+      { daemonDir: daemon.daemonDir },
     );
-    assert.equal(status['rest'], true);
+    assert.equal(trigger.code, 0, trigger.stderr.join(' | '));
   }
 
-  const codexField = join(
+  assert.equal(daemon.adapters.get('codex')?.prompts.length, 1);
+  assert.equal(daemon.adapters.get('dsh')?.prompts.length, 1);
+  assert.match(daemon.adapters.get('codex')?.prompts[0] ?? '', /from codex/);
+  assert.match(daemon.adapters.get('dsh')?.prompts[0] ?? '', /from dsh/);
+
+  const sessions = JSON.parse(
+    readFileSync(join(daemon.daemonDir, 'sessions.json'), 'utf8'),
+  ) as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    sessions.map((session) => session['harness']).sort(),
+    ['codex', 'dsh'],
+  );
+
+  const fieldPath = join(
     daemon.stateRoot,
-    'codex',
     'apiaries',
     'smoke',
     'compositions',
-    'shared-graph',
+    'mixed-graph',
     'honey',
     'field.json',
   );
-  const dshField = join(
-    daemon.stateRoot,
-    'dsh',
-    'apiaries',
-    'smoke',
-    'compositions',
-    'shared-graph',
-    'honey',
-    'field.json',
-  );
-  assert.equal(existsSync(codexField), true);
-  assert.equal(existsSync(dshField), true);
-  // The pre-fix shared path must not be used.
+  assert.equal(existsSync(fieldPath), true);
   assert.equal(
     existsSync(
-      join(
-        daemon.stateRoot,
-        'apiaries',
-        'smoke',
-        'compositions',
-        'shared-graph',
-        'honey',
-        'field.json',
-      ),
+      join(daemon.stateRoot, 'codex', 'apiaries', 'smoke', 'compositions', 'mixed-graph'),
     ),
     false,
   );
   assert.equal(
-    (JSON.parse(readFileSync(codexField, 'utf8')) as Record<string, unknown>)['compositionId'],
-    'shared-graph',
+    existsSync(
+      join(daemon.stateRoot, 'dsh', 'apiaries', 'smoke', 'compositions', 'mixed-graph'),
+    ),
+    false,
   );
+
+  // Unload retains both sessions; no native close is a graph-unload side effect.
   assert.equal(
-    (JSON.parse(readFileSync(dshField, 'utf8')) as Record<string, unknown>)['compositionId'],
-    'shared-graph',
+    singleJson(
+      await invokeControl(runGraphCli, ['graph', 'unload', 'mixed-graph', '--json'], {
+        daemonDir: daemon.daemonDir,
+      }),
+    )['unloaded'],
+    true,
   );
-
-  const unloadCodex = singleJson(
-    await invokeControl(
-      runGraphCli,
-      ['graph', 'unload', 'shared-graph', '--harness', 'codex', '--json'],
-      { daemonDir: daemon.daemonDir },
-    ),
+  assert.equal(daemon.adapters.get('codex')?.closedNativeIds.length, 0);
+  assert.equal(daemon.adapters.get('dsh')?.closedNativeIds.length, 0);
+  assert.equal(
+    (
+      JSON.parse(
+        readFileSync(join(daemon.daemonDir, 'sessions.json'), 'utf8'),
+      ) as unknown[]
+    ).length,
+    2,
   );
-  assert.equal(unloadCodex['unloaded'], true);
-  const dshAfterUnload = singleJson(
-    await invokeControl(
-      runGraphCli,
-      ['graph', 'status', 'shared-graph', '--harness', 'dsh', '--json'],
-      { daemonDir: daemon.daemonDir },
-    ),
-  );
-  assert.equal(dshAfterUnload['rest'], true);
-
-  const codexSweep = singleJson(
-    await invokeControl(runGraphCli, ['graph', 'sweep', '--harness', 'codex', '--json'], {
-      daemonDir: daemon.daemonDir,
-    }),
-  );
-  assert.deepEqual(codexSweep['unloaded'], []);
-  const dshAfterSweep = singleJson(
-    await invokeControl(
-      runGraphCli,
-      ['graph', 'status', 'shared-graph', '--harness', 'dsh', '--json'],
-      { daemonDir: daemon.daemonDir },
-    ),
-  );
-  assert.equal(dshAfterSweep['rest'], true);
-  assert.equal(existsSync(dshField), true);
 });
-
 test('a one-entry --harnesses list keeps the single-harness root layout', async (t) => {
   const adapter = new TrackingFakeAdapter();
   const stateRoot = tempDir('wax-control-cli-single-list-state-');
@@ -1784,10 +1565,11 @@ test('a one-entry --harnesses list keeps the single-harness root layout', async 
   });
 
   const info = await withTimeout(started.promise, 5_000, 'single-list waxd start');
-  assert.equal(info.harness, 'codex');
+  assert.deepEqual(info.harnesses, ['codex']);
   assert.equal(info.stateRoot, stateRoot);
   assert.equal(info.daemonDir, daemonDir);
   assert.equal(stdout.length, 5);
+  assert.equal(stdout[1], 'harnesses codex');
   assert.equal(stdout[2], `state    ${stateRoot}`);
   assert.equal(stdout[3], `daemon   ${daemonDir}`);
   assert.equal(existsSync(join(daemonDir, 'token')), true);

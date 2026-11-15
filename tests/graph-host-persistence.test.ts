@@ -147,9 +147,7 @@ function makeEnv(adapter: RecordingAdapter = new RecordingAdapter()): TestEnv {
     // A real, existing directory is required by Workspace; no test writes here.
     directory: process.cwd(),
   };
-  const registry = new SessionRegistry({
-    workspace,
-    harness: 'fake-harness',
+  const registry = new SessionRegistry({ workspaces: new Map([['fake-harness', workspace]]),
     now: () => FIXED_NOW,
   });
   return { adapter, workspace, registry, project };
@@ -274,7 +272,6 @@ test('trigger flushes the field to Honey and reports persisted', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-flush-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'flush');
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -314,7 +311,6 @@ test('unload and reload restore the field and continue the counter', async (t) =
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-reload-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'counter');
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -390,7 +386,6 @@ test('unload retains fresh sessions and reload creates replacements', async (t) 
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-fresh-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'fresh');
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -436,7 +431,6 @@ test('a failed flush blocks unload and keeps sessions and routing open', async (
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-block-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'blocked'));
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -495,7 +489,6 @@ test('a failed trigger flush is reported without replaying the trigger', async (
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-trigger-fail-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'trigger-fail'));
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -559,19 +552,16 @@ test('idle TTL defaults to 0 without Honey and 30 minutes with it', async (t) =>
   const storeFor = (graphId: string): HoneyStore =>
     HoneyStore.forComposition(root, 'apiary', graphId);
   const honeyHost = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: storeFor,
   });
   const plainHost = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
   });
   const overrideHoney = HoneyStore.forComposition(root, 'apiary', 'override-ttl');
   const overrideHost = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     defaultIdleTtlMs: 500,
@@ -657,7 +647,6 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-sweep-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'sweep-counter');
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -719,7 +708,6 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
   const storeFor = (graphId: string): HoneyStore =>
     HoneyStore.forComposition(root, 'apiary', graphId);
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: storeFor,
@@ -790,7 +778,6 @@ test('a revision mismatch fails restore, releases only the session it created an
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-revision-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'revision');
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -854,7 +841,6 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-recovery-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'recovery');
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -924,7 +910,6 @@ test('a failed restore closes created fresh_once sessions and removes their mapp
     now: () => FIXED_NOW,
   });
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -980,7 +965,6 @@ test('a failed reload never closes a reused fresh_once session or removes its ma
     now: () => FIXED_NOW,
   });
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -1049,7 +1033,6 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-reload-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'hover-reload');
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -1107,7 +1090,6 @@ test('a failed Honey flush blocks a hover-only unload and keeps it loaded', asyn
   const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-flush-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'hover-flush'));
   const host = new GraphHost({
-    workspace: env.workspace,
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,

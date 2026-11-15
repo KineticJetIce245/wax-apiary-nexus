@@ -25,14 +25,15 @@ waxd
 
 ## Current status
 
-The code is a B-core prototype with the M9c single-daemon shape and M9d scheduler/guard/run wiring; it does **not** yet implement the full target above.
+The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/guard/run wiring, and M9e session-ownership checks; it does **not** yet implement the full target above.
 
 - **M9a/M9b/M9c (committed in `3eb24b0`)** are wired together: one `AdapterPool`, one global `SessionRegistry`, one `GraphHost`, one `ControlServer`, one endpoint. A graph can mix Codex and DSH sessions.
 - **M9b** added `LiveHiveCatalog`, per-live `LiveHiveLock`, a graph TTL timer, and `GET /catalog`; unloaded LiveHives keep their identity. `status` still reports loaded graphs only.
-- **M9d (uncommitted)** added the per-LiveHive scheduler, `GET /guards` + `POST /guard/decide`, and durable `RunStore` output (`runId`/`requestId`, readable after unload).
+- **M9d (committed in `425fcdc`)** added the per-LiveHive scheduler, `GET /guards` + `POST /guard/decide`, and durable `RunStore` output (`runId`/`requestId`, readable after unload).
+- **M9e (uncommitted)** makes `fresh_once` reuse depend on harness + projectDirectory, and rejects a second loaded graph that binds the same explicit session with HTTP 409 `session-busy`.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 734 tests (733 pass + 1 Windows skip after M9d). Real integration now includes a mixed Codex+DSH `waxd` graph, a DSH/Codex product check, a scheduled Codex graph, and a real DSH guard approval; the full `npm run test:integration` suite was not run as a whole.
+- The regression suite is 739 tests (738 pass + 1 Windows skip after M9e). Real integration now includes a mixed Codex+DSH `waxd` graph, a DSH/Codex product check, a scheduled Codex graph, a real DSH guard approval, and a real DSH session-busy/reload check; the full `npm run test:integration` suite was not run as a whole.
 
 ## Current commands
 
@@ -66,10 +67,10 @@ The code still uses the old names; renames happen during the M9 refactor.
 - Scheduler triggers pass an empty text Value because `TriggerDefinition` has no `input` field.
 - Guard requests are exposed/decided by `requestId`; they are not RunStore records because `GuardRequest` has no `liveId`.
 - RunStore has 1000-record / 1 MiB defaults and is used by trigger/answer/drain.
-- Same session can be bound to two loaded graphs; the conflict is only detected on trigger.
-- `fresh_once` compares `projectId` (directory basename), not the project directory.
-- Real mixed Codex+DSH `waxd`, scheduler, and DSH guard tests pass; full `npm run test:integration`, native partial-failure, and daemon restart-after-exit remain unverified.
-- `GraphHost`/`ControlServer` remain over Rule 11 budgets; M9f split is still planned.
+- `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
+- A second loaded graph binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
+- Real mixed Codex+DSH `waxd`, scheduler, DSH guard, and DSH session-busy tests pass; full `npm run test:integration`, native partial-failure, and daemon restart-after-exit remain unverified.
+- `GraphHost` ~1577 and `ControlServer` ~1885 remain over Rule 11 budgets; M9f split is still planned.
 - OS SIGTERM graceful cleanup, Windows token ACL, and physical power-loss durability are not verified.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

@@ -34,6 +34,7 @@ function binding(
     sessionId: 'session-1',
     harness: 'dsh-acp',
     projectId: 'project-1',
+    projectDirectory: '/projects/one',
     updatedAt: FIXED_NOW,
     ...overrides,
   };
@@ -69,6 +70,7 @@ test('set/get/remove/removeForSession and snapshot copies do not alias the store
   const got = store.get('graph', 'node');
   assert.ok(got !== undefined);
   assert.equal(got.sessionId, 'session-1');
+  assert.equal(got.projectDirectory, '/projects/one');
   // A returned record is a copy: mutating it cannot rewrite the store.
   (got as { sessionId: string }).sessionId = 'mutated';
   assert.equal(store.get('graph', 'node')?.sessionId, 'session-1');
@@ -102,13 +104,14 @@ test('writes the documented schema atomically and leaves no temp file', () => {
   store.set(binding({ graphId: 'g1', nodeId: 'n1' }));
 
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {
-    schemaVersion: 1,
+    schemaVersion: 2,
     bindings: {
       g1: {
         n1: {
           sessionId: 'session-1',
           harness: 'dsh-acp',
           projectId: 'project-1',
+          projectDirectory: '/projects/one',
           updatedAt: FIXED_NOW,
         },
       },
@@ -157,25 +160,59 @@ test('corrupt JSON, wrong schema and invalid records are typed errors', () => {
   const invalidDocuments = [
     '{',
     JSON.stringify([]),
-    JSON.stringify({ schemaVersion: 2, bindings: {} }),
-    JSON.stringify({ schemaVersion: 1 }),
-    JSON.stringify({ schemaVersion: 1, bindings: [] }),
-    JSON.stringify({ schemaVersion: 1, bindings: { graph: [] } }),
-    JSON.stringify({
-      schemaVersion: 1,
-      bindings: {
-        graph: {
-          node: { sessionId: 1, harness: 'h', projectId: 'p', updatedAt: 't' },
-        },
-      },
-    }),
+    // A fully readable v1 document is still unsupported: no compatibility.
     JSON.stringify({
       schemaVersion: 1,
       bindings: {
         graph: {
           node: {
             sessionId: 's',
+            harness: 'h',
+            projectId: 'p',
+            projectDirectory: '/projects/one',
+            updatedAt: 't',
+          },
+        },
+      },
+    }),
+    JSON.stringify({ schemaVersion: 2 }),
+    JSON.stringify({ schemaVersion: 2, bindings: [] }),
+    JSON.stringify({ schemaVersion: 2, bindings: { graph: [] } }),
+    JSON.stringify({
+      schemaVersion: 2,
+      bindings: {
+        graph: {
+          node: {
+            sessionId: 1,
+            harness: 'h',
+            projectId: 'p',
+            projectDirectory: '/projects/one',
+            updatedAt: 't',
+          },
+        },
+      },
+    }),
+    JSON.stringify({
+      schemaVersion: 2,
+      bindings: {
+        graph: {
+          node: {
+            sessionId: 's',
             harness: '',
+            projectId: 'p',
+            projectDirectory: '/projects/one',
+            updatedAt: 't',
+          },
+        },
+      },
+    }),
+    JSON.stringify({
+      schemaVersion: 2,
+      bindings: {
+        graph: {
+          node: {
+            sessionId: 's',
+            harness: 'h',
             projectId: 'p',
             updatedAt: 't',
           },

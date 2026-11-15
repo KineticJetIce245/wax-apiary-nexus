@@ -21,6 +21,7 @@ import {
   GraphHostDisposedError,
   GraphLoadError,
   GraphNotFoundError,
+  GraphSessionBusyError,
   type LoadGraphOptions,
 } from '../daemon/graph-host.js';
 import type { LiveHiveCatalog } from '../daemon/live-hive-catalog.js';
@@ -147,6 +148,7 @@ type ControlErrorCode =
   | 'not-found'
   | 'method-not-allowed'
   | 'conflict'
+  | 'session-busy'
   | 'too-large'
   | 'unsupported-media-type'
   | 'internal';
@@ -1346,6 +1348,9 @@ export class ControlServer {
     }
     if (error instanceof GraphNotFoundError) {
       return new HttpError(404, 'not-found', 'graph is not loaded');
+    }
+    if (error instanceof GraphSessionBusyError) {
+      return new HttpError(409, 'session-busy', 'session is busy');
     }
     if (error instanceof GraphAnswerError) {
       return answerErrorToHttp(error);

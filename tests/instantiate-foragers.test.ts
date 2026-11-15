@@ -716,6 +716,7 @@ test('fresh_once creates once, stores the mapping and reuses it on a second inst
   assert.equal(stored.sessionId, firstSession.sessionId);
   assert.equal(stored.harness, 'dsh-acp');
   assert.equal(stored.projectId, project.id);
+  assert.equal(stored.projectDirectory, project.directory);
   assert.equal(stored.updatedAt, FIXED_NOW);
 
   const second = await instantiateForagers(options);
@@ -726,6 +727,49 @@ test('fresh_once creates once, stores the mapping and reuses it on a second inst
   assert.equal(bindingStore.get('once-graph', 'only')?.sessionId, firstSession.sessionId);
   assert.equal(registry.list().length, 1);
   assert.ok(workspace.getConversation(firstSession.sessionId) !== undefined);
+});
+
+test('fresh_once reuses only the exact project directory, not a shared projectId', async (t) => {
+  const { adapter, workspace, registry, project } = makeHarness();
+  t.after(() => workspace.stop());
+  const bindingStore = makeBindingStore();
+  const definition = makeDefinition({ only: foragerNode('run') });
+  const first = await instantiateForagers({
+    definition,
+    graphId: 'directory-graph',
+    bindings: { only: { kind: 'fresh', mode: 'once' } },
+    registry,
+    project,
+    bindingStore,
+  });
+  t.after(() => first.dispose());
+  const firstSession = first.sessions.get('only');
+  assert.ok(firstSession !== undefined);
+
+  const sameIdOtherDirectory: Project = {
+    id: project.id,
+    directory: mkdtempSync(join(tmpdir(), 'wax-m3b-other-directory-')),
+  };
+  const second = await instantiateForagers({
+    definition,
+    graphId: 'directory-graph',
+    bindings: { only: { kind: 'fresh', mode: 'once' } },
+    registry,
+    project: sameIdOtherDirectory,
+    bindingStore,
+  });
+  t.after(() => second.dispose());
+  const secondSession = second.sessions.get('only');
+  assert.ok(secondSession !== undefined);
+  assert.notEqual(secondSession.sessionId, firstSession.sessionId);
+  assert.deepEqual(second.createdSessionIds, [secondSession.sessionId]);
+  assert.equal(secondSession.projectId, project.id);
+  assert.equal(secondSession.projectDirectory, sameIdOtherDirectory.directory);
+  assert.equal(
+    bindingStore.get('directory-graph', 'only')?.projectDirectory,
+    sameIdOtherDirectory.directory,
+  );
+  assert.equal(adapter.displayNames.length, 2);
 });
 
 test('fresh_always and an absent mode both create a new session without writing the store', async (t) => {
@@ -852,6 +896,7 @@ test('a busy stored fresh_once session reports busy without creating a replaceme
     sessionId: existing.sessionId,
     harness: 'dsh-acp',
     projectId: project.id,
+    projectDirectory: project.directory,
     updatedAt: FIXED_NOW,
   });
   const execution = await workspace.submit(existing.sessionId, 'hold');
@@ -905,6 +950,7 @@ test('an attach failure on a stored fresh_once session reports attach-failed and
     sessionId: existing.sessionId,
     harness: 'dsh-acp',
     projectId: project.id,
+    projectDirectory: project.directory,
     updatedAt: FIXED_NOW,
   });
 
@@ -1021,6 +1067,7 @@ test('a later failure leaves a reused fresh_once session and its mapping untouch
     sessionId: existing.sessionId,
     harness: 'dsh-acp',
     projectId: project.id,
+    projectDirectory: project.directory,
     updatedAt: FIXED_NOW,
   });
   const definition = makeDefinition({
@@ -1066,6 +1113,7 @@ test('a stored mapping for another harness is replaced rather than attached', as
     sessionId: existing.sessionId,
     harness: 'codex',
     projectId: project.id,
+    projectDirectory: project.directory,
     updatedAt: FIXED_NOW,
   });
   const definition = makeDefinition({ only: foragerNode('run') });

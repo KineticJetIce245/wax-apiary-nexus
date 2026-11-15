@@ -204,10 +204,12 @@ export async function instantiateForagers(
         let resolved = bindingStore.get(graphId, node.id);
         if (
           resolved !== undefined &&
-          (resolved.harness !== harness || resolved.projectId !== project.id)
+          (resolved.harness !== harness ||
+            resolved.projectDirectory !== project.directory)
         ) {
-          // The mapping names a session from another harness/project. It is not
-          // usable here, so replace it rather than attaching the wrong session.
+          // The mapping names a session from another harness/project directory.
+          // It is not usable here, so replace it rather than attaching a session
+          // that belongs to a different directory with the same basename.
           bindingStore.remove(graphId, node.id);
           resolved = undefined;
         }
@@ -284,6 +286,7 @@ export async function instantiateForagers(
           sessionId: created.sessionId,
           harness,
           projectId: project.id,
+          projectDirectory: project.directory,
           updatedAt: new Date().toISOString(),
         });
         targets.set(node.id, { workspace, conversation });

@@ -12,7 +12,10 @@ export interface ResolvedGraphBinding {
   readonly nodeId: string;
   readonly sessionId: string;
   readonly harness: string;
+  /** Project id is metadata only; directory identity decides fresh_once reuse. */
   readonly projectId: string;
+  /** Canonical project directory at the time this mapping was written. */
+  readonly projectDirectory: string;
   readonly updatedAt: string;
 }
 
@@ -29,7 +32,7 @@ export class GraphBindingStoreError extends Error {
   }
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** graphId -> nodeId -> resolved binding. */
 type BindingIndex = Map<string, Map<string, ResolvedGraphBinding>>;
@@ -38,6 +41,7 @@ interface StoredBinding {
   readonly sessionId: string;
   readonly harness: string;
   readonly projectId: string;
+  readonly projectDirectory: string;
   readonly updatedAt: string;
 }
 
@@ -90,6 +94,7 @@ export class GraphBindingStore {
       sessionId: binding.sessionId,
       harness: binding.harness,
       projectId: binding.projectId,
+      projectDirectory: binding.projectDirectory,
       updatedAt: this.now(),
     };
     const next = cloneIndex(this.bindings);
@@ -245,6 +250,7 @@ function parseBinding(
     sessionId: requireString(input, 'sessionId', path),
     harness: requireString(input, 'harness', path),
     projectId: requireString(input, 'projectId', path),
+    projectDirectory: requireString(input, 'projectDirectory', path),
     updatedAt: requireString(input, 'updatedAt', path),
   };
 }
@@ -281,6 +287,7 @@ function serializeIndex(index: BindingIndex): {
               sessionId: record.sessionId,
               harness: record.harness,
               projectId: record.projectId,
+              projectDirectory: record.projectDirectory,
               updatedAt: record.updatedAt,
             } satisfies StoredBinding,
           ]),
@@ -305,6 +312,7 @@ function copyBinding(record: ResolvedGraphBinding): ResolvedGraphBinding {
     sessionId: record.sessionId,
     harness: record.harness,
     projectId: record.projectId,
+    projectDirectory: record.projectDirectory,
     updatedAt: record.updatedAt,
   };
 }

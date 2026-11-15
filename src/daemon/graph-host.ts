@@ -266,6 +266,21 @@ export class GraphLoadError extends Error {
   }
 }
 
+/** An explicit session binding is already owned by another loaded graph. */
+export class GraphSessionBusyError extends Error {
+  constructor(
+    readonly graphId: GraphId,
+    readonly sessionId: string,
+    readonly ownerGraphId: GraphId,
+  ) {
+    super(
+      `Session '${sessionId}' is already bound to loaded graph '${ownerGraphId}' ` +
+        `(requested by graph '${graphId}')`,
+    );
+    this.name = 'GraphSessionBusyError';
+  }
+}
+
 /** Why `GraphHost.answer` refused an answer. */
 export type GraphAnswerErrorReason =
   | 'unknown-node'
@@ -364,6 +379,8 @@ export class GraphHost {
   /** Serializes mutating operations per live id; read paths bypass it. */
   private readonly lock = new LiveHiveLock();
   private readonly loading = new Set<GraphId>();
+  /** Explicit-session reservations held by loading graphs. */
+  private readonly sessionOwners = new Map<string, GraphId>();
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
 
@@ -454,7 +471,21 @@ export class GraphHost {
         new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`),
       );
     }
-    return this.lock.run(graphId, () => this.loadGraphLocked(options));
+    // Reserve explicit sessions before the async load. This makes a concurrent
+    // second load fail fast instead of both graphs attaching the same session.
+    let release: () => void;
+    try {
+      release = this.reserveSessionBindings(graphId, options.bindings);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.lock.run(graphId, () => this.loadGraphLocked(options)).finally(() => {
+      // A load that never became visible releases its reservations; a load that
+      // registered keeps them until unload/dispose.
+      if (this.graphs.peek(graphId) === undefined) {
+        release();
+      }
+    });
   }
 
   private async loadGraphLocked(options: LoadGraphOptions): Promise<GraphStatus> {
@@ -801,6 +832,71 @@ export class GraphHost {
   }
 
   /**
+   * Reserve every explicit `session` binding for this load. A session already
+   * held by another loaded graph, or by a concurrent in-flight load, is a typed
+   * rejection. `fresh` bindings reserve nothing: they have no session yet.
+   */
+  private reserveSessionBindings(graphId: GraphId, bindings: GraphBindings): () => void {
+    const reserved: string[] = [];
+    const release = (): void => {
+      for (const sessionId of reserved) {
+        if (this.sessionOwners.get(sessionId) === graphId) {
+          this.sessionOwners.delete(sessionId);
+        }
+      }
+    };
+
+    try {
+      for (const binding of Object.values(bindings)) {
+        if (binding.kind !== 'session') {
+          continue;
+        }
+        const sessionId = binding.sessionId;
+        const existingOwner =
+          this.sessionOwners.get(sessionId) ??
+          this.findLoadedSessionOwner(sessionId, graphId);
+        if (existingOwner !== undefined && existingOwner !== graphId) {
+          throw new GraphSessionBusyError(graphId, sessionId, existingOwner);
+        }
+        if (this.sessionOwners.get(sessionId) === undefined) {
+          this.sessionOwners.set(sessionId, graphId);
+          reserved.push(sessionId);
+        }
+      }
+    } catch (error) {
+      release();
+      throw error;
+    }
+
+    return release;
+  }
+
+  private findLoadedSessionOwner(
+    sessionId: string,
+    excludingGraphId: GraphId,
+  ): GraphId | undefined {
+    for (const entry of this.graphs.list()) {
+      if (entry.id === excludingGraphId) {
+        continue;
+      }
+      for (const record of entry.value.instantiated.sessions.values()) {
+        if (record.sessionId === sessionId) {
+          return entry.id;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private releaseSessionReservations(graphId: GraphId): void {
+    for (const [sessionId, owner] of this.sessionOwners) {
+      if (owner === graphId) {
+        this.sessionOwners.delete(sessionId);
+      }
+    }
+  }
+
+  /**
    * Last completed Value of every forager in one loaded graph, keyed by node
    * id. It is a read-only snapshot: `peek` never refreshes the idle TTL, takes
    * a lease or changes residency, so reading output cannot extend a graph's
@@ -925,6 +1021,7 @@ export class GraphHost {
     this.disposed = true;
     // Stop timers even for a non-Rest graph that dispose cannot unload.
     this.schedulers.stopAll();
+    this.sessionOwners.clear();
     this.disposePromise = this.disposeAll();
     return this.disposePromise;
   }
@@ -1239,8 +1336,10 @@ export class GraphHost {
       await live.honey.save(live.runtime.exportField());
     }
     // The flush succeeded (or there was none); no further scheduled occurrence
-    // may target a graph that is about to disappear.
+    // may target a graph that is about to disappear, and its explicit-session
+    // reservations become available to another graph.
     this.schedulers.stop(graphId);
+    this.releaseSessionReservations(graphId);
     await this.releaseGraphResources(graphId, live.instantiated, live.bindings, 'retain');
   }
 

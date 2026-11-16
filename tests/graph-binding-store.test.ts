@@ -97,7 +97,7 @@ test('set/get/remove/removeForSession and snapshot copies do not alias the store
   assert.doesNotThrow(() => store.remove('graph', 'node'));
 });
 
-test('writes the documented schema atomically and leaves no temp file', () => {
+test('writes the documented schema and leaves no temp file', () => {
   const file = storePath();
   const store = new GraphBindingStore(file, { now: () => FIXED_NOW });
 

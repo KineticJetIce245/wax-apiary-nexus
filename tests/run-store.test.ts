@@ -32,7 +32,7 @@ async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-test('save, get, list and latestForLive round-trip atomically', () => {
+test('save, get, list and latestForLive round-trip without temp files', () => {
   const root = runStore();
   const store = new RunStore(root);
   store.save(record('run-1'));

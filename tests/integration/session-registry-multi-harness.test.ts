@@ -139,7 +139,9 @@ test(
       assert.ok(codexValue >= 1000 && codexValue <= 9999);
       assert.ok(dshValue >= 100 && dshValue <= 999);
 
-      t.diagnostic('observed: codex 4-digit integer within range; dsh 3-digit integer within range');
+      t.diagnostic(
+        `observed: codex=${codexOutput} (1000..9999), dsh=${dshOutput} (100..999)`,
+      );
 
       await registry.close(codexSession.sessionId);
       await registry.close(dshSession.sessionId);

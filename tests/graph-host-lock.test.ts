@@ -162,7 +162,10 @@ async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-test('concurrent triggers for one live id do not enter the field together', async (t) => {
+test(
+  'concurrent triggers for one live id do not enter the field together',
+  { timeout: 10_000 },
+  async (t) => {
   const adapter = new GatedAdapter();
   const env = makeEnv(adapter);
   t.after(async () => {
@@ -178,17 +181,21 @@ test('concurrent triggers for one live id do not enter the field together', asyn
   await adapter.waitForSubmits(1);
   const second = env.host.trigger('live', 'b', text('two'));
 
-  await delay(30);
-  assert.equal(adapter.prompts.length, 1, 'second trigger entered while the first was active');
+  await assert.rejects(
+    adapter.waitForSubmits(2, 250),
+    /timed out waiting for 2 submissions/,
+    'second trigger entered while the first was active',
+  );
 
   adapter.releaseAll();
   const [firstResult, secondResult] = await Promise.all([first, second]);
   assert.equal(firstResult.rest, true);
   assert.equal(secondResult.rest, true);
   assert.deepEqual(adapter.prompts, ['a one', 'b two']);
-});
+  },
+);
 
-test('different live ids proceed concurrently', async (t) => {
+test('different live ids proceed concurrently', { timeout: 10_000 }, async (t) => {
   const adapter = new GatedAdapter();
   const env = makeEnv(adapter);
   t.after(async () => {
@@ -219,7 +226,7 @@ test('different live ids proceed concurrently', async (t) => {
   assert.deepEqual(adapter.prompts, ['a a', 'a b']);
 });
 
-test('a failing locked trigger does not poison the next one', async (t) => {
+test('a failing locked trigger does not poison the next one', { timeout: 10_000 }, async (t) => {
   const adapter = new GatedAdapter({ hold: false });
   const env = makeEnv(adapter);
   t.after(async () => {
@@ -240,7 +247,7 @@ test('a failing locked trigger does not poison the next one', async (t) => {
   assert.deepEqual(adapter.prompts, ['a good']);
 });
 
-test('unload is refused while a trigger owns the same live id', async (t) => {
+test('unload is refused while a trigger owns the same live id', { timeout: 10_000 }, async (t) => {
   const adapter = new GatedAdapter();
   const env = makeEnv(adapter);
   t.after(async () => {

@@ -204,6 +204,7 @@ test(
       },
     );
     run.catch(() => undefined);
+    let mainError: unknown;
 
     try {
       const info = await withTimeout(started.promise, 180_000, 'real waxd startup');
@@ -255,7 +256,7 @@ test(
       const dshValue = Number(dshOutput);
       assert.ok(codexValue >= 1000 && codexValue <= 9999);
       assert.ok(dshValue >= 100 && dshValue <= 999);
-      t.diagnostic('observed: codex 4-digit integer within range; dsh 3-digit integer within range');
+      t.diagnostic(`observed: codex=${codexOutput} (1000..9999), dsh=${dshOutput} (100..999)`);
 
       // Prove which native adapter received which prompt, not just which
       // harness label the session record carries.
@@ -305,6 +306,45 @@ test(
       const catalogReloaded = await request(info, token, 'GET', '/catalog');
       assert.equal(catalogReloaded.body['entries']?.[0]?.['state'], 'loaded');
 
+      // A reload must be usable, not merely visible in the catalog: trigger
+      // both harnesses again and read the fresh outputs.
+      const codexReloadTrigger = await request(info, token, 'POST', '/trigger', {
+        graphId: 'mixed-harness',
+        nodeId: 'codex',
+        value: { kind: 'text', text: 'codex-reload' },
+      });
+      assert.equal(codexReloadTrigger.status, 200);
+      const dshReloadTrigger = await request(info, token, 'POST', '/trigger', {
+        graphId: 'mixed-harness',
+        nodeId: 'dsh',
+        value: { kind: 'text', text: 'dsh-reload' },
+      });
+      assert.equal(dshReloadTrigger.status, 200);
+
+      const reloadOutputs = await request(info, token, 'GET', '/graphs/mixed-harness/output');
+      assert.equal(reloadOutputs.status, 200);
+      const reloadByNode = new Map<string, string>();
+      for (const entry of reloadOutputs.body['outputs'] as Record<string, unknown>[]) {
+        reloadByNode.set(String(entry['nodeId']), textOf(entry['value']).trim());
+      }
+      const reloadCodex = reloadByNode.get('codex') ?? '';
+      const reloadDsh = reloadByNode.get('dsh') ?? '';
+      assert.match(reloadCodex, /^\d{4}$/);
+      assert.match(reloadDsh, /^\d{3}$/);
+      assert.ok(Number(reloadCodex) >= 1000 && Number(reloadCodex) <= 9999);
+      assert.ok(Number(reloadDsh) >= 100 && Number(reloadDsh) <= 999);
+      t.diagnostic(
+        `observed after reload: codex=${reloadCodex}, dsh=${reloadDsh}`,
+      );
+
+      // Both harnesses received a second prompt after reload.
+      const codexPromptsAfterReload = promptsByHarness.get('codex') ?? [];
+      const dshPromptsAfterReload = promptsByHarness.get('dsh') ?? [];
+      assert.equal(codexPromptsAfterReload.length, 2);
+      assert.equal(dshPromptsAfterReload.length, 2);
+      assert.match(codexPromptsAfterReload[1] ?? '', /1000 through 9999/);
+      assert.match(dshPromptsAfterReload[1] ?? '', /100 through 999/);
+
       const sessionsOnDisk = JSON.parse(
         readFileSync(join(daemonDir, 'sessions.json'), 'utf8'),
       ) as Array<Record<string, unknown>>;
@@ -316,17 +356,27 @@ test(
       assert.equal(existsSync(join(daemonDir, 'dsh')), false);
       assert.equal(existsSync(join(stateRoot, 'codex')), false);
       assert.equal(existsSync(join(stateRoot, 'dsh')), false);
+    } catch (error) {
+      mainError = error;
+      throw error;
     } finally {
       controller.abort();
       const code = await run.catch(() => 1);
-      assert.equal(stderr.length, 0, stderr.join(' | '));
-      assert.equal(code, 0);
-      assert.equal(existsSync(join(daemonDir, 'token')), false);
-      assert.equal(existsSync(join(daemonDir, 'server.json')), false);
-      assert.equal(
-        stdout.filter((line) => line.startsWith('waxd listening ')).length,
-        1,
-      );
+      if (mainError === undefined) {
+        assert.equal(stderr.length, 0, stderr.join(' | '));
+        assert.equal(code, 0);
+        assert.equal(existsSync(join(daemonDir, 'token')), false);
+        assert.equal(existsSync(join(daemonDir, 'server.json')), false);
+        assert.equal(
+          stdout.filter((line) => line.startsWith('waxd listening ')).length,
+          1,
+        );
+      } else {
+        // Do not mask the main assertion/request failure with cleanup detail.
+        t.diagnostic(
+          `cleanup after failure: exit=${String(code)} stderr=${JSON.stringify(stderr)}`,
+        );
+      }
     }
   },
 );

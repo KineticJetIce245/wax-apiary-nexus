@@ -134,7 +134,10 @@ test('a loaded graph starts its Honey-backed scheduler and unload stops it', asy
 
   assert.equal(await host.unload('scheduled'), true);
   timers.advance(5_000);
-  await new Promise<void>((resolve) => setTimeout(resolve, 30));
+  await assert.rejects(
+    waitFor(() => adapter.prompts.length > 1, 250),
+    /timed out waiting for scheduler trigger/,
+  );
   assert.equal(adapter.prompts.length, 1);
 });
 

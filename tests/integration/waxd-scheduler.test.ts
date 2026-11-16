@@ -125,6 +125,7 @@ test(
       },
     );
     run.catch(() => undefined);
+    let mainError: unknown;
 
     try {
       const info = await withTimeout(started.promise, 30_000, 'waxd startup');
@@ -213,10 +214,21 @@ test(
       );
 
       t.diagnostic('observed: run persisted and output readable after unload');
+    } catch (error) {
+      mainError = error;
+      throw error;
     } finally {
       controller.abort();
-      assert.equal(await run.catch(() => 1), 0);
-      assert.deepEqual(stderr, []);
+      const code = await run.catch(() => 1);
+      if (mainError === undefined) {
+        assert.equal(code, 0);
+        assert.deepEqual(stderr, []);
+      } else {
+        // Keep the main failure authoritative; cleanup is diagnostic only.
+        t.diagnostic(
+          `cleanup after failure: exit=${String(code)} stderr=${JSON.stringify(stderr)}`,
+        );
+      }
     }
   },
 );

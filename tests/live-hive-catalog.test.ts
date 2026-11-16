@@ -108,7 +108,7 @@ test('unload retains an identity that was never loaded', () => {
   });
 });
 
-test('save is atomic and leaves no temporary file behind', () => {
+test('save leaves no temporary file behind', () => {
   const path = tempCatalogPath();
   const catalog = new LiveHiveCatalog(path, { now: clock().now });
 

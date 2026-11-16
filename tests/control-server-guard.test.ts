@@ -107,6 +107,57 @@ async function waitFor(
   throw new Error('timed out waiting for guard state');
 }
 
+test('guard decision rejects invalid, missing and unauthenticated requests', async (t) => {
+  const env = makeEnv(new FakeAdapter());
+  const running = await start(env);
+  t.after(async () => {
+    await running.server.stop();
+    await env.workspace.stop();
+  });
+
+  const unauthenticated = await fetch(`${running.url}/guard/decide`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ requestId: 'missing', decision: 'allow_once' }),
+  });
+  assert.equal(unauthenticated.status, 401);
+
+  assert.equal(
+    (
+      await post(running, '/guard/decide', {
+        requestId: 'missing',
+        decision: 'maybe',
+      })
+    ).status,
+    400,
+  );
+  assert.equal((await post(running, '/guard/decide', [])).status, 400);
+  assert.equal(
+    (await post(running, '/guard/decide', { decision: 'allow_once' })).status,
+    400,
+  );
+  assert.equal(
+    (await post(running, '/guard/decide', { requestId: 'missing' })).status,
+    400,
+  );
+  assert.equal(
+    (
+      await post(running, '/guard/decide', {
+        requestId: 7,
+        decision: 'allow_once',
+      })
+    ).status,
+    400,
+  );
+
+  const malformed = await fetch(`${running.url}/guard/decide`, {
+    method: 'POST',
+    headers: headers(running.token),
+    body: '{"requestId":',
+  });
+  assert.equal(malformed.status, 400);
+});
+
 test('a pending native approval is listed and allowed through the broker', async (t) => {
   const adapter = new FakeAdapter({ askApproval: true, output: 'approved' });
   const env = makeEnv(adapter);

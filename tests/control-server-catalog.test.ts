@@ -221,7 +221,14 @@ test('graphSweepIntervalMs 0 disables the timer but keeps manual sweep', async (
   const loaded = await postJson(running, '/graphs/load', loadBody(env, 100));
   assert.equal(loaded.status, 200);
   now += 1_000;
-  await delay(50);
+  await assert.rejects(
+    waitFor(
+      'disabled automatic graph sweep',
+      async () => (await getJson(running, '/status/live')).status === 404,
+      150,
+    ),
+    /timed out waiting for disabled automatic graph sweep/,
+  );
   assert.equal((await getJson(running, '/status/live')).status, 200);
 
   const manual = await postJson(running, '/sweep', {});
@@ -235,7 +242,7 @@ test('graphSweepIntervalMs 0 disables the timer but keeps manual sweep', async (
   );
 });
 
-test('a slow failing graph sweep does not overlap and is logged without crashing', async (t) => {
+test('a slow failing graph sweep does not overlap and is logged without crashing', { timeout: 10_000 }, async (t) => {
   const env = makeEnv();
   const logs: string[] = [];
   const running = await startServer(env, {
@@ -264,7 +271,10 @@ test('a slow failing graph sweep does not overlap and is logged without crashing
   };
 
   await waitFor('first graph sweep tick', () => calls === 1);
-  await delay(50);
+  await assert.rejects(
+    waitFor('overlapping graph sweep tick', () => calls >= 2, 250),
+    /timed out waiting for overlapping graph sweep tick/,
+  );
   assert.equal(calls, 1, 'overlapping timer ticks must be skipped');
   release();
 

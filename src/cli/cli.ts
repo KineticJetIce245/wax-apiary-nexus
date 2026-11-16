@@ -2,6 +2,9 @@ import { pathToFileURL } from 'node:url';
 
 import type { ControlCliDependencies } from './control-cli.js';
 import { runGraphCli, runSessionCli, runTriggerCli } from './control-cli.js';
+import { runDispatchCli } from './dispatch-cli.js';
+import { runLiveCli } from './live-cli.js';
+import { runTemplateCli } from './template-cli.js';
 import type { WaxdDependencies } from './waxd-cli.js';
 import { runWaxdCli } from './waxd-cli.js';
 import { CliUsageError } from './cli-shared.js';
@@ -16,7 +19,7 @@ export { CliUsageError };
 export type CliDependencies = WaxdDependencies & ControlCliDependencies;
 
 const USAGE =
-  'usage: wax <waxd|graph|trigger|session> ... ' +
+  'usage: wax <waxd|graph|trigger|session|live|template|dispatch> ... ' +
   '(wax run, wax daemon, wax answer, wax status/log/honey, wax composition and wax mcp were removed)';
 
 /**
@@ -40,6 +43,15 @@ export async function runCli(
   }
   if (argv[0] === 'session') {
     return runSessionCli(argv, deps);
+  }
+  if (argv[0] === 'live') {
+    return runLiveCli(argv, deps);
+  }
+  if (argv[0] === 'template') {
+    return runTemplateCli(argv, deps);
+  }
+  if (argv[0] === 'dispatch') {
+    return runDispatchCli(argv, deps);
   }
 
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));

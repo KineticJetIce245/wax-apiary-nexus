@@ -1,0 +1,141 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import { runDispatchCli } from '../src/cli/dispatch-cli.js';
+import { runLiveCli } from '../src/cli/live-cli.js';
+import { runTemplateCli } from '../src/cli/template-cli.js';
+import type { LiveHive } from '../src/b/types.js';
+import { startServer, makeEnv } from './support/control-server-fixtures.js';
+import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
+
+function writer(): { lines: string[]; write: (line: string) => void } {
+  const lines: string[] = [];
+  return { lines, write: (line) => lines.push(line) };
+}
+
+test('wax live/template/dispatch use one daemon endpoint', async (t) => {
+  const env = makeEnv({ output: 'cli-output' });
+  const running = await startServer(env, { liveProject: env.project });
+  t.after(async () => {
+    await running.server.stop();
+    await env.workspace.stop();
+  });
+  const draft = await env.registry.create(env.project, { harness: 'codex' });
+  const review = await env.registry.create(env.project, { harness: 'codex' });
+  const done = await env.registry.create(env.project, { harness: 'codex' });
+  const live: LiveHive = {
+    ...simpleLiveHive(),
+    bindings: {
+      draft: draft.sessionId,
+      review: review.sessionId,
+      done: done.sessionId,
+    },
+  };
+  const directory = mkdtempSync(join(tmpdir(), 'wax-cli-live-'));
+  const liveFile = join(directory, 'live.json');
+  writeFileSync(liveFile, JSON.stringify(live), 'utf8');
+
+  const newOut = writer();
+  const newErr = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'new', liveFile, '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: newOut.write, stderr: newErr.write },
+    ),
+    0,
+    newErr.lines.join('\n'),
+  );
+  assert.equal((JSON.parse(newOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'], 'demo');
+
+  const wakeOut = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'wake', 'demo', 'draft', '--input', 'hello', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: wakeOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(wakeOut.lines[0] ?? '{}') as Record<string, unknown>)['graphId'],
+    'demo',
+  );
+
+  const templateFile = join(directory, 'template.json');
+  writeFileSync(templateFile, JSON.stringify(simpleTemplate()), 'utf8');
+  const composeOut = writer();
+  assert.equal(
+    await runTemplateCli(
+      ['template', 'compose', templateFile, '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: composeOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(composeOut.lines[0] ?? '{}') as Record<string, unknown>)['templateId'],
+    'starter',
+  );
+
+  const listOut = writer();
+  assert.equal(
+    await runTemplateCli(
+      ['template', 'list', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: listOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    ((JSON.parse(listOut.lines[0] ?? '{}') as Record<string, unknown>)['templates'] as unknown[]).length,
+    1,
+  );
+
+  const dispatchOut = writer();
+  assert.equal(
+    await runDispatchCli(
+      ['dispatch', '--input', 'summarize', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: dispatchOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(dispatchOut.lines[0] ?? '{}') as Record<string, unknown>)['output'],
+    'cli-output',
+  );
+});
+
+test('wax live rejects bad usage and unknown live ids without retrying', async (t) => {
+  const env = makeEnv();
+  const running = await startServer(env, { liveProject: env.project });
+  t.after(async () => {
+    await running.server.stop();
+    await env.workspace.stop();
+  });
+  const err = writer();
+  assert.equal(
+    await runLiveCli(['live', 'wake', 'demo'], { stdout: writer().write, stderr: err.write }),
+    2,
+  );
+  assert.match(err.lines.join('\n'), /usage: wax live/);
+
+  const unknownErr = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'inspect', 'missing', '--daemon-dir', env.daemonDir],
+      { stdout: writer().write, stderr: unknownErr.write },
+    ),
+    1,
+  );
+  assert.match(unknownErr.lines.join('\n'), /code=not-found/);
+
+  const dispatchErr = writer();
+  assert.equal(
+    await runDispatchCli(
+      ['dispatch', '--daemon-dir', env.daemonDir],
+      { stdout: writer().write, stderr: dispatchErr.write },
+    ),
+    2,
+  );
+  assert.match(dispatchErr.lines.join('\n'), /usage: wax dispatch/);
+});

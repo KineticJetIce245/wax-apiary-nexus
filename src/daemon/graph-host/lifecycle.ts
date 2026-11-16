@@ -18,6 +18,7 @@ import type { SessionOwnership } from './session-ownership.js';
 import {
   GraphHostDisposedError,
   GraphLoadError,
+  GraphNotFoundError,
   type GraphStatus,
   type LiveGraph,
   type LoadGraphOptions,
@@ -64,6 +65,32 @@ export class GraphHostLifecycle {
           release();
         }
       });
+  }
+
+  /**
+   * Flush Honey without releasing the graph. The live lock makes the snapshot
+   * consistent with an in-flight trigger; a failed flush leaves memory intact.
+   */
+  save(graphId: GraphId): Promise<GraphStatus> {
+    return this.context.lock.run(graphId, async () => {
+      this.context.assertNotDisposed();
+      const live = this.context.graphs.peek(graphId)?.value;
+      if (live === undefined) {
+        throw new GraphNotFoundError(graphId);
+      }
+      if (live.honey !== undefined) {
+        await live.honey.save(live.runtime.exportField());
+        const schedulerState = this.context.schedulers.exportState(graphId);
+        if (schedulerState !== undefined) {
+          live.honey.saveScheduler(schedulerState);
+        }
+      }
+      const status = this.read.statusOf(graphId);
+      if (status === undefined) {
+        throw new GraphNotFoundError(graphId);
+      }
+      return status;
+    });
   }
 
   /** Explicit unload; refused while busy/pinned/unsafe or when the flush fails. */
@@ -128,7 +155,7 @@ async function loadGraphLocked(
   let schedulerState: SchedulerState | undefined;
   // A host that does not restore still keeps `honey` for trigger/unload
   // flushes; only the load read is skipped.
-  if (honey !== undefined && context.restoreHoney) {
+  if (honey !== undefined && (options.restoreHoney ?? context.restoreHoney)) {
     try {
       // Load before creating any session: a corrupt or unsupported Honey
       // file must not leave a fresh session behind.

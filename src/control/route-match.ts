@@ -41,6 +41,12 @@ export function matchRoute(rawUrl: string | undefined): Route | undefined {
         return { kind: 'guards', methods: ['GET'] };
       case 'sessions':
         return { kind: 'sessions', methods: ['GET'] };
+      case 'lives':
+        return { kind: 'lives-create', methods: ['POST'] };
+      case 'templates':
+        return { kind: 'templates', methods: ['GET', 'POST'] };
+      case 'dispatch':
+        return { kind: 'dispatch', methods: ['POST'] };
       default:
         return undefined;
     }
@@ -73,6 +79,26 @@ export function matchRoute(rawUrl: string | undefined): Route | undefined {
     if (first === 'guard' && second === 'decide') {
       return { kind: 'guard-decide', methods: ['POST'] };
     }
+    if (first === 'lives') {
+      switch (second) {
+        case 'load':
+          return { kind: 'lives-load', methods: ['POST'] };
+        case 'instantiate':
+          return { kind: 'lives-instantiate', methods: ['POST'] };
+        case 'wake':
+          return { kind: 'lives-wake', methods: ['POST'] };
+        case 'answer':
+          return { kind: 'lives-answer', methods: ['POST'] };
+        case 'save':
+          return { kind: 'lives-save', methods: ['POST'] };
+        case 'unload':
+          return { kind: 'lives-unload', methods: ['POST'] };
+        case 'migrate':
+          return { kind: 'lives-migrate', methods: ['POST'] };
+        default:
+          return undefined;
+      }
+    }
   }
 
   if (parts.length === 3) {
@@ -88,6 +114,13 @@ export function matchRoute(rawUrl: string | undefined): Route | undefined {
       second.length <= MAX_ID_LENGTH
     ) {
       return { kind: 'graph-output', methods: ['GET'], graphId: second };
+    }
+    if (
+      first === 'lives' &&
+      third === 'inspect' &&
+      second.length <= MAX_ID_LENGTH
+    ) {
+      return { kind: 'lives-inspect', methods: ['GET'], graphId: second };
     }
   }
 

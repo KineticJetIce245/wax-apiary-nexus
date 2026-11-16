@@ -100,6 +100,11 @@ export class GraphHost {
     return this.read.outputsOf(graphId);
   }
 
+  /** Flush Honey/scheduler without unloading or disposing the graph. */
+  save(graphId: GraphId): Promise<GraphStatus> {
+    return this.lifecycle.save(graphId);
+  }
+
   unload(graphId: GraphId): Promise<boolean> {
     return this.lifecycle.unload(graphId);
   }

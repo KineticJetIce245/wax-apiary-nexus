@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 import type { HarnessAdapter } from '../adapters/harness.js';
 import type { ControlServerInfo } from '../control/server.js';
@@ -347,6 +347,10 @@ export async function runWaxdCli(
       sessionIdleTtlMs: command.sessionTtlMs,
       sessionSweepIntervalMs: command.sessionSweepIntervalMs,
       allowHoverUnload: true,
+      liveProject: {
+        id: basename(process.cwd()) || 'project',
+        directory: process.cwd(),
+      },
     });
 
     const info = await server.start();

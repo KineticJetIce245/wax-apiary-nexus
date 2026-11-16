@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 
 import { DaemonLock } from '../daemon/daemon-lock.js';
 import { GraphHost } from '../daemon/graph-host.js';
+import { HiveTemplateStore } from '../b/hive-template.js';
+import { LiveHiveService } from '../b/live-hive-service.js';
 import { RunStore } from '../storage/run-store.js';
 import { GuardBroker } from './guard-broker.js';
 import {
@@ -101,6 +103,18 @@ export class ControlServerLifecycle {
           : { bindingStore: context.options.bindingStore }),
       });
 
+      const liveHiveService = new LiveHiveService({
+        graphHost,
+        registry: context.registry,
+        livesRoot: context.options.livesRoot ?? join(context.options.stateRoot, 'lives'),
+        templateStore: new HiveTemplateStore(
+          context.options.templatesRoot ?? join(context.options.stateRoot, 'templates'),
+        ),
+        ...(context.options.liveProject === undefined
+          ? {}
+          : { defaultProject: context.options.liveProject }),
+      });
+
       server = this.http.createServer();
       await listenOnLoopback(server, context.port, context.host);
 
@@ -144,6 +158,7 @@ export class ControlServerLifecycle {
       context.server = server;
       context.lock = lock;
       context.graphHost = graphHost;
+      context.liveHiveService = liveHiveService;
       context.runStore = runStore;
       context.guardBroker = guardBroker;
       context.tokenValue = token;
@@ -175,6 +190,7 @@ export class ControlServerLifecycle {
       context.server = undefined;
       context.lock = undefined;
       context.graphHost = undefined;
+      context.liveHiveService = undefined;
       context.guardBroker = undefined;
       context.runStore = undefined;
       context.tokenValue = undefined;
@@ -206,6 +222,7 @@ export class ControlServerLifecycle {
     context.state = 'stopping';
     context.server = undefined;
     context.graphHost = undefined;
+    context.liveHiveService = undefined;
     context.guardBroker = undefined;
     context.runStore = undefined;
     context.lock = undefined;

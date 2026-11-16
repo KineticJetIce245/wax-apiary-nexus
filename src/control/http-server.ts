@@ -6,12 +6,9 @@ import {
   type ServerResponse,
 } from 'node:http';
 
-import { GraphAnswerError, GraphHostDisposedError, GraphLoadError, GraphNotFoundError, GraphSessionBusyError } from '../daemon/graph-host.js';
-import { ProjectDirectoryError } from '../project/project-directory.js';
-import { CompositionValidationError, QueueFullError } from '../runtime/index.js';
-import { BindingValidationError } from '../session/instantiate-foragers.js';
+import { toHttpError } from './http-errors.js';
 import { matchRoute } from './route-match.js';
-import { answerErrorToHttp, type ControlRoutes } from './routes.js';
+import type { ControlRoutes } from './routes.js';
 import type { ControlServerContext } from './server-context.js';
 import type { ControlErrorCode, HttpError, Route } from './server-types.js';
 import { HttpError as HttpErrorClass } from './server-types.js';
@@ -59,7 +56,7 @@ export class ControlHttpServer {
       }
 
       let payload: Record<string, unknown> | undefined;
-      if (route.methods[0] === 'POST') {
+      if (request.method === 'POST') {
         requireJsonContentType(request);
         const body = await this.readBody(request);
         payload = parseJsonObject(body);
@@ -67,12 +64,17 @@ export class ControlHttpServer {
         rejectBodyOnGet(request);
       }
 
-      const responseBody = await this.routes.dispatch(route, payload, request.url);
+      const responseBody = await this.routes.dispatch(
+        route,
+        payload,
+        request.url,
+        request.method,
+      );
       status = 200;
       code = 'ok';
       sendJson(response, status, responseBody);
     } catch (error) {
-      const httpError = this.toHttpError(error);
+      const httpError = toHttpError(error);
       status = httpError.status;
       code = httpError.code;
       if (response.headersSent) {
@@ -172,40 +174,6 @@ export class ControlHttpServer {
       request.on('error', onError);
       request.on('aborted', onAborted);
     });
-  }
-
-  private toHttpError(error: unknown): HttpError {
-    if (error instanceof HttpErrorClass) {
-      return error;
-    }
-    if (error instanceof CompositionValidationError) {
-      return new HttpErrorClass(400, 'bad-request', 'invalid composition definition');
-    }
-    if (error instanceof BindingValidationError) {
-      return new HttpErrorClass(400, 'bad-request', 'invalid graph bindings');
-    }
-    if (error instanceof ProjectDirectoryError) {
-      return new HttpErrorClass(400, 'bad-request', 'invalid project directory');
-    }
-    if (error instanceof GraphNotFoundError) {
-      return new HttpErrorClass(404, 'not-found', 'graph is not loaded');
-    }
-    if (error instanceof GraphSessionBusyError) {
-      return new HttpErrorClass(409, 'session-busy', 'session is busy');
-    }
-    if (error instanceof GraphAnswerError) {
-      return answerErrorToHttp(error);
-    }
-    if (error instanceof QueueFullError) {
-      return new HttpErrorClass(409, 'conflict', 'graph queue is full');
-    }
-    if (error instanceof TypeError) {
-      return new HttpErrorClass(400, 'bad-request', 'invalid request value');
-    }
-    if (error instanceof GraphHostDisposedError || error instanceof GraphLoadError) {
-      return new HttpErrorClass(500, 'internal', 'internal error');
-    }
-    return new HttpErrorClass(500, 'internal', 'internal error');
   }
 
   private logRequest(

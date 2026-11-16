@@ -100,6 +100,12 @@ export interface LoadGraphOptions {
    * registry.
    */
   readonly defaultHarness?: string;
+  /**
+   * Override the host's Honey-restore policy for this load. The default keeps
+   * existing behavior; an explicit structural migration may start from an
+   * empty field when the composition revision changed.
+   */
+  readonly restoreHoney?: boolean;
 }
 
 export interface GraphNodeStatus {

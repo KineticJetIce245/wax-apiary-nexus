@@ -11,6 +11,7 @@ import { parseComposition, QueueFullError } from '../runtime/index.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
 import { SessionBusyError, SessionNotFoundError } from '../session/session-registry.js';
 import { GuardAlreadySettledError, GuardNotFoundError } from './guard-broker.js';
+import { dispatchLiveRoute } from './live-routes.js';
 import {
   ANSWERABLE_NODE_KINDS,
   TRIGGERABLE_NODE_KINDS,
@@ -39,8 +40,9 @@ export class ControlRoutes {
     route: Route,
     payload: Record<string, unknown> | undefined,
     rawUrl?: string,
+    method?: string,
   ): Promise<Record<string, unknown>> {
-    return dispatchRoutes(this.context, route, payload, rawUrl);
+    return dispatchRoutes(this.context, route, payload, rawUrl, method);
   }
 }
 
@@ -49,6 +51,7 @@ async function dispatchRoutes(
   route: Route,
   payload: Record<string, unknown> | undefined,
   rawUrl?: string,
+  method?: string,
 ): Promise<Record<string, unknown>> {
   const host = context.requireGraphHost();
 
@@ -306,6 +309,18 @@ async function dispatchRoutes(
       const report = await context.sweepIdleSessions();
       return { ok: true, report };
     }
+    case 'lives-create':
+    case 'lives-load':
+    case 'lives-instantiate':
+    case 'lives-wake':
+    case 'lives-answer':
+    case 'lives-save':
+    case 'lives-unload':
+    case 'lives-migrate':
+    case 'lives-inspect':
+    case 'templates':
+    case 'dispatch':
+      return dispatchLiveRoute(context, route, payload, method);
   }
 }
 

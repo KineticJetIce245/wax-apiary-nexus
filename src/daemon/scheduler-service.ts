@@ -124,4 +124,9 @@ export class SchedulerService {
   has(graphId: string): boolean {
     return this.entries.has(graphId);
   }
+
+  /** Current occurrence markers for a graph; undefined without a scheduler. */
+  exportState(graphId: string): SchedulerState | undefined {
+    return this.entries.get(graphId)?.scheduler.exportState();
+  }
 }

@@ -385,7 +385,7 @@ export class ControlClient {
     return parseSweepSessionsReport(requireField(body, 'report'));
   }
 
-  private async request(
+  protected async request(
     method: 'GET' | 'POST',
     path: string,
     payload?: Record<string, unknown>,

@@ -9,6 +9,7 @@ import { expandHomePath } from '../storage/conversation-store.js';
 import { HoneyStore } from '../storage/honey.js';
 import { RunStore } from '../storage/run-store.js';
 import type { SweepReport } from '../graph/registry.js';
+import type { LiveHiveService } from '../b/live-hive-service.js';
 import { DEFAULT_GUARD_TIMEOUT_MS, GuardBroker } from './guard-broker.js';
 import {
   DEFAULT_DAEMON_DIR,
@@ -51,6 +52,7 @@ export class ControlServerContext {
   server: Server | undefined;
   lock: DaemonLock | undefined;
   graphHost: GraphHost | undefined;
+  liveHiveService: LiveHiveService | undefined;
   runStore: RunStore | undefined;
   guardBroker: GuardBroker | undefined;
   tokenValue: string | undefined;
@@ -179,6 +181,14 @@ export class ControlServerContext {
       throw new HttpError(500, 'internal', 'internal error');
     }
     return host;
+  }
+
+  requireLiveHiveService(): LiveHiveService {
+    const service = this.liveHiveService;
+    if (service === undefined) {
+      throw new HttpError(500, 'internal', 'internal error');
+    }
+    return service;
   }
 
   /** One idle-session pass, shared by `POST /sessions/sweep` and the timer. */

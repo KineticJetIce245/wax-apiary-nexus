@@ -481,3 +481,36 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
   assert.equal(again.persisted, true);
   assert.equal(counterCount(honey.load()), 2);
 });
+
+test('GraphHost.save flushes Honey without unloading and keeps memory on failure', async (t) => {
+  const env = makeEnv();
+  const root = mkdtempSync(join(tmpdir(), 'wax-m9i-save-'));
+  const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'save-only'));
+  const host = new GraphHost({
+    registry: env.registry,
+    honeyForGraph: () => honey,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('save-only', 'run {{input}}');
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+  });
+  await host.trigger('save-only', 'only', text('before-save'));
+  const status = await host.save('save-only');
+  assert.equal(status.graphId, 'save-only');
+  assert.equal(host.statusOf('save-only')?.rest, true);
+  assert.ok(honey.load() !== undefined);
+
+  honey.failSave = true;
+  await assert.rejects(host.save('save-only'), /honey save failed/);
+  assert.ok(host.statusOf('save-only') !== undefined);
+  honey.failSave = false;
+  assert.equal((await host.save('save-only')).graphId, 'save-only');
+  assert.equal(await host.unload('save-only'), true);
+});

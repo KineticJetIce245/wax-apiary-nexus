@@ -62,6 +62,12 @@ export interface ControlServerOptions {
   readonly catalog?: LiveHiveCatalog;
   /** Native guard decision timeout; defaults to one hour. */
   readonly guardTimeoutMs?: number;
+  /** Root for `<livesRoot>/<liveId>/live.json`; defaults under stateRoot. */
+  readonly livesRoot?: string;
+  /** Directory of `<templateId>.json` templates; defaults under stateRoot. */
+  readonly templatesRoot?: string;
+  /** Project used by B live operations that create fresh sessions. */
+  readonly liveProject?: Project;
   readonly now?: () => number;
   /**
    * Metadata-only request log. It never receives a body, prompt, output or
@@ -124,7 +130,18 @@ export type RouteKind =
   | 'guard-decide'
   | 'sessions'
   | 'session-close'
-  | 'session-sweep';
+  | 'session-sweep'
+  | 'lives-create'
+  | 'lives-load'
+  | 'lives-instantiate'
+  | 'lives-wake'
+  | 'lives-answer'
+  | 'lives-save'
+  | 'lives-unload'
+  | 'lives-migrate'
+  | 'lives-inspect'
+  | 'templates'
+  | 'dispatch';
 
 export interface Route {
   readonly kind: RouteKind;

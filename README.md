@@ -34,11 +34,12 @@ The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/g
 - **M9f1 (committed in `ba567ad`)** splits `GraphHost` into a 114-line facade plus lifecycle/execution/read/session-ownership services, and deletes the dead `drain`/`firstHover`/`lastOutputs` APIs.
 - **M9f2 (committed in `a4883cd`)** splits `ControlServer` into a 55-line facade plus lifecycle/HTTP/routes/validation/context services; no behavior change.
 - **M9g (committed in `7fa3db7`)** removes the unused revision module and Honey log/transcript methods; test files are now all ≤800.
-- **M9h (uncommitted)** adds the B object layer under `src/b/`: HiveTemplate, LiveHive (`live.json` keyed by beeId), Bee/Beeline/BeeBinding, codec to CompositionDefinition, and DispatchService.
+- **M9h (committed in `eda0df6`)** adds the B object layer under `src/b/`: HiveTemplate, LiveHive (`live.json` keyed by beeId), Bee/Beeline/BeeBinding, codec to CompositionDefinition, and DispatchService.
+- **M9i (uncommitted)** adds live/template/dispatch HTTP routes and CLI, `LiveHiveService`, and `GraphHost.save`; existing `/graphs` remains.
 - **Review fixes (committed in `463682c`, `cbbc6ac`)** hardened real evidence: DSH recall product test, adapter prompt routing, host guard reject/cancel, partial-start/restart, guard HTTP negatives, reload-then-run, explicit timeouts, and test-file splits.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 749 tests (748 pass + 1 Windows skip after M9h). **Full `npm run test:integration` passes 21/21 with 0 skip**; all test files are now ≤800 lines.
+- The regression suite is 761 tests (760 pass + 1 Windows skip after M9i). **Full `npm run test:integration` passes 21/21 with 0 skip**; all test files are now ≤800 lines. M9i real B operation chain is still M9j.
 
 ## Current commands
 

@@ -15,7 +15,6 @@ import {
   type Pheromone,
   type Value,
 } from '../src/runtime/index.js';
-import { findActiveReferences } from '../src/composition/revision.js';
 
 const START = Date.parse('2026-06-01T00:00:00.000Z');
 const TIMEOUT = 5000;
@@ -544,7 +543,6 @@ test('a timed-out tombstone is not a Rest blocker or an active edit reference', 
   });
 
   assert.equal(runtime.snapshot().rest, true);
-  assert.deepEqual(findActiveReferences(runtime.snapshot()), []);
   assert.equal(runtime.nextWakeAt(), undefined);
 });
 

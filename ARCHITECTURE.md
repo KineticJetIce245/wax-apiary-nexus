@@ -54,7 +54,6 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
     live.json
     honey/field.json
     honey/scheduler.json
-    honey/log.jsonl
 ```
 
 - `live.json` is keyed by `beeId` for `bees` and `bindings`; `beelines` are keyed by `beelineId`.

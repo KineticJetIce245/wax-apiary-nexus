@@ -32,11 +32,12 @@ The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/g
 - **M9d (committed in `425fcdc`)** added the per-LiveHive scheduler, `GET /guards` + `POST /guard/decide`, and durable `RunStore` output (`runId`/`requestId`, readable after unload).
 - **M9e (committed in `a5be496`)** makes `fresh_once` reuse depend on harness + projectDirectory, and rejects a second loaded graph that binds the same explicit session with HTTP 409 `session-busy`.
 - **M9f1 (committed in `ba567ad`)** splits `GraphHost` into a 114-line facade plus lifecycle/execution/read/session-ownership services, and deletes the dead `drain`/`firstHover`/`lastOutputs` APIs.
-- **M9f2 (uncommitted)** splits `ControlServer` into a 55-line facade plus lifecycle/HTTP/routes/validation/context services; no behavior change.
+- **M9f2 (committed in `a4883cd`)** splits `ControlServer` into a 55-line facade plus lifecycle/HTTP/routes/validation/context services; no behavior change.
+- **M9g (uncommitted)** removes the unused revision module and Honey log/transcript methods; test files are now all ≤800.
 - **Review fixes (committed in `463682c`, `cbbc6ac`)** hardened real evidence: DSH recall product test, adapter prompt routing, host guard reject/cancel, partial-start/restart, guard HTTP negatives, reload-then-run, explicit timeouts, and test-file splits.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 736 tests (735 pass + 1 Windows skip). **Full `npm run test:integration` passes 21/21 with 0 skip** on two consecutive runs; an earlier product-shape flake is recorded. `graph-host`, `control-cli`, and `control-server` test files are split; several smaller test files remain over 800 and are still M9f debt.
+- The regression suite is 725 tests (724 pass + 1 Windows skip after M9g). **Full `npm run test:integration` passes 21/21 with 0 skip**; all test files are now ≤800 lines.
 
 ## Current commands
 
@@ -71,10 +72,7 @@ The code still uses the old names; renames happen during the M9 refactor.
 - Guard requests are exposed/decided by `requestId`; they are not RunStore records because `GuardRequest` has no `liveId`.
 - RunStore has 1000-record / 1 MiB defaults and is used by trigger/answer.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
-- Fresh binding schema v2; v1 mapping files are rejected, not migrated.
 - A second loaded graph binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
-- Real mixed Codex+DSH, scheduler, DSH guard, and DSH session-busy tests pass; full integration is 17/17. Native partial-failure and daemon restart-after-exit remain unverified.
-- `ControlServer` (~1885) remains over Rule 11 budget; `GraphHost` is a 114-line facade now. M9f2 is next.
-- OS SIGTERM graceful cleanup, Windows token ACL, and physical power-loss durability are not verified.
+- Real mixed Codex+DSH, scheduler, DSH guard, and DSH session-busy tests pass; full integration is 21/21. Native SIGKILL/crash recovery, OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

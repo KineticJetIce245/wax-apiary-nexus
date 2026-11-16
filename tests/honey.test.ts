@@ -132,8 +132,6 @@ test('honeyPaths follows the contract layout', () => {
     join('C:/state', 'apiaries', 'apiary-1', 'compositions', 'comp-1'),
   );
   assert.equal(paths.field, join(paths.directory, 'honey', 'field.json'));
-  assert.equal(paths.log, join(paths.directory, 'log.jsonl'));
-  assert.equal(paths.transcripts, join(paths.directory, 'honey', 'transcripts'));
 });
 
 test('ids that could escape the state root are rejected', () => {
@@ -198,40 +196,6 @@ test('a loaded field with a bad node shape is rejected', () => {
   );
 
   assert.throws(() => store.load(), /expected a node state/);
-});
-
-test('appendLog writes one metadata line per entry', () => {
-  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
-  const entries = [
-    {
-      at: new Date(START).toISOString(),
-      event: 'node.completed' as const,
-      compositionId: 'ask',
-      graphRevision: 'rev',
-      nodeId: 'start',
-      outcome: 'ok',
-    },
-  ];
-
-  store.appendLog(entries);
-
-  const lines = readFileSync(store.paths.log, 'utf8').trim().split('\n');
-  assert.equal(lines.length, 1);
-  const parsed = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>;
-  assert.equal(parsed['event'], 'node.completed');
-  assert.equal(parsed['nodeId'], 'start');
-  assert.ok(!('prompt' in parsed));
-  assert.ok(!('output' in parsed));
-});
-
-test('transcript paths stay inside the transcripts directory', () => {
-  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
-
-  assert.equal(
-    store.transcriptPath('conv-1'),
-    join(store.paths.transcripts, 'conv-1.jsonl'),
-  );
-  assert.throws(() => store.transcriptPath('../escape'), /invalid conversation id/);
 });
 
 test('restore keeps queue, pending and a user hover', async () => {
@@ -391,53 +355,6 @@ test('a guard hover cannot be resumed and is marked stuck', () => {
   assert.ok(start !== undefined);
   assert.equal(start.hover, undefined);
   assert.equal(start.state['needsAttention'], true);
-});
-
-test('transcripts keep bodies that the metadata log does not', () => {
-  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
-
-  store.appendTranscript('conv-1', [
-    { at: new Date(START).toISOString(), type: 'output', text: 'SECRET-BODY' },
-  ]);
-  store.appendLog([
-    {
-      at: new Date(START).toISOString(),
-      event: 'node.completed',
-      compositionId: 'ask',
-      graphRevision: 'rev',
-      transcriptRef: 'conv-1',
-    },
-  ]);
-
-  const transcript = readFileSync(store.transcriptPath('conv-1'), 'utf8');
-  const log = readFileSync(store.paths.log, 'utf8');
-  assert.match(transcript, /SECRET-BODY/);
-  assert.ok(!log.includes('SECRET-BODY'));
-  assert.match(log, /transcriptRef/);
-});
-
-test('the log and transcripts rotate when they grow past the limit', () => {
-  const root = tempRoot();
-  const store = new HoneyStore(honeyPaths(root, 'apiary', 'ask'), {
-    maxLogBytes: 160,
-    maxTranscriptBytes: 160,
-    keepSegments: 2,
-  });
-  const entry = {
-    at: new Date(START).toISOString(),
-    event: 'runtime.rest' as const,
-    compositionId: 'ask',
-    graphRevision: 'rev',
-  };
-
-  for (let index = 0; index < 6; index += 1) {
-    store.appendLog([entry]);
-    store.appendTranscript('conv-1', [{ at: new Date(START).toISOString(), type: 'output', text: 'x'.repeat(40) }]);
-  }
-
-  assert.ok(existsSync(`${store.paths.log}.1`));
-  assert.ok(existsSync(`${store.transcriptPath('conv-1')}.1`));
-  assert.ok(!existsSync(`${store.paths.log}.3`), 'only keepSegments segments are kept');
 });
 
 test('restore refuses a different graph revision or an unknown node', () => {

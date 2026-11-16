@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import type { Project } from '../../src/project/kernel.js';
+import { DispatchService } from '../../src/b/dispatch-service.js';
 import { createDefaultAdapter } from '../../src/cli/cli-shared.js';
 import { AdapterPool } from '../../src/session/adapter-pool.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
@@ -142,6 +143,22 @@ test(
       t.diagnostic(
         `observed: codex=${codexOutput} (1000..9999), dsh=${dshOutput} (100..999)`,
       );
+
+      // M9h real Dispatch smoke: explicitly reuse the real DSH session and
+      // check only the unknown answer's format/range, not a fixed value.
+      const dispatched = await new DispatchService({
+        registry,
+        defaultProject: project,
+      }).dispatch(
+        'Pick a random integer from 100000 through 999999. ' +
+          'Do not use tools. Reply with only the integer.',
+        { sessionId: dshSession.sessionId, timeoutMs: 120_000 },
+      );
+      assert.match(dispatched.output.trim(), /^\d{6}$/);
+      const dispatchedValue = Number(dispatched.output.trim());
+      assert.ok(dispatchedValue >= 100000 && dispatchedValue <= 999999);
+      assert.equal(dispatched.sessionId, dshSession.sessionId);
+      t.diagnostic(`observed dispatch: dsh=${dispatched.output.trim()} (100000..999999)`);
 
       await registry.close(codexSession.sessionId);
       await registry.close(dshSession.sessionId);

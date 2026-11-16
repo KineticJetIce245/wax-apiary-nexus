@@ -33,11 +33,12 @@ The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/g
 - **M9e (committed in `a5be496`)** makes `fresh_once` reuse depend on harness + projectDirectory, and rejects a second loaded graph that binds the same explicit session with HTTP 409 `session-busy`.
 - **M9f1 (committed in `ba567ad`)** splits `GraphHost` into a 114-line facade plus lifecycle/execution/read/session-ownership services, and deletes the dead `drain`/`firstHover`/`lastOutputs` APIs.
 - **M9f2 (committed in `a4883cd`)** splits `ControlServer` into a 55-line facade plus lifecycle/HTTP/routes/validation/context services; no behavior change.
-- **M9g (uncommitted)** removes the unused revision module and Honey log/transcript methods; test files are now all ≤800.
+- **M9g (committed in `7fa3db7`)** removes the unused revision module and Honey log/transcript methods; test files are now all ≤800.
+- **M9h (uncommitted)** adds the B object layer under `src/b/`: HiveTemplate, LiveHive (`live.json` keyed by beeId), Bee/Beeline/BeeBinding, codec to CompositionDefinition, and DispatchService.
 - **Review fixes (committed in `463682c`, `cbbc6ac`)** hardened real evidence: DSH recall product test, adapter prompt routing, host guard reject/cancel, partial-start/restart, guard HTTP negatives, reload-then-run, explicit timeouts, and test-file splits.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 725 tests (724 pass + 1 Windows skip after M9g). **Full `npm run test:integration` passes 21/21 with 0 skip**; all test files are now ≤800 lines.
+- The regression suite is 749 tests (748 pass + 1 Windows skip after M9h). **Full `npm run test:integration` passes 21/21 with 0 skip**; all test files are now ≤800 lines.
 
 ## Current commands
 

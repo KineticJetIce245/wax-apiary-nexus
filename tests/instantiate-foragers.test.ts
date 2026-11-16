@@ -772,6 +772,48 @@ test('fresh_once reuses only the exact project directory, not a shared projectId
   assert.equal(adapter.displayNames.length, 2);
 });
 
+test('fresh_once reuses the same directory even when projectId changes', async (t) => {
+  const { adapter, workspace, registry, project } = makeHarness();
+  t.after(() => workspace.stop());
+  const bindingStore = makeBindingStore();
+  const definition = makeDefinition({ only: foragerNode('run') });
+  const first = await instantiateForagers({
+    definition,
+    graphId: 'directory-reuse-graph',
+    bindings: { only: { kind: 'fresh', mode: 'once' } },
+    registry,
+    project,
+    bindingStore,
+  });
+  t.after(() => first.dispose());
+  const firstSession = first.sessions.get('only');
+  assert.ok(firstSession !== undefined);
+
+  const sameDirectoryNewId: Project = {
+    id: 'different-project-id',
+    directory: project.directory,
+  };
+  const second = await instantiateForagers({
+    definition,
+    graphId: 'directory-reuse-graph',
+    bindings: { only: { kind: 'fresh', mode: 'once' } },
+    registry,
+    project: sameDirectoryNewId,
+    bindingStore,
+  });
+  t.after(() => second.dispose());
+
+  assert.deepEqual(second.createdSessionIds, []);
+  assert.equal(second.sessions.get('only')?.sessionId, firstSession.sessionId);
+  assert.equal(adapter.displayNames.length, 1);
+  assert.equal(registry.list().length, 1);
+  assert.equal(second.sessions.get('only')?.projectId, project.id);
+  assert.equal(
+    bindingStore.get('directory-reuse-graph', 'only')?.projectDirectory,
+    project.directory,
+  );
+});
+
 test('fresh_always and an absent mode both create a new session without writing the store', async (t) => {
   const { adapter, workspace, registry, project } = makeHarness();
   t.after(() => workspace.stop());

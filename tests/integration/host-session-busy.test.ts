@@ -104,6 +104,8 @@ test(
       assert.equal(busy.status, 409);
       assert.equal(busy.body['code'], 'session-busy');
       assert.equal(busy.body['error'], 'session is busy');
+      assert.equal(JSON.stringify(busy.body).includes(session.sessionId), false);
+      assert.equal(JSON.stringify(busy.body).includes('random request'), false);
 
       assert.equal(
         (await request('POST', '/graphs/unload', { graphId: 'first' })).status,
@@ -126,7 +128,7 @@ test(
       assert.match(text, /^\d{3}$/);
       const numeric = Number(text);
       assert.ok(numeric >= 100 && numeric <= 999);
-      t.diagnostic('observed: real DSH session rejected by second graph, then loaded and answered');
+      t.diagnostic(`observed: real DSH session rejected by second graph, then answered ${text}`);
     } finally {
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);

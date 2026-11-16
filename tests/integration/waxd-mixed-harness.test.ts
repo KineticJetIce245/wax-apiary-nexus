@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import type { HarnessAdapter } from '../../src/adapters/harness.js';
+import { createDefaultAdapter, type AdapterRequest } from '../../src/cli/cli-shared.js';
 import { runWaxdCli, type WaxdStartedInfo } from '../../src/cli/waxd-cli.js';
 import type { Project } from '../../src/project/kernel.js';
 
@@ -152,6 +154,24 @@ test(
     const started = deferred<WaxdStartedInfo>();
     const stdout: string[] = [];
     const stderr: string[] = [];
+    const promptsByHarness = new Map<string, string[]>();
+    const createAdapter = async (request: AdapterRequest): Promise<HarnessAdapter> => {
+      const adapter = await createDefaultAdapter(request);
+      const prompts: string[] = [];
+      promptsByHarness.set(request.harness, prompts);
+      const submit = adapter.submit.bind(adapter);
+      return new Proxy(adapter, {
+        get(target, property, receiver) {
+          if (property === 'submit') {
+            return (...args: Parameters<HarnessAdapter['submit']>) => {
+              prompts.push(args[2]);
+              return submit(...args);
+            };
+          }
+          return Reflect.get(target, property, receiver) as unknown;
+        },
+      });
+    };
 
     const run = runWaxdCli(
       [
@@ -179,6 +199,7 @@ test(
         stderr: (line) => stderr.push(line),
         signal: controller.signal,
         installSignalHandlers: false,
+        createAdapter,
         onStarted: (info) => started.resolve(info),
       },
     );
@@ -236,6 +257,16 @@ test(
       assert.ok(dshValue >= 100 && dshValue <= 999);
       t.diagnostic('observed: codex 4-digit integer within range; dsh 3-digit integer within range');
 
+      // Prove which native adapter received which prompt, not just which
+      // harness label the session record carries.
+      const codexPrompts = promptsByHarness.get('codex') ?? [];
+      const dshPrompts = promptsByHarness.get('dsh') ?? [];
+      assert.equal(codexPrompts.length, 1);
+      assert.equal(dshPrompts.length, 1);
+      assert.match(codexPrompts[0] ?? '', /1000 through 9999/);
+      assert.match(dshPrompts[0] ?? '', /100 through 999/);
+      t.diagnostic('adapter routing: codex prompt has 4-digit range; dsh prompt has 3-digit range');
+
       const sessions = await request(info, token, 'GET', '/sessions');
       assert.equal(sessions.status, 200);
       const summaries = sessions.body['sessions'] as Record<string, unknown>[];
@@ -243,7 +274,10 @@ test(
         summaries.map((session) => session['harness']).sort(),
         ['codex', 'dsh'],
       );
-      assert.equal(new Set(summaries.map((session) => session['projectId'])).size, 1);
+      assert.equal(
+        summaries.every((session) => session['projectId'] === project.id),
+        true,
+      );
 
       const catalogLoaded = await request(info, token, 'GET', '/catalog');
       assert.equal(catalogLoaded.status, 200);
@@ -289,7 +323,10 @@ test(
       assert.equal(code, 0);
       assert.equal(existsSync(join(daemonDir, 'token')), false);
       assert.equal(existsSync(join(daemonDir, 'server.json')), false);
-      assert.equal(stdout.length, 5);
+      assert.equal(
+        stdout.filter((line) => line.startsWith('waxd listening ')).length,
+        1,
+      );
     }
   },
 );

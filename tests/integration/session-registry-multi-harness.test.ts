@@ -1,3 +1,6 @@
+// Adapter/session-level test: two real native sessions and a global WAX
+// registry, not a graph/daemon cross-harness test. The real cross-harness graph
+// path is covered by waxd-mixed-harness.test.ts.
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';

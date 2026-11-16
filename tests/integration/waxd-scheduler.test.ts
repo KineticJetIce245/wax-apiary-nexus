@@ -182,7 +182,7 @@ test(
       assert.notEqual(runId, '');
       const numeric = Number(output);
       assert.ok(numeric >= 1000 && numeric <= 9999);
-      t.diagnostic('observed: scheduler-triggered Codex output was a 4-digit integer in range');
+      t.diagnostic(`observed: scheduler-triggered Codex output=${output}`);
 
       const runFiles = readdirSync(join(daemonDir, 'runs')).filter((name) =>
         name.endsWith('.json'),

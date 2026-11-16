@@ -34,7 +34,7 @@ The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/g
 - **M9f1 (uncommitted)** splits `GraphHost` into a 114-line facade plus lifecycle/execution/read/session-ownership services, and deletes the dead `drain`/`firstHover`/`lastOutputs` APIs.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 734 tests (733 pass + 1 Windows skip after M9f1; 5 dead-API tests were removed). Real integration now includes a mixed Codex+DSH `waxd` graph, a DSH/Codex product check, a scheduled Codex graph, a real DSH guard approval, and a real DSH session-busy/reload check; the full `npm run test:integration` suite was not run as a whole.
+- The regression suite is 735 tests (734 pass + 1 Windows skip after the review fixes; 5 dead-API tests were removed). **Full `npm run test:integration` passes 17/17 with 0 skip on rerun**; an earlier full run had one DSH seed-shape flake, and the targeted product test plus the full rerun passed. Real integration includes mixed Codex+DSH, scheduler, guard, session-busy, and product tests.
 
 ## Current commands
 
@@ -69,8 +69,9 @@ The code still uses the old names; renames happen during the M9 refactor.
 - Guard requests are exposed/decided by `requestId`; they are not RunStore records because `GuardRequest` has no `liveId`.
 - RunStore has 1000-record / 1 MiB defaults and is used by trigger/answer.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
+- Fresh binding schema v2; v1 mapping files are rejected, not migrated.
 - A second loaded graph binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
-- Real mixed Codex+DSH `waxd`, scheduler, DSH guard, and DSH session-busy tests pass; full `npm run test:integration`, native partial-failure, and daemon restart-after-exit remain unverified.
+- Real mixed Codex+DSH, scheduler, DSH guard, and DSH session-busy tests pass; full integration is 17/17. Native partial-failure and daemon restart-after-exit remain unverified.
 - `ControlServer` (~1885) remains over Rule 11 budget; `GraphHost` is a 114-line facade now. M9f2 is next.
 - OS SIGTERM graceful cleanup, Windows token ACL, and physical power-loss durability are not verified.
 

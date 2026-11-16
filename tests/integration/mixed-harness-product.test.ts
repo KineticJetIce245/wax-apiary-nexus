@@ -146,13 +146,12 @@ test(
         `observed seeds: DSH=${String(dshNumber)}, Codex=${String(codexNumber)}`,
       );
 
-      // Codex's number goes back to the original DSH session, which still has
-      // its own previous number in context.
+      // Codex's number goes back to the original DSH session. Do not repeat
+      // DSH's own number: DSH must recall it from its previous turn.
       const dshProductExecution = await dshWorkspace.submit(
         dshSession.sessionId,
-        `You previously picked ${String(dshNumber)}. ` +
-          `Codex picked ${String(codexNumber)}. ` +
-          'Compute their product. Reply with only the product, as digits.',
+        `Multiply your previous number by ${String(codexNumber)}. ` +
+          'Reply with only the product, as digits.',
       );
       const dshProduct = await waitForSettled(dshWorkspace, dshProductExecution.id);
       assert.equal(dshProduct.state, 'completed');

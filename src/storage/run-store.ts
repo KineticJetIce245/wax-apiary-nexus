@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { atomicWriteJson } from './atomic-write.js';
 
-export type RunOperation = 'trigger' | 'answer' | 'drain' | 'guard';
+export type RunOperation = 'trigger' | 'answer';
 export type RunStatus = 'completed' | 'hovered' | 'incomplete' | 'failed' | 'cancelled';
 
 export interface RunOutput {

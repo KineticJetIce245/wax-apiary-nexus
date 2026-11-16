@@ -25,16 +25,18 @@ waxd
 
 ## Current status
 
-The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/guard/run wiring, M9e session-ownership checks, and the M9f1 GraphHost split; it does **not** yet implement the full target above.
+The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/guard/run wiring, M9e session-ownership checks, and the M9f1/M9f2 host/control splits; it does **not** yet implement the full target above.
 
 - **M9a/M9b/M9c (committed in `3eb24b0`)** are wired together: one `AdapterPool`, one global `SessionRegistry`, one `GraphHost`, one `ControlServer`, one endpoint. A graph can mix Codex and DSH sessions.
 - **M9b** added `LiveHiveCatalog`, per-live `LiveHiveLock`, a graph TTL timer, and `GET /catalog`; unloaded LiveHives keep their identity. `status` still reports loaded graphs only.
 - **M9d (committed in `425fcdc`)** added the per-LiveHive scheduler, `GET /guards` + `POST /guard/decide`, and durable `RunStore` output (`runId`/`requestId`, readable after unload).
 - **M9e (committed in `a5be496`)** makes `fresh_once` reuse depend on harness + projectDirectory, and rejects a second loaded graph that binds the same explicit session with HTTP 409 `session-busy`.
-- **M9f1 (uncommitted)** splits `GraphHost` into a 114-line facade plus lifecycle/execution/read/session-ownership services, and deletes the dead `drain`/`firstHover`/`lastOutputs` APIs.
+- **M9f1 (committed in `ba567ad`)** splits `GraphHost` into a 114-line facade plus lifecycle/execution/read/session-ownership services, and deletes the dead `drain`/`firstHover`/`lastOutputs` APIs.
+- **M9f2 (uncommitted)** splits `ControlServer` into a 55-line facade plus lifecycle/HTTP/routes/validation/context services; no behavior change.
+- **Review fixes (committed in `463682c`, `cbbc6ac`)** hardened real evidence: DSH recall product test, adapter prompt routing, host guard reject/cancel, partial-start/restart, guard HTTP negatives, reload-then-run, explicit timeouts, and test-file splits.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 735 tests (734 pass + 1 Windows skip after the review fixes; 5 dead-API tests were removed). **Full `npm run test:integration` passes 17/17 with 0 skip on rerun**; an earlier full run had one DSH seed-shape flake, and the targeted product test plus the full rerun passed. Real integration includes mixed Codex+DSH, scheduler, guard, session-busy, and product tests.
+- The regression suite is 736 tests (735 pass + 1 Windows skip). **Full `npm run test:integration` passes 21/21 with 0 skip** on two consecutive runs; an earlier product-shape flake is recorded. `graph-host`, `control-cli`, and `control-server` test files are split; several smaller test files remain over 800 and are still M9f debt.
 
 ## Current commands
 

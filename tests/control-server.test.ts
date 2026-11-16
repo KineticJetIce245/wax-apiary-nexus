@@ -344,8 +344,9 @@ function assertNoSecrets(haystack: string, token: string): void {
 
 interface ServerHoverAccess {
   readonly graphHost?: {
-    readonly graphs: {
-      peek(id: string):
+    readonly context: {
+      readonly graphs: {
+        peek(id: string):
         | {
             readonly value: {
               readonly runtime: {
@@ -360,7 +361,8 @@ interface ServerHoverAccess {
               };
             };
           }
-        | undefined;
+          | undefined;
+      };
     };
   };
 }
@@ -369,7 +371,7 @@ interface ServerHoverAccess {
 function hoverTokenOf(server: ControlServer, graphId: string, nodeId: string): string {
   const host = (server as unknown as ServerHoverAccess).graphHost;
   assert.ok(host !== undefined, 'control server has no graph host');
-  const entry = host.graphs.peek(graphId);
+  const entry = host.context.graphs.peek(graphId);
   assert.ok(entry !== undefined, `graph '${graphId}' is not loaded`);
   const hover = entry.value.runtime.snapshot().nodes[nodeId]?.hover;
   assert.ok(hover !== undefined, `node '${nodeId}' has no open hover`);

@@ -252,10 +252,12 @@ interface RuntimeTestAccess {
 
 function runtimeOf(host: GraphHost, graphId: string): RuntimeTestAccess {
   const graphs = (host as unknown as {
-    graphs: {
-      peek(id: string): { readonly value: { readonly runtime: RuntimeTestAccess } } | undefined;
+    context: {
+      graphs: {
+        peek(id: string): { readonly value: { readonly runtime: RuntimeTestAccess } } | undefined;
+      };
     };
-  }).graphs;
+  }).context.graphs;
   const entry = graphs.peek(graphId);
   assert.ok(entry !== undefined, `graph '${graphId}' is not loaded`);
   return entry.value.runtime;

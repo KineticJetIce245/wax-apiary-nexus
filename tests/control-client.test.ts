@@ -149,8 +149,9 @@ function userForagerDefinition(id: string): Record<string, unknown> {
 
 interface ClientHoverAccess {
   readonly graphHost?: {
-    readonly graphs: {
-      peek(id: string):
+    readonly context: {
+      readonly graphs: {
+        peek(id: string):
         | {
             readonly value: {
               readonly runtime: {
@@ -165,7 +166,8 @@ interface ClientHoverAccess {
               };
             };
           }
-        | undefined;
+          | undefined;
+      };
     };
   };
 }
@@ -174,7 +176,7 @@ interface ClientHoverAccess {
 function hoverTokenOf(daemon: TestDaemon, graphId: string, nodeId: string): string {
   const host = (daemon.server as unknown as ClientHoverAccess).graphHost;
   assert.ok(host !== undefined, 'daemon has no graph host');
-  const entry = host.graphs.peek(graphId);
+  const entry = host.context.graphs.peek(graphId);
   assert.ok(entry !== undefined, `graph '${graphId}' is not loaded`);
   const hover = entry.value.runtime.snapshot().nodes[nodeId]?.hover;
   assert.ok(hover !== undefined, `node '${nodeId}' has no open hover`);

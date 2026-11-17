@@ -163,7 +163,7 @@ export class LiveHiveService {
       id,
     );
     const status = await this.options.graphHost.save(id);
-    this.repository.saveLive(live);
+    this.syncBindings(live);
     return status;
   }
 
@@ -171,9 +171,10 @@ export class LiveHiveService {
   async unload(liveId: string): Promise<boolean> {
     const id = this.repository.requireLiveId(liveId);
     const live = this.repository.cacheGet(id) ?? this.repository.tryReadLive(id);
+    const synced = live === undefined ? undefined : this.syncBindings(live);
     const unloaded = await this.options.graphHost.unload(id);
-    if (unloaded && live !== undefined) {
-      this.repository.saveLive(live);
+    if (unloaded && synced !== undefined) {
+      this.repository.saveLive(synced);
     }
     return unloaded;
   }
@@ -197,9 +198,13 @@ export class LiveHiveService {
     if (status === undefined && catalog === undefined && !this.repository.cached(id)) {
       throw new LiveHiveServiceError('not-found', `live hive is not loaded: ${id}`);
     }
-    const outputs = [...this.options.graphHost.outputsOf(id).entries()]
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([nodeId, value]) => ({ nodeId, value }));
+    // outputsOf requires a loaded graph. An unloaded live is a valid read:
+    // return its catalog identity and an empty output list, never a 500.
+    const outputs = status === undefined
+      ? []
+      : [...this.options.graphHost.outputsOf(id).entries()]
+          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+          .map(([nodeId, value]) => ({ nodeId, value }));
     return {
       liveId: id,
       ...(status === undefined ? {} : { status }),
@@ -261,13 +266,36 @@ export class LiveHiveService {
       this.options.registry,
     );
     const definition = toCompositionDefinition(live);
-    return this.options.graphHost.loadGraph({
+    const status = await this.options.graphHost.loadGraph({
       definition,
       bindings: bindingsFor(live, defaults),
       project: resolvedProject,
       ...(this.defaultHarness === undefined ? {} : { defaultHarness: this.defaultHarness }),
       ...(restoreHoney === undefined ? {} : { restoreHoney }),
     });
+    // live.json is the binding truth: persist the sessions GraphHost actually
+    // created/attached for this topology.
+    this.syncBindings(live);
+    return status;
+  }
+
+  /** Merge the loaded bee -> session mapping into live.json. */
+  private syncBindings(live: LiveHive): LiveHive {
+    const loaded = this.options.graphHost.bindingsOf(live.liveId);
+    const bindings: Record<string, string> = {};
+    for (const [beeId, bee] of Object.entries(live.bees)) {
+      if (bee.kind !== 'forager') {
+        continue;
+      }
+      const sessionId = loaded.get(beeId) ?? live.bindings[beeId];
+      if (sessionId !== undefined) {
+        bindings[beeId] = sessionId;
+      }
+    }
+    const next = this.repository.parseLive({ ...live, bindings });
+    this.repository.saveLive(next);
+    this.repository.cacheSet(next);
+    return next;
   }
 }
 
@@ -287,10 +315,14 @@ function bindingsFor(live: LiveHive, defaults?: LiveHiveOverrides): GraphBinding
       throw new LiveHiveServiceError('conflict', `forager '${beeId}' has no session binding`);
     }
     const params = defaults?.[beeId] ?? {};
+    const connection = bee.config['connection'];
+    const harness =
+      params.harness ??
+      (typeof connection === 'string' && connection.length > 0 ? connection : undefined);
     bindings[beeId] = {
       kind: 'fresh',
       ...(mode === 'fresh_once' ? { mode: 'once' } : {}),
-      ...(params.harness === undefined ? {} : { harness: params.harness }),
+      ...(harness === undefined ? {} : { harness }),
       ...(params.model === undefined ? {} : { model: params.model }),
       ...(params.reasoning === undefined ? {} : { reasoning: params.reasoning }),
     };

@@ -57,6 +57,20 @@ export class GraphHostRead {
     return ids;
   }
 
+  /** Read-only bee/node -> session mapping for one loaded graph. */
+  bindingsOf(graphId: GraphId): ReadonlyMap<NodeId, string> {
+    this.context.assertNotDisposed();
+    const entry = this.context.graphs.peek(graphId);
+    if (entry === undefined) {
+      throw new GraphNotFoundError(graphId);
+    }
+    const bindings = new Map<NodeId, string>();
+    for (const [nodeId, record] of entry.value.instantiated.sessions) {
+      bindings.set(nodeId, record.sessionId);
+    }
+    return bindings;
+  }
+
   /**
    * Last completed Value of every forager in one loaded graph, keyed by node
    * id. It is a read-only snapshot: `peek` never refreshes the idle TTL, takes

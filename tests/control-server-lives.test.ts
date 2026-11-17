@@ -68,6 +68,13 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   });
   assert.equal(unloaded.status, 200);
   assert.equal(unloaded.body?.['unloaded'], true);
+  const unloadedInspect = await getJson(
+    running.info.url,
+    running.token,
+    '/lives/demo/inspect',
+  );
+  assert.equal(unloadedInspect.status, 200);
+  assert.deepEqual(unloadedInspect.body?.['outputs'], []);
 
   const loaded = await postJson(running.info.url, running.token, '/lives/load', {
     liveId: 'demo',

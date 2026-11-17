@@ -154,11 +154,12 @@ test(
           'Do not use tools. Reply with only the integer.',
         { sessionId: dshSession.sessionId, timeoutMs: 120_000 },
       );
-      assert.match(dispatched.output.trim(), /^\d{6}$/);
-      const dispatchedValue = Number(dispatched.output.trim());
+      const dispatchedDigits = dispatched.output.trim().replace(/,/g, '');
+      assert.match(dispatchedDigits, /^\d{6}$/);
+      const dispatchedValue = Number(dispatchedDigits);
       assert.ok(dispatchedValue >= 100000 && dispatchedValue <= 999999);
       assert.equal(dispatched.sessionId, dshSession.sessionId);
-      t.diagnostic(`observed dispatch: dsh=${dispatched.output.trim()} (100000..999999)`);
+      t.diagnostic(`observed dispatch: dsh=${dispatchedDigits} (100000..999999)`);
 
       await registry.close(codexSession.sessionId);
       await registry.close(dshSession.sessionId);

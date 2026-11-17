@@ -95,6 +95,11 @@ export class GraphHost {
     return this.read.loadedSessionIds();
   }
 
+  /** Read-only bee/node -> session mapping for one loaded graph. */
+  bindingsOf(graphId: GraphId): ReadonlyMap<NodeId, string> {
+    return this.read.bindingsOf(graphId);
+  }
+
   /** Last completed Value of every forager in one loaded graph. */
   outputsOf(graphId: GraphId): ReadonlyMap<NodeId, Value> {
     return this.read.outputsOf(graphId);

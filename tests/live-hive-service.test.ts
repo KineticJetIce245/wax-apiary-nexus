@@ -105,6 +105,9 @@ test('LiveHiveService new/wake/save/unload/load round-trips one live', async (t)
   assert.equal(await harness.service.unload('demo'), true);
   assert.equal(harness.host.statusOf('demo'), undefined);
   assert.equal(existsSync(livePath), true);
+  const unloadedInspect = harness.service.inspect('demo');
+  assert.equal(unloadedInspect.status, undefined);
+  assert.deepEqual(unloadedInspect.outputs, []);
   const loaded = await harness.service.load('demo');
   assert.equal(loaded.status.graphId, 'demo');
   assert.equal(harness.host.statusOf('demo')?.rest, true);

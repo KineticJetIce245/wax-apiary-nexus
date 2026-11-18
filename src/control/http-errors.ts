@@ -9,7 +9,6 @@ import {
 import { ProjectDirectoryError } from '../project/project-directory.js';
 import { CompositionValidationError, QueueFullError } from '../runtime/index.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
-import { answerErrorToHttp } from './routes.js';
 import { HttpError } from './server-types.js';
 
 /** Stable HTTP mapping; no native/prompt/output text is ever forwarded. */
@@ -45,7 +44,14 @@ export function toHttpError(error: unknown): HttpError {
     return new HttpError(409, 'session-busy', 'session is busy');
   }
   if (error instanceof GraphAnswerError) {
-    return answerErrorToHttp(error);
+    switch (error.reason) {
+      case 'unknown-node':
+      case 'not-user-node':
+        return new HttpError(400, 'bad-request', 'unknown or unanswerable node');
+      case 'no-hover':
+      case 'token-mismatch':
+        return new HttpError(409, 'conflict', 'hover is not open');
+    }
   }
   if (error instanceof QueueFullError) {
     return new HttpError(409, 'conflict', 'graph queue is full');

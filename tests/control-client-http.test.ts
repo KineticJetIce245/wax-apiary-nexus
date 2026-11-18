@@ -25,18 +25,17 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions } from './support/fake-adapter.js';
+import { bLoad, bUnload } from './support/control-server-http.js';
 import {
   FIXED_NOW,
   FakeClock,
   VALID_TOKEN,
+  foragerDefinition,
   PROMPT_MARKER,
   OUTPUT_MARKER,
   LEAK_MARKER,
   startDaemon,
-  foragerDefinition,
-  userForagerDefinition,
   hoverTokenOf,
-  clientManifestFixture,
   asRecord,
   isControlError,
   tempDir,
@@ -45,138 +44,20 @@ import {
   startRawServer,
 } from './support/control-client-fixtures.js';
 
-test('load, status, trigger, statusOf, sweep and unload round-trip over real HTTP', async (t) => {
-  const daemon = await startDaemon(t, { output: OUTPUT_MARKER });
-  const project = daemon.env.project;
-  const bindings = { only: { kind: 'fresh' } };
-
-  const loaded = asRecord(
-    await daemon.client.load({
-      definition: foragerDefinition('main', `run {{input}} ${PROMPT_MARKER}`),
-      bindings,
-      project,
-      idleTtlMs: 60_000,
-    }),
-  );
-  assert.equal(loaded['graphId'], 'main');
-  assert.equal(loaded['rest'], true);
-  assert.equal(loaded['residency']?.['idleTtlMs'], 60_000);
-
-  const statuses = await daemon.client.status();
-  assert.equal(statuses.length, 1);
-  assert.equal(asRecord(statuses[0])['graphId'], 'main');
-
-  const triggered = asRecord(
-    await daemon.client.trigger('main', 'only', {
-      kind: 'text',
-      text: 'client input',
-    }),
-  );
-  assert.equal(triggered['graphId'], 'main');
-  assert.equal(triggered['rest'], true);
-  assert.equal(triggered['persisted'], true);
-  assert.ok(Number(triggered['pumps']) >= 1);
-
-  const current = asRecord(await daemon.client.statusOf('main'));
-  assert.equal(current['graphId'], 'main');
-  assert.equal(current['rest'], true);
-  const nodes = current['nodes'];
-  assert.ok(Array.isArray(nodes));
-  assert.equal(asRecord(nodes[0])['queue'], 0);
-
-  await daemon.client.load({
-    definition: foragerDefinition('sweepme', 'sweep {{input}}'),
-    bindings,
-    project,
-    idleTtlMs: 60_000,
-  });
-  const report = asRecord(await daemon.client.sweep());
-  assert.deepEqual(report['unloaded'], []);
-  assert.deepEqual(report['skipped'], [
-    { id: 'main', reason: 'not-expired' },
-    { id: 'sweepme', reason: 'not-expired' },
-  ]);
-  assert.deepEqual(report['failed'], []);
-
-  assert.equal(await daemon.client.unload('main'), true);
-  assert.equal(await daemon.client.statusOf('main'), undefined);
-  assert.equal(await daemon.client.unload('sweepme'), true);
-  assert.equal((await daemon.client.status()).length, 0);
-});
-
-test('outputs round-trips over real HTTP and maps 404 to undefined', async (t) => {
-  const daemon = await startDaemon(t, { output: OUTPUT_MARKER });
-  const project = daemon.env.project;
-  await daemon.client.load({
-    definition: foragerDefinition('main', `run {{input}} ${PROMPT_MARKER}`),
-    bindings: { only: { kind: 'fresh' } },
-    project,
-  });
-
-  // Loaded but never executed is an empty list, distinct from "not loaded".
-  assert.deepEqual(await daemon.client.outputs('main'), []);
-
-  await daemon.client.trigger('main', 'only', { kind: 'text', text: 'client input' });
-  const outputs = await daemon.client.outputs('main');
-  assert.deepEqual(outputs, [
-    { nodeId: 'only', value: { kind: 'text', text: OUTPUT_MARKER } },
-  ]);
-  const serialized = JSON.stringify(outputs);
-  assert.equal(serialized.includes(PROMPT_MARKER), false);
-  assert.equal(serialized.includes(daemon.discovery.token), false);
-
-  assert.equal(await daemon.client.outputs('missing'), undefined);
-  await daemon.client.unload('main');
-  // Run output is durable: unload retains the latest run's readable outputs.
-  assert.deepEqual(await daemon.client.outputs('main'), [
-    { nodeId: 'only', value: { kind: 'text', text: OUTPUT_MARKER } },
-  ]);
-});
-
-test('outputs rejects malformed responses as protocol errors without echoing them', async (t) => {
-  let calls = 0;
-  let body = '';
-  const raw = await startRawServer((_request, response) => {
-    calls += 1;
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(body);
-  });
-  t.after(async () => {
-    await raw.close();
-  });
-  const client = new ControlClient({ baseUrl: raw.baseUrl, token: VALID_TOKEN });
-
-  const malformed = [
-    JSON.stringify({ ok: true, graphId: 'x', outputs: 'not-an-array' }),
-    JSON.stringify({ ok: true, graphId: 'x', outputs: [{ nodeId: 'only' }] }),
-    JSON.stringify({ ok: true, graphId: 'x', outputs: [{ value: 'orphan' }] }),
-    JSON.stringify({ ok: true, graphId: 'x', outputs: [{ nodeId: 'only', value: 1 }, { nodeId: 'only', value: 2 }] }),
-    JSON.stringify({ ok: true, graphId: 'other', outputs: [] }),
-    JSON.stringify({ ok: true, graphId: 'x', outputs: [LEAK_MARKER] }),
-  ];
-  for (const candidate of malformed) {
-    body = candidate;
-    const before = calls;
-    await assert.rejects(client.outputs('x'), (error: unknown) => {
-      assert.ok(error instanceof ControlClientError);
-      assert.equal(error.code, 'protocol');
-      assert.equal(error.message.includes(LEAK_MARKER), false);
-      return true;
-    });
-    assert.equal(calls, before + 1, 'outputs must be attempted exactly once');
-  }
-});
-
 test('listSessions and closeSession round-trip and report bound/busy state', async (t) => {
   const daemon = await startDaemon(t, { output: OUTPUT_MARKER });
   assert.deepEqual(await daemon.client.listSessions(), []);
 
   const definition = foragerDefinition('session-client', `run {{input}} ${PROMPT_MARKER}`);
-  await daemon.client.load({
-    definition,
-    bindings: { only: { kind: 'fresh' } },
-    project: daemon.env.project,
-  });
+  const token = readFileSync(daemon.info.tokenPath, 'utf8').trim();
+  assert.equal(
+    (await bLoad(daemon.info.url, token, {
+      definition,
+      bindings: { only: { kind: 'fresh' } },
+      project: daemon.env.project,
+    })).status,
+    200,
+  );
   const record = daemon.env.registry.list()[0];
   assert.ok(record !== undefined);
 
@@ -200,7 +81,7 @@ test('listSessions and closeSession round-trip and report bound/busy state', asy
   );
   assert.equal(daemon.env.registry.get(record.sessionId)?.sessionId, record.sessionId);
 
-  assert.equal(await daemon.client.unload('session-client'), true);
+  assert.equal((await bUnload(daemon.info.url, token, 'session-client')).status, 200);
   const unbound = await daemon.client.listSessions();
   assert.equal(unbound.length, 1);
   assert.equal(unbound[0]?.bound, false);
@@ -353,28 +234,4 @@ test('a wrong token is a 401 without echoing the token', async (t) => {
     assert.equal(error.message.includes(wrongToken), false);
     return true;
   });
-});
-
-test('statusOf 404 is undefined while other control failures throw', async (t) => {
-  const daemon = await startDaemon(t);
-  await daemon.client.load({
-    definition: foragerDefinition('main', 'answer {{input}}'),
-    bindings: { only: { kind: 'fresh' } },
-    project: daemon.env.project,
-  });
-
-  assert.equal(await daemon.client.statusOf('missing'), undefined);
-
-  await assert.rejects(
-    daemon.client.trigger('missing', 'only', { kind: 'text', text: 'x' }),
-    isControlError('not-found', 404),
-  );
-  await assert.rejects(
-    daemon.client.unload('missing'),
-    isControlError('not-found', 404),
-  );
-  await assert.rejects(
-    daemon.client.trigger('main', 'missing-node', { kind: 'text', text: 'x' }),
-    isControlError('bad-request', 400),
-  );
 });

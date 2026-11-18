@@ -250,7 +250,7 @@ export async function announcedButUnsentBody(
         host: '127.0.0.1',
         port: info.port,
         method: 'POST',
-        path: '/trigger',
+        path: '/lives/wake',
         headers: {
           ...authHeader(token),
           'content-type': 'application/json',

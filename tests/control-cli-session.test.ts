@@ -7,12 +7,10 @@ import test, { type TestContext } from 'node:test';
 
 import { runCli } from '../src/cli/cli.js';
 import { CliUsageError } from '../src/cli/cli-shared.js';
-import {
-  runGraphCli,
-  runSessionCli,
-  runTriggerCli,
-  type ControlCliDependencies,
-} from '../src/cli/control-cli.js';
+import { runSessionCli, type ControlCliDependencies } from '../src/cli/control-cli.js';
+import { runLiveCli } from '../src/cli/live-cli.js';
+import { fromCompositionDefinition } from '../src/b/live-hive-codec.js';
+import { parseComposition } from '../src/runtime/index.js';
 import {
   parseWaxdArgs,
   runWaxdCli,
@@ -43,6 +41,29 @@ import {
 } from './support/control-cli-fixtures.js';
 import { startWaxd, startMultiWaxd } from './support/control-cli-daemons.js';
 
+function liveFile(compositionPath: string, bindingsPath: string): string {
+  const definition = JSON.parse(readFileSync(compositionPath, 'utf8')) as Record<string, unknown>;
+  const bindings = JSON.parse(readFileSync(bindingsPath, 'utf8')) as Record<string, unknown>;
+  return tempJson(fromCompositionDefinition(parseComposition(definition), bindings as any));
+}
+
+async function loadLive(
+  daemonDir: string,
+  compositionPath: string,
+  bindingsPath: string,
+  project: string,
+): Promise<{ readonly code: number; readonly stdout: readonly string[]; readonly stderr: readonly string[] }> {
+  return invokeControl(
+    runLiveCli,
+    ['live', 'new', liveFile(compositionPath, bindingsPath), '--project', project, '--json'],
+    { daemonDir },
+  );
+}
+
+async function unloadLive(daemonDir: string, liveId: string) {
+  return invokeControl(runLiveCli, ['live', 'unload', liveId, '--json'], { daemonDir });
+}
+
 test('wax session list/close work over real HTTP and never print a token', async (t) => {
   const daemon = await startWaxd(t);
   const token = readFileSync(daemon.started.tokenPath, 'utf8').trim();
@@ -51,11 +72,7 @@ test('wax session list/close work over real HTTP and never print a token', async
   const project = tempDir('wax-control-cli-session-project-');
   const composition = tempJson(foragerComposition('session-cli'));
 
-  const load = await invokeControl(
-    runGraphCli,
-    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
+  const load = await loadLive(daemon.daemonDir, composition, bindings, project);
   assert.equal(load.code, 0, load.stderr.join(' | '));
 
   const listed = await invokeControl(runSessionCli, ['session', 'list', '--json'], {
@@ -107,11 +124,7 @@ test('wax session list/close work over real HTTP and never print a token', async
   assert.match(boundClose.stderr[0] as string, /409|conflict/);
   assertNoSecret(boundClose.stderr, token);
 
-  const unload = await invokeControl(
-    runGraphCli,
-    ['graph', 'unload', 'session-cli', '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
+  const unload = await unloadLive(daemon.daemonDir, 'session-cli');
   assert.equal(unload.code, 0, unload.stderr.join(' | '));
   // The unload retains the session; the list still shows it, now unbound.
   assert.equal(daemon.adapter.closedNativeIds.length, 0);
@@ -152,16 +165,8 @@ test('wax session list/close work over real HTTP and never print a token', async
 
   // A human close prints one line and still removes the session.
   const compositionB = tempJson(foragerComposition('session-cli-b'));
-  await invokeControl(
-    runGraphCli,
-    ['graph', 'load', compositionB, '--project', project, '--bindings', bindings, '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
-  const unloadB = await invokeControl(
-    runGraphCli,
-    ['graph', 'unload', 'session-cli-b', '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
+  await loadLive(daemon.daemonDir, compositionB, bindings, project);
+  const unloadB = await unloadLive(daemon.daemonDir, 'session-cli-b');
   assert.equal(unloadB.code, 0, unloadB.stderr.join(' | '));
   const listB = singleJson(
     await invokeControl(runSessionCli, ['session', 'list', '--json'], {
@@ -211,11 +216,7 @@ test('wax session sweep closes orphan idle sessions over real HTTP', async (t) =
   const project = tempDir('wax-control-cli-sweep-project-');
   const composition = tempJson(foragerComposition('sweep-cli'));
 
-  const load = await invokeControl(
-    runGraphCli,
-    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
+  const load = await loadLive(daemon.daemonDir, composition, bindings, project);
   assert.equal(load.code, 0, load.stderr.join(' | '));
 
   const listed = singleJson(
@@ -237,11 +238,7 @@ test('wax session sweep closes orphan idle sessions over real HTTP', async (t) =
   assert.deepEqual(boundReport['skipped'], [sessionId]);
   assert.deepEqual(boundReport['failed'], []);
 
-  const unload = await invokeControl(
-    runGraphCli,
-    ['graph', 'unload', 'sweep-cli', '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
+  const unload = await unloadLive(daemon.daemonDir, 'sweep-cli');
   assert.equal(unload.code, 0, unload.stderr.join(' | '));
 
   // The session is now an orphan; let the 20ms TTL expire.
@@ -285,33 +282,17 @@ test('wax session list returns all sessions from one endpoint and --harness only
   const dshComposition = tempJson(foragerComposition('session-dsh'));
 
   const loads = [
-    await invokeControl(
-      runGraphCli,
-      [
-        'graph',
-        'load',
-        codexComposition,
-        '--project',
-        project,
-        '--bindings',
-        tempJson({ only: { kind: 'fresh', harness: 'codex' } }),
-        '--json',
-      ],
-      { daemonDir: daemon.daemonDir },
+    await loadLive(
+      daemon.daemonDir,
+      codexComposition,
+      tempJson({ only: { kind: 'fresh', harness: 'codex' } }),
+      project,
     ),
-    await invokeControl(
-      runGraphCli,
-      [
-        'graph',
-        'load',
-        dshComposition,
-        '--project',
-        project,
-        '--bindings',
-        tempJson({ only: { kind: 'fresh', harness: 'dsh' } }),
-        '--json',
-      ],
-      { daemonDir: daemon.daemonDir },
+    await loadLive(
+      daemon.daemonDir,
+      dshComposition,
+      tempJson({ only: { kind: 'fresh', harness: 'dsh' } }),
+      project,
     ),
   ];
   for (const load of loads) {
@@ -358,195 +339,6 @@ test('wax session list returns all sessions from one endpoint and --harness only
   );
   assert.equal(invalidHarness.code, 2);
   assert.match(invalidHarness.stderr[0] as string, /--harness must be/);
-});
-
-test('graph and trigger commands use one endpoint; --harness never selects a directory', async (t) => {
-  const daemon = await startMultiWaxd(t);
-  const project = tempDir('wax-control-cli-multi-cli-project-');
-  const codexComposition = tempJson(foragerComposition('codex-graph'));
-  const dshComposition = tempJson(foragerComposition('dsh-graph'));
-
-  const loadCodex = await invokeControl(
-    runGraphCli,
-    [
-      'graph',
-      'load',
-      codexComposition,
-      '--project',
-      project,
-      '--bindings',
-      tempJson({ only: { kind: 'fresh', harness: 'codex' } }),
-      '--harness',
-      'codex',
-      '--json',
-    ],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(singleJson(loadCodex)['graphId'], 'codex-graph');
-  const loadDsh = await invokeControl(
-    runGraphCli,
-    [
-      'graph',
-      'load',
-      dshComposition,
-      '--project',
-      project,
-      '--bindings',
-      tempJson({ only: { kind: 'fresh', harness: 'dsh' } }),
-      '--harness',
-      'dsh',
-      '--json',
-    ],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(singleJson(loadDsh)['graphId'], 'dsh-graph');
-
-  // graph list ignores --harness: the daemon returns all loaded graphs.
-  const allGraphs = singleJson(
-    await invokeControl(runGraphCli, ['graph', 'list', '--harness', 'codex', '--json'], {
-      daemonDir: daemon.daemonDir,
-    }),
-  );
-  assert.deepEqual(
-    (allGraphs['status'] as unknown[]).map((status) => asRecord(status)['graphId']).sort(),
-    ['codex-graph', 'dsh-graph'],
-  );
-
-  const codexTrigger = singleJson(
-    await invokeControl(
-      runTriggerCli,
-      ['trigger', 'codex-graph', 'only', '--input', 'to codex', '--harness', 'codex', '--json'],
-      { daemonDir: daemon.daemonDir },
-    ),
-  );
-  assert.equal(codexTrigger['graphId'], 'codex-graph');
-  const dshTrigger = singleJson(
-    await invokeControl(
-      runTriggerCli,
-      ['trigger', 'dsh-graph', 'only', '--input', 'to dsh', '--harness', 'dsh', '--json'],
-      { daemonDir: daemon.daemonDir },
-    ),
-  );
-  assert.equal(dshTrigger['graphId'], 'dsh-graph');
-  assert.equal(daemon.adapters.get('codex')?.prompts.length, 1);
-  assert.equal(daemon.adapters.get('dsh')?.prompts.length, 1);
-
-  assert.equal(
-    singleJson(
-      await invokeControl(
-        runGraphCli,
-        ['graph', 'unload', 'codex-graph', '--harness', 'codex', '--json'],
-        { daemonDir: daemon.daemonDir },
-      ),
-    )['unloaded'],
-    true,
-  );
-  assert.equal(daemon.adapters.get('codex')?.closedNativeIds.length, 0);
-  assert.equal(daemon.adapters.get('dsh')?.closedNativeIds.length, 0);
-  assert.equal(
-    singleJson(
-      await invokeControl(
-        runGraphCli,
-        ['graph', 'status', 'dsh-graph', '--harness', 'dsh', '--json'],
-        { daemonDir: daemon.daemonDir },
-      ),
-    )['graphId'],
-    'dsh-graph',
-  );
-
-  assert.equal(existsSync(join(daemon.daemonDir, 'codex')), false);
-  assert.equal(existsSync(join(daemon.daemonDir, 'dsh')), false);
-  assert.equal(existsSync(join(daemon.daemonDir, 'token')), true);
-});
-
-test('one daemon stores a mixed-harness graph in one sessions file and one Honey root', async (t) => {
-  const daemon = await startMultiWaxd(t, { apiary: 'smoke' });
-  const project = tempDir('wax-control-cli-honey-project-');
-  const composition = tempJson({
-    schemaVersion: 1,
-    id: 'mixed-graph',
-    nodes: {
-      codex: { kind: 'forager', config: { connection: 'codex', prompt: 'codex {{input}}' } },
-      dsh: { kind: 'forager', config: { connection: 'dsh', prompt: 'dsh {{input}}' } },
-    },
-    edges: [],
-  });
-  const bindings = tempJson({
-    codex: { kind: 'fresh', harness: 'codex' },
-    dsh: { kind: 'fresh', harness: 'dsh' },
-  });
-
-  const load = await invokeControl(
-    runGraphCli,
-    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(load.code, 0, load.stderr.join(' | '));
-
-  for (const nodeId of ['codex', 'dsh']) {
-    const trigger = await invokeControl(
-      runTriggerCli,
-      ['trigger', 'mixed-graph', nodeId, '--input', `from ${nodeId}`, '--json'],
-      { daemonDir: daemon.daemonDir },
-    );
-    assert.equal(trigger.code, 0, trigger.stderr.join(' | '));
-  }
-
-  assert.equal(daemon.adapters.get('codex')?.prompts.length, 1);
-  assert.equal(daemon.adapters.get('dsh')?.prompts.length, 1);
-  assert.match(daemon.adapters.get('codex')?.prompts[0] ?? '', /from codex/);
-  assert.match(daemon.adapters.get('dsh')?.prompts[0] ?? '', /from dsh/);
-
-  const sessions = JSON.parse(
-    readFileSync(join(daemon.daemonDir, 'sessions.json'), 'utf8'),
-  ) as Array<Record<string, unknown>>;
-  assert.deepEqual(
-    sessions.map((session) => session['harness']).sort(),
-    ['codex', 'dsh'],
-  );
-
-  const fieldPath = join(
-    daemon.stateRoot,
-    'apiaries',
-    'smoke',
-    'compositions',
-    'mixed-graph',
-    'honey',
-    'field.json',
-  );
-  assert.equal(existsSync(fieldPath), true);
-  assert.equal(
-    existsSync(
-      join(daemon.stateRoot, 'codex', 'apiaries', 'smoke', 'compositions', 'mixed-graph'),
-    ),
-    false,
-  );
-  assert.equal(
-    existsSync(
-      join(daemon.stateRoot, 'dsh', 'apiaries', 'smoke', 'compositions', 'mixed-graph'),
-    ),
-    false,
-  );
-
-  // Unload retains both sessions; no native close is a graph-unload side effect.
-  assert.equal(
-    singleJson(
-      await invokeControl(runGraphCli, ['graph', 'unload', 'mixed-graph', '--json'], {
-        daemonDir: daemon.daemonDir,
-      }),
-    )['unloaded'],
-    true,
-  );
-  assert.equal(daemon.adapters.get('codex')?.closedNativeIds.length, 0);
-  assert.equal(daemon.adapters.get('dsh')?.closedNativeIds.length, 0);
-  assert.equal(
-    (
-      JSON.parse(
-        readFileSync(join(daemon.daemonDir, 'sessions.json'), 'utf8'),
-      ) as unknown[]
-    ).length,
-    2,
-  );
 });
 
 test('a one-entry --harnesses list keeps the single-harness root layout', async (t) => {
@@ -599,15 +391,11 @@ test('a one-entry --harnesses list keeps the single-harness root layout', async 
   const composition = tempJson(foragerComposition('single-list-graph'));
   const bindings = tempJson(freshBindings());
   const project = tempDir('wax-control-cli-single-list-project-');
-  const load = await invokeControl(
-    runGraphCli,
-    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
-    { daemonDir },
-  );
-  assert.equal(singleJson(load)['graphId'], 'single-list-graph');
+  const load = await loadLive(daemonDir, composition, bindings, project);
+  assert.equal(singleJson(load)['liveId'], 'single-list-graph');
   const trigger = await invokeControl(
-    runTriggerCli,
-    ['trigger', 'single-list-graph', 'only', '--input', 'single', '--json'],
+    runLiveCli,
+    ['live', 'wake', 'single-list-graph', 'only', '--input', 'single', '--json'],
     { daemonDir },
   );
   assert.equal(singleJson(trigger)['persisted'], true);

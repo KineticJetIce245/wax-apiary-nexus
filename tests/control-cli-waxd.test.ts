@@ -6,11 +6,10 @@ import { join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 import { runCli } from '../src/cli/cli.js';
+import { runLiveCli } from '../src/cli/live-cli.js';
 import { CliUsageError } from '../src/cli/cli-shared.js';
 import {
-  runGraphCli,
   runSessionCli,
-  runTriggerCli,
   type ControlCliDependencies,
 } from '../src/cli/control-cli.js';
 import {
@@ -461,44 +460,6 @@ test('a stop failure still releases the other adapter and the only endpoint', as
   await assert.rejects(fetch(`${info.url}/health`, { signal: AbortSignal.timeout(2_000) }));
 });
 
-test('waxd persists a fresh session and retains it when the graph unloads', async (t) => {
-  const daemon = await startWaxd(t);
-  const sessionsPath = join(daemon.daemonDir, 'sessions.json');
-  assert.equal(existsSync(sessionsPath), false);
-
-  const composition = tempJson(foragerComposition('persisted-graph'));
-  const bindings = tempJson(freshBindings());
-  const project = tempDir('wax-control-cli-persisted-project-');
-
-  const load = await invokeControl(
-    runGraphCli,
-    ['graph', 'load', composition, '--project', project, '--bindings', bindings, '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(load.code, 0, load.stderr.join(' | '));
-
-  const stored = JSON.parse(readFileSync(sessionsPath, 'utf8')) as Array<Record<string, unknown>>;
-  assert.equal(stored.length, 1);
-  assert.equal(stored[0]?.['harness'], 'codex');
-  assert.equal(stored[0]?.['projectDirectory'], project);
-  assert.equal(typeof stored[0]?.['conversationId'], 'string');
-  assert.equal(typeof stored[0]?.['nativeId'], 'string');
-  assert.equal(typeof stored[0]?.['updatedAt'], 'string');
-
-  const unload = await invokeControl(
-    runGraphCli,
-    ['graph', 'unload', 'persisted-graph', '--json'],
-    { daemonDir: daemon.daemonDir },
-  );
-  assert.equal(unload.code, 0, unload.stderr.join(' | '));
-  // The unload retains the persisted session mapping.
-  const afterUnload = JSON.parse(readFileSync(sessionsPath, 'utf8')) as Array<
-    Record<string, unknown>
-  >;
-  assert.equal(afterUnload.length, 1);
-  assert.equal(afterUnload[0]?.['conversationId'], stored[0]?.['conversationId']);
-});
-
 test('runWaxdCli exits 1 before daemon files exist when sessions.json is corrupt', async () => {
   const adapter = new TrackingFakeAdapter();
   const stateRoot = tempDir('wax-control-cli-corrupt-store-');
@@ -531,7 +492,7 @@ test('runWaxdCli exits 1 before daemon files exist when sessions.json is corrupt
 
 test('daemon discovery and network failures exit 1 without printing a token', async () => {
   const missingDir = join(tempDir('wax-control-cli-missing-daemon-'), 'waxd');
-  const missing = await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
+  const missing = await invokeControl(runLiveCli, ['live', 'list', '--json'], {
     daemonDir: missingDir,
   });
   assert.equal(missing.code, 1);
@@ -541,7 +502,7 @@ test('daemon discovery and network failures exit 1 without printing a token', as
 
   const malformedDir = tempDir('wax-control-cli-bad-daemon-');
   writeFileSync(join(malformedDir, 'server.json'), '{');
-  const malformed = await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
+  const malformed = await invokeControl(runLiveCli, ['live', 'list', '--json'], {
     daemonDir: malformedDir,
   });
   assert.equal(malformed.code, 1);
@@ -564,7 +525,7 @@ test('daemon discovery and network failures exit 1 without printing a token', as
       tokenPath,
     }),
   );
-  const network = await invokeControl(runGraphCli, ['graph', 'list', '--json'], {
+  const network = await invokeControl(runLiveCli, ['live', 'list', '--json'], {
     daemonDir,
   });
   assert.equal(network.code, 1);
@@ -574,23 +535,23 @@ test('daemon discovery and network failures exit 1 without printing a token', as
   assertNoSecret(network.stderr, secret);
 });
 
-test('runCli dispatches graph, trigger, session and waxd', async (t) => {
+test('runCli dispatches live, wake, session and waxd', async (t) => {
   const daemon = await startWaxd(t);
 
-  const graphStdout: string[] = [];
-  const graphStderr: string[] = [];
-  const graphCode = await runCli(
-    ['graph', 'list', '--json', '--daemon-dir', daemon.daemonDir],
+  const liveStdout: string[] = [];
+  const liveStderr: string[] = [];
+  const liveCode = await runCli(
+    ['live', 'list', '--json', '--daemon-dir', daemon.daemonDir],
     {
-      stdout: (line) => graphStdout.push(line),
-      stderr: (line) => graphStderr.push(line),
+      stdout: (line) => liveStdout.push(line),
+      stderr: (line) => liveStderr.push(line),
       env: {},
     },
   );
-  assert.equal(graphCode, 0);
-  assert.equal(graphStderr.length, 0);
-  assert.equal(graphStdout.length, 1);
-  assert.equal(Array.isArray(JSON.parse(graphStdout[0] as string)['status']), true);
+  assert.equal(liveCode, 0);
+  assert.equal(liveStderr.length, 0);
+  assert.equal(liveStdout.length, 1);
+  assert.equal(Array.isArray(JSON.parse(liveStdout[0] as string)['lives']), true);
 
   const sessionStdout: string[] = [];
   const sessionStderr: string[] = [];
@@ -609,7 +570,7 @@ test('runCli dispatches graph, trigger, session and waxd', async (t) => {
 
   const triggerStderr: string[] = [];
   const triggerCode = await runCli(
-    ['trigger', 'missing-graph', 'node', '--daemon-dir', daemon.daemonDir],
+    ['wake', 'missing-live', 'node', '--daemon-dir', daemon.daemonDir],
     {
       stdout: () => undefined,
       stderr: (line) => triggerStderr.push(line),

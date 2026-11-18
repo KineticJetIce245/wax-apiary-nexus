@@ -115,43 +115,48 @@ Session = {
 
 ## 8. Control API
 
-Target routes:
+The API is B-only:
 
 ```text
-POST /lives                     new LiveHive
-POST /lives/:id/load            load
-POST /lives/:id/unload          unload
-POST /lives/:id/wake            wake a bee
-POST /lives/:id/answer          answer a user hover
-POST /lives/:id/guard           guard decision
-POST /lives/:id/save            save
-POST /lives/:id/migrate         explicit structure change
-GET  /lives                     list
-GET  /lives/:id                 status
-GET  /lives/:id/output          run output
+POST /lives                     create a LiveHive
+POST /lives/load                load by id, optional path or inline live
+POST /lives/instantiate         instantiate a template
+POST /lives/wake                wake a bee
+POST /lives/answer              answer a user hover
+POST /lives/save                save
+POST /lives/unload              unload
+POST /lives/migrate             explicit structure change
+GET  /lives                     list loaded and unloaded LiveHives
+GET  /lives/:id/inspect         status, durable outputs and catalog entry
+GET  /lives/:id/output          latest or runId-keyed output
+GET  /templates                 list templates
+POST /templates                 compose a HiveTemplate
+POST /dispatch                  temporary bee
+GET  /guards                    pending guard requests
+POST /guard/decide              decide one guard request
 GET  /sessions                  global sessions
 POST /sessions/close            close
 POST /sessions/sweep            sweep idle
-POST /dispatch                  temporary bee
-POST /templates                 compose HiveTemplate
-GET  /templates                 list templates
+GET  /health
 ```
 
 - One endpoint, one token.
 - `--harness` filters/validates; it does not select a per-harness daemon.
-- No fork route.
+- No fork route. The legacy graph and catalog routes are not present and have no aliases.
 
 ## 9. CLI
 
 ```text
 waxd
-wax live new|load|instantiate|wake|answer|guard|save|unload|migrate|list|status|output
-wax dispatch
+wax live new|load|instantiate|wake|answer|save|unload|migrate|list|inspect
+wax wake <liveId> <beeId>
+wax answer <liveId> <beeId>
 wax template compose|list
+wax dispatch
 wax session list|close|sweep
 ```
 
-Current code still exposes `wax graph` / `wax trigger`; those names are renamed during M9.
+The legacy graph client commands are not present and have no aliases.
 
 ## 10. Invariants
 
@@ -160,7 +165,7 @@ Current code still exposes `wax graph` / `wax trigger`; those names are renamed 
 3. A LiveHive can mix harnesses; `liveId` is globally unique.
 4. One session has one active execution.
 5. Same LiveHive mutating operations are serialized; different LiveHives may run in parallel.
-6. `unload` keeps catalog/sessions; `status`/`output` do not refresh TTL.
+6. `unload` keeps the catalog/sessions; `inspect`/`output` do not refresh TTL.
 7. Load makes memory authoritative; save/unload overwrite disk.
 8. No Agent/Revision/Definition/Actor objects; no fork command.
 9. Logs never contain prompt/output/token bodies; output uses explicit routes.

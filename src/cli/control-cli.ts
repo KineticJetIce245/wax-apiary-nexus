@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
-
 import {
   ControlClient,
   ControlClientError,
@@ -8,30 +5,12 @@ import {
   type SessionSummary,
   type SweepSessionsReport,
 } from '../control/client.js';
-import type { GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
-import { GraphManifestError, loadGraphManifest } from '../graph/manifest.js';
-import type { ManifestLoadSpec } from '../graph/manifest.js';
-import type { SweepReport } from '../graph/registry.js';
 import type { HarnessKind } from '../session/connection.js';
 import { CliUsageError, messageOf } from './cli-shared.js';
 
-const GRAPH_USAGE =
-  'usage: wax graph <list|status <graphId>|output <graphId>|load <composition.json>|' +
-  'load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId> ' +
-  '[--input <text>] [--token <hv_...>] [--graph <manifest>]> [--json] ' +
-  '[--daemon-dir <dir>] [--harness <codex|dsh>] ' +
-  '(load also needs --project <dir> --bindings <file> [--idle-ttl-ms <n>], or --manifest)';
-const TRIGGER_USAGE =
-  'usage: wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>] [--json] ' +
-  '[--daemon-dir <dir>] [--harness <codex|dsh>]';
 const SESSION_USAGE =
   'usage: wax session <list|close <sessionId>|sweep> [--json] [--daemon-dir <dir>] ' +
   '[--harness <codex|dsh>]';
-/** Same bound as the control server's trigger/answer `graphRef`. */
-const MAX_GRAPH_REF_LENGTH = 4_096;
-/** Same bound as the control server's `/answer` hover token. */
-const MAX_TOKEN_LENGTH = 4_096;
-/** Same bound as the control server's session id field. */
 const MAX_SESSION_ID_LENGTH = 512;
 
 /** Injected by the CLI entry points and by tests. */
@@ -45,14 +24,6 @@ export interface ControlCliDependencies {
 
 type Writer = (line: string) => void;
 
-/** A local input file could not be read; this is an IO failure, not usage. */
-class ControlCliIoError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ControlCliIoError';
-  }
-}
-
 export interface ParsedCliTokens {
   readonly positionals: readonly string[];
   readonly flags: ReadonlyMap<string, string>;
@@ -60,14 +31,14 @@ export interface ParsedCliTokens {
 }
 
 export interface ParseCliTokensOptions {
-  /** `waxd` has no `--json` switch; graph and trigger do. */
+  /** `waxd` has no `--json` switch. */
   readonly allowJson?: boolean;
   /** Flags for which an empty string is a meaningful value (for example --input). */
   readonly allowEmpty?: ReadonlySet<string>;
 }
 
 /**
- * Shared token parser for the graph/trigger and waxd front ends.
+ * Shared token parser for the B CLI front ends and waxd.
  *
  * It deliberately mirrors the existing CLI style: `--json` is a boolean,
  * every other `--flag` consumes exactly one value, duplicates are usage
@@ -122,87 +93,18 @@ export function parseCliTokens(
   return { positionals, flags, json };
 }
 
-const LIST_FLAGS = new Set(['--daemon-dir', '--harness']);
-const STATUS_FLAGS = new Set(['--daemon-dir', '--harness']);
-const OUTPUT_FLAGS = new Set(['--daemon-dir', '--harness']);
-const LOAD_FLAGS = new Set([
-  '--manifest',
-  '--project',
-  '--bindings',
-  '--idle-ttl-ms',
-  '--daemon-dir',
-  '--harness',
-]);
-const UNLOAD_FLAGS = new Set(['--daemon-dir', '--harness']);
-const SWEEP_FLAGS = new Set(['--daemon-dir', '--harness']);
-const TRIGGER_FLAGS = new Set(['--input', '--graph', '--daemon-dir', '--harness']);
-const TRIGGER_EMPTY_FLAGS = new Set(['--input']);
-const ANSWER_FLAGS = new Set([
-  '--input',
-  '--token',
-  '--graph',
-  '--daemon-dir',
-  '--harness',
-]);
-const ANSWER_EMPTY_FLAGS = new Set(['--input']);
 const SESSION_FLAGS = new Set(['--daemon-dir', '--harness']);
 
-interface GraphCommon {
-  readonly json: boolean;
-  readonly daemonDir?: string;
-  readonly harness?: HarnessKind;
-}
-
-/** Where a `graph load` takes its definition, bindings and project from. */
-export type GraphLoadSource =
-  | {
-      readonly kind: 'composition';
-      readonly compositionPath: string;
-      readonly projectDirectory: string;
-      readonly bindingsPath: string;
-      readonly idleTtlMs?: number;
-    }
-  | { readonly kind: 'manifest'; readonly manifestPath: string };
-
-export type GraphCommand =
-  | (GraphCommon & { readonly kind: 'list' })
-  | (GraphCommon & { readonly kind: 'status'; readonly graphId: string })
-  | (GraphCommon & { readonly kind: 'output'; readonly graphId: string })
-  | (GraphCommon & { readonly kind: 'load'; readonly source: GraphLoadSource })
-  | (GraphCommon & { readonly kind: 'unload'; readonly graphId: string })
-  | (GraphCommon & { readonly kind: 'sweep' })
-  | (GraphCommon & {
-      readonly kind: 'answer';
-      readonly graphId: string;
-      readonly nodeId: string;
-      readonly input: string;
-      /** Optional hover token; validated locally, forwarded only when given. */
-      readonly token?: string;
-      /**
-       * Optional manifest path. The CLI only validates and forwards it; the
-       * daemon reads the manifest, so a bad file here can never create a session.
-       */
-      readonly graphRef?: string;
-    });
-
-export interface TriggerCommand {
-  readonly graphId: string;
-  readonly nodeId: string;
-  readonly input: string;
-  /**
-   * Optional manifest path. The CLI only validates and forwards it; the daemon
-   * reads the manifest, so a bad file here can never create a session.
-   */
-  readonly graphRef?: string;
+interface SessionCommon {
   readonly json: boolean;
   readonly daemonDir?: string;
   readonly harness?: HarnessKind;
 }
 
 export type SessionCommand =
-  | (GraphCommon & { readonly kind: 'list' })
-  | (GraphCommon & { readonly kind: 'close'; readonly sessionId: string })
-  | (GraphCommon & { readonly kind: 'sweep' });
+  | (SessionCommon & { readonly kind: 'list' })
+  | (SessionCommon & { readonly kind: 'close'; readonly sessionId: string })
+  | (SessionCommon & { readonly kind: 'sweep' });
 
 function harnessOf(parsed: ParsedCliTokens): { readonly harness?: HarnessKind } {
   const value = parsed.flags.get('--harness');
@@ -232,207 +134,6 @@ function requirePositionals(parsed: ParsedCliTokens, count: number, message: str
   }
 }
 
-function requireFlag(parsed: ParsedCliTokens, flag: string, label: string): string {
-  const value = parsed.flags.get(flag);
-  if (value === undefined) {
-    throw new CliUsageError(`missing required option ${flag} <${label}>`);
-  }
-  return value;
-}
-
-function requireIdentifier(value: string | undefined, label: string): string {
-  if (value === undefined || value.trim() === '') {
-    throw new CliUsageError(`missing ${label}`);
-  }
-  return value;
-}
-
-function parseNonNegativeInteger(raw: string, flag: string): number {
-  if (!/^[0-9]+$/.test(raw)) {
-    throw new CliUsageError(`${flag} must be a non-negative integer`);
-  }
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new CliUsageError(`${flag} must be a non-negative integer`);
-  }
-  return value;
-}
-
-function parseGraphRefFlag(parsed: ParsedCliTokens): string | undefined {
-  const raw = parsed.flags.get('--graph');
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (
-    raw.trim() === '' ||
-    raw.length > MAX_GRAPH_REF_LENGTH ||
-    /[\u0000-\u001f\u007f]/.test(raw)
-  ) {
-    throw new CliUsageError(
-      `--graph must be a non-empty manifest path of at most ${String(MAX_GRAPH_REF_LENGTH)} characters`,
-    );
-  }
-  return raw;
-}
-
-function parseHoverTokenFlag(parsed: ParsedCliTokens): string | undefined {
-  const raw = parsed.flags.get('--token');
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (
-    raw.trim() === '' ||
-    raw.length > MAX_TOKEN_LENGTH ||
-    /[\u0000-\u001f\u007f]/.test(raw)
-  ) {
-    throw new CliUsageError(
-      `--token must be a non-empty hover token of at most ${String(MAX_TOKEN_LENGTH)} characters`,
-    );
-  }
-  return raw;
-}
-
-export function parseGraphArgs(argv: readonly string[]): GraphCommand {
-  const [command, subcommand, ...rest] = argv;
-  if (command !== 'graph') {
-    throw new CliUsageError(GRAPH_USAGE);
-  }
-
-  if (subcommand === 'list') {
-    const parsed = parseCliTokens(rest, LIST_FLAGS);
-    requirePositionals(parsed, 0, 'expected no arguments after "wax graph list"');
-    return { kind: 'list', json: parsed.json, ...commonOf(parsed) };
-  }
-
-  if (subcommand === 'status') {
-    const parsed = parseCliTokens(rest, STATUS_FLAGS);
-    requirePositionals(parsed, 1, 'expected exactly one graph id after "wax graph status"');
-    return {
-      kind: 'status',
-      graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
-      json: parsed.json,
-      ...commonOf(parsed),
-    };
-  }
-
-  if (subcommand === 'output') {
-    const parsed = parseCliTokens(rest, OUTPUT_FLAGS);
-    requirePositionals(parsed, 1, 'expected exactly one graph id after "wax graph output"');
-    return {
-      kind: 'output',
-      graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
-      json: parsed.json,
-      ...commonOf(parsed),
-    };
-  }
-
-  if (subcommand === 'load') {
-    const parsed = parseCliTokens(rest, LOAD_FLAGS);
-    const manifestPath = parsed.flags.get('--manifest');
-    if (manifestPath !== undefined) {
-      if (parsed.positionals.length > 0) {
-        throw new CliUsageError('--manifest cannot be combined with a composition file');
-      }
-      for (const flag of ['--project', '--bindings', '--idle-ttl-ms']) {
-        if (parsed.flags.has(flag)) {
-          throw new CliUsageError(`${flag} cannot be combined with --manifest`);
-        }
-      }
-      return {
-        kind: 'load',
-        source: { kind: 'manifest', manifestPath },
-        json: parsed.json,
-        ...commonOf(parsed),
-      };
-    }
-    requirePositionals(parsed, 1, 'expected exactly one composition file after "wax graph load"');
-    const idleRaw = parsed.flags.get('--idle-ttl-ms');
-    return {
-      kind: 'load',
-      source: {
-        kind: 'composition',
-        compositionPath: parsed.positionals[0] as string,
-        projectDirectory: requireFlag(parsed, '--project', 'dir'),
-        bindingsPath: requireFlag(parsed, '--bindings', 'file'),
-        ...(idleRaw === undefined
-          ? {}
-          : { idleTtlMs: parseNonNegativeInteger(idleRaw, '--idle-ttl-ms') }),
-      },
-      json: parsed.json,
-      ...commonOf(parsed),
-    };
-  }
-
-  if (subcommand === 'unload') {
-    const parsed = parseCliTokens(rest, UNLOAD_FLAGS);
-    requirePositionals(parsed, 1, 'expected exactly one graph id after "wax graph unload"');
-    return {
-      kind: 'unload',
-      graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
-      json: parsed.json,
-      ...commonOf(parsed),
-    };
-  }
-
-  if (subcommand === 'sweep') {
-    const parsed = parseCliTokens(rest, SWEEP_FLAGS);
-    requirePositionals(parsed, 0, 'expected no arguments after "wax graph sweep"');
-    return { kind: 'sweep', json: parsed.json, ...commonOf(parsed) };
-  }
-
-  if (subcommand === 'answer') {
-    const parsed = parseCliTokens(rest, ANSWER_FLAGS, {
-      allowEmpty: ANSWER_EMPTY_FLAGS,
-    });
-    if (parsed.positionals.length !== 2) {
-      throw new CliUsageError(
-        'expected exactly a graph id and a node id after "wax graph answer"',
-      );
-    }
-    const token = parseHoverTokenFlag(parsed);
-    const graphRef = parseGraphRefFlag(parsed);
-    return {
-      kind: 'answer',
-      graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
-      nodeId: requireIdentifier(parsed.positionals[1], 'node id'),
-      input: parsed.flags.get('--input') ?? '',
-      ...(token === undefined ? {} : { token }),
-      ...(graphRef === undefined ? {} : { graphRef }),
-      json: parsed.json,
-      ...commonOf(parsed),
-    };
-  }
-
-  if (subcommand === undefined) {
-    throw new CliUsageError(GRAPH_USAGE);
-  }
-  throw new CliUsageError(`unknown graph command '${subcommand}'`);
-}
-
-export function parseTriggerArgs(argv: readonly string[]): TriggerCommand {
-  const [command, ...rest] = argv;
-  if (command !== 'trigger') {
-    throw new CliUsageError(TRIGGER_USAGE);
-  }
-  const parsed = parseCliTokens(rest, TRIGGER_FLAGS, {
-    allowEmpty: TRIGGER_EMPTY_FLAGS,
-  });
-  if (parsed.positionals.length !== 2) {
-    throw new CliUsageError(
-      'expected exactly a graph id and a node id after "wax trigger"',
-    );
-  }
-  const graphRef = parseGraphRefFlag(parsed);
-  return {
-    graphId: requireIdentifier(parsed.positionals[0], 'graph id'),
-    nodeId: requireIdentifier(parsed.positionals[1], 'node id'),
-    input: parsed.flags.get('--input') ?? '',
-    ...(graphRef === undefined ? {} : { graphRef }),
-    json: parsed.json,
-    ...commonOf(parsed),
-  };
-}
-
 function requireSessionId(value: string | undefined): string {
   if (
     value === undefined ||
@@ -448,11 +149,7 @@ function requireSessionId(value: string | undefined): string {
   return value;
 }
 
-/**
- * The explicit session surface is separate from the graph commands: `list` is
- * read-only and `close`
- * names exactly one session.
- */
+/** `wax session list|close|sweep`. */
 export function parseSessionArgs(argv: readonly string[]): SessionCommand {
   const [command, subcommand, ...rest] = argv;
   if (command !== 'session') {
@@ -464,7 +161,6 @@ export function parseSessionArgs(argv: readonly string[]): SessionCommand {
     requirePositionals(parsed, 0, 'expected no arguments after "wax session list"');
     return { kind: 'list', json: parsed.json, ...commonOf(parsed) };
   }
-
   if (subcommand === 'close') {
     const parsed = parseCliTokens(rest, SESSION_FLAGS);
     requirePositionals(parsed, 1, 'expected exactly one session id after "wax session close"');
@@ -475,114 +171,17 @@ export function parseSessionArgs(argv: readonly string[]): SessionCommand {
       ...commonOf(parsed),
     };
   }
-
   if (subcommand === 'sweep') {
     const parsed = parseCliTokens(rest, SESSION_FLAGS);
     requirePositionals(parsed, 0, 'expected no arguments after "wax session sweep"');
     return { kind: 'sweep', json: parsed.json, ...commonOf(parsed) };
   }
-
   if (subcommand === undefined) {
     throw new CliUsageError(SESSION_USAGE);
   }
   throw new CliUsageError(`unknown session command '${subcommand}'`);
 }
 
-interface PreparedLoad {
-  readonly definition: unknown;
-  readonly bindings: unknown;
-  readonly project: { readonly id: string; readonly directory: string };
-  readonly idleTtlMs?: number;
-  /** A manifest's harness; the daemon uses it for fresh bindings. */
-  readonly defaultHarness?: string;
-}
-
-function readJsonFile(path: string, label: string): unknown {
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch (error) {
-    throw new ControlCliIoError(
-      `cannot read ${label} file '${path}': ${ioCode(error)}`,
-    );
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    // The parser message can echo file content (a prompt, for example), so the
-    // error deliberately carries only the path.
-    throw new CliUsageError(`${label} file '${path}' is not valid JSON`);
-  }
-}
-
-function ioCode(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException).code;
-  return typeof code === 'string' && code !== '' ? code : 'read failed';
-}
-
-/**
- * The control API requires a project id, but graph load is the only consumer
- * and no project registry is persisted. A path-derived id keeps repeated loads
- * of the same directory stable without introducing new state.
- */
-function projectIdForDirectory(directory: string): string {
-  const name = basename(directory).replace(/[\u0000-\u001f\u007f]/g, '-');
-  const safe = name.slice(0, 256);
-  return safe === '' ? 'project' : safe;
-}
-
-function loadManifestOrUsage(manifestPath: string): ManifestLoadSpec {
-  try {
-    return loadGraphManifest(manifestPath);
-  } catch (error) {
-    // A bad manifest is local input, so it keeps the CLI's exit-2 contract and
-    // never reaches discovery or the daemon.
-    if (error instanceof GraphManifestError) {
-      throw new CliUsageError(error.message);
-    }
-    throw error;
-  }
-}
-
-function prepareLoad(command: Extract<GraphCommand, { kind: 'load' }>): PreparedLoad {
-  if (command.source.kind === 'manifest') {
-    const spec = loadManifestOrUsage(command.source.manifestPath);
-    if (command.harness !== undefined && command.harness !== spec.harness) {
-      throw new CliUsageError(
-        `manifest harness '${spec.harness}' conflicts with --harness '${command.harness}'`,
-      );
-    }
-    return {
-      definition: spec.definition,
-      bindings: spec.bindings,
-      project: spec.project,
-      defaultHarness: spec.harness,
-      ...(spec.idleTtlMs === undefined ? {} : { idleTtlMs: spec.idleTtlMs }),
-    };
-  }
-
-  const definition = readJsonFile(command.source.compositionPath, 'composition');
-  const bindings = readJsonFile(command.source.bindingsPath, 'bindings');
-  if (!isRecord(bindings)) {
-    throw new CliUsageError(
-      `bindings file '${command.source.bindingsPath}' must contain a JSON object`,
-    );
-  }
-  const directory = resolve(command.source.projectDirectory);
-  return {
-    definition,
-    bindings,
-    project: { id: projectIdForDirectory(directory), directory },
-    ...(command.source.idleTtlMs === undefined
-      ? {}
-      : { idleTtlMs: command.source.idleTtlMs }),
-  };
-}
-
-/**
- * One daemon directory, one endpoint. `--harness` never changes discovery; it
- * only filters session output or validates a manifest.
- */
 function createClient(
   daemonDir: string | undefined,
   deps: ControlCliDependencies,
@@ -598,169 +197,9 @@ function createClient(
   });
 }
 
-export async function runGraphCli(
-  argv: readonly string[],
-  deps: ControlCliDependencies = {},
-): Promise<number> {
-  const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
-  try {
-    const command = parseGraphArgs(argv);
-    // Local validation happens before discovery or any HTTP request, so a bad
-    // file can never create a session or reach the daemon.
-    const prepared = command.kind === 'load' ? prepareLoad(command) : undefined;
-    const client = createClient(command.daemonDir, deps);
-
-    switch (command.kind) {
-      case 'list': {
-        const statuses = (await client.status()) as readonly GraphStatus[];
-        if (command.json) {
-          writeJson(out, { status: statuses });
-        } else {
-          for (const status of statuses) {
-            out(listLine(status));
-          }
-        }
-        return 0;
-      }
-      case 'status': {
-        const status = await client.statusOf(command.graphId);
-        if (status === undefined) {
-          err(`error: graph '${command.graphId}' is not loaded`);
-          return 1;
-        }
-        if (command.json) {
-          writeJson(out, status);
-        } else {
-          printStatus(out, status as GraphStatus, 'status');
-        }
-        return 0;
-      }
-      case 'output': {
-        const outputs = await client.outputs(command.graphId);
-        if (outputs === undefined) {
-          err(`error: graph '${command.graphId}' is not loaded`);
-          return 1;
-        }
-        if (command.json) {
-          // One object, exactly the wire shape: no wrapper and no extra fields.
-          writeJson(out, { graphId: command.graphId, outputs: [...outputs] });
-        } else {
-          for (const entry of outputs) {
-            out(`${entry.nodeId}: ${renderOutputValue(entry.value)}`);
-          }
-        }
-        return 0;
-      }
-      case 'load': {
-        if (prepared === undefined) {
-          throw new Error('load command was not prepared');
-        }
-        const status = (await client.load(prepared)) as GraphStatus;
-        if (command.json) {
-          writeJson(out, status);
-        } else {
-          printStatus(out, status, 'loaded');
-        }
-        return 0;
-      }
-      case 'answer': {
-        // Exactly one attempt. An answer can resolve a hover and have side
-        // effects, so a failure is reported as-is and never retried.
-        const result = await client.answer({
-          graphId: command.graphId,
-          nodeId: command.nodeId,
-          value: { kind: 'text', text: command.input },
-          ...(command.token === undefined ? {} : { token: command.token }),
-          ...(command.graphRef === undefined ? {} : { graphRef: command.graphRef }),
-        });
-        if (command.json) {
-          writeJson(out, result);
-        } else {
-          out(
-            `answer ${result.graphId} rest=${String(result.rest)} ` +
-              `hovered=${String(result.hovered)} pumps=${String(result.pumps)} ` +
-              `persisted=${String(result.persisted)}`,
-          );
-          if (!result.persisted) {
-            out(`persist-failed ${oneLine(result.persistError ?? 'unknown')}`);
-          }
-        }
-        return 0;
-      }
-      case 'unload': {
-        const unloaded = await client.unload(command.graphId);
-        if (!unloaded) {
-          err(`error: graph '${command.graphId}' is not unloadable`);
-          return 1;
-        }
-        if (command.json) {
-          writeJson(out, { graphId: command.graphId, unloaded: true });
-        } else {
-          out(`unloaded ${command.graphId}`);
-        }
-        return 0;
-      }
-      case 'sweep': {
-        const report = (await client.sweep()) as SweepReport;
-        if (command.json) {
-          writeJson(out, report);
-        } else {
-          out(
-            `unloaded=${String(report.unloaded.length)} ` +
-              `skipped=${String(report.skipped.length)} ` +
-              `failed=${String(report.failed.length)}`,
-          );
-        }
-        return 0;
-      }
-    }
-  } catch (error) {
-    return reportCliError(error, err);
-  }
-}
-
-export async function runTriggerCli(
-  argv: readonly string[],
-  deps: ControlCliDependencies = {},
-): Promise<number> {
-  const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
-  try {
-    const command = parseTriggerArgs(argv);
-    const client = createClient(command.daemonDir, deps);
-    // Exactly one attempt. ControlClient never retries, and neither does this
-    // CLI: a trigger can have side effects, so a failure is reported as-is.
-    const result = (await client.trigger(
-      command.graphId,
-      command.nodeId,
-      {
-        kind: 'text',
-        text: command.input,
-      },
-      command.graphRef,
-    )) as GraphRunResult;
-    if (command.json) {
-      writeJson(out, result);
-    } else {
-      out(
-        `trigger ${result.graphId} rest=${String(result.rest)} ` +
-          `hovered=${String(result.hovered)} pumps=${String(result.pumps)} ` +
-          `persisted=${String(result.persisted)}`,
-      );
-      if (!result.persisted) {
-        out(`persist-failed ${oneLine(result.persistError ?? 'unknown')}`);
-      }
-    }
-    return 0;
-  } catch (error) {
-    return reportCliError(error, err);
-  }
-}
-
 /**
- * `wax session list|close`. A single attempt over the real control HTTP API; a
- * 404 close is reported as a normal "not found" failure (exit 1), never retried.
+ * `wax session list|close|sweep`. A single attempt over the real control HTTP
+ * API; a 404 close is a normal "not found" failure (exit 1), never retried.
  */
 export async function runSessionCli(
   argv: readonly string[],
@@ -791,8 +230,6 @@ export async function runSessionCli(
       case 'close': {
         const closed = await client.closeSession(command.sessionId);
         if (!closed) {
-          // Static text: the id is local input and is safe to echo, but no
-          // server response body is involved.
           err(`error: session '${command.sessionId}' is unknown or already closed`);
           return 1;
         }
@@ -806,7 +243,6 @@ export async function runSessionCli(
       case 'sweep': {
         const report = await client.sweepSessions();
         if (command.json) {
-          // One object, exactly the report shape; no wrapper.
           writeJson(out, report);
         } else {
           printSessionSweep(out, report);
@@ -828,10 +264,6 @@ function reportCliError(error: unknown, err: Writer): number {
     err(controlErrorLine(error));
     return 1;
   }
-  if (error instanceof ControlCliIoError) {
-    err(`error: ${oneLine(error.message)}`);
-    return 1;
-  }
   err(`error: ${oneLine(messageOf(error))}`);
   return 1;
 }
@@ -850,14 +282,6 @@ function writeJson(out: Writer, value: unknown): void {
     throw new Error('control response could not be serialized as JSON');
   }
   out(text);
-}
-
-function listLine(status: GraphStatus): string {
-  return (
-    `${status.graphId} rest=${String(status.rest)} ` +
-    `hovered=${String(status.hovered)} nodes=${String(status.nodes.length)} ` +
-    `refCount=${String(status.residency.refCount)}`
-  );
 }
 
 function sessionLine(session: SessionSummary): string {
@@ -889,57 +313,10 @@ function printSessionSweep(out: Writer, report: SweepSessionsReport): void {
   }
 }
 
-function printStatus(out: Writer, status: GraphStatus, label: string): void {
-  out(
-    `${label} ${status.graphId} rest=${String(status.rest)} ` +
-      `hovered=${String(status.hovered)} nodes=${String(status.nodes.length)} ` +
-      `refCount=${String(status.residency.refCount)}`,
-  );
-  for (const node of status.nodes) {
-    out(
-      `node ${node.nodeId} kind=${node.kind} queue=${String(node.queue)} ` +
-        `pending=${yesNo(node.pending)} active=${yesNo(node.active)} ` +
-        `hovered=${yesNo(node.hovered)} joins=${String(node.joins)}`,
-    );
-  }
-  out(
-    `residency state=${status.residency.state} ` +
-      `ttlMs=${String(status.residency.idleTtlMs)} ` +
-      `refCount=${String(status.residency.refCount)} ` +
-      `pinned=${yesNo(status.residency.pinned)}`,
-  );
-  if (status.recovery !== undefined) {
-    out(
-      `recovery resumed=${status.recovery.resumedHovers.join(',') || '-'} ` +
-        `unknown=${status.recovery.unknownActive.join(',') || '-'} ` +
-        `stuck=${status.recovery.stuckActive.join(',') || '-'}`,
-    );
-  }
-}
-
-/**
- * Human rendering of one graph output Value. A text Value prints its text
- * directly; every other shape prints stable compact JSON. Newlines are folded
- * so the documented "one line per node" contract always holds.
- */
-function renderOutputValue(value: unknown): string {
-  if (isRecord(value) && value['kind'] === 'text' && typeof value['text'] === 'string') {
-    // Text is printed as-is apart from folding embedded newlines, so the
-    // documented one-line-per-node contract always holds.
-    return value['text'].replace(/[\r\n]+/g, ' ');
-  }
-  const serialized = JSON.stringify(value);
-  return serialized === undefined ? '' : serialized;
-}
-
 function yesNo(value: boolean): string {
   return value ? 'yes' : 'no';
 }
 
 function oneLine(text: string): string {
   return text.replace(/[\r\n]+/g, ' ').trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

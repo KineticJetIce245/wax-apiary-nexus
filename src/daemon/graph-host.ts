@@ -35,7 +35,7 @@ export {
  *
  * Public behavior and errors are unchanged from the M9e host. Mutating
  * operations for one live id (load, unload, trigger, answer) are serialized by
- * the shared lock; status/catalog/output paths remain lock-free reads. `sweep`
+ * the shared lock; status, catalog and output paths remain lock-free reads. `sweep`
  * and `dispose` remain best-effort multi-live registry passes.
  */
 export class GraphHost {

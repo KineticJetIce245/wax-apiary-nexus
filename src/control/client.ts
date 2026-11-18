@@ -1,18 +1,22 @@
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-
-import type { GraphRunResult } from '../daemon/graph-host.js';
 import type { SweepSessionsReport } from '../session/session-registry.js';
-import { expandHomePath } from '../storage/conversation-store.js';
+import { ControlClientError } from './client-errors.js';
+import { parseLoopbackUrl, type LoopbackUrl } from './client-discovery.js';
+import {
+  parseSessionSummary,
+  parseSweepSessionsReport,
+  type SessionSummary,
+} from './client-session.js';
 
+export { ControlClientError } from './client-errors.js';
+export { discoverDaemon } from './client-discovery.js';
+export type { DaemonDiscovery, DaemonDiscoveryOptions } from './client-discovery.js';
+export type { SessionSummary } from './client-session.js';
 export type { SweepSessionsReport };
 
+
 const LOOPBACK_HOST = '127.0.0.1';
-const DEFAULT_DAEMON_PARTS = ['.wax', 'waxd'] as const;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const MAX_CONFIG_LENGTH = 4_096;
 const MAX_TOKEN_LENGTH = 4_096;
 const MAX_ID_LENGTH = 512;
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -28,148 +32,7 @@ export interface ControlClientOptions {
   readonly timeoutMs?: number;
 }
 
-export interface DaemonDiscoveryOptions {
-  /** Default `~/.wax/waxd`. A leading `~` is expanded. */
-  readonly daemonDir?: string;
-  /** Used only to resolve the default home directory. */
-  readonly env?: NodeJS.ProcessEnv;
-}
-
-export interface DaemonDiscovery {
-  readonly baseUrl: string;
-  readonly token: string;
-  readonly infoPath: string;
-  readonly tokenPath: string;
-}
-
-/**
- * One session as exposed by the control channel. It is deliberately routing
- * metadata only: a native id, project directory, prompt, output or token is
- * never part of this shape.
- */
-export interface SessionSummary {
-  readonly sessionId: string;
-  readonly harness: string;
-  readonly projectId: string;
-  readonly busy: boolean;
-  readonly bound: boolean;
-}
-
-/**
- * One forager's last completed output as exposed by the control channel. The
- * value is the runtime Value itself; it never includes a prompt, hover token or
- * transcript because those are not part of the graph output snapshot.
- */
-export interface GraphOutputEntry {
-  readonly nodeId: string;
-  readonly value: unknown;
-}
-
-export interface ControlClientErrorOptions {
-  /** Server error code, or `network` | `timeout` | `discovery` | `protocol`. */
-  readonly code: string;
-  readonly status?: number;
-}
-
-/**
- * Typed control-channel failure. Its message is always built from static text
- * and the HTTP status/code alone: never from a response body, a token, a
- * prompt or an output. Callers can therefore log `message` safely.
- */
-export class ControlClientError extends Error {
-  readonly code: string;
-  readonly status?: number;
-
-  constructor(message: string, options: ControlClientErrorOptions) {
-    super(message);
-    this.name = 'ControlClientError';
-    this.code = options.code;
-    if (options.status !== undefined) {
-      this.status = options.status;
-    }
-  }
-}
-
-interface LoopbackUrl {
-  readonly baseUrl: string;
-  readonly port: number;
-}
-
-/** Error used only to mark the client-side timeout race. */
-class ClientTimeoutError extends Error {
-  constructor() {
-    super('control request timed out');
-    this.name = 'ClientTimeoutError';
-  }
-}
-
-/**
- * Reads `server.json` and the token file written by `ControlServer`.
- *
- * Discovery is deliberately strict: only a loopback HTTP URL on the exact
- * port declared in the info file is accepted. A malformed, redirected or
- * remote endpoint must never receive the daemon token.
- */
-export function discoverDaemon(options: DaemonDiscoveryOptions = {}): DaemonDiscovery {
-  const daemonDir = resolveDaemonDirectory(options);
-  const infoPath = join(daemonDir, 'server.json');
-
-  const raw = readInfoFile(infoPath);
-  const info = parseInfoFile(raw, infoPath);
-
-  const host = info['host'];
-  if (host !== LOOPBACK_HOST) {
-    throw discoveryError(infoPath, `host must be '${LOOPBACK_HOST}'`);
-  }
-
-  const port = info['port'];
-  if (
-    typeof port !== 'number' ||
-    !Number.isSafeInteger(port) ||
-    port < 1 ||
-    port > 65_535
-  ) {
-    throw discoveryError(infoPath, 'port must be an integer between 1 and 65535');
-  }
-
-  let endpoint: LoopbackUrl;
-  try {
-    endpoint = parseLoopbackUrl(info['url']);
-  } catch {
-    throw discoveryError(infoPath, `url must be http://${LOOPBACK_HOST}:<port>`);
-  }
-  if (endpoint.port !== port) {
-    throw discoveryError(infoPath, 'port does not match url');
-  }
-
-  const rawTokenPath = info['tokenPath'];
-  if (
-    typeof rawTokenPath !== 'string' ||
-    rawTokenPath.length === 0 ||
-    rawTokenPath.length > MAX_CONFIG_LENGTH ||
-    /[\u0000-\u001f\u007f]/.test(rawTokenPath)
-  ) {
-    throw discoveryError(infoPath, 'tokenPath must be a non-empty string');
-  }
-  const tokenPath = resolve(expandHomePath(rawTokenPath));
-
-  const token = readTokenFile(infoPath, tokenPath);
-  return {
-    baseUrl: endpoint.baseUrl,
-    token,
-    infoPath,
-    tokenPath,
-  };
-}
-
-/**
- * Minimal client for the M4c1 control endpoint.
- *
- * Every request is a single attempt: `trigger`, `answer` and `load` have side
- * effects and are never retried automatically after a network failure or
- * timeout. Request bodies and server response bodies are never included in
- * thrown errors.
- */
+/** Base control-channel client: health and session operations. */
 export class ControlClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -202,134 +65,6 @@ export class ControlClient {
 
   async health(): Promise<Record<string, unknown>> {
     return this.request('GET', '/health');
-  }
-
-  async status(): Promise<readonly unknown[]> {
-    const body = await this.request('GET', '/status');
-    const value = body['status'];
-    if (!Array.isArray(value)) {
-      throw protocolError("control response missing 'status' array");
-    }
-    return value;
-  }
-
-  async statusOf(graphId: string): Promise<unknown | undefined> {
-    const id = requireId(graphId, 'graphId');
-    try {
-      const body = await this.request('GET', `/status/${encodeURIComponent(id)}`);
-      return requireField(body, 'status');
-    } catch (error) {
-      // An unloaded graph is a normal answer, not a failure. Every other
-      // non-2xx response still propagates as a typed error.
-      if (error instanceof ControlClientError && error.status === 404) {
-        return undefined;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Last completed output of every forager in one loaded graph, in the order
-   * the server returned them (node-id sorted). A 404 means the graph is not
-   * loaded and resolves `undefined`, matching `statusOf`; every other failure
-   * throws. Read-only and never retried, so a failed read cannot prolong a
-   * graph's residency.
-   */
-  async outputs(graphId: string): Promise<readonly GraphOutputEntry[] | undefined> {
-    const id = requireId(graphId, 'graphId');
-    try {
-      const body = await this.request('GET', `/graphs/${encodeURIComponent(id)}/output`);
-      return parseGraphOutputs(body, id);
-    } catch (error) {
-      if (error instanceof ControlClientError && error.status === 404) {
-        return undefined;
-      }
-      throw error;
-    }
-  }
-
-  async load(body: {
-    definition: unknown;
-    bindings: unknown;
-    project: { id: string; directory: string };
-    idleTtlMs?: number;
-    /** Manifest harness used for fresh bindings without an explicit harness. */
-    defaultHarness?: string;
-  }): Promise<unknown> {
-    const response = await this.request('POST', '/graphs/load', {
-      definition: body.definition,
-      bindings: body.bindings,
-      project: body.project,
-      ...(body.idleTtlMs === undefined ? {} : { idleTtlMs: body.idleTtlMs }),
-      ...(body.defaultHarness === undefined
-        ? {}
-        : { defaultHarness: body.defaultHarness }),
-    });
-    return requireField(response, 'status');
-  }
-
-  /**
-   * Trigger one node. An optional `graphRef` is a manifest path the daemon may
-   * load when the graph is not already in memory; it is omitted from the body
-   * when undefined, so an existing loaded graph is always reused as-is.
-   */
-  async trigger(
-    graphId: string,
-    nodeId: string,
-    value: unknown,
-    graphRef?: string,
-  ): Promise<unknown> {
-    const id = requireId(graphId, 'graphId');
-    const node = requireId(nodeId, 'nodeId');
-    const body = await this.request('POST', '/trigger', {
-      graphId: id,
-      nodeId: node,
-      value,
-      ...(graphRef === undefined ? {} : { graphRef }),
-    });
-    return requireField(body, 'result');
-  }
-
-  /**
-   * Answer one open user hover.
-   *
-   * `token` is the hover token and `graphRef` is a manifest path the daemon may
-   * load when the graph is not already in memory. Both are omitted from the
-   * body when undefined, so an existing loaded graph is always reused as-is.
-   * Neither is ever placed in a URL, error message or log.
-   */
-  async answer(body: {
-    graphId: string;
-    nodeId: string;
-    value: unknown;
-    token?: string;
-    graphRef?: string;
-  }): Promise<GraphRunResult> {
-    const graphId = requireId(body.graphId, 'graphId');
-    const nodeId = requireId(body.nodeId, 'nodeId');
-    const response = await this.request('POST', '/answer', {
-      graphId,
-      nodeId,
-      value: body.value,
-      ...(body.token === undefined ? {} : { token: body.token }),
-      ...(body.graphRef === undefined ? {} : { graphRef: body.graphRef }),
-    });
-    return requireField(response, 'result') as GraphRunResult;
-  }
-
-  async unload(graphId: string): Promise<boolean> {
-    const id = requireId(graphId, 'graphId');
-    const body = await this.request('POST', '/graphs/unload', { graphId: id });
-    const unloaded = body['unloaded'];
-    if (typeof unloaded !== 'boolean') {
-      throw protocolError("control response missing boolean 'unloaded'");
-    }
-    return unloaded;
-  }
-
-  async sweep(): Promise<unknown> {
-    const body = await this.request('POST', '/sweep', {});
-    return requireField(body, 'report');
   }
 
   /**
@@ -449,6 +184,14 @@ export class ControlClient {
       throw protocolError("control response did not have 'ok: true'");
     }
     return body;
+  }
+}
+
+/** Error used only to mark the client-side timeout race. */
+class ClientTimeoutError extends Error {
+  constructor() {
+    super('control request timed out');
+    this.name = 'ClientTimeoutError';
   }
 }
 
@@ -665,118 +408,6 @@ function requireId(value: unknown, field: string): string {
   return value;
 }
 
-/**
- * Strict parser for the graph output response. The graph id must match the one
- * requested and every entry must carry a bounded node id plus an own `value`
- * property. The message is static: a malformed body is never echoed.
- */
-function parseGraphOutputs(
-  body: Record<string, unknown>,
-  expectedGraphId: string,
-): readonly GraphOutputEntry[] {
-  const graphId = body['graphId'];
-  if (!isBoundedString(graphId, MAX_ID_LENGTH) || graphId !== expectedGraphId) {
-    throw protocolError('control response contained an invalid graph output');
-  }
-  const outputs = body['outputs'];
-  if (!Array.isArray(outputs)) {
-    throw protocolError('control response contained an invalid graph output');
-  }
-  const entries: GraphOutputEntry[] = [];
-  const seen = new Set<string>();
-  for (const entry of outputs) {
-    if (!isRecord(entry)) {
-      throw protocolError('control response contained an invalid graph output');
-    }
-    const nodeId = entry['nodeId'];
-    if (
-      !isBoundedString(nodeId, MAX_ID_LENGTH) ||
-      seen.has(nodeId) ||
-      !Object.hasOwn(entry, 'value')
-    ) {
-      throw protocolError('control response contained an invalid graph output');
-    }
-    seen.add(nodeId);
-    entries.push({ nodeId, value: entry['value'] });
-  }
-  return entries;
-}
-
-/**
- * Parse one sweep report from a control response. Every list and every field is
- * validated; a malformed entry is a protocol error, never a partially trusted
- * object. Ids and the static failure text are the only accepted content.
- */
-function parseSweepSessionsReport(value: unknown): SweepSessionsReport {
-  if (!isRecord(value)) {
-    throw invalidSweepReport();
-  }
-  const closed = parseSessionIdList(value['closed']);
-  const skipped = parseSessionIdList(value['skipped']);
-  const failedValue = value['failed'];
-  if (!Array.isArray(failedValue)) {
-    throw invalidSweepReport();
-  }
-  const failed: { sessionId: string; error: string }[] = [];
-  for (const entry of failedValue) {
-    if (!isRecord(entry)) {
-      throw invalidSweepReport();
-    }
-    const sessionId = entry['sessionId'];
-    const error = entry['error'];
-    if (
-      !isBoundedString(sessionId, MAX_ID_LENGTH) ||
-      typeof error !== 'string' ||
-      error.length > 200 ||
-      /[\u0000-\u001f\u007f]/.test(error)
-    ) {
-      throw invalidSweepReport();
-    }
-    failed.push({ sessionId, error });
-  }
-  return { closed, skipped, failed };
-}
-
-function parseSessionIdList(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw invalidSweepReport();
-  }
-  const ids: string[] = [];
-  for (const entry of value) {
-    if (!isBoundedString(entry, MAX_ID_LENGTH)) {
-      throw invalidSweepReport();
-    }
-    ids.push(entry);
-  }
-  return ids;
-}
-
-function invalidSweepReport(): ControlClientError {
-  return protocolError('control response contained an invalid session sweep report');
-}
-
-function parseSessionSummary(value: unknown): SessionSummary {
-  if (!isRecord(value)) {
-    throw protocolError('control response contained an invalid session summary');
-  }
-  const sessionId = value['sessionId'];
-  const harness = value['harness'];
-  const projectId = value['projectId'];
-  const busy = value['busy'];
-  const bound = value['bound'];
-  if (
-    !isBoundedString(sessionId, MAX_ID_LENGTH) ||
-    !isBoundedString(harness, 128) ||
-    !isBoundedString(projectId, MAX_ID_LENGTH) ||
-    typeof busy !== 'boolean' ||
-    typeof bound !== 'boolean'
-  ) {
-    // The message is static: a malformed summary is never echoed.
-    throw protocolError('control response contained an invalid session summary');
-  }
-  return { sessionId, harness, projectId, busy, bound };
-}
-
 function isBoundedString(value: unknown, maxLength: number): value is string {
   return (
     typeof value === 'string' &&
@@ -816,125 +447,6 @@ function requireTimeout(value: unknown): number {
     });
   }
   return value;
-}
-
-function resolveDaemonDirectory(options: DaemonDiscoveryOptions): string {
-  if (options.daemonDir !== undefined) {
-    const value = options.daemonDir;
-    if (
-      typeof value !== 'string' ||
-      value.length === 0 ||
-      value.length > MAX_CONFIG_LENGTH ||
-      /[\u0000-\u001f\u007f]/.test(value)
-    ) {
-      throw new ControlClientError('control daemonDir must be a non-empty string', {
-        code: 'discovery',
-      });
-    }
-    return resolve(expandHomePath(value));
-  }
-
-  const env = options.env;
-  const home = env?.['HOME'] || env?.['USERPROFILE'] || homedir();
-  return resolve(join(home, ...DEFAULT_DAEMON_PARTS));
-}
-
-function readInfoFile(infoPath: string): string {
-  try {
-    return readFileSync(infoPath, 'utf8');
-  } catch {
-    throw discoveryError(infoPath, 'server.json is missing or unreadable');
-  }
-}
-
-function parseInfoFile(raw: string, infoPath: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw discoveryError(infoPath, 'server.json is not valid JSON');
-  }
-  if (!isRecord(parsed)) {
-    throw discoveryError(infoPath, 'server.json must be a JSON object');
-  }
-  return parsed;
-}
-
-function readTokenFile(infoPath: string, tokenPath: string): string {
-  let contents: string;
-  try {
-    contents = readFileSync(tokenPath, 'utf8');
-  } catch {
-    throw discoveryError(infoPath, `token file '${tokenPath}' is missing or unreadable`);
-  }
-
-  const token = contents.trim();
-  if (
-    token.length === 0 ||
-    token.length > MAX_TOKEN_LENGTH ||
-    /[\s\u0000-\u001f\u007f]/.test(token)
-  ) {
-    throw discoveryError(
-      infoPath,
-      `token file '${tokenPath}' does not contain a valid token`,
-    );
-  }
-  return token;
-}
-
-/**
- * Strict parser for the only endpoint this client may ever contact. Echoing
- * the rejected value is avoided so a token accidentally embedded in a URL can
- * never end up in an error message.
- */
-function parseLoopbackUrl(value: unknown): LoopbackUrl {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > MAX_CONFIG_LENGTH
-  ) {
-    throw new Error('invalid loopback url');
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error('invalid loopback url');
-  }
-
-  if (
-    parsed.protocol !== 'http:' ||
-    parsed.username !== '' ||
-    parsed.password !== '' ||
-    parsed.hostname !== LOOPBACK_HOST ||
-    parsed.pathname !== '/' ||
-    parsed.search !== '' ||
-    parsed.hash !== ''
-  ) {
-    throw new Error('invalid loopback url');
-  }
-
-  const portText = parsed.port;
-  if (!/^[0-9]+$/.test(portText)) {
-    throw new Error('invalid loopback url');
-  }
-  const port = Number(portText);
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
-    throw new Error('invalid loopback url');
-  }
-
-  return {
-    baseUrl: `http://${LOOPBACK_HOST}:${String(port)}`,
-    port,
-  };
-}
-
-function discoveryError(infoPath: string, reason: string): ControlClientError {
-  return new ControlClientError(
-    `daemon discovery failed at '${infoPath}': ${reason}`,
-    { code: 'discovery' },
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

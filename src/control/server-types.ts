@@ -1,8 +1,6 @@
-import type { GraphBindings } from '../graph/binding.js';
 import type { GraphBindingStore } from '../graph/binding-store.js';
 import type { LiveHiveCatalog } from '../daemon/live-hive-catalog.js';
 import type { Project } from '../project/kernel.js';
-import type { GuardDecision, Value } from '../runtime/index.js';
 import type { SessionRegistry } from '../session/session-registry.js';
 import type { HoneyStore } from '../storage/honey.js';
 
@@ -54,11 +52,11 @@ export interface ControlServerOptions {
    */
   readonly sessionSweepIntervalMs?: number;
   /**
-   * Period for automatic graph TTL sweeps; default 60_000. `0` disables the
-   * timer. The manual `POST /sweep` route is unaffected.
+   * Period for the internal LiveHive TTL sweep; default 60_000. `0` disables
+   * the timer. There is no public sweep route.
    */
   readonly graphSweepIntervalMs?: number;
-  /** Optional durable LiveHive identity index, shared by host and `/catalog`. */
+  /** Optional durable LiveHive identity index used by host reads. */
   readonly catalog?: LiveHiveCatalog;
   /** Native guard decision timeout; defaults to one hour. */
   readonly guardTimeoutMs?: number;
@@ -99,7 +97,7 @@ export type ControlErrorCode =
 
 export interface HttpErrorOptions {
   readonly allow?: readonly string[];
-  /** Extra metadata (for example the current graph status on 409). */
+  /** Extra metadata (for example the current live status on 409). */
   readonly body?: Record<string, unknown>;
 }
 
@@ -117,15 +115,6 @@ export class HttpError extends Error {
 
 export type RouteKind =
   | 'health'
-  | 'status'
-  | 'graph-status'
-  | 'graph-output'
-  | 'load'
-  | 'trigger'
-  | 'answer'
-  | 'unload'
-  | 'sweep'
-  | 'catalog'
   | 'guards'
   | 'guard-decide'
   | 'sessions'
@@ -151,31 +140,4 @@ export interface Route {
   readonly graphId?: string;
 }
 
-export interface TriggerRequest {
-  readonly graphId: string;
-  readonly nodeId: string;
-  readonly value: Value;
-  /** Optional manifest path; consulted only when the graph is not in memory. */
-  readonly graphRef?: string;
-}
-
-export interface AnswerRequest {
-  readonly graphId: string;
-  readonly nodeId: string;
-  readonly value: Value;
-  /** Hover token from the parked user hover; optional. Never logged. */
-  readonly token?: string;
-  /** Optional manifest path; consulted only when the graph is not in memory. */
-  readonly graphRef?: string;
-}
-
-/** One lazy load from a manifest, with the node kind the caller can accept. */
-export interface LazyLoadRequest {
-  readonly graphId: string;
-  readonly nodeId: string;
-  readonly graphRef: string;
-  readonly allowedNodeKinds: readonly string[];
-  readonly nodeErrorMessage: string;
-}
-
-export type { GraphBindings, GuardDecision, Project };
+export type { Project };

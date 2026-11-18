@@ -356,6 +356,11 @@ test('wrong methods return 405 and unknown or traversing paths return 404', asyn
   const unknown = await getJson(info.url, token, '/not-a-route');
   assert.equal(unknown.status, 404);
 
+  const removedGraphRoute = await getJson(info.url, token, ['', 'graphs', 'load'].join('/'));
+  assert.equal(removedGraphRoute.status, 404);
+  const removedCatalogRoute = await getJson(info.url, token, ['', 'catalog'].join('/'));
+  assert.equal(removedCatalogRoute.status, 404);
+
   const nested = await getJson(info.url, token, '/lives/a/b/inspect');
   assert.equal(nested.status, 404);
 

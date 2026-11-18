@@ -9,8 +9,8 @@ A **LiveHive** is a loaded graph of **bees** connected by **beelines**; each bee
 ## 2. Layers
 
 ```text
-L4  Control / CLI        ControlServer / ControlClient / wax
-L3  LiveHive host        LiveHiveHost / LiveHiveCatalog / LiveHiveRegistry / LiveHiveLock
+L4  Control / CLI        ControlServer / ControlClient / wax (B surface only)
+L3  LiveHive host        LiveHiveService / GraphHost / LiveHiveCatalog / LiveHiveLock
 L2  Session              SessionRegistry / AdapterPool / Workspace
 L1  Adapter              CodexAdapter / DshAcpAdapter
 L0  Native harness       Codex app-server / DSH ACP server
@@ -68,15 +68,10 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - One session has at most one active execution. Sharing a session across LiveHives requires queue/forward or an explicit `session-busy` error; never silent.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
-## 7. Code names vs target names
+## 7. Public names and internal engine names
 
-| Target | Current code |
-| --- | --- |
-| LiveHive | `LiveGraph` / `Graph` |
-| Bee | `node` / `Node` |
-| Beeline | `edge` |
-| `wake` | `trigger` |
-| LiveHiveHost | `GraphHost` |
-| hive structure | `CompositionDefinition` / `GraphDefinition` |
+The public object layer is B: `LiveHive`, `Bee`, `Beeline`, `BeeBinding`, `HiveTemplate`, `Schedule` and `Dispatch`. The control API and CLI expose `/lives`, `/templates`, `/dispatch`, `/guards`, `/sessions`, `wax live`, `wax wake`, `wax answer`, `wax template`, `wax dispatch` and `wax session`.
 
-The renames happen during the M9 refactor. Until then, the code may use the old names internally.
+`GraphHost`, `GraphStatus`, `GraphId` and `CompositionDefinition` remain internal execution-engine names. They are not a second object model and are not exposed by the HTTP or CLI surface. Renaming them is a separate internal cleanup.
+
+The legacy graph control surface and its client commands were removed in M10c; there are no aliases.

@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url';
 
 import type { ControlCliDependencies } from './control-cli.js';
-import { runGraphCli, runSessionCli, runTriggerCli } from './control-cli.js';
+import { runSessionCli } from './control-cli.js';
 import { runDispatchCli } from './dispatch-cli.js';
 import { runLiveCli } from './live-cli.js';
 import { runTemplateCli } from './template-cli.js';
@@ -20,7 +20,7 @@ export { CliUsageError };
 export type CliDependencies = WaxdDependencies & ControlCliDependencies;
 
 const USAGE =
-  'usage: wax <waxd|graph|trigger|session|live|wake|answer|template|dispatch> ... ' +
+  'usage: wax <waxd|session|live|wake|answer|template|dispatch> ... ' +
   '(wax run, wax daemon, wax status/log/honey, wax composition and wax mcp were removed)';
 
 /**
@@ -35,12 +35,6 @@ export async function runCli(
 ): Promise<number> {
   if (argv[0] === 'waxd') {
     return runWaxdCli(argv, deps);
-  }
-  if (argv[0] === 'graph') {
-    return runGraphCli(argv, deps);
-  }
-  if (argv[0] === 'trigger') {
-    return runTriggerCli(argv, deps);
   }
   if (argv[0] === 'session') {
     return runSessionCli(argv, deps);

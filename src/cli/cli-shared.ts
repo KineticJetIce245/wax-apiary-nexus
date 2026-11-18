@@ -56,7 +56,7 @@ function findDshPluginPatch(startUrl: string | URL = import.meta.url): string | 
 }
 
 /**
- * Applies the selection policy shared by `waxd`, `wax graph`, `wax trigger`
+ * Applies the selection policy shared by `waxd` and the B CLI
  * and `wax session`. A dsh root never has an implicit default: it must come
  * from `--dsh-root` or `DSH_ROOT`. Each per-harness override is rejected on
  * the other harness.

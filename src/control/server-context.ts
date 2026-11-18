@@ -200,7 +200,7 @@ export class ControlServerContext {
     });
   }
 
-  /** One graph TTL pass shared by `POST /sweep` and the automatic timer. */
+  /** One internal LiveHive TTL pass; not a public route. */
   sweepGraphs(): Promise<SweepReport> {
     return this.requireGraphHost().sweep();
   }

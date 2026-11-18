@@ -33,10 +33,7 @@ import {
   OUTPUT_MARKER,
   LEAK_MARKER,
   startDaemon,
-  foragerDefinition,
-  userForagerDefinition,
   hoverTokenOf,
-  clientManifestFixture,
   asRecord,
   isControlError,
   tempDir,
@@ -324,31 +321,6 @@ test('2xx responses without ok:true or JSON are protocol errors', async (t) => {
 
   const client = new ControlClient({ baseUrl: raw.baseUrl, token: VALID_TOKEN });
   await assert.rejects(client.health(), isControlError('protocol'));
-  await assert.rejects(client.status(), isControlError('protocol'));
-});
-
-test('trigger is attempted exactly once after a network failure', async () => {
-  let calls = 0;
-  const fetchImpl: typeof fetch = async () => {
-    calls += 1;
-    throw new TypeError('simulated network failure');
-  };
-  const client = new ControlClient({
-    baseUrl: 'http://127.0.0.1:4321',
-    token: VALID_TOKEN,
-    fetchImpl,
-    timeoutMs: 1_000,
-  });
-
-  await assert.rejects(
-    client.trigger('main', 'only', { kind: 'text', text: 'x' }),
-    isControlError('network'),
-  );
-  assert.equal(calls, 1);
-  await new Promise<void>((resolvePromise) => {
-    setTimeout(resolvePromise, 25);
-  });
-  assert.equal(calls, 1, 'trigger must not be retried');
 });
 
 test('an oversized response is rejected by the 2 MiB limit', async (t) => {

@@ -10,75 +10,88 @@ It is not a new agent runtime. Each harness stays native; WAX coordinates LiveHi
 waxd
   ├─ AdapterPool            codex / dsh → one Workspace each
   ├─ SessionRegistry        global; session.harness decides the Workspace
-  ├─ LiveHiveHost           load / wake / answer / guard / save / unload
-  │    └─ LiveHive          bees + beelines + PheromoneField
+  ├─ LiveHiveService       new / load / wake / answer / guard / save / unload / migrate / dispatch
+  │    └─ GraphHost         internal execution engine for bees/beelines/PheromoneField
   └─ ControlServer          one local endpoint, one token
 ```
 
-- **LiveHive is the first-class object.** A LiveHive is a loaded graph with `bees`, `beelines`, `beeId -> sessionId` bindings, and a `PheromoneField`.
-- **Bee is the execution slot** (previously called node). A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
-- **Beeline is a connection** (previously called edge). Conditions choose outgoing beelines; fork/merge use branches.
-- **`wake` replaces trigger.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps.
+- **LiveHive is the first-class object.** A LiveHive has `bees`, `beelines`, `beeId -> sessionId` bindings, optional `schedules`, and a `PheromoneField`.
+- **Bee is the execution slot.** A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
+- **Beeline is a connection.** Conditions choose outgoing beelines; fork/merge use branches.
+- **`wake` is the execution verb.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps.
 - **Save and unload both write `live.json`.** Load makes memory authoritative; disk changes are ignored until the next save/unload.
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
+- `GraphHost`, `GraphStatus` and `GraphId` remain internal engine names. They are not public WAX objects and may be renamed later.
 
 ## Current status
 
-The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/guard/run wiring, M9e session-ownership checks, and the M9f1/M9f2 host/control splits; it does **not** yet implement the full target above.
+The code is a B-core prototype with a single daemon and one control endpoint.
 
-- **M9a/M9b/M9c (committed in `3eb24b0`)** are wired together: one `AdapterPool`, one global `SessionRegistry`, one `GraphHost`, one `ControlServer`, one endpoint. A graph can mix Codex and DSH sessions.
-- **M9b** added `LiveHiveCatalog`, per-live `LiveHiveLock`, a graph TTL timer, and `GET /catalog`; unloaded LiveHives keep their identity. `status` still reports loaded graphs only.
-- **M9d (committed in `425fcdc`)** added the per-LiveHive scheduler, `GET /guards` + `POST /guard/decide`, and durable `RunStore` output (`runId`/`requestId`, readable after unload).
-- **M9e (committed in `a5be496`)** makes `fresh_once` reuse depend on harness + projectDirectory, and rejects a second loaded graph that binds the same explicit session with HTTP 409 `session-busy`.
-- **M9f1 (committed in `ba567ad`)** splits `GraphHost` into a 114-line facade plus lifecycle/execution/read/session-ownership services, and deletes the dead `drain`/`firstHover`/`lastOutputs` APIs.
-- **M9f2 (committed in `a4883cd`)** splits `ControlServer` into a 55-line facade plus lifecycle/HTTP/routes/validation/context services; no behavior change.
-- **M9g (committed in `7fa3db7`)** removes the unused revision module and Honey log/transcript methods; test files are now all ≤800.
-- **M9h (committed in `eda0df6`)** adds the B object layer under `src/b/`: HiveTemplate, LiveHive (`live.json` keyed by beeId), Bee/Beeline/BeeBinding, codec to CompositionDefinition, and DispatchService.
-- **M9i (committed in `1eed44e`)** adds live/template/dispatch HTTP routes and CLI, `LiveHiveService`, and `GraphHost.save`; existing `/graphs` remains.
-- **M9j (committed in `fbcbe53`)** adds the real Codex+DSH LiveHive acceptance chain (template → instantiate → wake → save → unload → load → migrate → dispatch) and persists created session IDs into `live.json` bindings.
-- **M10a (committed in `ff814ea`)** adds `GET /lives`, `GET /lives/:id/output`, top-level `wax wake`/`wax answer`, `wax live list`, and a one-way composition importer.
-- **M10b1 (committed in `566199b`)** adds B `schedules` (`Schedule`, at/every) and maps them through the codec, so the scheduler survives the B surface cut.
-- **M10b2 (uncommitted)** migrates all old-surface tests to `/lives` and B CLI, fixes B unload/duplicate-load 409 mapping, and removes manifest/graphRef/sweep tests. Old route/CLI code remains for M10c.
-- **Review fixes (committed in `463682c`, `cbbc6ac`)** hardened real evidence: DSH recall product test, adapter prompt routing, host guard reject/cancel, partial-start/restart, guard HTTP negatives, reload-then-run, explicit timeouts, and test-file splits.
-- `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
-- The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 731 tests (730 pass + 1 Windows skip after M10b2). **Full `npm run test:integration` passes 22/22 with 0 skip**; all test files are ≤800 lines. Tests no longer exercise `/graphs`, `wax graph`, or `wax trigger`; old route/CLI code remains for M10c.
+- **M9a–M9j** established the single daemon, global session registry, scheduler/guard/RunStore wiring, B object layer (`HiveTemplate`, `LiveHive`, bees/beelines/bindings), real Codex+DSH LiveHive chain, and session-ownership checks.
+- **M10a** added `GET /lives`, `GET /lives/:id/output`, top-level `wax wake`/`wax answer`, `wax live list`, and a one-way composition importer.
+- **M10b1** added B `schedules` (`Schedule`, at/every), mapped through the codec so the scheduler survives the surface cut.
+- **M10b2** migrated surface coverage to `/lives` and B CLI, and fixed B unload/duplicate-load 409 mapping.
+- **M10c** removes the legacy graph control surface and client commands. The HTTP API, CLI, tests and client now expose only `/lives`, `/templates`, `/dispatch`, `/guards` and `/sessions`.
+- `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
+- The regression suite is 716 tests (715 pass + 1 Windows skip). Full `npm run test:integration` passes 22/22 with 0 skip; all test files are ≤800 lines.
 
 ## Current commands
 
 ```text
 waxd (--harness <codex|dsh> | --harnesses <codex,dsh>) [options]
-wax graph list|status <graphId>|output <graphId>|load <composition>|load --manifest <file>|unload <graphId>|sweep|answer <graphId> <nodeId>
-wax trigger <graphId> <nodeId> [--input <text>] [--graph <manifest>]
+wax live list|new <live.json>|load <liveId> [path]|instantiate <templateId> <liveId>|wake <liveId> <beeId>|answer <liveId> <beeId>|save <liveId>|unload <liveId>|migrate <liveId> <live.json>|inspect <liveId>
+wax wake <liveId> <beeId> [--input <text>]
+wax answer <liveId> <beeId> [--input <text>] [--token <hv_...>]
+wax template compose <template.json>|list
+wax dispatch --input <text>
 wax session list|close <sessionId>|sweep
 ```
 
-`wax run`, `wax daemon`, `wax answer`, `wax status/log/honey`, `wax composition` and `wax mcp` are removed. One-shot/headless execution goes through `waxd` plus the control API; there is no second host.
+`waxd` and the control API are the only host. One-shot/headless execution goes through `wax dispatch` or a LiveHive; there is no second host.
 
-## Current code names vs target names
+## HTTP surface
 
-The code still uses the old names; renames happen during the M9 refactor.
+```text
+POST /lives
+POST /lives/load
+POST /lives/instantiate
+POST /lives/wake
+POST /lives/answer
+POST /lives/save
+POST /lives/unload
+POST /lives/migrate
+GET  /lives
+GET  /lives/:id/inspect
+GET  /lives/:id/output
+GET  /templates
+POST /templates
+POST /dispatch
+GET  /guards
+POST /guard/decide
+GET  /sessions
+POST /sessions/close
+POST /sessions/sweep
+GET  /health
+```
 
-| Target | Current code |
-| --- | --- |
-| LiveHive | `LiveGraph` / `Graph` |
-| Bee | `node` / `Node` |
-| Beeline | `edge` |
-| `wake` | `trigger` |
-| LiveHiveHost | `GraphHost` |
-| hive structure | `CompositionDefinition` / `GraphDefinition` |
+The legacy graph routes, catalog route and legacy CLI commands are not present and have no forwarding aliases.
+
+## Names
+
+Public names are B names. Internal execution code still uses `GraphHost`, `GraphStatus`, `GraphId` and `CompositionDefinition`; these are implementation details, not a second object model.
+
+There is no Agent object, no Revision/Definition object, and no Actor object.
 
 ## Known limits
 
-- `GET /catalog` exposes unloaded identity, but `GET /status` still only reports loaded graphs.
-- Per-live lock covers load/trigger/answer; the multi-live `sweep` pass is not per-live locked (it relies on registry busy/refCount guards).
-- Idle TTL has a daemon timer (default 60s, 0 disables), but `GraphStatus`/catalog API merging is still pending.
-- Scheduler triggers pass an empty text Value because `TriggerDefinition` has no `input` field.
+- B `schedules` have no `input` field; scheduled wakes use the existing empty text input.
+- `unload` keeps the durable catalog and sessions; `inspect`/`output` do not refresh TTL.
+- Per-live lock covers mutating operations; the multi-live sweep pass is not per-live locked (it relies on registry busy/refCount guards).
 - Guard requests are exposed/decided by `requestId`; they are not RunStore records because `GuardRequest` has no `liveId`.
-- RunStore has 1000-record / 1 MiB defaults and is used by trigger/answer.
+- RunStore has 1000-record / 1 MiB defaults and is used by wake/answer.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
-- A second loaded graph binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
+- A second LiveHive binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
 - Real mixed Codex+DSH, scheduler, DSH guard, DSH session-busy, and full B LiveHive chain pass; full integration is 22/22. Native approval/cancel flake risk remains recorded; OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

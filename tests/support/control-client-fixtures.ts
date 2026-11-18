@@ -183,45 +183,6 @@ export function hoverTokenOf(daemon: TestDaemon, graphId: string, nodeId: string
   return hover.token;
 }
 
-interface ClientManifestFixture {
-  readonly root: string;
-  readonly manifestPath: string;
-  readonly compositionPath: string;
-}
-
-/** A real manifest for exercising the client's optional graphRef end to end. */
-export function clientManifestFixture(
-  options: {
-    readonly graphId?: string;
-    readonly harness?: 'codex' | 'dsh';
-    readonly composition?: Record<string, unknown>;
-    readonly bindings?: Record<string, unknown>;
-  } = {},
-): ClientManifestFixture {
-  const root = mkdtempSync(join(tmpdir(), 'wax-client-manifest-'));
-  const projectDirectory = join(root, 'project');
-  mkdirSync(projectDirectory, { recursive: true });
-  const compositionPath = join(root, 'composition.json');
-  writeFileSync(
-    compositionPath,
-    JSON.stringify(
-      options.composition ?? foragerDefinition(options.graphId ?? 'client-manifest', 'run {{input}}'),
-    ),
-  );
-  const manifestPath = join(root, 'graph.wax.json');
-  writeFileSync(
-    manifestPath,
-    JSON.stringify({
-      schemaVersion: 1,
-      composition: 'composition.json',
-      project: { id: 'client-manifest-project', directory: 'project' },
-      harness: options.harness ?? 'codex',
-      bindings: options.bindings ?? { only: { kind: 'fresh' } },
-    }),
-  );
-  return { root, manifestPath, compositionPath };
-}
-
 export function asRecord(value: unknown): Record<string, any> {
   assert.equal(typeof value, 'object');
   assert.notEqual(value, null);

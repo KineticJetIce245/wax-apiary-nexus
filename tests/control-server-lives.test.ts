@@ -42,6 +42,14 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   assert.equal(created.body?.['status']?.['graphId'], 'demo');
   const livePath = join(env.stateRoot, 'lives', 'demo', 'live.json');
   assert.equal(existsSync(livePath), true);
+  const listedLoaded = await getJson(running.info.url, running.token, '/lives');
+  assert.equal(listedLoaded.status, 200);
+  assert.equal(
+    (listedLoaded.body?.['lives'] as Record<string, unknown>[]).find(
+      (entry) => entry['liveId'] === 'demo',
+    )?.['state'],
+    'loaded',
+  );
 
   const woke = await postJson(running.info.url, running.token, '/lives/wake', {
     liveId: 'demo',
@@ -50,6 +58,8 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   });
   assert.equal(woke.status, 200);
   assert.equal(woke.body?.['result']?.['graphId'], 'demo');
+  const runId = String(woke.body?.['result']?.['runId']);
+  assert.ok(runId.length > 0);
 
   const saved = await postJson(running.info.url, running.token, '/lives/save', {
     liveId: 'demo',
@@ -68,6 +78,34 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   });
   assert.equal(unloaded.status, 200);
   assert.equal(unloaded.body?.['unloaded'], true);
+  const listedUnloaded = await getJson(running.info.url, running.token, '/lives');
+  assert.equal(
+    (listedUnloaded.body?.['lives'] as Record<string, unknown>[]).find(
+      (entry) => entry['liveId'] === 'demo',
+    )?.['state'],
+    'unloaded',
+  );
+  const outputByRun = await getJson(
+    running.info.url,
+    running.token,
+    `/lives/demo/output?runId=${encodeURIComponent(runId)}`,
+  );
+  assert.equal(outputByRun.status, 200);
+  assert.equal(outputByRun.body?.['runId'], runId);
+  assert.equal(JSON.stringify(outputByRun.body).includes('hello'), false);
+  const latestOutput = await getJson(
+    running.info.url,
+    running.token,
+    '/lives/demo/output',
+  );
+  assert.equal(latestOutput.status, 200);
+  assert.equal(latestOutput.body?.['runId'], runId);
+  const unknownOutput = await getJson(
+    running.info.url,
+    running.token,
+    '/lives/demo/output?runId=missing-run',
+  );
+  assert.equal(unknownOutput.status, 404);
   const unloadedInspect = await getJson(
     running.info.url,
     running.token,

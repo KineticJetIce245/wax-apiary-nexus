@@ -17,6 +17,20 @@ export interface LiveDispatchResult {
  * single-attempt control client; the token never enters a URL or error text.
  */
 export class LiveHiveClient extends ControlClient {
+  async listLives(): Promise<readonly unknown[]> {
+    const body = await this.request('GET', '/lives');
+    const lives = body['lives'];
+    if (!Array.isArray(lives)) {
+      throw protocolError("control response missing 'lives' array");
+    }
+    return lives;
+  }
+
+  async output(liveId: string, runId?: string): Promise<Record<string, unknown>> {
+    const query = runId === undefined ? '' : `?runId=${encodeURIComponent(runId)}`;
+    return this.request('GET', `/lives/${encodeURIComponent(liveId)}/output${query}`);
+  }
+
   async createLive(live: LiveHive, project?: Project): Promise<LiveOperationResult> {
     const body = await this.request('POST', '/lives', {
       live,
@@ -104,24 +118,6 @@ export class LiveHiveClient extends ControlClient {
     return this.request('GET', `/lives/${encodeURIComponent(liveId)}/inspect`);
   }
 
-  async composeTemplate(template: HiveTemplate): Promise<string> {
-    const body = await this.request('POST', '/templates', { template });
-    const templateId = body['templateId'];
-    if (typeof templateId !== 'string' || templateId.length === 0) {
-      throw protocolError("control response missing 'templateId'");
-    }
-    return templateId;
-  }
-
-  async listTemplates(): Promise<readonly unknown[]> {
-    const body = await this.request('GET', '/templates');
-    const templates = body['templates'];
-    if (!Array.isArray(templates)) {
-      throw protocolError("control response missing 'templates' array");
-    }
-    return templates;
-  }
-
   async dispatch(
     input: string,
     options: {
@@ -146,6 +142,27 @@ export class LiveHiveClient extends ControlClient {
       throw protocolError("control response missing dispatch output/sessionId");
     }
     return { output, sessionId };
+  }
+}
+
+/** Template-only additions; keeps the core LiveHiveClient at the method cap. */
+export class TemplateClient extends LiveHiveClient {
+  async composeTemplate(template: HiveTemplate): Promise<string> {
+    const body = await this.request('POST', '/templates', { template });
+    const templateId = body['templateId'];
+    if (typeof templateId !== 'string' || templateId.length === 0) {
+      throw protocolError("control response missing 'templateId'");
+    }
+    return templateId;
+  }
+
+  async listTemplates(): Promise<readonly unknown[]> {
+    const body = await this.request('GET', '/templates');
+    const templates = body['templates'];
+    if (!Array.isArray(templates)) {
+      throw protocolError("control response missing 'templates' array");
+    }
+    return templates;
   }
 }
 

@@ -4,7 +4,7 @@ import {
   type ControlCliDependencies,
 } from './control-cli.js';
 import {
-  createClient,
+  createTemplateClient,
   readTemplate,
   reportCliError,
   requirePositionals,
@@ -24,7 +24,7 @@ export async function runTemplateCli(
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
   try {
     const parsed = parseCliTokens(argv.slice(2), new Set(['--daemon-dir']));
-    const client = createClient(parsed, deps);
+    const client = createTemplateClient(parsed, deps);
     if (argv[1] === 'list') {
       requirePositionals(parsed, 0, TEMPLATE_USAGE);
       const templates = await client.listTemplates();

@@ -2,7 +2,7 @@ import { MAX_ID_LENGTH, MAX_PATH_LENGTH } from './server-constants.js';
 import type { Route } from './server-types.js';
 
 /** Match a raw request path without URL normalization. */
-export function matchRoute(rawUrl: string | undefined): Route | undefined {
+export function matchRoute(rawUrl: string | undefined, method?: string): Route | undefined {
   if (rawUrl === undefined) {
     return undefined;
   }
@@ -42,7 +42,9 @@ export function matchRoute(rawUrl: string | undefined): Route | undefined {
       case 'sessions':
         return { kind: 'sessions', methods: ['GET'] };
       case 'lives':
-        return { kind: 'lives-create', methods: ['POST'] };
+        return method === 'GET'
+          ? { kind: 'lives-list', methods: ['GET'] }
+          : { kind: 'lives-create', methods: ['POST'] };
       case 'templates':
         return { kind: 'templates', methods: ['GET', 'POST'] };
       case 'dispatch':
@@ -121,6 +123,13 @@ export function matchRoute(rawUrl: string | undefined): Route | undefined {
       second.length <= MAX_ID_LENGTH
     ) {
       return { kind: 'lives-inspect', methods: ['GET'], graphId: second };
+    }
+    if (
+      first === 'lives' &&
+      third === 'output' &&
+      second.length <= MAX_ID_LENGTH
+    ) {
+      return { kind: 'lives-output', methods: ['GET'], graphId: second };
     }
   }
 

@@ -10,6 +10,7 @@ import {
   parseWakeLiveBody,
 } from './b-validation.js';
 import type { LiveHiveService } from '../b/live-hive-service.js';
+import { queryParam } from './route-output.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
 import { HttpError } from './server-types.js';
@@ -20,6 +21,7 @@ export async function dispatchLiveRoute(
   route: Route,
   payload: Record<string, unknown> | undefined,
   method?: string,
+  rawUrl?: string,
 ): Promise<Record<string, unknown>> {
   const service = context.requireLiveHiveService();
   switch (route.kind) {
@@ -28,6 +30,8 @@ export async function dispatchLiveRoute(
     case 'lives-instantiate':
     case 'lives-migrate':
       return dispatchLifecycle(service, route.kind, payload);
+    case 'lives-list':
+      return { ok: true, lives: service.read.list() };
     case 'lives-wake':
     case 'lives-answer':
       return dispatchLiveRun(service, route.kind, payload);
@@ -35,12 +39,29 @@ export async function dispatchLiveRoute(
     case 'lives-unload':
     case 'lives-inspect':
       return dispatchLiveState(service, route, payload);
+    case 'lives-output':
+      return dispatchLiveOutput(service, route, rawUrl);
     case 'templates':
     case 'dispatch':
       return dispatchLiveUtility(service, route.kind, payload, method);
     default:
       throw new HttpError(500, 'internal', 'internal error');
   }
+}
+
+function dispatchLiveOutput(
+  service: LiveHiveService,
+  route: Route,
+  rawUrl: string | undefined,
+): Record<string, unknown> {
+  const liveId = route.graphId;
+  if (liveId === undefined) {
+    throw new HttpError(404, 'not-found', 'not found');
+  }
+  return {
+    ok: true,
+    ...service.read.output(liveId, queryParam(rawUrl, 'runId')),
+  };
 }
 
 async function dispatchLifecycle(
@@ -106,7 +127,7 @@ async function dispatchLiveState(
   if (liveId === undefined) {
     throw new HttpError(404, 'not-found', 'not found');
   }
-  const inspected = service.inspect(liveId);
+  const inspected = service.read.inspect(liveId);
   return {
     ok: true,
     liveId: inspected.liveId,
@@ -131,7 +152,7 @@ async function dispatchLiveUtility(
     return { ok: true, templateId: template.templateId };
   }
   const body = parseDispatchBody(payload);
-  const result = await service.dispatch(body.input, {
+  const result = await service.dispatchService.dispatch(body.input, {
     ...(body.sessionParams === undefined ? {} : { sessionParams: body.sessionParams }),
     ...(body.sessionId === undefined ? {} : { sessionId: body.sessionId }),
     ...(body.timeoutMs === undefined ? {} : { timeoutMs: body.timeoutMs }),
@@ -142,6 +163,7 @@ async function dispatchLiveUtility(
 
 export const LIVE_ROUTE_KINDS = new Set<Route['kind']>([
   'lives-create',
+  'lives-list',
   'lives-load',
   'lives-instantiate',
   'lives-wake',
@@ -150,6 +172,7 @@ export const LIVE_ROUTE_KINDS = new Set<Route['kind']>([
   'lives-unload',
   'lives-migrate',
   'lives-inspect',
+  'lives-output',
   'templates',
   'dispatch',
 ]);

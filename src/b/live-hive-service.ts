@@ -1,11 +1,12 @@
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
 import type { GraphHost, GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
-import type { LiveHiveCatalogEntry } from '../daemon/live-hive-catalog.js';
 import type { Project } from '../project/kernel.js';
 import type { Value } from '../runtime/index.js';
 import type { SessionRegistry } from '../session/session-registry.js';
-import { DispatchService, type DispatchOptions, type DispatchResult } from './dispatch-service.js';
+import type { RunStore } from '../storage/run-store.js';
+import { DispatchService } from './dispatch-service.js';
 import type { HiveTemplate, LiveHive, SessionParams } from './types.js';
+import { LiveHiveReadService } from './live-hive-read.js';
 import { LiveHiveRepository } from './live-hive-repository.js';
 import { toCompositionDefinition } from './live-hive-codec.js';
 import { LiveHiveServiceError } from './live-hive-service-errors.js';
@@ -23,6 +24,7 @@ export interface LiveHiveServiceOptions {
   readonly defaultProject?: Project;
   readonly dispatchService?: DispatchService;
   readonly defaultHarness?: string;
+  readonly runStore?: RunStore;
 }
 
 export interface LiveHiveOperationResult {
@@ -30,12 +32,11 @@ export interface LiveHiveOperationResult {
   readonly status: GraphStatus;
 }
 
-export interface LiveHiveInspectResult {
-  readonly liveId: string;
-  readonly status?: GraphStatus;
-  readonly outputs: readonly { readonly nodeId: string; readonly value: unknown }[];
-  readonly catalog?: LiveHiveCatalogEntry;
-}
+export type {
+  LiveHiveInspectResult,
+  LiveHiveOutputResult,
+  LiveHiveSummary,
+} from './live-hive-read.js';
 
 /** Per-bee session defaults for template instantiation. */
 export type LiveHiveOverrides = Readonly<Record<string, SessionParams>>;
@@ -47,8 +48,9 @@ export type LiveHiveOverrides = Readonly<Record<string, SessionParams>>;
 export class LiveHiveService {
   private readonly repository: LiveHiveRepository;
   private readonly defaultProject: Project | undefined;
-  private readonly dispatchService: DispatchService;
+  readonly dispatchService: DispatchService;
   private readonly defaultHarness: string | undefined;
+  readonly read: LiveHiveReadService;
 
   constructor(private readonly options: LiveHiveServiceOptions) {
     if (typeof options !== 'object' || options === null) {
@@ -57,6 +59,11 @@ export class LiveHiveService {
     this.repository = new LiveHiveRepository(options.livesRoot, options.templateStore);
     this.defaultProject = options.defaultProject;
     this.defaultHarness = options.defaultHarness;
+    this.read = new LiveHiveReadService(
+      options.graphHost,
+      this.repository,
+      options.runStore,
+    );
     this.dispatchService =
       options.dispatchService ??
       new DispatchService({
@@ -188,31 +195,6 @@ export class LiveHiveService {
     return this.repository.listTemplates();
   }
 
-  /** Read-only status/output/catalog; never touches residency. */
-  inspect(liveId: string): LiveHiveInspectResult {
-    const id = this.repository.requireLiveId(liveId);
-    const status = this.options.graphHost.statusOf(id);
-    const catalog = this.options.graphHost
-      .catalogEntries()
-      .find((entry) => entry.liveId === id);
-    if (status === undefined && catalog === undefined && !this.repository.cached(id)) {
-      throw new LiveHiveServiceError('not-found', `live hive is not loaded: ${id}`);
-    }
-    // outputsOf requires a loaded graph. An unloaded live is a valid read:
-    // return its catalog identity and an empty output list, never a 500.
-    const outputs = status === undefined
-      ? []
-      : [...this.options.graphHost.outputsOf(id).entries()]
-          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-          .map(([nodeId, value]) => ({ nodeId, value }));
-    return {
-      liveId: id,
-      ...(status === undefined ? {} : { status }),
-      outputs,
-      ...(catalog === undefined ? {} : { catalog }),
-    };
-  }
-
   /**
    * Explicit structural replacement: unload, write the new live, load again.
    * There is no fork command and no revision/CAS.
@@ -247,10 +229,6 @@ export class LiveHiveService {
       }
       throw error;
     }
-  }
-
-  async dispatch(input: string, options: DispatchOptions): Promise<DispatchResult> {
-    return this.dispatchService.dispatch(input, options);
   }
 
   private async start(

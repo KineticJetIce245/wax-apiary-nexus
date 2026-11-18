@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { expandHomePath } from '../storage/conversation-store.js';
@@ -113,6 +113,29 @@ export class LiveHiveRepository {
     const path = this.pathFor(liveId);
     const store = new LiveHiveStore(path);
     return store.exists() ? store.load() : undefined;
+  }
+
+  /** Directory ids with a live.json; malformed names are ignored. */
+  listLiveIds(): string[] {
+    let names: readonly string[];
+    try {
+      names = readdirSync(this.livesRoot);
+    } catch {
+      return [];
+    }
+    const ids: string[] = [];
+    for (const name of names) {
+      try {
+        this.requireLiveId(name);
+      } catch {
+        continue;
+      }
+      const path = join(this.livesRoot, name, 'live.json');
+      if (existsSync(path)) {
+        ids.push(name);
+      }
+    }
+    return ids;
   }
 
   loadTemplate(templateId: string): HiveTemplate {

@@ -5,6 +5,7 @@ import { runGraphCli, runSessionCli, runTriggerCli } from './control-cli.js';
 import { runDispatchCli } from './dispatch-cli.js';
 import { runLiveCli } from './live-cli.js';
 import { runTemplateCli } from './template-cli.js';
+import { runAnswerCli, runWakeCli } from './wake-cli.js';
 import type { WaxdDependencies } from './waxd-cli.js';
 import { runWaxdCli } from './waxd-cli.js';
 import { CliUsageError } from './cli-shared.js';
@@ -19,8 +20,8 @@ export { CliUsageError };
 export type CliDependencies = WaxdDependencies & ControlCliDependencies;
 
 const USAGE =
-  'usage: wax <waxd|graph|trigger|session|live|template|dispatch> ... ' +
-  '(wax run, wax daemon, wax answer, wax status/log/honey, wax composition and wax mcp were removed)';
+  'usage: wax <waxd|graph|trigger|session|live|wake|answer|template|dispatch> ... ' +
+  '(wax run, wax daemon, wax status/log/honey, wax composition and wax mcp were removed)';
 
 /**
  * Dispatches the supported B-core commands.
@@ -46,6 +47,12 @@ export async function runCli(
   }
   if (argv[0] === 'live') {
     return runLiveCli(argv, deps);
+  }
+  if (argv[0] === 'wake') {
+    return runWakeCli(argv, deps);
+  }
+  if (argv[0] === 'answer') {
+    return runAnswerCli(argv, deps);
   }
   if (argv[0] === 'template') {
     return runTemplateCli(argv, deps);

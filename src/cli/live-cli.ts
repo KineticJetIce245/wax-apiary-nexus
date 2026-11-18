@@ -21,7 +21,7 @@ import {
 } from './live-cli-shared.js';
 
 const LIVE_USAGE =
-  'usage: wax live <new <live.json>|load <liveId> [path]|instantiate <templateId> <liveId>|' +
+  'usage: wax live <list|new <live.json>|load <liveId> [path]|instantiate <templateId> <liveId>|' +
   'wake <liveId> <beeId> --input <text>|answer <liveId> <beeId> --input <text> [--token <token>]|' +
   'save <liveId>|unload <liveId>|migrate <liveId> <live.json>|inspect <liveId>> ' +
   '[--project <dir>] [--daemon-dir <dir>] [--harness <codex|dsh>] [--json]';
@@ -75,6 +75,7 @@ type SimpleCommand = LiveCommon & {
 };
 
 type LiveCommand =
+  | (LiveCommon & { readonly kind: 'list' })
   | (LiveCommon & { readonly kind: 'new'; readonly file: string })
   | (LiveCommon & { readonly kind: 'load'; readonly liveId: string; readonly path?: string })
   | (LiveCommon & {
@@ -90,6 +91,9 @@ type LiveCommand =
 function liveCommand(sub: string | undefined, parsed: ParsedCliTokens): LiveCommand {
   const common = { project: projectOf(parsed), json: parsed.json };
   switch (sub) {
+    case 'list':
+      requirePositionals(parsed, 0, LIVE_USAGE);
+      return { ...common, kind: 'list' };
     case 'new':
       return parseNewCommand(parsed, common);
     case 'load':
@@ -193,6 +197,8 @@ async function executeLive(
   err: Writer,
 ): Promise<number> {
   switch (command.kind) {
+    case 'list':
+      return executeList(client, json, out);
     case 'new':
       return executeNew(client, command, json, out);
     case 'load':
@@ -211,6 +217,23 @@ async function executeLive(
     case 'inspect':
       return executeInspect(client, command, json, out);
   }
+}
+
+async function executeList(
+  client: LiveHiveClient,
+  json: boolean,
+  out: Writer,
+): Promise<number> {
+  const lives = await client.listLives();
+  if (json) {
+    writeJson(out, { lives });
+  } else {
+    for (const live of lives) {
+      const record = live as Record<string, unknown>;
+      out(`${String(record['liveId'])} ${String(record['state'])}`);
+    }
+  }
+  return 0;
 }
 
 async function executeNew(

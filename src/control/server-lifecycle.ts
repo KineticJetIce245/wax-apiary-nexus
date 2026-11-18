@@ -110,6 +110,7 @@ export class ControlServerLifecycle {
         templateStore: new HiveTemplateStore(
           context.options.templatesRoot ?? join(context.options.stateRoot, 'templates'),
         ),
+        ...(runStore === undefined ? {} : { runStore }),
         ...(context.options.liveProject === undefined
           ? {}
           : { defaultProject: context.options.liveProject }),

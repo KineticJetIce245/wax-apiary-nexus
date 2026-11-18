@@ -132,6 +132,7 @@ export type RouteKind =
   | 'session-close'
   | 'session-sweep'
   | 'lives-create'
+  | 'lives-list'
   | 'lives-load'
   | 'lives-instantiate'
   | 'lives-wake'
@@ -140,6 +141,7 @@ export type RouteKind =
   | 'lives-unload'
   | 'lives-migrate'
   | 'lives-inspect'
+  | 'lives-output'
   | 'templates'
   | 'dispatch';
 

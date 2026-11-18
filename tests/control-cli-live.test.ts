@@ -7,6 +7,7 @@ import test from 'node:test';
 import { runDispatchCli } from '../src/cli/dispatch-cli.js';
 import { runLiveCli } from '../src/cli/live-cli.js';
 import { runTemplateCli } from '../src/cli/template-cli.js';
+import { runAnswerCli, runWakeCli } from '../src/cli/wake-cli.js';
 import type { LiveHive } from '../src/b/types.js';
 import { startServer, makeEnv } from './support/control-server-fixtures.js';
 import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
@@ -50,6 +51,19 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
   );
   assert.equal((JSON.parse(newOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'], 'demo');
 
+  const liveListOut = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'list', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: liveListOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    ((JSON.parse(liveListOut.lines[0] ?? '{}') as Record<string, unknown>)['lives'] as Record<string, unknown>[])[0]?.['state'],
+    'loaded',
+  );
+
   const wakeOut = writer();
   assert.equal(
     await runLiveCli(
@@ -60,6 +74,19 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
   );
   assert.equal(
     (JSON.parse(wakeOut.lines[0] ?? '{}') as Record<string, unknown>)['graphId'],
+    'demo',
+  );
+
+  const topWakeOut = writer();
+  assert.equal(
+    await runWakeCli(
+      ['wake', 'demo', 'draft', '--input', 'again', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: topWakeOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(topWakeOut.lines[0] ?? '{}') as Record<string, unknown>)['graphId'],
     'demo',
   );
 
@@ -102,6 +129,51 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
   assert.equal(
     (JSON.parse(dispatchOut.lines[0] ?? '{}') as Record<string, unknown>)['output'],
     'cli-output',
+  );
+});
+
+test('top-level wax wake/answer resolves a user hover', async (t) => {
+  const env = makeEnv();
+  const running = await startServer(env, { liveProject: env.project });
+  t.after(async () => {
+    await running.server.stop();
+    await env.workspace.stop();
+  });
+  const directory = mkdtempSync(join(tmpdir(), 'wax-cli-answer-'));
+  const liveFile = join(directory, 'ask.json');
+  writeFileSync(
+    liveFile,
+    JSON.stringify({
+      schemaVersion: 1,
+      liveId: 'ask',
+      bees: {
+        ask: { kind: 'user', config: { modality: 'text', prompt: '?' }, outgoing: [] },
+      },
+      beelines: {},
+      bindings: {},
+    }),
+    'utf8',
+  );
+  assert.equal(
+    await runLiveCli(
+      ['live', 'new', liveFile, '--daemon-dir', env.daemonDir],
+      { stdout: writer().write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    await runWakeCli(
+      ['wake', 'ask', 'ask', '--input', 'open', '--daemon-dir', env.daemonDir],
+      { stdout: writer().write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    await runAnswerCli(
+      ['answer', 'ask', 'ask', '--input', 'answer', '--daemon-dir', env.daemonDir],
+      { stdout: writer().write, stderr: writer().write },
+    ),
+    0,
   );
 });
 

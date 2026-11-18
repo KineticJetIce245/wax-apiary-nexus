@@ -6,7 +6,7 @@ import {
   ControlClientError,
   discoverDaemon,
 } from '../control/client.js';
-import { LiveHiveClient } from '../control/live-client.js';
+import { LiveHiveClient, TemplateClient } from '../control/live-client.js';
 import type { Project } from '../project/kernel.js';
 import { CliUsageError, messageOf } from './cli-shared.js';
 import type {
@@ -26,6 +26,22 @@ export function createClient(
     ...(daemonDir === undefined && deps.env !== undefined ? { env: deps.env } : {}),
   });
   return new LiveHiveClient({
+    baseUrl: discovery.baseUrl,
+    token: discovery.token,
+    ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }),
+  });
+}
+
+export function createTemplateClient(
+  parsed: ParsedCliTokens,
+  deps: ControlCliDependencies,
+): TemplateClient {
+  const daemonDir = parsed.flags.get('--daemon-dir');
+  const discovery = discoverDaemon({
+    ...(daemonDir === undefined ? {} : { daemonDir }),
+    ...(daemonDir === undefined && deps.env !== undefined ? { env: deps.env } : {}),
+  });
+  return new TemplateClient({
     baseUrl: discovery.baseUrl,
     token: discovery.token,
     ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }),

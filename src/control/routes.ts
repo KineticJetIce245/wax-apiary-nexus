@@ -310,6 +310,7 @@ async function dispatchRoutes(
       return { ok: true, report };
     }
     case 'lives-create':
+    case 'lives-list':
     case 'lives-load':
     case 'lives-instantiate':
     case 'lives-wake':
@@ -318,9 +319,10 @@ async function dispatchRoutes(
     case 'lives-unload':
     case 'lives-migrate':
     case 'lives-inspect':
+    case 'lives-output':
     case 'templates':
     case 'dispatch':
-      return dispatchLiveRoute(context, route, payload, method);
+      return dispatchLiveRoute(context, route, payload, method, rawUrl);
   }
 }
 

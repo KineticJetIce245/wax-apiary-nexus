@@ -45,7 +45,7 @@ export class ControlHttpServer {
     try {
       this.authorize(request);
 
-      const route = matchRoute(request.url);
+      const route = matchRoute(request.url, request.method);
       if (route === undefined) {
         throw new HttpErrorClass(404, 'not-found', 'not found');
       }

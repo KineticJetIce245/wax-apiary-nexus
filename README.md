@@ -36,11 +36,12 @@ The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/g
 - **M9g (committed in `7fa3db7`)** removes the unused revision module and Honey log/transcript methods; test files are now all ≤800.
 - **M9h (committed in `eda0df6`)** adds the B object layer under `src/b/`: HiveTemplate, LiveHive (`live.json` keyed by beeId), Bee/Beeline/BeeBinding, codec to CompositionDefinition, and DispatchService.
 - **M9i (committed in `1eed44e`)** adds live/template/dispatch HTTP routes and CLI, `LiveHiveService`, and `GraphHost.save`; existing `/graphs` remains.
-- **M9j (uncommitted)** adds the real Codex+DSH LiveHive acceptance chain (template → instantiate → wake → save → unload → load → migrate → dispatch) and persists created session IDs into `live.json` bindings.
+- **M9j (committed in `fbcbe53`)** adds the real Codex+DSH LiveHive acceptance chain (template → instantiate → wake → save → unload → load → migrate → dispatch) and persists created session IDs into `live.json` bindings.
+- **M10a (uncommitted)** adds `GET /lives`, `GET /lives/:id/output`, top-level `wax wake`/`wax answer`, `wax live list`, and a one-way composition importer. Old `/graphs`/`wax graph`/`wax trigger` remain until M10b/M10c.
 - **Review fixes (committed in `463682c`, `cbbc6ac`)** hardened real evidence: DSH recall product test, adapter prompt routing, host guard reject/cancel, partial-start/restart, guard HTTP negatives, reload-then-run, explicit timeouts, and test-file splits.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 761 tests (760 pass + 1 Windows skip after M9j). **Full `npm run test:integration` passes 22/22 with 0 skip**; all test files are ≤800 lines. The real B chain covers template/instantiate/wake/save/unload/load/migrate/dispatch with real Codex+DSH.
+- The regression suite is 766 tests (765 pass + 1 Windows skip after M10a). **Full `npm run test:integration` passes 22/22 with 0 skip**; all test files are ≤800 lines. The real B chain covers template/instantiate/wake/save/unload/load/migrate/dispatch with real Codex+DSH.
 
 ## Current commands
 

@@ -109,6 +109,24 @@ async function waitFor(
   throw new Error('timed out waiting for guard state');
 }
 
+async function waitForGuard(
+  running: Running,
+  timeoutMs = 2_000,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const guards = (await get(running, '/guards'))['guards'] as
+      | Record<string, unknown>[]
+      | undefined;
+    const guard = guards?.[0];
+    if (guard !== undefined) {
+      return guard;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('timed out waiting for a guard');
+}
+
 test('guard decision rejects invalid, missing and unauthenticated requests', async (t) => {
   const env = makeEnv(new FakeAdapter());
   const running = await start(env);
@@ -219,7 +237,7 @@ test('a pending native approval is listed and allowed through the broker', async
 test('reject and timeout never auto-allow', async (t) => {
   const adapter = new FakeAdapter({ askApproval: true });
   const env = makeEnv(adapter);
-  const running = await start(env, 500);
+  const running = await start(env, 1_000);
   t.after(async () => {
     await running.server.stop();
     await env.workspace.stop();
@@ -230,8 +248,7 @@ test('reject and timeout never auto-allow', async (t) => {
   });
 
   const rejectedPromise = bWake(running.url, running.token, 'guarded', 'only', 'reject');
-  await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
-  const rejectedGuard = ((await get(running, '/guards'))['guards'] as Record<string, unknown>[])[0];
+  const rejectedGuard = await waitForGuard(running);
   assert.ok(rejectedGuard !== undefined);
   assert.equal(
     (

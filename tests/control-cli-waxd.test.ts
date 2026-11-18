@@ -604,3 +604,28 @@ test('runCli dispatches live, wake, session and waxd', async (t) => {
   assert.equal(runStderr.length, 1);
   assert.match(runStderr[0] as string, /wax run/);
 });
+
+test('legacy graph commands are usage errors and not advertised', async () => {
+  for (const command of ['graph', 'trigger']) {
+    const stderr: string[] = [];
+    const code = await runCli([command], {
+      stdout: () => undefined,
+      stderr: (line) => stderr.push(line),
+      env: {},
+    });
+    assert.equal(code, 2);
+    assert.equal(stderr.length, 1);
+    assert.match(stderr[0] as string, /usage: wax/);
+    assert.equal((stderr[0] as string).includes(`wax ${command}`), false);
+  }
+
+  const helpStderr: string[] = [];
+  const helpCode = await runCli(['--help'], {
+    stdout: () => undefined,
+    stderr: (line) => helpStderr.push(line),
+    env: {},
+  });
+  assert.equal(helpCode, 2);
+  assert.match(helpStderr[0] as string, /usage: wax <waxd\|session\|live\|wake/);
+  assert.equal(/wax graph|wax trigger/.test(helpStderr[0] as string), false);
+});

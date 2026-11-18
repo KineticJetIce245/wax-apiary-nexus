@@ -206,6 +206,12 @@ test(
       assert.deepEqual(info.harnesses, ['codex', 'dsh']);
       t.diagnostic('constraints: codex 4 digits 1000..9999; dsh 3 digits 100..999');
 
+      for (const removedPath of ['/graphs', '/catalog', '/status', '/trigger']) {
+        const removed = await request(info, token, 'GET', removedPath);
+        assert.equal(removed.status, 404, removedPath);
+      }
+      t.diagnostic('legacy graph/catalog/status/trigger routes are 404');
+
       const composed = await request(info, token, 'POST', '/templates', {
         template: template(),
       });

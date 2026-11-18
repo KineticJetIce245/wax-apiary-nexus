@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  fromCompositionDefinition,
   LiveHiveCodecError,
   toCompositionDefinition,
   toGraphBindings,
@@ -137,6 +138,32 @@ test('toGraphBindings includes only forager bindings', () => {
     draft: { kind: 'session', sessionId: 's1' },
     review: { kind: 'session', sessionId: 's2' },
   });
+});
+
+test('B schedules map to and from composition triggers', () => {
+  const live: LiveHive = {
+    ...simpleLiveHive(),
+    schedules: [
+      { scheduleId: 'once', targetBee: 'draft', at: '2026-01-01T00:00:00Z' },
+      { scheduleId: 'tick', targetBee: 'review', everyMs: 1_000 },
+    ],
+  };
+  const composition = toCompositionDefinition(live);
+  assert.deepEqual(composition.triggers, [
+    {
+      id: 'once',
+      target: 'draft',
+      schedule: { kind: 'at', at: '2026-01-01T00:00:00Z' },
+    },
+    {
+      id: 'tick',
+      target: 'review',
+      schedule: { kind: 'every', everyMs: 1_000 },
+    },
+  ]);
+
+  const imported = fromCompositionDefinition(composition);
+  assert.deepEqual(imported.schedules, live.schedules);
 });
 
 test('codec does not mutate the LiveHive object', () => {

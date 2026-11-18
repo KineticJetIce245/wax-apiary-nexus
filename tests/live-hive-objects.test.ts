@@ -16,6 +16,7 @@ import {
   HiveTemplateStoreError,
 } from '../src/b/hive-template.js';
 import type { LiveHive } from '../src/b/types.js';
+import { parseLiveHive } from '../src/b/validation.js';
 import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
 
 function tempDir(): string {
@@ -44,6 +45,30 @@ test('live.json round-trips beeId/beelineId keys, bindings, outgoing and branch'
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
   assert.deepEqual(Object.keys(raw['bees'] as object), ['draft', 'review', 'done']);
   assert.deepEqual(Object.keys(raw['bindings'] as object), ['draft', 'review']);
+});
+
+test('live.json and templates round-trip schedules', () => {
+  const directory = tempDir();
+  const live = {
+    ...simpleLiveHive(),
+    schedules: [
+      { scheduleId: 'once', targetBee: 'draft', at: '2026-01-01T00:00:00Z' },
+      { scheduleId: 'tick', targetBee: 'review', everyMs: 1_000 },
+    ],
+  };
+  const livePath = join(directory, 'live.json');
+  new LiveHiveStore(livePath).save(live);
+  assert.deepEqual(new LiveHiveStore(livePath).load(), live);
+
+  const template = {
+    ...simpleTemplate(),
+    schedules: [
+      { scheduleId: 'tick', targetBee: 'draft', everyMs: 2_000 },
+    ],
+  };
+  const templates = new HiveTemplateStore(join(directory, 'templates'));
+  templates.save(template);
+  assert.deepEqual(templates.load('starter'), template);
 });
 
 test('live.json save overwrites atomically and leaves no temp file', () => {
@@ -114,6 +139,71 @@ test('live.json validates outgoing, beeline endpoints and binding keys before wr
   };
   assert.throws(() => store.save(unknownBinding), /unknown bee/);
   assert.equal(store.exists(), false);
+});
+
+test('LiveHive validation enforces at/every, targets, ids and instants', () => {
+  const base = simpleLiveHive();
+  const withSchedules = (schedules: readonly Record<string, unknown>[]) =>
+    parseLiveHive({ ...base, schedules });
+
+  assert.doesNotThrow(() =>
+    withSchedules([
+      { scheduleId: 'once', targetBee: 'draft', at: '2026-01-01T00:00:00Z' },
+      { scheduleId: 'tick', targetBee: 'review', everyMs: 1_000 },
+    ]),
+  );
+  assert.throws(
+    () => withSchedules([{ scheduleId: 'missing', targetBee: 'draft' }]),
+    /exactly one/,
+  );
+  assert.throws(
+    () =>
+      withSchedules([
+        {
+          scheduleId: 'both',
+          targetBee: 'draft',
+          at: '2026-01-01T00:00:00Z',
+          everyMs: 1_000,
+        },
+      ]),
+    /exactly one/,
+  );
+  assert.throws(
+    () => withSchedules([{ scheduleId: 'bad-at', targetBee: 'draft', at: 'tomorrow' }]),
+    /ISO-8601/,
+  );
+  assert.throws(
+    () => withSchedules([{ scheduleId: 'bad-every', targetBee: 'draft', everyMs: 0 }]),
+    /positive integer/,
+  );
+  assert.throws(
+    () => withSchedules([{ scheduleId: 'ghost', targetBee: 'ghost', everyMs: 1_000 }]),
+    /unknown bee/,
+  );
+  assert.throws(
+    () =>
+      withSchedules([
+        { scheduleId: 'dupe', targetBee: 'draft', everyMs: 1_000 },
+        { scheduleId: 'dupe', targetBee: 'review', everyMs: 1_000 },
+      ]),
+    /duplicate id/,
+  );
+  const control = {
+    ...base,
+    bees: {
+      ...base.bees,
+      gate: { kind: 'condition', config: { mode: 'boolean' }, outgoing: [] },
+    },
+    beelines: base.beelines,
+  };
+  assert.throws(
+    () =>
+      parseLiveHive({
+        ...control,
+        schedules: [{ scheduleId: 'gate', targetBee: 'gate', everyMs: 1_000 }],
+      }),
+    /cannot be woken/,
+  );
 });
 
 test('BeeBinding helpers derive from live.bindings and never mutate the input', () => {

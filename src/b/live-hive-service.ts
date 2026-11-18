@@ -136,6 +136,7 @@ export class LiveHiveService {
       bees: template.hive.bees,
       beelines: template.hive.beelines,
       bindings: {},
+      ...(template.schedules === undefined ? {} : { schedules: template.schedules }),
     };
     this.repository.saveLive(live);
     this.repository.cacheSet(live);

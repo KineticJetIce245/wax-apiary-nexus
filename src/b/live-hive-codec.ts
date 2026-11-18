@@ -63,7 +63,13 @@ export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
     id: parsed.liveId,
     nodes,
     edges,
-    triggers: [],
+    triggers: (parsed.schedules ?? []).map((schedule) => ({
+      id: schedule.scheduleId,
+      target: schedule.targetBee,
+      schedule: schedule.at !== undefined
+        ? { kind: 'at', at: schedule.at }
+        : { kind: 'every', everyMs: schedule.everyMs as number },
+    })),
   });
 }
 
@@ -105,6 +111,17 @@ export function fromCompositionDefinition(
     bees,
     beelines,
     bindings: sessionBindings,
+    ...(definition.triggers.length === 0
+      ? {}
+      : {
+          schedules: definition.triggers.map((trigger) => ({
+            scheduleId: trigger.id,
+            targetBee: trigger.target,
+            ...(trigger.schedule.kind === 'at'
+              ? { at: trigger.schedule.at }
+              : { everyMs: trigger.schedule.everyMs }),
+          })),
+        }),
   });
 }
 

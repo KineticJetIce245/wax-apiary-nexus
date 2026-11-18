@@ -138,7 +138,10 @@ test('LiveHiveService new/wake/save/unload/load round-trips one live', async (t)
 
 test('LiveHiveService compose/instantiate uses template defaults and creates sessions', async (t) => {
   const harness = setup(t);
-  const template = simpleTemplate();
+  const template = {
+    ...simpleTemplate(),
+    schedules: [{ scheduleId: 'tick', targetBee: 'draft', everyMs: 60_000 }],
+  };
   assert.deepEqual(harness.service.compose(template), template);
   assert.deepEqual(harness.service.listTemplates().map((entry) => entry.templateId), ['starter']);
 
@@ -153,6 +156,12 @@ test('LiveHiveService compose/instantiate uses template defaults and creates ses
   );
   assert.equal(instantiated.status.graphId, 'instantiated');
   assert.equal(existsSync(join(harness.root, 'lives', 'instantiated', 'live.json')), true);
+  assert.deepEqual(
+    JSON.parse(
+      readFileSync(join(harness.root, 'lives', 'instantiated', 'live.json'), 'utf8'),
+    )['schedules'],
+    template.schedules,
+  );
   assert.equal(harness.registry.list().length, 3);
   const draft = harness.registry.list().find((record) => record.model === 'override-model');
   assert.ok(draft !== undefined);

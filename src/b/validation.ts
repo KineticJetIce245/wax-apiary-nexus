@@ -1,3 +1,4 @@
+import { parseSchedules } from './schedule-validation.js';
 import {
   BEE_KINDS,
   SESSION_MODES,
@@ -7,6 +8,7 @@ import {
   type HiveGraph,
   type HiveTemplate,
   type LiveHive,
+  type Schedule,
   type SessionMode,
   type SessionParams,
 } from './types.js';
@@ -31,6 +33,7 @@ export function parseLiveHive(input: unknown): LiveHive {
   const liveId = requireString(input['liveId'], 'liveId', issues);
   const graph = parseHiveGraph(input, 'live', issues);
   const bindings = parseBindings(input['bindings'], graph.bees, issues);
+  const schedules = parseSchedules(input['schedules'], graph.bees, 'live.schedules', issues);
   if (issues.length > 0) {
     throw new BObjectValidationError(issues);
   }
@@ -40,6 +43,7 @@ export function parseLiveHive(input: unknown): LiveHive {
     bees: graph.bees,
     beelines: graph.beelines,
     bindings,
+    ...(schedules === undefined ? {} : { schedules }),
   };
 }
 
@@ -57,6 +61,12 @@ export function parseHiveTemplate(input: unknown): HiveTemplate {
   }
   const graph = parseHiveGraph(hive, 'template.hive', issues);
   const defaults = parseDefaults(input['defaults'], graph.bees, issues);
+  const schedules = parseSchedules(
+    input['schedules'],
+    graph.bees,
+    'template.schedules',
+    issues,
+  );
   if (issues.length > 0) {
     throw new BObjectValidationError(issues);
   }
@@ -65,6 +75,7 @@ export function parseHiveTemplate(input: unknown): HiveTemplate {
     templateId: templateId as string,
     hive: graph,
     defaults,
+    ...(schedules === undefined ? {} : { schedules }),
   };
 }
 

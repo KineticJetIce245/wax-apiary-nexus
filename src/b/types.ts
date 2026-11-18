@@ -41,6 +41,19 @@ export interface Beeline {
   readonly branch?: string;
 }
 
+/**
+ * One time configuration; it is not an execution identity. A scheduled wake
+ * uses the existing empty text input because the B schedule has no input field.
+ */
+export interface Schedule {
+  readonly scheduleId: string;
+  readonly targetBee: string;
+  /** Exactly one of `at` and `everyMs` is present. */
+  readonly at?: string;
+  /** Positive integer milliseconds; scheduled wakes use the empty input value. */
+  readonly everyMs?: number;
+}
+
 /** Structure shared by a saved template and a live hive. */
 export interface HiveGraph {
   readonly bees: Readonly<Record<string, Bee>>;
@@ -56,6 +69,7 @@ export interface LiveHive extends HiveGraph {
   readonly liveId: string;
   /** beeId -> sessionId; only bees that need a native session appear here. */
   readonly bindings: Readonly<Record<string, string>>;
+  readonly schedules?: readonly Schedule[];
 }
 
 /** A saved graph plus per-bee default session parameters. */
@@ -64,6 +78,7 @@ export interface HiveTemplate {
   readonly templateId: string;
   readonly hive: HiveGraph;
   readonly defaults: Readonly<Record<string, SessionParams>>;
+  readonly schedules?: readonly Schedule[];
 }
 
 /** One beeId -> sessionId pair. It has no identity of its own. */

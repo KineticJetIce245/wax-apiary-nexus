@@ -105,9 +105,19 @@ test('fork branches become labelled beelines without fabricating edges', () => {
   assert.equal(live.beelines['merge-done']?.toBee, 'done');
 });
 
-test('importer ignores triggers and rejects unsupported counter nodes', () => {
+test('importer copies composition triggers into schedules', () => {
   const live = fromCompositionDefinition(composition());
   assert.equal(Object.hasOwn(live, 'triggers'), false);
+  assert.deepEqual(live.schedules, [
+    {
+      scheduleId: 't',
+      targetBee: 'start',
+      at: '2026-01-01T00:00:00Z',
+    },
+  ]);
+});
+
+test('importer rejects unsupported counter nodes', () => {
   assert.throws(
     () => fromCompositionDefinition(composition(true)),
     LiveHiveCodecError,

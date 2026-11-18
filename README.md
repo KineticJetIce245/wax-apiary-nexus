@@ -33,7 +33,7 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M10b1** added B `schedules` (`Schedule`, at/every), mapped through the codec so the scheduler survives the surface cut.
 - **M10b2** migrated surface coverage to `/lives` and B CLI, and fixed B unload/duplicate-load 409 mapping.
 - **M10c (committed in `c6af169`)** removes the legacy graph control surface and client commands. The HTTP API, CLI, tests and client now expose only `/lives`, `/templates`, `/dispatch`, `/guards` and `/sessions`.
-- **M10d (uncommitted)** adds final B-only surface assertions: legacy routes 404, removed graph/trigger CLI commands are usage errors, and the real Codex+DSH B chain stays green.
+- **M10d (committed in `83b3d4c`)** adds final B-only surface assertions: legacy routes 404, removed graph/trigger CLI commands are usage errors, and the real Codex+DSH B chain stays green.
 - `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The regression suite is 717 tests (716 pass + 1 Windows skip). Full `npm run test:integration` passes 22/22 with 0 skip; all test files are ≤800 lines.
 

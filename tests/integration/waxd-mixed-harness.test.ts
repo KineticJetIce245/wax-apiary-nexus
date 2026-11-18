@@ -8,6 +8,9 @@ import type { HarnessAdapter } from '../../src/adapters/harness.js';
 import { createDefaultAdapter, type AdapterRequest } from '../../src/cli/cli-shared.js';
 import { runWaxdCli, type WaxdStartedInfo } from '../../src/cli/waxd-cli.js';
 import type { Project } from '../../src/project/kernel.js';
+import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
+import type { GraphBindings } from '../../src/graph/binding.js';
+import { parseComposition } from '../../src/runtime/index.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtDshCli =
@@ -132,6 +135,13 @@ function textOf(value: unknown): string {
   return typeof record['text'] === 'string' ? record['text'] : '';
 }
 
+function mixedLive(): Record<string, unknown> {
+  return fromCompositionDefinition(parseComposition(graphDefinition()), {
+    codex: { kind: 'fresh', harness: 'codex' },
+    dsh: { kind: 'fresh', harness: 'dsh' },
+  } as GraphBindings) as unknown as Record<string, unknown>;
+}
+
 test(
   'real waxd serves one mixed-harness graph through one endpoint and catalog',
   integrationOptions,
@@ -218,31 +228,27 @@ test(
       assert.equal(health.status, 200);
       assert.deepEqual(health.body['harnesses'], ['codex', 'dsh']);
 
-      const loaded = await request(info, token, 'POST', '/graphs/load', {
-        definition: graphDefinition(),
-        bindings: {
-          codex: { kind: 'fresh', harness: 'codex' },
-          dsh: { kind: 'fresh', harness: 'dsh' },
-        },
+      const loaded = await request(info, token, 'POST', '/lives', {
+        live: mixedLive(),
         project,
       });
       assert.equal(loaded.status, 200);
       assert.equal(loaded.body['status']?.['graphId'], 'mixed-harness');
 
-      const codexTrigger = await request(info, token, 'POST', '/trigger', {
-        graphId: 'mixed-harness',
-        nodeId: 'codex',
-        value: { kind: 'text', text: 'codex' },
+      const codexTrigger = await request(info, token, 'POST', '/lives/wake', {
+        liveId: 'mixed-harness',
+        beeId: 'codex',
+        input: 'codex',
       });
       assert.equal(codexTrigger.status, 200);
-      const dshTrigger = await request(info, token, 'POST', '/trigger', {
-        graphId: 'mixed-harness',
-        nodeId: 'dsh',
-        value: { kind: 'text', text: 'dsh' },
+      const dshTrigger = await request(info, token, 'POST', '/lives/wake', {
+        liveId: 'mixed-harness',
+        beeId: 'dsh',
+        input: 'dsh',
       });
       assert.equal(dshTrigger.status, 200);
 
-      const outputs = await request(info, token, 'GET', '/graphs/mixed-harness/output');
+      const outputs = await request(info, token, 'GET', '/lives/mixed-harness/output');
       assert.equal(outputs.status, 200);
       const byNode = new Map<string, string>();
       for (const entry of outputs.body['outputs'] as Record<string, unknown>[]) {
@@ -280,48 +286,44 @@ test(
         true,
       );
 
-      const catalogLoaded = await request(info, token, 'GET', '/catalog');
+      const catalogLoaded = await request(info, token, 'GET', '/lives');
       assert.equal(catalogLoaded.status, 200);
-      assert.equal(catalogLoaded.body['entries']?.[0]?.['state'], 'loaded');
+      assert.equal(catalogLoaded.body['lives']?.[0]?.['state'], 'loaded');
 
-      const unload = await request(info, token, 'POST', '/graphs/unload', {
-        graphId: 'mixed-harness',
+      const unload = await request(info, token, 'POST', '/lives/unload', {
+        liveId: 'mixed-harness',
       });
       assert.equal(unload.status, 200);
-      const catalogUnloaded = await request(info, token, 'GET', '/catalog');
-      assert.equal(catalogUnloaded.body['entries']?.[0]?.['state'], 'unloaded');
-      assert.equal(catalogUnloaded.body['entries']?.[0]?.['lastUnloadReason'], 'unload');
+      const catalogUnloaded = await request(info, token, 'GET', '/lives');
+      assert.equal(catalogUnloaded.body['lives']?.[0]?.['state'], 'unloaded');
+      assert.equal(catalogUnloaded.body['lives']?.[0]?.['catalog']?.['lastUnloadReason'], 'unload');
 
       // Reload once on the same daemon; the catalog returns to loaded and the
       // same single endpoint serves it.
-      const reloaded = await request(info, token, 'POST', '/graphs/load', {
-        definition: graphDefinition(),
-        bindings: {
-          codex: { kind: 'fresh', harness: 'codex' },
-          dsh: { kind: 'fresh', harness: 'dsh' },
-        },
+      const reloaded = await request(info, token, 'POST', '/lives/load', {
+        liveId: 'mixed-harness',
         project,
       });
       assert.equal(reloaded.status, 200);
-      const catalogReloaded = await request(info, token, 'GET', '/catalog');
-      assert.equal(catalogReloaded.body['entries']?.[0]?.['state'], 'loaded');
+      const catalogReloaded = await request(info, token, 'GET', '/lives');
+      assert.equal(catalogReloaded.body['lives']?.[0]?.['state'], 'loaded');
 
       // A reload must be usable, not merely visible in the catalog: trigger
       // both harnesses again and read the fresh outputs.
-      const codexReloadTrigger = await request(info, token, 'POST', '/trigger', {
-        graphId: 'mixed-harness',
-        nodeId: 'codex',
-        value: { kind: 'text', text: 'codex-reload' },
+      const codexReloadTrigger = await request(info, token, 'POST', '/lives/wake', {
+        liveId: 'mixed-harness',
+        beeId: 'codex',
+        input: 'codex-reload',
       });
       assert.equal(codexReloadTrigger.status, 200);
-      const dshReloadTrigger = await request(info, token, 'POST', '/trigger', {
-        graphId: 'mixed-harness',
-        nodeId: 'dsh',
-        value: { kind: 'text', text: 'dsh-reload' },
+      const dshReloadTrigger = await request(info, token, 'POST', '/lives/wake', {
+        liveId: 'mixed-harness',
+        beeId: 'dsh',
+        input: 'dsh-reload',
       });
       assert.equal(dshReloadTrigger.status, 200);
 
-      const reloadOutputs = await request(info, token, 'GET', '/graphs/mixed-harness/output');
+      const reloadOutputs = await request(info, token, 'GET', '/lives/mixed-harness/output');
       assert.equal(reloadOutputs.status, 200);
       const reloadByNode = new Map<string, string>();
       for (const entry of reloadOutputs.body['outputs'] as Record<string, unknown>[]) {
@@ -350,7 +352,7 @@ test(
       ) as Array<Record<string, unknown>>;
       assert.deepEqual(
         sessionsOnDisk.map((record) => record['harness']).sort(),
-        ['codex', 'codex', 'dsh', 'dsh'],
+        ['codex', 'dsh'],
       );
       assert.equal(existsSync(join(daemonDir, 'codex')), false);
       assert.equal(existsSync(join(daemonDir, 'dsh')), false);

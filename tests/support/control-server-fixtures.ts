@@ -86,6 +86,7 @@ export function makeServer(
     stateRoot: env.stateRoot,
     apiary: 'apiary',
     daemonDir: env.daemonDir,
+    liveProject: env.project,
     ...overrides,
   });
 }

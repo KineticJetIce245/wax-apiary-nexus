@@ -9,6 +9,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
+import { liveFrom } from './support/control-server-http.js';
 
 const PROMPT_SECRET = 'M9E-HTTP-PROMPT-SECRET';
 
@@ -43,6 +44,7 @@ test('a second loaded graph with the same session returns 409 session-busy', asy
     stateRoot,
     apiary: 'apiary',
     daemonDir: join(stateRoot, 'waxd'),
+    liveProject: project,
   });
 
   try {
@@ -66,9 +68,10 @@ test('a second loaded graph with the same session returns 409 session-busy', asy
       };
     };
     const load = (id: string): ReturnType<typeof post> =>
-      post('/graphs/load', {
-        definition: definition(id),
-        bindings: { only: { kind: 'session', sessionId: session.sessionId } },
+      post('/lives', {
+        live: liveFrom(definition(id), {
+          only: { kind: 'session', sessionId: session.sessionId },
+        }),
         project,
       });
 
@@ -82,7 +85,7 @@ test('a second loaded graph with the same session returns 409 session-busy', asy
     assert.equal(JSON.stringify(second.body).includes('secret-output'), false);
     assert.equal(second.body['error'], 'session is busy');
 
-    const unload = await post('/graphs/unload', { graphId: 'first' });
+    const unload = await post('/lives/unload', { liveId: 'first' });
     assert.equal(unload.status, 200);
     const reload = await load('second');
     assert.equal(reload.status, 200);

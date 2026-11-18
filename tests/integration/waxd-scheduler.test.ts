@@ -6,6 +6,8 @@ import test from 'node:test';
 
 import { runWaxdCli, type WaxdStartedInfo } from '../../src/cli/waxd-cli.js';
 import type { Project } from '../../src/project/kernel.js';
+import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
+import { parseComposition } from '../../src/runtime/index.js';
 
 const codexExe = process.env.CODEX_EXE;
 const integrationOptions = {
@@ -131,29 +133,30 @@ test(
       const info = await withTimeout(started.promise, 30_000, 'waxd startup');
       const token = readFileSync(info.tokenPath, 'utf8').trim();
       const scheduledFor = new Date(Date.now() - 1_000).toISOString();
-      const definition = {
-        schemaVersion: 1,
-        id: 'scheduled-live',
-        nodes: {
-          only: {
-            kind: 'forager',
-            config: {
-              connection: 'codex',
-              prompt:
-                'Pick a random integer from 1000 through 9999. ' +
-                'Do not use tools. Reply with only the integer.',
+      const live = fromCompositionDefinition(
+        parseComposition({
+          schemaVersion: 1,
+          id: 'scheduled-live',
+          nodes: {
+            only: {
+              kind: 'forager',
+              config: {
+                connection: 'codex',
+                prompt:
+                  'Pick a random integer from 1000 through 9999. ' +
+                  'Do not use tools. Reply with only the integer.',
+              },
             },
           },
+          edges: [],
+        }),
+        { only: { kind: 'fresh', harness: 'codex' } },
+      );
+      const load = await fetchJson(info, token, 'POST', '/lives', {
+        live: {
+          ...live,
+          schedules: [{ scheduleId: 'once', targetBee: 'only', at: scheduledFor }],
         },
-        edges: [],
-        triggers: [
-          { id: 'once', target: 'only', schedule: { kind: 'at', at: scheduledFor } },
-        ],
-      };
-
-      const load = await fetchJson(info, token, 'POST', '/graphs/load', {
-        definition,
-        bindings: { only: { kind: 'fresh', harness: 'codex' } },
         project,
       });
       assert.equal(load.status, 200);
@@ -165,7 +168,7 @@ test(
           info,
           token,
           'GET',
-          '/graphs/scheduled-live/output',
+          '/lives/scheduled-live/output',
         );
         if (response.status !== 200) {
           return false;
@@ -196,15 +199,15 @@ test(
       assert.equal(record['status'], 'completed');
       assert.equal(record['operation'], 'trigger');
 
-      const unload = await fetchJson(info, token, 'POST', '/graphs/unload', {
-        graphId: 'scheduled-live',
+      const unload = await fetchJson(info, token, 'POST', '/lives/unload', {
+        liveId: 'scheduled-live',
       });
       assert.equal(unload.status, 200);
       const afterUnload = await fetchJson(
         info,
         token,
         'GET',
-        `/graphs/scheduled-live/output?runId=${runId}`,
+        `/lives/scheduled-live/output?runId=${runId}`,
       );
       assert.equal(afterUnload.status, 200);
       const afterEntries = afterUnload.body['outputs'] as Record<string, unknown>[];

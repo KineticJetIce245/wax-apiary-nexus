@@ -291,8 +291,8 @@ test(
       });
       assert.equal(unloaded.status, 200);
       assert.equal(unloaded.body['unloaded'], true);
-      const catalogUnloaded = await request(info, token, 'GET', '/catalog');
-      const unloadedEntry = (catalogUnloaded.body['entries'] as Record<string, unknown>[])
+      const catalogUnloaded = await request(info, token, 'GET', '/lives');
+      const unloadedEntry = (catalogUnloaded.body['lives'] as Record<string, unknown>[])
         .find((entry) => entry['liveId'] === 'm9j-live');
       assert.equal(unloadedEntry?.['state'], 'unloaded');
       const unloadedInspect = await request(
@@ -406,8 +406,8 @@ test(
       });
       assert.equal(finalUnload.status, 200);
       assert.equal(finalUnload.body['unloaded'], true);
-      const finalCatalog = await request(info, token, 'GET', '/catalog');
-      const finalEntry = (finalCatalog.body['entries'] as Record<string, unknown>[])
+      const finalCatalog = await request(info, token, 'GET', '/lives');
+      const finalEntry = (finalCatalog.body['lives'] as Record<string, unknown>[])
         .find((entry) => entry['liveId'] === 'm9j-live');
       assert.equal(finalEntry?.['state'], 'unloaded');
     } catch (error) {

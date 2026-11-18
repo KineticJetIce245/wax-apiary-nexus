@@ -9,6 +9,9 @@ import { ControlServer } from '../../src/control/server.js';
 import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
+import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
+import type { GraphBindings } from '../../src/graph/binding.js';
+import { parseComposition } from '../../src/runtime/index.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
@@ -23,6 +26,13 @@ const integrationOptions = {
       : false,
   timeout: 180_000,
 };
+
+function liveOf(
+  definition: Record<string, unknown>,
+  bindings: Record<string, unknown>,
+) {
+  return fromCompositionDefinition(parseComposition(definition), bindings as GraphBindings);
+}
 
 async function waitFor(
   predicate: () => Promise<boolean> | boolean,
@@ -64,6 +74,7 @@ test(
       stateRoot,
       apiary: 'apiary',
       daemonDir: join(stateRoot, 'waxd'),
+      liveProject: project,
       guardTimeoutMs: 90_000,
     });
 
@@ -91,8 +102,8 @@ test(
       };
 
       const marker = `REJECTED-GUARD-${String(Date.now())}`;
-      const loaded = await request('POST', '/graphs/load', {
-        definition: {
+      const loaded = await request('POST', '/lives', {
+        live: liveOf({
           schemaVersion: 1,
           id: 'native-guard-reject',
           nodes: {
@@ -102,21 +113,17 @@ test(
             },
           },
           edges: [],
-        },
-        bindings: { only: { kind: 'fresh', harness: 'dsh' } },
+        }, { only: { kind: 'fresh', harness: 'dsh' } }),
         project,
       });
       assert.equal(loaded.status, 200);
 
-      const triggerPromise = request('POST', '/trigger', {
-        graphId: 'native-guard-reject',
-        nodeId: 'only',
-        value: {
-          kind: 'text',
-          text:
+      const triggerPromise = request('POST', '/lives/wake', {
+        liveId: 'native-guard-reject',
+        beeId: 'only',
+        input:
             `Use the shell tool to create a file named rejected-guard.txt in the current directory ` +
             `with the exact content ${marker}. Report done. Do not use any other directory.`,
-        },
       });
 
       await waitFor(async () => {
@@ -204,8 +211,8 @@ test(
       };
 
       const marker = `CANCELLED-GUARD-${String(Date.now())}`;
-      const loaded = await request('POST', '/graphs/load', {
-        definition: {
+      const loaded = await request('POST', '/lives', {
+        live: liveOf({
           schemaVersion: 1,
           id: 'native-guard-cancel',
           nodes: {
@@ -215,21 +222,17 @@ test(
             },
           },
           edges: [],
-        },
-        bindings: { only: { kind: 'fresh', harness: 'dsh' } },
+        }, { only: { kind: 'fresh', harness: 'dsh' } }),
         project,
       });
       assert.equal(loaded.status, 200);
 
-      const triggerPromise = request('POST', '/trigger', {
-        graphId: 'native-guard-cancel',
-        nodeId: 'only',
-        value: {
-          kind: 'text',
-          text:
+      const triggerPromise = request('POST', '/lives/wake', {
+        liveId: 'native-guard-cancel',
+        beeId: 'only',
+        input:
             `Use the shell tool to create a file named cancelled-guard.txt in the current directory ` +
             `with the exact content ${marker}. Report done. Do not use any other directory.`,
-        },
       });
 
       await waitFor(async () => {
@@ -316,8 +319,8 @@ test(
       };
 
       const marker = `APPROVED-GUARD-${String(Date.now())}`;
-      const loaded = await request('POST', '/graphs/load', {
-        definition: {
+      const loaded = await request('POST', '/lives', {
+        live: liveOf({
           schemaVersion: 1,
           id: 'native-guard',
           nodes: {
@@ -327,21 +330,17 @@ test(
             },
           },
           edges: [],
-        },
-        bindings: { only: { kind: 'fresh', harness: 'dsh' } },
+        }, { only: { kind: 'fresh', harness: 'dsh' } }),
         project,
       });
       assert.equal(loaded.status, 200);
 
-      const triggerPromise = request('POST', '/trigger', {
-        graphId: 'native-guard',
-        nodeId: 'only',
-        value: {
-          kind: 'text',
-          text:
+      const triggerPromise = request('POST', '/lives/wake', {
+        liveId: 'native-guard',
+        beeId: 'only',
+        input:
             `Use the shell tool to create a file named approved-guard.txt in the current directory ` +
             `with the exact content ${marker}. Report done. Do not use any other directory.`,
-        },
       });
 
       await waitFor(async () => {

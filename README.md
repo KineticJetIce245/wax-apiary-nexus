@@ -38,11 +38,12 @@ The code is a B-core prototype with the M9c single-daemon shape, M9d scheduler/g
 - **M9i (committed in `1eed44e`)** adds live/template/dispatch HTTP routes and CLI, `LiveHiveService`, and `GraphHost.save`; existing `/graphs` remains.
 - **M9j (committed in `fbcbe53`)** adds the real Codex+DSH LiveHive acceptance chain (template → instantiate → wake → save → unload → load → migrate → dispatch) and persists created session IDs into `live.json` bindings.
 - **M10a (committed in `ff814ea`)** adds `GET /lives`, `GET /lives/:id/output`, top-level `wax wake`/`wax answer`, `wax live list`, and a one-way composition importer.
-- **M10b1 (uncommitted)** adds B `schedules` (`Schedule`, at/every) and maps them through the codec, so the scheduler survives the B surface cut. Old `/graphs`/CLI still remain for M10b2.
+- **M10b1 (committed in `566199b`)** adds B `schedules` (`Schedule`, at/every) and maps them through the codec, so the scheduler survives the B surface cut.
+- **M10b2 (uncommitted)** migrates all old-surface tests to `/lives` and B CLI, fixes B unload/duplicate-load 409 mapping, and removes manifest/graphRef/sweep tests. Old route/CLI code remains for M10c.
 - **Review fixes (committed in `463682c`, `cbbc6ac`)** hardened real evidence: DSH recall product test, adapter prompt routing, host guard reject/cancel, partial-start/restart, guard HTTP negatives, reload-then-run, explicit timeouts, and test-file splits.
 - `--harness` no longer selects a per-harness directory; it only validates/filter. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
 - The current command surface is still `waxd`, `wax graph`, `wax trigger`, `wax session`; target names are `wax live` and `wax wake`.
-- The regression suite is 773 tests (772 pass + 1 Windows skip after M10b1). **Full `npm run test:integration` passes 22/22 with 0 skip**; all test files are ≤800 lines. The real B chain covers template/instantiate/wake/save/unload/load/migrate/dispatch with real Codex+DSH.
+- The regression suite is 731 tests (730 pass + 1 Windows skip after M10b2). **Full `npm run test:integration` passes 22/22 with 0 skip**; all test files are ≤800 lines. Tests no longer exercise `/graphs`, `wax graph`, or `wax trigger`; old route/CLI code remains for M10c.
 
 ## Current commands
 

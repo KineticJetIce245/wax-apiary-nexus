@@ -53,7 +53,15 @@ import {
   FailingCloseFakeAdapter,
   ThrowingSweepRegistry,
 } from './support/control-server-adapters.js';
-import { authHeader, readResponse, getJson, postJson } from './support/control-server-http.js';
+import {
+  authHeader,
+  bInspect,
+  bLoad,
+  bUnload,
+  getJson,
+  postJson,
+  readResponse,
+} from './support/control-server-http.js';
 
 test('session list exposes routing metadata and close refuses busy or bound sessions', async (t) => {
   const adapter = new HoldingFakeAdapter();
@@ -78,12 +86,11 @@ test('session list exposes routing metadata and close refuses busy or bound sess
   assert.equal(env.workspace.isConversationBusy(busy.sessionId), true);
 
   const definition = foragerDefinition('sessions-graph', 'run {{input}}');
-  const loaded = await postJson(
-    info.url,
-    token,
-    '/graphs/load',
-    loadBody(definition, env.project, { only: { kind: 'fresh' } }),
-  );
+  const loaded = await bLoad(info.url, token, {
+    definition,
+    bindings: { only: { kind: 'fresh' } },
+    project: env.project,
+  });
   assert.equal(loaded.status, 200);
   const boundRecord = env.registry.list().find((record) => record.nativeId === 'native-3');
   assert.ok(boundRecord !== undefined);
@@ -139,7 +146,7 @@ test('session list exposes routing metadata and close refuses busy or bound sess
   assert.equal(boundClose.status, 409, 'bound close');
   assert.equal(boundClose.body?.['code'], 'conflict');
   assert.equal(env.registry.get(boundRecord.sessionId)?.sessionId, boundRecord.sessionId);
-  assert.equal((await getJson(info.url, token, '/status/sessions-graph')).status, 200);
+  assert.equal((await bInspect(info.url, token, 'sessions-graph')).status, 200);
 
   // An idle, unbound session closes for real and disappears from the list.
   const closed = await postJson(info.url, token, '/sessions/close', {
@@ -232,20 +239,17 @@ test('an unloaded graph leaves its session listable and closable', async (t) => 
   const { info, token } = running;
 
   const definition = foragerDefinition('retained-session', 'run {{input}}');
-  const load = await postJson(
-    info.url,
-    token,
-    '/graphs/load',
-    loadBody(definition, env.project, { only: { kind: 'fresh' } }),
-  );
+  const load = await bLoad(info.url, token, {
+    definition,
+    bindings: { only: { kind: 'fresh' } },
+    project: env.project,
+  });
   assert.equal(load.status, 200);
   const session = env.registry.list()[0];
   assert.ok(session !== undefined);
   assert.equal(adapter.closedNativeIds.length, 0);
 
-  const unload = await postJson(info.url, token, '/graphs/unload', {
-    graphId: 'retained-session',
-  });
+  const unload = await bUnload(info.url, token, 'retained-session');
   assert.equal(unload.status, 200);
   assert.deepEqual(adapter.closedNativeIds, []);
 
@@ -303,12 +307,11 @@ test('POST /sessions/sweep closes orphan idle sessions but never bound or busy o
   const idle = await env.registry.create(env.project);
 
   const definition = foragerDefinition('session-sweep-graph', 'run {{input}}');
-  const loaded = await postJson(
-    info.url,
-    token,
-    '/graphs/load',
-    loadBody(definition, env.project, { only: { kind: 'fresh' } }),
-  );
+  const loaded = await bLoad(info.url, token, {
+    definition,
+    bindings: { only: { kind: 'fresh' } },
+    project: env.project,
+  });
   assert.equal(loaded.status, 200);
   const bound = env.registry.list().find((record) => record.nativeId === 'native-3');
   assert.ok(bound !== undefined);
@@ -337,7 +340,7 @@ test('POST /sessions/sweep closes orphan idle sessions but never bound or busy o
   assert.ok(env.registry.get(bound.sessionId) !== undefined);
   assert.deepEqual(adapter.closedNativeIds, ['native-2']);
   // The loaded graph is untouched and its session still bound.
-  assert.equal((await getJson(info.url, token, '/status/session-sweep-graph')).status, 200);
+  assert.equal((await bInspect(info.url, token, 'session-sweep-graph')).status, 200);
 
   // The explicit session list still exposes only the five documented fields.
   const list = await getJson(info.url, token, '/sessions');

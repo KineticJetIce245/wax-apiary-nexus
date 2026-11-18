@@ -9,6 +9,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
+import { bWake, liveFrom } from './support/control-server-http.js';
 
 interface Env {
   readonly adapter: FakeAdapter;
@@ -51,6 +52,7 @@ async function start(env: Env, guardTimeoutMs?: number): Promise<Running> {
     stateRoot: env.stateRoot,
     apiary: 'apiary',
     daemonDir: env.daemonDir,
+    liveProject: env.project,
     ...(guardTimeoutMs === undefined ? {} : { guardTimeoutMs }),
   });
   const info = await server.start();
@@ -169,20 +171,15 @@ test('a pending native approval is listed and allowed through the broker', async
 
   assert.equal(
     (
-      await post(running, '/graphs/load', {
-        definition: definition('guarded'),
-        bindings: { only: { kind: 'fresh' } },
+      await post(running, '/lives', {
+        live: liveFrom(definition('guarded'), { only: { kind: 'fresh' } }),
         project: env.project,
       })
     ).status,
     200,
   );
 
-  const triggerPromise = post(running, '/trigger', {
-    graphId: 'guarded',
-    nodeId: 'only',
-    value: { kind: 'text', text: 'go' },
-  });
+  const triggerPromise = bWake(running.url, running.token, 'guarded', 'only', 'go');
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
 
   const pending = await get(running, '/guards');
@@ -202,7 +199,7 @@ test('a pending native approval is listed and allowed through the broker', async
 
   const trigger = await triggerPromise;
   assert.equal(trigger.status, 200);
-  assert.equal(trigger['result']?.['rest'], true);
+  assert.equal(trigger.body?.['result']?.['rest'], true);
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['allow_once']);
   assert.equal((await get(running, '/guards'))['guards'].length, 0);
 
@@ -227,17 +224,12 @@ test('reject and timeout never auto-allow', async (t) => {
     await running.server.stop();
     await env.workspace.stop();
   });
-  await post(running, '/graphs/load', {
-    definition: definition('guarded'),
-    bindings: { only: { kind: 'fresh' } },
+  await post(running, '/lives', {
+    live: liveFrom(definition('guarded'), { only: { kind: 'fresh' } }),
     project: env.project,
   });
 
-  const rejectedPromise = post(running, '/trigger', {
-    graphId: 'guarded',
-    nodeId: 'only',
-    value: { kind: 'text', text: 'reject' },
-  });
+  const rejectedPromise = bWake(running.url, running.token, 'guarded', 'only', 'reject');
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
   const rejectedGuard = ((await get(running, '/guards'))['guards'] as Record<string, unknown>[])[0];
   assert.ok(rejectedGuard !== undefined);
@@ -253,11 +245,7 @@ test('reject and timeout never auto-allow', async (t) => {
   assert.equal((await rejectedPromise).status, 200);
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['reject_once']);
 
-  const timedOutPromise = post(running, '/trigger', {
-    graphId: 'guarded',
-    nodeId: 'only',
-    value: { kind: 'text', text: 'timeout' },
-  });
+  const timedOutPromise = bWake(running.url, running.token, 'guarded', 'only', 'timeout');
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 0);
   assert.equal((await timedOutPromise).status, 200);

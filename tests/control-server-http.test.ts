@@ -50,6 +50,8 @@ import {
   readResponse,
   getJson,
   postJson,
+  liveFrom,
+  bLoad,
   withTimeout,
   freePort,
   rawGet,
@@ -161,7 +163,7 @@ test('requests without a valid bearer token are rejected with 401', async (t) =>
   assert.equal(valid.status, 200);
 });
 
-test('invalid definitions, bindings and projects are rejected without creating sessions', async (t) => {
+test('invalid live objects and projects are rejected without creating sessions', async (t) => {
   const env = makeEnv();
   t.after(async () => {
     await env.workspace.stop();
@@ -172,65 +174,29 @@ test('invalid definitions, bindings and projects are rejected without creating s
   });
   const { info, token } = running;
 
-  const invalidDefinition = {
-    schemaVersion: 1,
-    id: 'bad-definition',
-    nodes: {
-      only: { kind: 'forager', config: { connection: 'fake' } },
+  const badDefinition = await postJson(info.url, token, '/lives', {
+    live: {
+      schemaVersion: 1,
+      liveId: 'bad-definition',
+      bees: { only: { kind: 'bogus', config: {}, outgoing: [] } },
+      beelines: {},
+      bindings: {},
     },
-    edges: [],
-  };
-  const badDefinition = await postJson(
-    info.url,
-    token,
-    '/graphs/load',
-    loadBody(invalidDefinition, env.project, { only: { kind: 'fresh' } }),
-  );
+    project: env.project,
+  });
   assert.equal(badDefinition.status, 400);
   assert.equal(badDefinition.body?.['code'], 'bad-request');
   assert.equal(env.registry.list().length, 0);
   assert.equal(env.adapter.displayNames.length, 0);
 
-  const validDefinition = {
-    schemaVersion: 1,
-    id: 'two-foragers',
-    nodes: {
-      one: { kind: 'forager', config: { connection: 'fake', prompt: 'one {{input}}' } },
-      two: { kind: 'forager', config: { connection: 'fake', prompt: 'two {{input}}' } },
-    },
-    edges: [],
-  };
-  const missingBinding = await postJson(
-    info.url,
-    token,
-    '/graphs/load',
-    loadBody(validDefinition, env.project, { one: { kind: 'fresh' } }),
-  );
-  assert.equal(missingBinding.status, 400);
-  assert.equal(env.registry.list().length, 0);
-  assert.equal(env.adapter.displayNames.length, 0);
-
-  const invalidKind = await postJson(
-    info.url,
-    token,
-    '/graphs/load',
-    loadBody(validDefinition, env.project, {
-      one: { kind: 'bogus' },
-      two: { kind: 'fresh' },
-    }),
-  );
-  assert.equal(invalidKind.status, 400);
-  assert.equal(env.registry.list().length, 0);
-
-  const missingProjectDirectory = await postJson(
-    info.url,
-    token,
-    '/graphs/load',
-    loadBody(foragerDefinition('bad-project', 'bad {{input}}'), {
+  const missingProjectDirectory = await bLoad(info.url, token, {
+    definition: foragerDefinition('bad-project', 'bad {{input}}'),
+    bindings: { only: { kind: 'fresh' } },
+    project: {
       id: 'missing-project',
       directory: join(env.stateRoot, 'does-not-exist'),
-    }, { only: { kind: 'fresh' } }),
-  );
+    },
+  });
   assert.equal(missingProjectDirectory.status, 400);
   assert.equal(env.registry.list().length, 0);
   assert.equal(env.adapter.displayNames.length, 0);
@@ -248,7 +214,7 @@ test('unsupported media types, malformed JSON and unknown fields are rejected', 
   const { info, token } = running;
 
   const wrongType = await readResponse(
-    await fetch(`${info.url}/sweep`, {
+    await fetch(info.url + '/lives', {
       method: 'POST',
       headers: { ...authHeader(token), 'content-type': 'text/plain' },
       body: '{}',
@@ -258,7 +224,7 @@ test('unsupported media types, malformed JSON and unknown fields are rejected', 
   assert.equal(wrongType.body?.['code'], 'unsupported-media-type');
 
   const badJson = await readResponse(
-    await fetch(`${info.url}/sweep`, {
+    await fetch(info.url + '/lives', {
       method: 'POST',
       headers: { ...authHeader(token), 'content-type': 'application/json' },
       body: '{',
@@ -268,7 +234,7 @@ test('unsupported media types, malformed JSON and unknown fields are rejected', 
   assert.equal(badJson.body?.['code'], 'bad-request');
 
   const emptyBody = await readResponse(
-    await fetch(`${info.url}/sweep`, {
+    await fetch(info.url + '/lives', {
       method: 'POST',
       headers: { ...authHeader(token), 'content-type': 'application/json' },
     }),
@@ -276,7 +242,7 @@ test('unsupported media types, malformed JSON and unknown fields are rejected', 
   assert.equal(emptyBody.status, 400);
 
   const topLevelArray = await readResponse(
-    await fetch(`${info.url}/sweep`, {
+    await fetch(info.url + '/lives', {
       method: 'POST',
       headers: { ...authHeader(token), 'content-type': 'application/json' },
       body: '[]',
@@ -284,55 +250,32 @@ test('unsupported media types, malformed JSON and unknown fields are rejected', 
   );
   assert.equal(topLevelArray.status, 400);
 
-  const unknownSweepField = await postJson(info.url, token, '/sweep', { unexpected: true });
-  assert.equal(unknownSweepField.status, 400);
+  const unknownLiveField = await postJson(info.url, token, '/lives', { unexpected: true });
+  assert.equal(unknownLiveField.status, 400);
 
-  const unknownTriggerField = await postJson(info.url, token, '/trigger', {
-    graphId: 'x',
-    nodeId: 'y',
-    value: { kind: 'text', text: 'z' },
+  const unknownTriggerField = await postJson(info.url, token, '/lives/wake', {
+    liveId: 'x',
+    beeId: 'y',
+    input: 'z',
     extra: true,
   });
   assert.equal(unknownTriggerField.status, 400);
 
   const definition = foragerDefinition('unknown-fields', 'run {{input}}');
-  const unknownProjectField = await postJson(info.url, token, '/graphs/load', {
-    definition,
-    bindings: { only: { kind: 'fresh' } },
+  const unknownProjectField = await postJson(info.url, token, '/lives', {
+    live: liveFrom(definition, { only: { kind: 'fresh' } }),
     project: { ...env.project, extra: true },
   });
   assert.equal(unknownProjectField.status, 400);
-
-  const unknownBindingField = await postJson(info.url, token, '/graphs/load', {
-    definition,
-    bindings: { only: { kind: 'fresh', extra: true } },
-    project: env.project,
-  });
-  assert.equal(unknownBindingField.status, 400);
-
-  const negativeTtl = await postJson(info.url, token, '/graphs/load', {
-    ...loadBody(definition, env.project, { only: { kind: 'fresh' } }),
-    idleTtlMs: -1,
-  });
-  assert.equal(negativeTtl.status, 400);
-
-  const fractionalTtl = await postJson(info.url, token, '/graphs/load', {
-    ...loadBody(definition, env.project, { only: { kind: 'fresh' } }),
-    idleTtlMs: 1.5,
-  });
-  assert.equal(fractionalTtl.status, 400);
 
   for (const result of [
     wrongType,
     badJson,
     emptyBody,
     topLevelArray,
-    unknownSweepField,
+    unknownLiveField,
     unknownTriggerField,
     unknownProjectField,
-    unknownBindingField,
-    negativeTtl,
-    fractionalTtl,
   ]) {
     assert.equal(Object.hasOwn(result.body ?? {}, 'stack'), false);
     assert.equal(result.text.includes(token), false);
@@ -377,7 +320,7 @@ test('oversized bodies are rejected before the request body is sent or completed
   } as unknown as RequestInit & { readonly duplex: 'half' };
 
   try {
-    const response = await fetch(`${info.url}/trigger`, init);
+    const response = await fetch(`${info.url}/lives/wake`, init);
     assert.equal(response.status, 413);
     const result = await readResponse(response);
     assert.equal(result.body?.['code'], 'too-large');
@@ -401,31 +344,31 @@ test('wrong methods return 405 and unknown or traversing paths return 404', asyn
   });
   const { info, token } = running;
 
-  const getTrigger = await getJson(info.url, token, '/trigger');
-  assert.equal(getTrigger.status, 405);
-  assert.equal(getTrigger.body?.['code'], 'method-not-allowed');
-  assert.match(getTrigger.headers.get('allow') ?? '', /POST/);
+  const getWake = await getJson(info.url, token, '/lives/wake');
+  assert.equal(getWake.status, 405);
+  assert.equal(getWake.body?.['code'], 'method-not-allowed');
+  assert.match(getWake.headers.get('allow') ?? '', /POST/);
 
-  const postStatus = await postJson(info.url, token, '/status', {});
-  assert.equal(postStatus.status, 405);
-  assert.match(postStatus.headers.get('allow') ?? '', /GET/);
+  const postInspect = await postJson(info.url, token, '/lives/x/inspect', {});
+  assert.equal(postInspect.status, 405);
+  assert.match(postInspect.headers.get('allow') ?? '', /GET/);
 
   const unknown = await getJson(info.url, token, '/not-a-route');
   assert.equal(unknown.status, 404);
 
-  const nested = await getJson(info.url, token, '/status/a/b');
+  const nested = await getJson(info.url, token, '/lives/a/b/inspect');
   assert.equal(nested.status, 404);
 
   const encodedTraversal = await getJson(
     info.url,
     token,
-    '/status/%2e%2e%2fhealth',
+    '/lives/%2e%2e%2fhealth/inspect',
   );
   assert.equal(encodedTraversal.status, 404);
 
   // fetch normalizes literal `..` in a URL, so send this target over the raw
   // HTTP request to prove the server itself does not normalize it.
-  const traversal = await rawGet(info, token, '/status/../health');
+  const traversal = await rawGet(info, token, '/lives/../health');
   assert.equal(traversal.status, 404);
   assert.equal(traversal.text.includes('"harness"'), false);
 
@@ -571,10 +514,10 @@ test('the logger records only request metadata', async (t) => {
   const health = await getJson(info.url, token, `/health?token=${token}`);
   assert.equal(health.status, 200);
 
-  const missing = await postJson(info.url, token, '/trigger', {
-    graphId: 'missing',
-    nodeId: 'missing',
-    value: { kind: 'text', text: INPUT_SECRET },
+  const missing = await postJson(info.url, token, '/lives/wake', {
+    liveId: 'missing',
+    beeId: 'missing',
+    input: INPUT_SECRET,
   });
   assert.equal(missing.status, 404);
 
@@ -593,7 +536,7 @@ test('the logger records only request metadata', async (t) => {
   assert.equal(joined.includes(INPUT_SECRET), false);
   assert.equal(joined.includes('/health?token='), false);
   assert.match(joined, /method=GET path=\/health status=200/);
-  assert.match(joined, /method=POST path=\/trigger status=404/);
+  assert.match(joined, /method=POST path=\/lives\/wake status=404/);
 });
 
 test('token and info files are 0600 and the daemon directory is 0700 on POSIX', async (t) => {

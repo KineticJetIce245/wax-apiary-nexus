@@ -3,6 +3,10 @@ import { request as httpRequest } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 
 import type { ControlServerInfo } from '../../src/control/server.js';
+import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
+import type { LiveHive } from '../../src/b/types.js';
+import type { GraphBindings } from '../../src/graph/binding.js';
+import { parseComposition, type Value } from '../../src/runtime/index.js';
 
 interface HttpResult {
   readonly status: number;
@@ -51,6 +55,112 @@ export async function postJson(
     body: JSON.stringify(body),
   });
   return readResponse(response);
+}
+
+/** Convert a legacy composition + bindings fixture into a B live. */
+export function liveFrom(
+  definition: Record<string, unknown>,
+  bindings: Record<string, unknown>,
+  liveId?: string,
+): LiveHive {
+  const parsed = parseComposition(definition);
+  return fromCompositionDefinition(
+    parsed,
+    bindings as GraphBindings,
+    liveId ?? parsed.id,
+  );
+}
+
+export async function bLoad(
+  url: string,
+  token: string,
+  body: Record<string, any>,
+): Promise<HttpResult> {
+  return postJson(url, token, '/lives', {
+    live: liveFrom(body.definition, body.bindings, body.liveId),
+    project: body.project,
+  });
+}
+
+export async function bLoadLive(
+  url: string,
+  token: string,
+  live: LiveHive,
+  project?: { readonly id: string; readonly directory: string },
+): Promise<HttpResult> {
+  return postJson(url, token, '/lives', {
+    live,
+    ...(project === undefined ? {} : { project }),
+  });
+}
+
+export async function bWake(
+  url: string,
+  token: string,
+  liveId: string,
+  beeId: string,
+  value: unknown,
+): Promise<HttpResult> {
+  return postJson(url, token, '/lives/wake', { liveId, beeId, input: inputOf(value) });
+}
+
+export async function bAnswer(
+  url: string,
+  token: string,
+  liveId: string,
+  beeId: string,
+  value: unknown,
+  tokenValue?: string,
+): Promise<HttpResult> {
+  return postJson(url, token, '/lives/answer', {
+    liveId,
+    beeId,
+    input: inputOf(value),
+    ...(tokenValue === undefined ? {} : { token: tokenValue }),
+  });
+}
+
+export async function bUnload(
+  url: string,
+  token: string,
+  liveId: string,
+): Promise<HttpResult> {
+  return postJson(url, token, '/lives/unload', { liveId });
+}
+
+export async function bInspect(
+  url: string,
+  token: string,
+  liveId: string,
+): Promise<HttpResult> {
+  return getJson(url, token, `/lives/${encodeURIComponent(liveId)}/inspect`);
+}
+
+export async function bOutput(
+  url: string,
+  token: string,
+  liveId: string,
+  runId?: string,
+): Promise<HttpResult> {
+  const query = runId === undefined ? '' : `?runId=${encodeURIComponent(runId)}`;
+  return getJson(url, token, `/lives/${encodeURIComponent(liveId)}/output${query}`);
+}
+
+export async function bList(url: string, token: string): Promise<HttpResult> {
+  return getJson(url, token, '/lives');
+}
+
+function inputOf(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Value & Record<string, unknown>;
+    if (record.kind === 'text' && typeof record.text === 'string') {
+      return record.text;
+    }
+  }
+  throw new Error('B wake/answer fixture only supports text input');
 }
 
 export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {

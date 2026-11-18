@@ -295,9 +295,9 @@ function bindingsFor(live: LiveHive, defaults?: LiveHiveOverrides): GraphBinding
     }
     const params = defaults?.[beeId] ?? {};
     const connection = bee.config['connection'];
-    const harness =
-      params.harness ??
-      (typeof connection === 'string' && connection.length > 0 ? connection : undefined);
+    const inferred =
+      connection === 'codex' || connection === 'dsh' ? connection : undefined;
+    const harness = params.harness ?? inferred;
     bindings[beeId] = {
       kind: 'fresh',
       ...(mode === 'fresh_once' ? { mode: 'once' } : {}),

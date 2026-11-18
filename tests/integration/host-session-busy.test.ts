@@ -9,6 +9,9 @@ import { ControlServer } from '../../src/control/server.js';
 import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
+import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
+import type { GraphBindings } from '../../src/graph/binding.js';
+import { parseComposition } from '../../src/runtime/index.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
@@ -67,6 +70,7 @@ test(
       stateRoot,
       apiary: 'apiary',
       daemonDir: join(stateRoot, 'waxd'),
+      liveProject: project,
       sessionIdleTtlMs: 0,
     });
 
@@ -92,12 +96,13 @@ test(
           body: (await response.json()) as Record<string, any>,
         };
       };
-      const load = (id: string): ReturnType<typeof request> =>
-        request('POST', '/graphs/load', {
-          definition: definition(id),
-          bindings: { only: { kind: 'session', sessionId: session.sessionId } },
-          project,
-        });
+      const load = (id: string): ReturnType<typeof request> => {
+        const live = fromCompositionDefinition(
+          parseComposition(definition(id)),
+          { only: { kind: 'session', sessionId: session.sessionId } } as GraphBindings,
+        );
+        return request('POST', '/lives', { live, project });
+      };
 
       assert.equal((await load('first')).status, 200);
       const busy = await load('second');
@@ -108,19 +113,19 @@ test(
       assert.equal(JSON.stringify(busy.body).includes('random request'), false);
 
       assert.equal(
-        (await request('POST', '/graphs/unload', { graphId: 'first' })).status,
+        (await request('POST', '/lives/unload', { liveId: 'first' })).status,
         200,
       );
       const reload = await load('second');
       assert.equal(reload.status, 200);
 
-      const trigger = await request('POST', '/trigger', {
-        graphId: 'second',
-        nodeId: 'only',
-        value: { kind: 'text', text: 'random request' },
+      const trigger = await request('POST', '/lives/wake', {
+        liveId: 'second',
+        beeId: 'only',
+        input: 'random request',
       });
       assert.equal(trigger.status, 200);
-      const output = await request('GET', '/graphs/second/output');
+      const output = await request('GET', '/lives/second/output');
       assert.equal(output.status, 200);
       const entries = output.body['outputs'] as Record<string, unknown>[];
       const value = entries[0]?.['value'] as Record<string, unknown> | undefined;

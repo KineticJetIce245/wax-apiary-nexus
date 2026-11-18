@@ -11,6 +11,7 @@ import {
 import { LiveHiveCatalog } from '../src/daemon/live-hive-catalog.js';
 import type { Project } from '../src/project/kernel.js';
 import { FakeAdapter } from './support/fake-adapter.js';
+import { liveFrom } from './support/control-server-http.js';
 
 function deferred<T>(): {
   readonly promise: Promise<T>;
@@ -86,8 +87,8 @@ test('waxd stores live-catalog.json in its daemon directory', async (t) => {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
 
-    const loaded = await request('POST', '/graphs/load', {
-      definition: {
+    const loaded = await request('POST', '/lives', {
+      live: liveFrom({
         schemaVersion: 1,
         id: 'live',
         nodes: {
@@ -97,13 +98,12 @@ test('waxd stores live-catalog.json in its daemon directory', async (t) => {
           },
         },
         edges: [],
-      },
-      bindings: { only: { kind: 'fresh' } },
+      }, { only: { kind: 'fresh' } }),
       project,
     });
     assert.equal(loaded.status, 200);
 
-    const unloaded = await request('POST', '/graphs/unload', { graphId: 'live' });
+    const unloaded = await request('POST', '/lives/unload', { liveId: 'live' });
     assert.equal(unloaded.status, 200);
   } finally {
     controller.abort();

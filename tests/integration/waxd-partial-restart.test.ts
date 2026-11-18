@@ -6,6 +6,8 @@ import test from 'node:test';
 
 import { runWaxdCli, type WaxdStartedInfo } from '../../src/cli/waxd-cli.js';
 import type { Project } from '../../src/project/kernel.js';
+import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
+import { parseComposition } from '../../src/runtime/index.js';
 
 const codexExe = process.env.CODEX_EXE;
 const integrationOptions = {
@@ -160,7 +162,7 @@ test(
       const health = await fetchJson(daemon, token, 'GET', '/health');
       assert.equal(health.status, 200);
       assert.deepEqual(health.body['harnesses'], ['codex']);
-      assert.equal((await fetchJson(daemon, token, 'GET', '/catalog')).status, 200);
+      assert.equal((await fetchJson(daemon, token, 'GET', '/lives')).status, 200);
       t.diagnostic(
         `observed partial startup: harnesses=${JSON.stringify(daemon.info.harnesses)}; ` +
           `dshRootMissing=${!existsSync(badDshRoot)}`,
@@ -198,14 +200,16 @@ test(
         codexExe,
       ]);
       const firstToken = readFileSync(first.info.tokenPath, 'utf8').trim();
-      const loaded = await fetchJson(first, firstToken, 'POST', '/graphs/load', {
-        definition: workerDefinition('restart-live'),
-        bindings: {},
+      const loaded = await fetchJson(first, firstToken, 'POST', '/lives', {
+        live: fromCompositionDefinition(
+          parseComposition(workerDefinition('restart-live')),
+          {},
+        ),
         project,
       });
       assert.equal(loaded.status, 200);
-      const firstCatalog = await fetchJson(first, firstToken, 'GET', '/catalog');
-      assert.equal(firstCatalog.body['entries']?.[0]?.['liveId'], 'restart-live');
+      const firstCatalog = await fetchJson(first, firstToken, 'GET', '/lives');
+      assert.equal(firstCatalog.body['lives']?.[0]?.['liveId'], 'restart-live');
       assert.equal(await stopDaemon(first), 0);
       first = undefined;
 
@@ -218,12 +222,12 @@ test(
       const secondToken = readFileSync(second.info.tokenPath, 'utf8').trim();
       const health = await fetchJson(second, secondToken, 'GET', '/health');
       assert.equal(health.status, 200);
-      const catalog = await fetchJson(second, secondToken, 'GET', '/catalog');
-      const entry = (catalog.body['entries'] as Record<string, unknown>[])[0];
+      const catalog = await fetchJson(second, secondToken, 'GET', '/lives');
+      const entry = (catalog.body['lives'] as Record<string, unknown>[])[0];
       assert.ok(entry !== undefined);
       assert.equal(entry['liveId'], 'restart-live');
       assert.equal(entry['state'], 'unloaded');
-      assert.equal(entry['lastUnloadReason'], 'dispose');
+      assert.equal((entry['catalog'] as Record<string, unknown>)['lastUnloadReason'], 'dispose');
       t.diagnostic(
         `observed restart: daemonDir=${daemonDir}; catalog state=${String(entry['state'])}`,
       );

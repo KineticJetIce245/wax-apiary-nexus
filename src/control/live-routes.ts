@@ -10,6 +10,7 @@ import {
   parseWakeLiveBody,
 } from './b-validation.js';
 import type { LiveHiveService } from '../b/live-hive-service.js';
+import { GraphLoadError } from '../daemon/graph-host.js';
 import { queryParam } from './route-output.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
@@ -71,21 +72,22 @@ async function dispatchLifecycle(
 ): Promise<Record<string, unknown>> {
   if (kind === 'lives-create') {
     const body = parseNewLiveBody(payload);
-    const result = await service.new(body.live, body.project);
+    const result = await loadWithConflict(service, body.live.liveId, () =>
+      service.new(body.live, body.project),
+    );
     return { ok: true, liveId: result.liveId, status: result.status };
   }
   if (kind === 'lives-load') {
     const body = parseLoadLiveBody(payload);
-    const result = await service.load(body.liveId, body.live ?? body.path, body.project);
+    const result = await loadWithConflict(service, body.liveId, () =>
+      service.load(body.liveId, body.live ?? body.path, body.project),
+    );
     return { ok: true, liveId: result.liveId, status: result.status };
   }
   if (kind === 'lives-instantiate') {
     const body = parseInstantiateBody(payload);
-    const result = await service.instantiate(
-      body.templateId,
-      body.liveId,
-      body.overrides,
-      body.project,
+    const result = await loadWithConflict(service, body.liveId, () =>
+      service.instantiate(body.templateId, body.liveId, body.overrides, body.project),
     );
     return { ok: true, liveId: result.liveId, status: result.status };
   }
@@ -121,7 +123,17 @@ async function dispatchLiveState(
   }
   if (route.kind === 'lives-unload') {
     const body = parseLiveIdBody(payload);
-    return { ok: true, unloaded: await service.unload(body.liveId) };
+    const unloaded = await service.unload(body.liveId);
+    if (!unloaded) {
+      const status = currentStatus(service, body.liveId);
+      if (status === undefined) {
+        throw new HttpError(404, 'not-found', 'live hive is not loaded');
+      }
+      throw new HttpError(409, 'conflict', 'live hive is not unloadable', {
+        body: { status },
+      });
+    }
+    return { ok: true, unloaded: true };
   }
   const liveId = route.graphId;
   if (liveId === undefined) {
@@ -135,6 +147,38 @@ async function dispatchLiveState(
     outputs: inspected.outputs,
     ...(inspected.catalog === undefined ? {} : { catalog: inspected.catalog }),
   };
+}
+
+function currentStatus(service: LiveHiveService, liveId: string) {
+  try {
+    return service.read.inspect(liveId).status;
+  } catch {
+    return undefined;
+  }
+}
+
+async function loadWithConflict<T>(
+  service: LiveHiveService,
+  liveId: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  const current = currentStatus(service, liveId);
+  if (current !== undefined) {
+    throw new HttpError(409, 'conflict', 'live hive is already loaded', {
+      body: { status: current },
+    });
+  }
+  try {
+    return await load();
+  } catch (error) {
+    if (error instanceof GraphLoadError) {
+      const status = currentStatus(service, liveId);
+      throw new HttpError(409, 'conflict', 'live hive is already loaded', {
+        ...(status === undefined ? {} : { body: { status } }),
+      });
+    }
+    throw error;
+  }
 }
 
 async function dispatchLiveUtility(

@@ -14,6 +14,7 @@ import {
   type Value,
 } from '../../runtime/index.js';
 import type { RunOperation, RunOutput, RunRecord, RunStatus } from '../../storage/run-store.js';
+import type { QueuedRun } from '../session-execution-queue.js';
 import { messageOf, snapshotHovered } from './context.js';
 import type { GraphHostContext } from './context.js';
 import type { GraphHostRead } from './read.js';
@@ -41,14 +42,31 @@ export class GraphHostExecution {
     private readonly read: GraphHostRead,
   ) {}
 
-  trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult> {
+  /**
+   * Trigger one node. A forager node that already holds a session goes through
+   * the per-session execution queue: a free session runs now, a session another
+   * loaded LiveHive is executing returns a `QueuedRun` instead of a busy error.
+   * Nodes without a session (condition/fork/merge/user/worker) keep the plain
+   * per-live lock path.
+   */
+  trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult | QueuedRun> {
     if (this.context.disposed) {
       return Promise.reject(new GraphHostDisposedError());
     }
-    return this.context.lock.run(graphId, () =>
-      runRecorded(this.context, this.read, graphId, 'trigger', () =>
-        triggerLocked(this.context, this.read, graphId, nodeId, value),
-      ),
+    const run = (): Promise<GraphRunResult> =>
+      this.context.lock.run(graphId, () =>
+        runRecorded(this.context, this.read, graphId, 'trigger', () =>
+          triggerLocked(this.context, this.read, graphId, nodeId, value),
+        ),
+      );
+    const sessionId = this.sessionIdOf(graphId, nodeId);
+    if (sessionId === undefined) {
+      return run();
+    }
+    return this.context.sessionQueue.start(
+      sessionId,
+      { liveId: graphId, beeId: nodeId },
+      run,
     );
   }
 
@@ -70,6 +88,15 @@ export class GraphHostExecution {
         answerLocked(this.context, this.read, graphId, nodeId, value, token),
       ),
     );
+  }
+
+  /**
+   * The session a trigger would execute on, read without taking any lock.
+   * Only forager nodes have one; the map is immutable after a load.
+   */
+  private sessionIdOf(graphId: GraphId, nodeId: NodeId): string | undefined {
+    const live = this.context.graphs.peek(graphId)?.value;
+    return live?.instantiated.sessions.get(nodeId)?.sessionId;
   }
 }
 

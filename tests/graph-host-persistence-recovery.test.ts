@@ -46,6 +46,7 @@ import {
   userNode,
   userAndForagerDefinition,
 } from './support/graph-host-persistence-fixtures.js';
+import { triggerRun } from './support/graph-host-fixtures.js';
 
 test('a corrupt or unsupported Honey field fails load before creating a session', async (t) => {
   const env = makeEnv();
@@ -139,7 +140,7 @@ test('a revision mismatch fails restore, releases only the session it created an
     bindings: allFresh(firstDefinition),
     project: env.project,
   });
-  const triggered = await host.trigger('revision', 'only', text('one'));
+  const triggered = await triggerRun(host, 'revision', 'only', text('one'));
   assert.equal(triggered.persisted, true);
   assert.equal(await host.unload('revision'), true);
   // The first load's session is retained by the unload; the failed reload must
@@ -326,7 +327,7 @@ test('a failed reload never closes a reused fresh_once session or removes its ma
   await host.loadGraph({ definition, bindings, project: env.project });
   const session = env.registry.list()[0];
   assert.ok(session !== undefined);
-  const triggered = await host.trigger('keep-once', 'only', text('one'));
+  const triggered = await triggerRun(host, 'keep-once', 'only', text('one'));
   assert.equal(triggered.rest, true);
   assert.equal(await host.unload('keep-once'), true);
   assert.deepEqual(env.adapter.closedNativeIds, []);
@@ -381,7 +382,7 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   const bindings = allFresh(definition);
   await host.loadGraph({ definition, bindings, project: env.project });
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
-  const triggered = await host.trigger('hover-reload', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'hover-reload', 'ask', text('waiting'));
   assert.equal(triggered.rest, false);
   assert.equal(triggered.hovered, true);
   assert.equal(triggered.persisted, true);
@@ -443,7 +444,7 @@ test('a failed Honey flush blocks a hover-only unload and keeps it loaded', asyn
   });
 
   honey.failSave = true;
-  const triggered = await host.trigger('hover-flush', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'hover-flush', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
   assert.equal(triggered.persisted, false);
   assert.equal(triggered.persistError, SAVE_ERROR);

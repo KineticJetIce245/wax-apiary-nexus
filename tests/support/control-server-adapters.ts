@@ -4,7 +4,7 @@ import {
   SessionRegistry,
   type SweepSessionsReport,
 } from '../../src/session/session-registry.js';
-import { FakeAdapter } from './fake-adapter.js';
+import { FakeAdapter, type FakeAdapterOptions } from './fake-adapter.js';
 
 /**
  * FakeAdapter whose first conversation creation blocks on a gate, so a second
@@ -54,6 +54,66 @@ export class HoldingFakeAdapter extends TrackingFakeAdapter {
     _executionId: string,
     _text: string,
   ): Promise<void> {}
+}
+
+interface HeldSubmission {
+  readonly nativeId: string;
+  readonly executionId: string;
+  readonly text: string;
+}
+
+/**
+ * Submissions stay parked until the test finishes them one at a time, so a
+ * second wake provably arrives while the shared session is still executing.
+ * The output is derived from the rendered prompt, which lets a test prove that
+ * two LiveHives' outputs did not cross.
+ */
+export class SteppedFakeAdapter extends TrackingFakeAdapter {
+  readonly held: HeldSubmission[] = [];
+  private readonly outputPrefix: string;
+
+  constructor(options: FakeAdapterOptions & { readonly outputPrefix?: string } = {}) {
+    const { outputPrefix, ...adapterOptions } = options;
+    super(adapterOptions);
+    this.outputPrefix = outputPrefix ?? 'echo:';
+  }
+
+  get heldCount(): number {
+    return this.held.length;
+  }
+
+  override async submit(nativeId: string, executionId: string, text: string): Promise<void> {
+    this.prompts.push(text);
+    this.held.push({ nativeId, executionId, text });
+  }
+
+  /** Complete the oldest parked execution; returns the emitted output text. */
+  finishNext(): string | undefined {
+    const next = this.held.shift();
+    if (next === undefined) {
+      return undefined;
+    }
+    const output = `${this.outputPrefix}${next.text}`;
+    this.emit({
+      type: 'execution/output',
+      executionId: next.executionId,
+      channel: 'assistant',
+      text: output,
+    });
+    this.emit({
+      type: 'execution/completed',
+      executionId: next.executionId,
+      stopReason: 'end_turn',
+    });
+    return output;
+  }
+
+  /** Test cleanup: complete everything still parked. */
+  finishAll(): void {
+    while (this.heldCount > 0) {
+      this.finishNext();
+    }
+  }
 }
 
 /** A native close that fails with a marker that must never reach a response. */

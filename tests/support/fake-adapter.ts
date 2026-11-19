@@ -148,7 +148,7 @@ export class FakeAdapter implements HarnessAdapter {
     }
   }
 
-  private emit(event: HarnessEvent): void {
+  protected emit(event: HarnessEvent): void {
     for (const listener of this.listeners) {
       listener(event);
     }

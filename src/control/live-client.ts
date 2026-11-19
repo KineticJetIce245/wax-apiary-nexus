@@ -67,8 +67,21 @@ export class LiveHiveClient extends ControlClient {
     return parseLiveResult(body);
   }
 
+  /**
+   * Wake one bee. A free session returns the run result; a busy shared session
+   * returns the queue handle (`status: 'queued'`) so callers can report it and
+   * query the queue instead of retrying.
+   */
   async wake(liveId: string, beeId: string, input: string): Promise<unknown> {
     const body = await this.request('POST', '/lives/wake', { liveId, beeId, input });
+    if (body['status'] === 'queued') {
+      const queueId = body['queueId'];
+      const position = body['position'];
+      if (typeof queueId !== 'string' || typeof position !== 'number') {
+        throw protocolError("queued wake response missing 'queueId'/'position'");
+      }
+      return { status: 'queued', queueId, position };
+    }
     return requireField(body, 'result');
   }
 

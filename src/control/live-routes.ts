@@ -11,6 +11,7 @@ import {
 } from './b-validation.js';
 import type { LiveHiveService } from '../b/live-hive-service.js';
 import { GraphLoadError } from '../daemon/graph-host.js';
+import { isQueuedRun } from '../daemon/session-execution-queue.js';
 import { queryParam } from './route-output.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
@@ -103,7 +104,18 @@ async function dispatchLiveRun(
 ): Promise<Record<string, unknown>> {
   if (kind === 'lives-wake') {
     const body = parseWakeLiveBody(payload);
-    return { ok: true, result: await service.wake(body.liveId, body.beeId, body.input) };
+    const result = await service.wake(body.liveId, body.beeId, body.input);
+    if (isQueuedRun(result)) {
+      // MVP keeps the success channel at 200 and distinguishes a queued wake
+      // in the body. There is deliberately no 202 path.
+      return {
+        ok: true,
+        status: result.status,
+        queueId: result.queueId,
+        position: result.position,
+      };
+    }
+    return { ok: true, result };
   }
   const body = parseAnswerLiveBody(payload);
   return {

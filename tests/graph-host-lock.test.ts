@@ -20,6 +20,7 @@ import {
 } from '../src/runtime/index.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
+import { triggerRun } from './support/graph-host-fixtures.js';
 
 /**
  * A minimal adapter whose submissions can be held. Holding the native submit
@@ -177,9 +178,9 @@ test(
   const graph = definition('live');
   await env.host.loadGraph({ definition: graph, bindings: bindings(), project: env.project });
 
-  const first = env.host.trigger('live', 'a', text('one'));
+  const first = triggerRun(env.host, 'live', 'a', text('one'));
   await adapter.waitForSubmits(1);
-  const second = env.host.trigger('live', 'b', text('two'));
+  const second = triggerRun(env.host, 'live', 'b', text('two'));
 
   await assert.rejects(
     adapter.waitForSubmits(2, 250),
@@ -215,8 +216,8 @@ test('different live ids proceed concurrently', { timeout: 10_000 }, async (t) =
     project: env.project,
   });
 
-  const first = env.host.trigger('live-a', 'a', text('a'));
-  const second = env.host.trigger('live-b', 'a', text('b'));
+  const first = triggerRun(env.host, 'live-a', 'a', text('a'));
+  const second = triggerRun(env.host, 'live-b', 'a', text('b'));
   await adapter.waitForSubmits(2);
 
   adapter.releaseAll();
@@ -240,8 +241,8 @@ test('a failing locked trigger does not poison the next one', { timeout: 10_000 
     project: env.project,
   });
 
-  await assert.rejects(env.host.trigger('live', 'missing', text('bad')));
-  const result = await env.host.trigger('live', 'a', text('good'));
+  await assert.rejects(triggerRun(env.host, 'live', 'missing', text('bad')));
+  const result = await triggerRun(env.host, 'live', 'a', text('good'));
 
   assert.equal(result.rest, true);
   assert.deepEqual(adapter.prompts, ['a good']);
@@ -262,7 +263,7 @@ test('unload is refused while a trigger owns the same live id', { timeout: 10_00
     project: env.project,
   });
 
-  const trigger = env.host.trigger('live', 'a', text('one'));
+  const trigger = triggerRun(env.host, 'live', 'a', text('one'));
   await adapter.waitForSubmits(1);
 
   // Explicit unload keeps its "refused while busy" contract instead of

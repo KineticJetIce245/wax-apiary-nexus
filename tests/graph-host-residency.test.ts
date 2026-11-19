@@ -61,6 +61,7 @@ import {
   userNode,
   userAndForagerGraph,
   runnableForagerGraph,
+  triggerRun,
 } from './support/graph-host-fixtures.js';
 
 
@@ -94,7 +95,7 @@ test('a user hover is not unloaded or swept until it reaches Rest', async (t) =>
   assert.ok(sessionId !== undefined);
   assert.equal(workspaceListenerCount(env.workspace), 1);
 
-  const result = await host.trigger('hover', 'ask', text('hello'));
+  const result = await triggerRun(host, 'hover', 'ask', text('hello'));
   assert.equal(result.rest, false);
   assert.equal(result.hovered, true);
   assert.equal(result.pumps, 1);
@@ -172,7 +173,7 @@ test('allowHoverUnload unloads a quiescent hover and retains its fresh session',
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
   assert.equal(workspaceListenerCount(env.workspace), 1);
 
-  const triggered = await host.trigger('hover-unload', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'hover-unload', 'ask', text('waiting'));
   assert.equal(triggered.rest, false);
   assert.equal(triggered.hovered, true);
   const ask = nodeStatus(triggered.status, 'ask');
@@ -218,7 +219,7 @@ test('allowHoverUnload still refuses a hover while another node has queued work'
     project: env.project,
     idleTtlMs: 100,
   });
-  const triggered = await host.trigger('hover-queue', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'hover-queue', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
 
   // A queue entry that no host pump has drained yet. The field is therefore
@@ -274,13 +275,13 @@ test('allowHoverUnload still refuses a hover while a node has a pending Pheromon
     idleTtlMs: 100,
   });
 
-  const first = await host.trigger('hover-pending', 'idle', text('one'));
+  const first = await triggerRun(host, 'hover-pending', 'idle', text('one'));
   assert.equal(first.rest, true);
-  const second = await host.trigger('hover-pending', 'idle', text('two'));
+  const second = await triggerRun(host, 'hover-pending', 'idle', text('two'));
   assert.equal(second.rest, false);
   assert.equal(nodeStatus(second.status, 'idle').pending, true);
 
-  const triggered = await host.trigger('hover-pending', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'hover-pending', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
   const parked = host.statusOf('hover-pending');
   assert.ok(parked !== undefined);

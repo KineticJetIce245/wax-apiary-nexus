@@ -11,7 +11,9 @@ import type {
 import {
   GraphAnswerError,
   GraphHost,
+  isQueuedRun,
   type GraphNodeStatus,
+  type GraphRunResult,
   type GraphStatus,
 } from '../../src/daemon/graph-host.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
@@ -220,6 +222,25 @@ export function makeEnv(
 
 export function text(value: string): Value {
   return { kind: 'text', text: value };
+}
+
+/**
+ * Await a trigger in a fixture whose sessions are unique per live, so it must
+ * run immediately. A queued result would mean a shared session slipped into a
+ * test that expects a synchronous run, so fail loudly instead of reading
+ * undefined fields off the handle.
+ */
+export async function triggerRun(
+  host: GraphHost,
+  graphId: string,
+  nodeId: NodeId,
+  value: Value,
+): Promise<GraphRunResult> {
+  const result = await host.trigger(graphId, nodeId, value);
+  if (isQueuedRun(result)) {
+    assert.fail(`trigger '${graphId}/${nodeId}' was unexpectedly queued`);
+  }
+  return result;
 }
 
 export function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {

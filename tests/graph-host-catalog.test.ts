@@ -21,6 +21,7 @@ import {
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
+import { triggerRun } from './support/graph-host-fixtures.js';
 
 interface Env {
   readonly adapter: FakeAdapter;
@@ -178,7 +179,7 @@ test('trigger refreshes lastAccessAt', async (t) => {
   const loadedAt = catalog.get('live')?.lastAccessAt;
 
   current += 5_000;
-  const result = await host.trigger('live', 'only', text('hello'));
+  const result = await triggerRun(host, 'live', 'only', text('hello'));
   assert.equal(result.rest, true);
   assert.notEqual(catalog.get('live')?.lastAccessAt, loadedAt);
 });

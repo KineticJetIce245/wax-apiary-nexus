@@ -27,7 +27,7 @@ function definition(id: string): Record<string, unknown> {
   };
 }
 
-test('a second loaded graph with the same session returns 409 session-busy', async (t) => {
+test('a second loaded graph may share the same session; unload is refcounted', async (t) => {
   const adapter = new FakeAdapter({ output: 'secret-output' });
   const workspace = new Workspace(adapter);
   const registry = new SessionRegistry({
@@ -75,21 +75,35 @@ test('a second loaded graph with the same session returns 409 session-busy', asy
         project,
       });
 
+    // Both loaded LiveHives now hold the same explicit session; the queue, not
+    // a 409, serializes their executions.
     const first = await load('first');
-    assert.equal(first.status, 200);
-
+    assert.equal(first.status, 200, JSON.stringify(first.body));
     const second = await load('second');
-    assert.equal(second.status, 409);
-    assert.equal(second.body['code'], 'session-busy');
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(second.body['status']?.['graphId'], 'second');
+    assert.equal(JSON.stringify(first.body).includes(PROMPT_SECRET), false);
     assert.equal(JSON.stringify(second.body).includes(PROMPT_SECRET), false);
     assert.equal(JSON.stringify(second.body).includes('secret-output'), false);
-    assert.equal(second.body['error'], 'session is busy');
 
+    // Unloading one sharer leaves the other loaded and executable.
     const unload = await post('/lives/unload', { liveId: 'first' });
     assert.equal(unload.status, 200);
-    const reload = await load('second');
+    const wake = await post('/lives/wake', {
+      liveId: 'second',
+      beeId: 'only',
+      input: 'still here',
+    });
+    assert.equal(wake.status, 200, JSON.stringify(wake.body));
+    assert.equal(wake.body['result']?.['graphId'], 'second');
+    assert.equal(typeof wake.body['result']?.['runId'], 'string');
+
+    const reload = await load('first');
     assert.equal(reload.status, 200);
-    assert.equal(reload.body['status']?.['graphId'], 'second');
+    assert.equal(reload.body['status']?.['graphId'], 'first');
+
+    assert.equal((await post('/lives/unload', { liveId: 'second' })).status, 200);
+    assert.equal((await post('/lives/unload', { liveId: 'first' })).status, 200);
   } finally {
     await server.stop().catch(() => undefined);
     await workspace.stop().catch(() => undefined);

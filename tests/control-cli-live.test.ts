@@ -307,3 +307,38 @@ test('wax live rejects bad usage and unknown live ids without retrying', async (
   );
   assert.match(dispatchErr.lines.join('\n'), /usage: wax dispatch/);
 });
+test('wax wake prints a queued handle instead of retrying', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wax-cli-queued-'));
+  writeFileSync(join(dir, 'token'), 'queued-token-0123456789', 'utf8');
+  writeFileSync(
+    join(dir, 'server.json'),
+    JSON.stringify({
+      url: 'http://127.0.0.1:45999',
+      host: '127.0.0.1',
+      port: 45999,
+      pid: 1,
+      startedAt: '2026-11-19T00:00:00.000Z',
+      tokenPath: join(dir, 'token'),
+    }),
+    'utf8',
+  );
+  const out = writer();
+  const requests: string[] = [];
+  const code = await runWakeCli(
+    ['wake', 'demo', 'only', '--input', 'x', '--daemon-dir', dir],
+    {
+      stdout: out.write,
+      stderr: writer().write,
+      fetchImpl: (async (input: string | URL | Request) => {
+        requests.push(String(input));
+        return new Response(
+          JSON.stringify({ ok: true, status: 'queued', queueId: 'q-1', position: 2 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as typeof fetch,
+    },
+  );
+  assert.equal(code, 0);
+  assert.deepEqual(out.lines, ['queued q-1 position=2']);
+  assert.equal(requests.length, 1);
+});

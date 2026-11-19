@@ -1,79 +1,65 @@
 import type { GraphBindings } from '../../graph/binding.js';
 import type { GraphId } from '../../graph/registry.js';
-import { GraphSessionBusyError } from './types.js';
-import type { GraphHostContext } from './context.js';
 
 /**
- * Explicit-session reservations. A reservation is held from the start of a
- * load until that graph unloads; a failed load releases it.
+ * Explicit-session reservations, refcounted per session.
+ *
+ * Several loaded LiveHives may share one explicit session: the session
+ * execution queue in front of `trigger` serializes the actual executions, so
+ * sharing is safe and no longer a typed rejection. A reservation is held from
+ * the start of a load until that graph unloads; a failed load releases only the
+ * sessions this call added.
+ *
+ * Loading the same graph id twice is still refused by `GraphHostLifecycle`
+ * before this layer is consulted.
  */
 export class SessionOwnership {
-  private readonly owners = new Map<string, GraphId>();
+  private readonly owners = new Map<string, Set<GraphId>>();
 
-  constructor(private readonly context: GraphHostContext) {}
-
-  /**
-   * Reserve every explicit `session` binding for this load. A session already
-   * held by another loaded graph, or by a concurrent in-flight load, is a typed
-   * rejection. `fresh` bindings reserve nothing: they have no session yet.
-   */
+  /** Register this graph's explicit session bindings; never throws. */
   reserve(graphId: GraphId, bindings: GraphBindings): () => void {
-    const reserved: string[] = [];
-    const release = (): void => {
-      for (const sessionId of reserved) {
-        if (this.owners.get(sessionId) === graphId) {
-          this.owners.delete(sessionId);
-        }
+    const touched: string[] = [];
+    for (const binding of Object.values(bindings)) {
+      if (binding.kind !== 'session') {
+        continue;
       }
-    };
-
-    try {
-      for (const binding of Object.values(bindings)) {
-        if (binding.kind !== 'session') {
-          continue;
-        }
-        const sessionId = binding.sessionId;
-        const existingOwner =
-          this.owners.get(sessionId) ?? this.findLoadedOwner(sessionId, graphId);
-        if (existingOwner !== undefined && existingOwner !== graphId) {
-          throw new GraphSessionBusyError(graphId, sessionId, existingOwner);
-        }
-        if (this.owners.get(sessionId) === undefined) {
-          this.owners.set(sessionId, graphId);
-          reserved.push(sessionId);
-        }
+      const sessionId = binding.sessionId;
+      const owners = this.owners.get(sessionId);
+      if (owners === undefined) {
+        this.owners.set(sessionId, new Set([graphId]));
+        touched.push(sessionId);
+        continue;
       }
-    } catch (error) {
-      release();
-      throw error;
+      if (!owners.has(graphId)) {
+        owners.add(graphId);
+        touched.push(sessionId);
+      }
     }
-
-    return release;
+    // The rollback removes only the sessions this call registered; a shared
+    // session that another loaded graph still holds survives.
+    return () => {
+      this.releaseSessions(graphId, touched);
+    };
   }
 
   release(graphId: GraphId): void {
-    for (const [sessionId, owner] of this.owners) {
-      if (owner === graphId) {
-        this.owners.delete(sessionId);
-      }
-    }
+    this.releaseSessions(graphId, [...this.owners.keys()]);
   }
 
   clear(): void {
     this.owners.clear();
   }
 
-  private findLoadedOwner(sessionId: string, excludingGraphId: GraphId): GraphId | undefined {
-    for (const entry of this.context.graphs.list()) {
-      if (entry.id === excludingGraphId) {
+  private releaseSessions(graphId: GraphId, sessionIds: readonly string[]): void {
+    for (const sessionId of sessionIds) {
+      const owners = this.owners.get(sessionId);
+      if (owners === undefined) {
         continue;
       }
-      for (const record of entry.value.instantiated.sessions.values()) {
-        if (record.sessionId === sessionId) {
-          return entry.id;
-        }
+      owners.delete(graphId);
+      if (owners.size === 0) {
+        this.owners.delete(sessionId);
       }
     }
-    return undefined;
   }
 }

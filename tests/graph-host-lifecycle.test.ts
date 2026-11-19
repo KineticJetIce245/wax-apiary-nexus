@@ -62,6 +62,7 @@ import {
   userAndForagerGraph,
   runnableForagerGraph,
   pacedForkMergeDefinition,
+  triggerRun,
 } from './support/graph-host-fixtures.js';
 
 class FailingCloseAdapter extends RecordingAdapter {
@@ -153,7 +154,7 @@ test('duplicate load, invalid bindings and an unknown graph are rejected explici
   assert.equal(env.registry.list().length, 1);
 
   await assert.rejects(
-    host.trigger('missing', 'only', text('x')),
+    triggerRun(host, 'missing', 'only', text('x')),
     (error: unknown) => {
       assert.ok(error instanceof GraphNotFoundError);
       assert.equal(error.graphId, 'missing');
@@ -191,9 +192,9 @@ test('unload retains fresh and borrowed sessions and disposes routing', async (t
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
   assert.equal(workspaceListenerCount(env.workspace), 2);
 
-  const reused = await host.trigger('mixed', 'reuse', text('keep'));
+  const reused = await triggerRun(host, 'mixed', 'reuse', text('keep'));
   assert.equal(reused.rest, true);
-  const fresh = await host.trigger('mixed', 'fresh', text('close'));
+  const fresh = await triggerRun(host, 'mixed', 'fresh', text('close'));
   assert.equal(fresh.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['reuse keep']);
   assert.deepEqual(promptsFor(env.adapter, 'native-2'), ['fresh close']);
@@ -210,7 +211,7 @@ test('unload retains fresh and borrowed sessions and disposes routing', async (t
 
   const promptsBefore = env.adapter.allPrompts.length;
   await assert.rejects(
-    host.trigger('mixed', 'reuse', text('after')),
+    triggerRun(host, 'mixed', 'reuse', text('after')),
     GraphNotFoundError,
   );
   assert.equal(env.adapter.allPrompts.length, promptsBefore);
@@ -309,12 +310,12 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
     project: env.project,
     idleTtlMs: 100,
   });
-  const first = await host.trigger('renew', 'only', text('one'));
+  const first = await triggerRun(host, 'renew', 'only', text('one'));
   assert.equal(first.rest, true);
   assert.equal(first.status.residency.lastAccessAt, 1_100);
 
   clock.advance(60);
-  const second = await host.trigger('renew', 'only', text('two'));
+  const second = await triggerRun(host, 'renew', 'only', text('two'));
   assert.equal(second.rest, true);
   assert.equal(second.status.residency.lastAccessAt, 1_160);
 
@@ -352,7 +353,7 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
     idleTtlMs: 100,
   });
 
-  const run = host.trigger('busy', 'only', text('hold'));
+  const run = triggerRun(host, 'busy', 'only', text('hold'));
   await env.adapter.waitForSubmit(1);
 
   // The lease must span the whole trigger, not just the initial enqueue.
@@ -407,7 +408,7 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
   assert.equal(env.adapter.createdNativeIds.length, 3);
   assert.equal(workspaceListenerCount(env.workspace), 3);
 
-  const result = await host.trigger('queued', 'start', text('seed'));
+  const result = await triggerRun(host, 'queued', 'start', text('seed'));
   assert.equal(result.rest, false);
   assert.equal(result.pumps, 1);
   const loaded = host.statusOf('queued');
@@ -459,7 +460,7 @@ test('dispose unloads every Rest graph, is idempotent and refuses later work', a
   await host.loadGraph({ definition: graphA, bindings: allFresh(graphA), project: env.project });
   await host.loadGraph({ definition: graphB, bindings: allFresh(graphB), project: env.project });
 
-  const result = await host.trigger('graph-a', 'only', text('one'));
+  const result = await triggerRun(host, 'graph-a', 'only', text('one'));
   assert.equal(result.rest, true);
   assert.equal(workspaceListenerCount(env.workspace), 2);
 
@@ -478,7 +479,7 @@ test('dispose unloads every Rest graph, is idempotent and refuses later work', a
   assert.deepEqual(env.adapter.closedNativeIds, []);
 
   await assert.rejects(
-    host.trigger('graph-a', 'only', text('after')),
+    triggerRun(host, 'graph-a', 'only', text('after')),
     GraphHostDisposedError,
   );
   await assert.rejects(
@@ -514,7 +515,7 @@ test('fresh_once keeps its session and mapping across unload and reuses it on re
   assert.ok(session !== undefined);
   assert.equal(bindingStore.get('once', 'only')?.sessionId, session.sessionId);
 
-  const first = await host.trigger('once', 'only', text('one'));
+  const first = await triggerRun(host, 'once', 'only', text('one'));
   assert.equal(first.rest, true);
   assert.equal(await host.unload('once'), true);
   assert.equal(host.statusOf('once'), undefined);
@@ -533,7 +534,7 @@ test('fresh_once keeps its session and mapping across unload and reuses it on re
   assert.equal(env.registry.list()[0]?.sessionId, session.sessionId);
   assert.equal(workspaceListenerCount(env.workspace), 1);
 
-  const second = await host.trigger('once', 'only', text('two'));
+  const second = await triggerRun(host, 'once', 'only', text('two'));
   assert.equal(second.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['run one', 'run two']);
 
@@ -585,7 +586,7 @@ test('fresh_always is retained on unload and a reload creates a new session', as
   assert.deepEqual(env.adapter.closedNativeIds, []);
   assert.deepEqual(bindingStore.snapshot(), []);
 
-  const result = await host.trigger('always', 'only', text('go'));
+  const result = await triggerRun(host, 'always', 'only', text('go'));
   assert.equal(result.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-2'), ['run go']);
 });
@@ -614,7 +615,7 @@ test('an idle sweep retains a fresh_once session and the reload still reuses it'
   });
   const session = env.registry.list()[0];
   assert.ok(session !== undefined);
-  const triggered = await host.trigger('once-sweep', 'only', text('one'));
+  const triggered = await triggerRun(host, 'once-sweep', 'only', text('one'));
   assert.equal(triggered.rest, true);
 
   clock.advance(100);
@@ -628,7 +629,7 @@ test('an idle sweep retains a fresh_once session and the reload still reuses it'
   await host.loadGraph({ definition, bindings, project: env.project });
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
   assert.equal(env.registry.list()[0]?.sessionId, session.sessionId);
-  const second = await host.trigger('once-sweep', 'only', text('two'));
+  const second = await triggerRun(host, 'once-sweep', 'only', text('two'));
   assert.equal(second.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['run one', 'run two']);
 });

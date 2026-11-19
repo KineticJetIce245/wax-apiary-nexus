@@ -7,6 +7,7 @@ import type { RunStore } from '../../storage/run-store.js';
 import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import { LiveHiveLock } from '../live-hive-lock.js';
 import { SchedulerService } from '../scheduler-service.js';
+import { SessionExecutionQueue } from '../session-execution-queue.js';
 import {
   GraphHostDisposedError,
   type GraphHostEvent,
@@ -41,6 +42,7 @@ export class GraphHostContext {
   readonly graphs: GraphRegistry<LiveGraph>;
   readonly lock = new LiveHiveLock();
   readonly loading = new Set<GraphId>();
+  readonly sessionQueue: SessionExecutionQueue;
 
   disposed = false;
   disposePromise: Promise<void> | undefined;
@@ -90,6 +92,7 @@ export class GraphHostContext {
       throw new TypeError('onGuardExpired must be a function');
     }
     this.onEvent = options.onEvent;
+    this.sessionQueue = new SessionExecutionQueue(options.sessionQueue);
     this.schedulers = new SchedulerService({
       now: this.now,
       ...(options.schedulerTimers === undefined

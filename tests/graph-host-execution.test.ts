@@ -62,6 +62,7 @@ import {
   userAndForagerGraph,
   runnableForagerGraph,
   pacedForkMergeDefinition,
+  triggerRun,
 } from './support/graph-host-fixtures.js';
 
 class ThrowingTouchRegistry extends SessionRegistry {
@@ -134,7 +135,7 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
   assert.equal(loaded.residency.idleTtlMs, 0);
   assert.equal(loaded.residency.refCount, 0);
 
-  const result = await host.trigger('main', 'start', text('seed'));
+  const result = await triggerRun(host, 'main', 'start', text('seed'));
   assert.equal(result.graphId, 'main');
   assert.equal(result.rest, true);
   assert.equal(result.hovered, false);
@@ -208,7 +209,7 @@ test('two loaded graphs stay independent through trigger and unload', async (t) 
   assert.equal(host.statusOf('graph-a')?.rest, true);
   assert.equal(host.statusOf('graph-b')?.rest, true);
 
-  const first = await host.trigger('graph-a', 'only', text('one'));
+  const first = await triggerRun(host, 'graph-a', 'only', text('one'));
   assert.equal(first.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['A one']);
   assert.equal(env.adapter.promptsByNative.has('native-2'), false);
@@ -224,7 +225,7 @@ test('two loaded graphs stay independent through trigger and unload', async (t) 
   assert.equal(host.statusOf('graph-a')?.residency.lastAccessAt, lastAccessA);
   assert.equal(host.statusOf('graph-b')?.residency.lastAccessAt, lastAccessB);
 
-  const second = await host.trigger('graph-b', 'only', text('two'));
+  const second = await triggerRun(host, 'graph-b', 'only', text('two'));
   assert.equal(second.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-2'), ['B two']);
   assert.equal(host.statusOf('graph-a')?.residency.lastAccessAt, lastAccessA);
@@ -237,7 +238,7 @@ test('two loaded graphs stay independent through trigger and unload', async (t) 
   assert.equal(env.registry.list().length, 2);
   assert.equal(host.statusOf('graph-b')?.rest, true);
 
-  const third = await host.trigger('graph-b', 'only', text('three'));
+  const third = await triggerRun(host, 'graph-b', 'only', text('three'));
   assert.equal(third.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-2'), ['B two', 'B three']);
 });
@@ -262,7 +263,7 @@ test('an unknown trigger node rethrows the runtime error and releases the lease'
   });
 
   await assert.rejects(
-    host.trigger('lease', 'does-not-exist', text('x')),
+    triggerRun(host, 'lease', 'does-not-exist', text('x')),
     /unknown node 'does-not-exist'/,
   );
 
@@ -273,7 +274,7 @@ test('an unknown trigger node rethrows the runtime error and releases the lease'
   assert.equal(status.residency.refCount, 0);
   assert.equal(env.adapter.allPrompts.length, 0);
 
-  const result = await host.trigger('lease', 'only', text('works'));
+  const result = await triggerRun(host, 'lease', 'only', text('works'));
   assert.equal(result.rest, true);
   assert.deepEqual(env.adapter.allPrompts, ['run works']);
 });
@@ -302,7 +303,7 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
     project: env.project,
   });
 
-  const result = await host.trigger('paced-rest', 'start', text('seed'));
+  const result = await triggerRun(host, 'paced-rest', 'start', text('seed'));
   assert.equal(result.rest, true);
   assert.equal(result.hovered, false);
   assert.deepEqual(waits, [1_000]);
@@ -347,7 +348,7 @@ test('the trigger lease covers pacing waits, not only pump calls', async (t) => 
     project: env.project,
   });
 
-  const run = host.trigger('paced-lease', 'start', text('seed'));
+  const run = triggerRun(host, 'paced-lease', 'start', text('seed'));
   await sleepStarted.promise;
   assert.deepEqual(waits, [1_000]);
   const during = host.statusOf('paced-lease');
@@ -402,7 +403,7 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
     bindings: allFresh(noWaitDefinition),
     project: env.project,
   });
-  const noWait = await zeroHost.trigger('no-wait', 'start', text('seed'));
+  const noWait = await triggerRun(zeroHost, 'no-wait', 'start', text('seed'));
   assert.equal(noWait.rest, false);
   assert.equal(noWait.pumps, 1);
   assert.deepEqual(zeroWaits, []);
@@ -414,7 +415,7 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
     bindings: allFresh(shortDefinition),
     project: env.project,
   });
-  const short = await shortHost.trigger('short-wait', 'start', text('seed'));
+  const short = await triggerRun(shortHost, 'short-wait', 'start', text('seed'));
   assert.equal(short.rest, false);
   assert.equal(short.pumps, 2);
   assert.deepEqual(shortWaits, [250]);
@@ -453,7 +454,7 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
     project: env.project,
   });
 
-  const result = await host.trigger('paced', 'start', text('seed'));
+  const result = await triggerRun(host, 'paced', 'start', text('seed'));
   assert.equal(result.rest, false);
   assert.equal(result.hovered, false);
   assert.equal(result.pumps, 1);
@@ -471,7 +472,7 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
   assert.equal(host.status().length, 1);
   assert.deepEqual(env.adapter.closedNativeIds, []);
   // The graph is still loaded and can accept another trigger.
-  const again = await host.trigger('paced', 'start', text('again'));
+  const again = await triggerRun(host, 'paced', 'start', text('again'));
   assert.equal(again.graphId, 'paced');
   assert.equal(host.statusOf('paced') !== undefined, true);
 });
@@ -499,7 +500,7 @@ test('answer resolves an open user hover and rejects invalid targets and tokens'
     host.answer('answer', 'ask', text('early')),
     isAnswerError('no-hover'),
   );
-  const triggered = await host.trigger('answer', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'answer', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
   const token = hoverTokenOf(host, 'answer', 'ask');
 
@@ -606,7 +607,7 @@ test('trigger refreshes the lastAccessAt of every bound session', async (t) => {
   }
 
   clock.advance(5_000);
-  const result = await host.trigger('touch-trigger', 'first', text('go'));
+  const result = await triggerRun(host, 'touch-trigger', 'first', text('go'));
   assert.equal(result.rest, true);
   // Only one node ran, but every session the loaded graph is bound to was used
   // by that run, so all of them must be protected from the next idle sweep.
@@ -635,7 +636,7 @@ test('answer refreshes the lastAccessAt of every bound session', async (t) => {
   const sessions = env.registry.list();
 
   clock.advance(1_000);
-  const triggered = await host.trigger('touch-answer', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'touch-answer', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
 
   clock.advance(2_000);
@@ -674,7 +675,7 @@ test('a failing touch does not change a trigger or answer result', async (t) => 
   );
   await host.loadGraph({ definition, bindings: allFresh(definition), project });
 
-  const triggered = await host.trigger('touch-failure', 'ask', text('waiting'));
+  const triggered = await triggerRun(host, 'touch-failure', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
   const token = hoverTokenOf(host, 'touch-failure', 'ask');
   const answered = await host.answer('touch-failure', 'ask', text('answered'), token);
@@ -708,8 +709,8 @@ test('onGuard is passed to the runtime and decides native approvals', async (t) 
   const definition = runnableForagerGraph('guard-decisions');
   await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
 
-  const allowed = await host.trigger('guard-decisions', 'only', text('one'));
-  const rejected = await host.trigger('guard-decisions', 'only', text('two'));
+  const allowed = await triggerRun(host, 'guard-decisions', 'only', text('one'));
+  const rejected = await triggerRun(host, 'guard-decisions', 'only', text('two'));
 
   assert.equal(allowed.rest, true);
   assert.equal(rejected.rest, true);
@@ -734,7 +735,7 @@ test('a native approval is rejected when no onGuard handler is configured', asyn
   const definition = runnableForagerGraph('guard-default');
   await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
 
-  const result = await host.trigger('guard-default', 'only', text('go'));
+  const result = await triggerRun(host, 'guard-default', 'only', text('go'));
 
   assert.equal(result.rest, true);
   assert.equal(result.hovered, false);

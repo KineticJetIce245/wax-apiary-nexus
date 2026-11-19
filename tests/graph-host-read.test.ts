@@ -61,6 +61,7 @@ import {
   userNode,
   userAndForagerGraph,
   runnableForagerGraph,
+  triggerRun,
 } from './support/graph-host-fixtures.js';
 
 
@@ -179,7 +180,7 @@ test('outputsOf snapshots one graph without touching residency or taking a lease
   // A loaded graph with no completed execution yet has an empty snapshot.
   assert.deepEqual([...host.outputsOf('output-graph')], []);
 
-  const triggered = await host.trigger('output-graph', 'zeta', text('z'));
+  const triggered = await triggerRun(host, 'output-graph', 'zeta', text('z'));
   assert.equal(triggered.rest, true);
   assert.deepEqual(promptsFor(env.adapter, 'native-1'), ['zeta z']);
   assert.equal(env.adapter.promptsByNative.has('native-2'), false);

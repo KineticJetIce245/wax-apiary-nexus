@@ -46,6 +46,7 @@ import {
   userNode,
   userAndForagerDefinition,
 } from './support/graph-host-persistence-fixtures.js';
+import { triggerRun } from './support/graph-host-fixtures.js';
 
 test('trigger flushes the field to Honey and reports persisted', async (t) => {
   const env = makeEnv();
@@ -73,7 +74,7 @@ test('trigger flushes the field to Honey and reports persisted', async (t) => {
   assert.equal(loaded.residency.nextEvictionAt, 1_000 + 30 * 60_000);
   assert.equal(Object.hasOwn(loaded, 'recovery'), false);
 
-  const result = await host.trigger('flush', 'only', text('one'));
+  const result = await triggerRun(host, 'flush', 'only', text('one'));
   assert.equal(result.rest, true);
   assert.equal(result.persisted, true);
   assert.equal(Object.hasOwn(result, 'persistError'), false);
@@ -106,7 +107,7 @@ test('unload and reload restore the field and continue the counter', async (t) =
   await host.loadGraph({ definition, bindings, project: env.project });
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2', 'native-3']);
 
-  const firstTrigger = await host.trigger('counter', 'start', text('first'));
+  const firstTrigger = await triggerRun(host, 'counter', 'start', text('first'));
   assert.equal(firstTrigger.rest, true);
   assert.equal(firstTrigger.persisted, true);
   assert.equal(counterCount(honey.load()), 1);
@@ -147,7 +148,7 @@ test('unload and reload restore the field and continue the counter', async (t) =
   // The restored field carries the counter state; a fresh runtime was not used.
   assert.equal(counterCount(runtimeOf(host, 'counter').exportField()), 1);
 
-  const secondTrigger = await host.trigger('counter', 'start', text('second'));
+  const secondTrigger = await triggerRun(host, 'counter', 'start', text('second'));
   assert.equal(secondTrigger.rest, true);
   assert.equal(secondTrigger.persisted, true);
   assert.equal(counterCount(honey.load()), 2);
@@ -183,7 +184,7 @@ test('unload retains fresh sessions and reload creates replacements', async (t) 
   assert.ok(first !== undefined);
   assert.equal(workspaceListenerCount(env.workspace), 1);
 
-  const result = await host.trigger('fresh', 'only', text('go'));
+  const result = await triggerRun(host, 'fresh', 'only', text('go'));
   assert.equal(result.rest, true);
   assert.equal(await host.unload('fresh'), true);
   // The first session is retained; the graph no longer routes to it.
@@ -230,7 +231,7 @@ test('a failed flush blocks unload and keeps sessions and routing open', async (
   });
   const sessionId = env.registry.list()[0]?.sessionId;
   assert.ok(sessionId !== undefined);
-  const triggered = await host.trigger('blocked', 'only', text('keep'));
+  const triggered = await triggerRun(host, 'blocked', 'only', text('keep'));
   assert.equal(triggered.persisted, true);
   assert.equal(workspaceListenerCount(env.workspace), 1);
 
@@ -287,7 +288,7 @@ test('a failed trigger flush is reported without replaying the trigger', async (
     project: env.project,
   });
 
-  const first = await host.trigger('trigger-fail', 'only', text('one'));
+  const first = await triggerRun(host, 'trigger-fail', 'only', text('one'));
   assert.equal(first.persisted, true);
   const firstSaved = honey.load();
   assert.equal(
@@ -297,7 +298,7 @@ test('a failed trigger flush is reported without replaying the trigger', async (
 
   clock.advance(1_000);
   honey.failSave = true;
-  const failed = await host.trigger('trigger-fail', 'only', text('two'));
+  const failed = await triggerRun(host, 'trigger-fail', 'only', text('two'));
   assert.equal(failed.rest, true);
   assert.equal(failed.persisted, false);
   assert.equal(failed.persistError, SAVE_ERROR);
@@ -316,7 +317,7 @@ test('a failed trigger flush is reported without replaying the trigger', async (
 
   honey.failSave = false;
   clock.advance(100);
-  const third = await host.trigger('trigger-fail', 'only', text('three'));
+  const third = await triggerRun(host, 'trigger-fail', 'only', text('three'));
   assert.equal(third.persisted, true);
   assert.equal(Object.hasOwn(third, 'persistError'), false);
   assert.deepEqual(env.adapter.allPrompts, ['run one', 'run two', 'run three']);
@@ -445,7 +446,7 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
     project: env.project,
     idleTtlMs: 100,
   });
-  const triggered = await host.trigger('sweep-counter', 'start', text('seed'));
+  const triggered = await triggerRun(host, 'sweep-counter', 'start', text('seed'));
   assert.equal(triggered.rest, true);
   assert.equal(triggered.persisted, true);
   assert.equal(counterCount(honey.load()), 1);
@@ -476,7 +477,7 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
   });
   assert.equal(counterCount(runtimeOf(host, 'sweep-counter').exportField()), 1);
 
-  const again = await host.trigger('sweep-counter', 'start', text('again'));
+  const again = await triggerRun(host, 'sweep-counter', 'start', text('again'));
   assert.equal(again.rest, true);
   assert.equal(again.persisted, true);
   assert.equal(counterCount(honey.load()), 2);
@@ -501,7 +502,7 @@ test('GraphHost.save flushes Honey without unloading and keeps memory on failure
     bindings: allFresh(definition),
     project: env.project,
   });
-  await host.trigger('save-only', 'only', text('before-save'));
+  await triggerRun(host, 'save-only', 'only', text('before-save'));
   const status = await host.save('save-only');
   assert.equal(status.graphId, 'save-only');
   assert.equal(host.statusOf('save-only')?.rest, true);

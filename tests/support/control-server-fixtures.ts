@@ -41,7 +41,7 @@ export interface TestEnv {
   readonly daemonDir: string;
 }
 
-interface RunningServer {
+export interface RunningServer {
   readonly server: ControlServer;
   readonly info: ControlServerInfo;
   readonly token: string;

@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
-import { GraphHost } from '../src/daemon/graph-host.js';
+import {
+  GraphHost,
+  isQueuedRun,
+  type GraphRunResult,
+} from '../src/daemon/graph-host.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import { HiveTemplateStore } from '../src/b/hive-template.js';
 import { LiveHiveStore } from '../src/b/live-hive.js';
@@ -17,6 +21,24 @@ import { HoneyStore } from '../src/storage/honey.js';
 import { RunStore } from '../src/storage/run-store.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
+
+/**
+ * Wake a fixture live whose sessions are unique per live. A queued handle here
+ * would hide the synchronous result the test asserts on.
+ */
+async function wakeNow(
+  service: LiveHiveService,
+  liveId: string,
+  beeId: string,
+  input: string,
+): Promise<GraphRunResult> {
+  const result = await service.wake(liveId, beeId, input);
+  assert.equal(isQueuedRun(result), false, 'fixture session should be free');
+  if (isQueuedRun(result)) {
+    throw new Error(`unexpected queued wake for '${liveId}/${beeId}'`);
+  }
+  return result;
+}
 
 interface Harness {
   readonly adapter: FakeAdapter;
@@ -105,7 +127,7 @@ test('LiveHiveService new/wake/save/unload/load round-trips one live', async (t)
   assert.equal(harness.host.statusOf('demo')?.rest, true);
   assert.equal(harness.service.read.list().find((entry) => entry.liveId === 'demo')?.state, 'loaded');
 
-  const woke = await harness.service.wake('demo', 'draft', 'hello');
+  const woke = await wakeNow(harness.service, 'demo', 'draft', 'hello');
   assert.equal(woke.graphId, 'demo');
   assert.equal(harness.host.statusOf('demo')?.rest, true);
   assert.equal(harness.service.read.output('demo').runId, woke.runId);
@@ -166,7 +188,10 @@ test('LiveHiveService compose/instantiate uses template defaults and creates ses
   const draft = harness.registry.list().find((record) => record.model === 'override-model');
   assert.ok(draft !== undefined);
   assert.equal(harness.host.statusOf('instantiated')?.rest, true);
-  assert.equal((await harness.service.wake('instantiated', 'draft', 'x')).graphId, 'instantiated');
+  assert.equal(
+    (await wakeNow(harness.service, 'instantiated', 'draft', 'x')).graphId,
+    'instantiated',
+  );
 });
 
 test('LiveHiveService migrate replaces structure explicitly without fork semantics', async (t) => {

@@ -38,9 +38,10 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M11 (committed in `3407942`)** makes guard expiry explicit: runtime expiry notifies the broker, late decisions return 409 `guard-expired`, and normal allow/reject/cancel is unchanged. The original generic 500 was not reproduced.
 - **M12a (committed in `1c0e06d`)** adds sanitized 500 error-class logging and guard stress/race tests. 145 guard rounds / ~430 decide requests saw zero guard 500s; the original 500 remains unreproduced.
 - **M12a2 (committed in `9be21d3`)** namespaces DSH approval requestIds by session and adds concurrent-session/extra-approval coverage. The reproduced 500 was an unhandled extra approval timing out in a test, not a load/broker race.
-- **M12b (uncommitted)** recovers stale catalog `loaded` entries on daemon startup and validates DSH graceful stop, SIGTERM/SIGKILL restart, pending-guard shutdown, and same-state recovery.
+- **M12b (committed in `047e03d`)** recovers stale catalog `loaded` entries on daemon startup and validates DSH graceful stop, SIGTERM/SIGKILL restart, pending-guard shutdown, and same-state recovery.
+- **M12c (uncommitted)** adds `npm run complexity` with a shrinking source/test baseline and splits `runtime/definition.ts` from 951 to 91 lines.
 - `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
-- The regression suite is 732 tests (731 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 14/14.
+- The regression suite is 740 tests (739 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 14/14. `npm run complexity` fails on new/growing source >500 or test >800; existing source violations are an exact shrinking baseline.
 
 ## Current commands
 

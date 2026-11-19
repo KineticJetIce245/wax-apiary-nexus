@@ -32,7 +32,7 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M10a** added `GET /lives`, `GET /lives/:id/output`, top-level `wax wake`/`wax answer`, `wax live list`, and a one-way composition importer.
 - **M10b1** added B `schedules` (`Schedule`, at/every), mapped through the codec so the scheduler survives the surface cut.
 - **M10b2** migrated surface coverage to `/lives` and B CLI, and fixed B unload/duplicate-load 409 mapping.
-- **M10c (committed in `c6af169`)** removes the legacy graph control surface and client commands. The HTTP API, CLI, tests and client now expose only `/lives`, `/templates`, `/dispatch`, `/guards` and `/sessions`.
+- **M10c (committed in `c6af169`)** removes the legacy graph control surface and client commands. The HTTP API, CLI, tests and client now expose only `/lives`, `/templates`, `/dispatch`, `/guards`, `/sessions` and (since M16b) `/queues`.
 - **M10d (committed in `83b3d4c`)** adds final B-only surface assertions: legacy routes 404, removed graph/trigger CLI commands are usage errors, and the real Codex+DSH B chain stays green.
 - **M10e (committed in `0e54524`)** closes review evidence gaps: dispatch session harness, guarded-wake RunStore record, two-live loaded/unloaded list, CLI save/load, POST legacy 404, and explicit evidence boundaries.
 - **M11 (committed in `3407942`)** makes guard expiry explicit: runtime expiry notifies the broker, late decisions return 409 `guard-expired`, and normal allow/reject/cancel is unchanged. The original generic 500 was not reproduced.
@@ -43,8 +43,11 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M13a (committed in `7a38d0e`)** maps cancelled executions to 409 `execution-cancelled`; failed/unknown stay 500.
 - **M13b (committed in `8ff7e4a`)** adds internal cancellation provenance: approval timer → 409 `approval-timeout`; other cancelled → 409 `execution-cancelled`; failed/unknown stay 500.
 - **M14 (committed in `16e4a83`)** adds the `wax guard list|decide` CLI and a real DSH guard CLI test.
+- **M15a (committed in `6ff2ce5`)** hardens the guard-expiry test waits against full-suite load: a 10 s budget, one socket per request, and wake-failure diagnostics. The assertions and the 500 ms guard timeout are unchanged.
+- **M16a (committed in `7a7217c`)** attributes each pending guard to its LiveHive, bee and session (`liveId` / `beeId` / `sessionId`). Unknown attribution is omitted from JSON and shown as `-` by the CLI, never invented.
+- **M16b (committed in `75ca84b`)** lets several loaded LiveHives share one explicit session: a wake that finds the session busy is queued (bounded FIFO) and returns a queue handle instead of 409 `session-busy`. The queue is in memory only; answers and dispatch are not queued.
 - `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
-- The regression suite is 764 tests (763 pass + 1 Windows skip); `npm run test:integration:dsh` is 16/16 and the full Codex+DSH integration suite is 28/28 (2026-11-19). `npm run complexity` fails on new/growing source >500 or test >800; existing source violations are an exact shrinking baseline.
+- The regression suite is 784 tests (783 pass + 1 Windows skip); `npm run test:integration:dsh` is 16/16 and the full Codex+DSH integration suite is 28/28 (re-run after M16b, 2026-11-19). `npm run complexity` fails on new/growing source >500 or test >800; existing source violations are an exact shrinking baseline.
 
 ## Current commands
 
@@ -79,6 +82,7 @@ POST /templates
 POST /dispatch
 GET  /guards
 POST /guard/decide
+GET  /queues/:queueId
 GET  /sessions
 POST /sessions/close
 POST /sessions/sweep
@@ -101,8 +105,8 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - Guard requests are not separate RunStore records; a guarded wake still produces one `trigger` run. The guard decision is part of that wake.
 - RunStore has 1000-record / 1 MiB defaults and is used by wake/answer.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
-- A second LiveHive binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
-- Real mixed Codex+DSH, scheduler, DSH guard, DSH session-busy, and full B LiveHive chain pass; full integration is 28/28 as of 2026-11-19 (22/22 before M13/M14 added cases). Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
+- Several loaded LiveHives may share one explicit session. A wake that finds the session busy is queued FIFO (16 waiting per session, 5 min wait): the response carries `queueId` / `position`, and `GET /queues/:queueId` reports `queued|running|completed|failed|timeout|dropped` plus the `runId` once it starts. The queue is in memory only, so a restarted daemon answers 404 for old queue ids and never replays queued work. `answer` and `dispatch` are not queued; `wax live wake` prints the queued handle as JSON.
+- Real mixed Codex+DSH, scheduler, DSH guard, shared-session queue, and full B LiveHive chain pass; full integration is 28/28 (re-run after M16b, 2026-11-19; 22/22 before M13/M14 added cases). Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
 - Guard expiry is now explicit: a late decision returns 409 `guard-expired`; normal allow/reject/cancel still works.
 - Guard allow/reject/cancel tests use a known marker to prove the side effect did or did not happen. They are guard/side-effect evidence, not Rule 9 unknown-answer evidence.
 - `mixed-harness-product` and `session-registry-multi-harness` are adapter/session-level evidence, not graph/daemon cross-harness evidence. `waxd-mixed-harness` is the graph-level proof.

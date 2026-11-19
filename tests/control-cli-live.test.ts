@@ -9,6 +9,7 @@ import { runLiveCli } from '../src/cli/live-cli.js';
 import { runTemplateCli } from '../src/cli/template-cli.js';
 import { runAnswerCli, runWakeCli } from '../src/cli/wake-cli.js';
 import type { LiveHive } from '../src/b/types.js';
+import { GraphBindingStore } from '../src/graph/binding-store.js';
 import { startServer, makeEnv } from './support/control-server-fixtures.js';
 import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
 
@@ -19,7 +20,10 @@ function writer(): { lines: string[]; write: (line: string) => void } {
 
 test('wax live/template/dispatch use one daemon endpoint', async (t) => {
   const env = makeEnv({ output: 'cli-output' });
-  const running = await startServer(env, { liveProject: env.project });
+  const running = await startServer(env, {
+    liveProject: env.project,
+    bindingStore: new GraphBindingStore(join(env.daemonDir, 'graph-bindings.json')),
+  });
   t.after(async () => {
     await running.server.stop();
     await env.workspace.stop();
@@ -103,6 +107,35 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     'demo',
   );
 
+  const migratedFile = join(directory, 'migrated.json');
+  const migratedLive: LiveHive = {
+    ...live,
+    liveId: 'demo',
+    bees: {
+      ...live.bees,
+      draft: {
+        ...live.bees['draft']!,
+        config: {
+          ...live.bees['draft']!.config,
+          prompt: 'draft migrated {{input}}',
+        },
+      },
+    },
+  };
+  writeFileSync(migratedFile, JSON.stringify(migratedLive), 'utf8');
+  const migrateOut = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'migrate', 'demo', migratedFile, '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: migrateOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(migrateOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'],
+    'demo',
+  );
+
   const wakeOut = writer();
   assert.equal(
     await runLiveCli(
@@ -130,7 +163,16 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
   );
 
   const templateFile = join(directory, 'template.json');
-  writeFileSync(templateFile, JSON.stringify(simpleTemplate()), 'utf8');
+  const template = simpleTemplate();
+  const cliTemplate = {
+    ...template,
+    defaults: {
+      draft: { harness: 'codex' },
+      review: { harness: 'codex' },
+      done: { harness: 'codex' },
+    },
+  };
+  writeFileSync(templateFile, JSON.stringify(cliTemplate), 'utf8');
   const composeOut = writer();
   assert.equal(
     await runTemplateCli(
@@ -155,6 +197,21 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
   assert.equal(
     ((JSON.parse(listOut.lines[0] ?? '{}') as Record<string, unknown>)['templates'] as unknown[]).length,
     1,
+  );
+
+  const instantiateOut = writer();
+  const instantiateErr = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'instantiate', 'starter', 'instantiated', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: instantiateOut.write, stderr: instantiateErr.write },
+    ),
+    0,
+    instantiateErr.lines.join('\n'),
+  );
+  assert.equal(
+    (JSON.parse(instantiateOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'],
+    'instantiated',
   );
 
   const dispatchOut = writer();

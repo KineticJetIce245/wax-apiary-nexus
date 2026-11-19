@@ -210,7 +210,7 @@ test(
         const removed = await request(info, token, 'GET', removedPath);
         assert.equal(removed.status, 404, removedPath);
       }
-      for (const removedPath of ['/graphs/load', '/graphs/trigger']) {
+      for (const removedPath of ['/graphs/load', '/graphs/trigger', '/graphs/unload']) {
         const removed = await request(info, token, 'POST', removedPath, {});
         assert.equal(removed.status, 404, `POST ${removedPath}`);
       }

@@ -9,7 +9,7 @@ import {
   type RunningServer,
   type TestEnv,
 } from './support/control-server-fixtures.js';
-import { getJson, liveFrom, postJson } from './support/control-server-http.js';
+import { getJson, liveFrom, postJson, readResponse } from './support/control-server-http.js';
 
 const PROMPT_SECRET = 'M16B-PROMPT-SECRET';
 const INPUT_A = 'alpha';
@@ -33,6 +33,8 @@ interface QueueEnv {
   readonly sessionId: string;
   wake(liveId: string, input: string): ReturnType<typeof postJson>;
   queue(queueId: string): ReturnType<typeof getJson>;
+  createSession(): Promise<string>;
+  loadWithSession(liveId: string, prompt: string, sessionId: string): Promise<void>;
 }
 
 interface QueueEnvOptions {
@@ -45,19 +47,26 @@ async function setup(options: QueueEnvOptions = {}): Promise<QueueEnv> {
   const env = makeEnvWithAdapter(adapter);
   const running = await startServer(env, { liveProject: env.project });
   const session = await env.registry.create(env.project, { harness: 'codex' });
-  const bindings = { only: { kind: 'session', sessionId: session.sessionId } };
-  const load = async (liveId: string, prompt: string): Promise<void> => {
+  const loadWithSession = async (
+    liveId: string,
+    prompt: string,
+    sessionId: string,
+  ): Promise<void> => {
+    const bindings = { only: { kind: 'session', sessionId } };
     const live = liveFrom(definition(liveId, prompt), bindings, liveId);
     const response = await postJson(running.info.url, running.token, '/lives', { live });
     assert.equal(response.status, 200, response.text);
   };
-  await load('first', options.promptA ?? `${PROMPT_SECRET} A:{{input}}`);
-  await load('second', options.promptB ?? `${PROMPT_SECRET} B:{{input}}`);
+  await loadWithSession('first', options.promptA ?? `${PROMPT_SECRET} A:{{input}}`, session.sessionId);
+  await loadWithSession('second', options.promptB ?? `${PROMPT_SECRET} B:{{input}}`, session.sessionId);
   return {
     adapter,
     env,
     running,
     sessionId: session.sessionId,
+    createSession: async () =>
+      (await env.registry.create(env.project, { harness: 'codex' })).sessionId,
+    loadWithSession,
     wake: (liveId, input) =>
       postJson(running.info.url, running.token, '/lives/wake', {
         liveId,
@@ -208,6 +217,193 @@ test('a busy shared session answers 200 queued and both output records stay sepa
   );
 });
 
+test('queue reads require the bearer token, are GET-only, and reject unknown ids', async (t) => {
+  const context = await setup();
+  t.after(stopCleanly(context));
+
+  const anonymous = await readResponse(
+    await fetch(`${context.running.info.url}/queues/whatever`),
+  );
+  assert.equal(anonymous.status, 401, anonymous.text);
+  assert.equal(anonymous.body?.['code'], 'unauthorized');
+
+  const wrongToken = await readResponse(
+    await fetch(`${context.running.info.url}/queues/whatever`, {
+      headers: { authorization: 'Bearer not-the-daemon-token' },
+    }),
+  );
+  assert.equal(wrongToken.status, 401, wrongToken.text);
+  assert.equal(wrongToken.body?.['code'], 'unauthorized');
+
+  const posted = await postJson(
+    context.running.info.url,
+    context.running.token,
+    '/queues/whatever',
+    {},
+  );
+  assert.equal(posted.status, 405, posted.text);
+  assert.equal(posted.body?.['code'], 'method-not-allowed');
+  assert.equal(posted.headers.get('allow'), 'GET');
+
+  const missing = await context.queue('no-such-queue');
+  assert.equal(missing.status, 404, missing.text);
+  assert.equal(missing.body?.['code'], 'not-found');
+  assert.equal(missing.body?.['error'], 'unknown queue item');
+});
+
+test('a full session queue does not block another session on the same daemon', async (t) => {
+  const context = await setup();
+  t.after(stopCleanly(context));
+  const otherSessionId = await context.createSession();
+  await context.loadWithSession('third', `${PROMPT_SECRET} C:{{input}}`, otherSessionId);
+
+  const firstWake = context.wake('first', 'hold');
+  await waitHeld(context.adapter, 1);
+  const queueIds: string[] = [];
+  for (let index = 0; index < 16; index += 1) {
+    const queued = await context.wake('first', `wait-${String(index)}`);
+    assert.equal(queued.status, 200, queued.text);
+    assert.equal(queued.body?.['status'], 'queued');
+    queueIds.push(String(queued.body?.['queueId']));
+  }
+
+  const overflow = await context.wake('first', 'overflow');
+  assert.equal(overflow.status, 429, overflow.text);
+  assert.equal(overflow.body?.['code'], 'queue-full');
+
+  // live 'second' shares session-1, so it sees the same capacity limit.
+  const sameSession = await context.wake('second', 'overflow-second');
+  assert.equal(sameSession.status, 429, sameSession.text);
+  assert.equal(sameSession.body?.['code'], 'queue-full');
+
+  // live 'third' holds a different session and must run right away.
+  const isolatedWake = context.wake('third', 'isolated');
+  await waitHeld(context.adapter, 2);
+  context.adapter.finishNext();
+  assert.equal((await firstWake).status, 200);
+  context.adapter.finishNext();
+  const isolated = await isolatedWake;
+  assert.equal(isolated.status, 200, isolated.text);
+  assert.equal(isolated.body?.['status'], undefined);
+  assert.equal(isolated.body?.['result']?.['graphId'], 'third');
+  assert.equal(typeof isolated.body?.['result']?.['runId'], 'string');
+
+  const promoted = await waitQueueStatus(context, queueIds[0]!, 'running');
+  assert.equal(promoted['position'], undefined);
+  const last = await context.queue(queueIds[15]!);
+  assert.equal(last.body?.['queue']?.['sessionId'], context.sessionId);
+  assert.equal(last.body?.['queue']?.['status'], 'queued');
+  assert.equal(last.body?.['queue']?.['position'], 15);
+});
+
+test('three live hives on one session run in FIFO order', async (t) => {
+  const context = await setup();
+  t.after(stopCleanly(context));
+  await context.loadWithSession('third', `${PROMPT_SECRET} C:{{input}}`, context.sessionId);
+
+  const firstWake = context.wake('first', INPUT_A);
+  await waitHeld(context.adapter, 1);
+  const secondWake = await context.wake('second', INPUT_B);
+  assert.equal(secondWake.status, 200, secondWake.text);
+  assert.equal(secondWake.body?.['status'], 'queued');
+  assert.equal(secondWake.body?.['position'], 1);
+  const secondQueueId = String(secondWake.body?.['queueId']);
+
+  const thirdWake = await context.wake('third', 'gamma');
+  assert.equal(thirdWake.status, 200, thirdWake.text);
+  assert.equal(thirdWake.body?.['status'], 'queued');
+  assert.equal(thirdWake.body?.['position'], 2);
+  const thirdQueueId = String(thirdWake.body?.['queueId']);
+
+  const secondQueued = await waitQueueStatus(context, secondQueueId, 'queued');
+  assert.equal(secondQueued['liveId'], 'second');
+  assert.equal(secondQueued['position'], 1);
+  const thirdQueued = await waitQueueStatus(context, thirdQueueId, 'queued');
+  assert.equal(thirdQueued['liveId'], 'third');
+  assert.equal(thirdQueued['position'], 2);
+
+  context.adapter.finishNext();
+  const firstDone = await firstWake;
+  assert.equal(firstDone.status, 200, firstDone.text);
+  const firstRunId = String(firstDone.body?.['result']?.['runId']);
+
+  await waitHeld(context.adapter, 1);
+  const secondRunning = await waitQueueStatus(context, secondQueueId, 'running');
+  assert.equal(secondRunning['position'], undefined);
+  const thirdWaiting = await context.queue(thirdQueueId);
+  assert.equal(thirdWaiting.body?.['queue']?.['status'], 'queued');
+  assert.equal(thirdWaiting.body?.['queue']?.['position'], 1);
+
+  context.adapter.finishNext();
+  const secondCompleted = await waitQueueStatus(context, secondQueueId, 'completed');
+  const secondRunId = String(secondCompleted['runId']);
+
+  await waitHeld(context.adapter, 1);
+  const thirdRunning = await waitQueueStatus(context, thirdQueueId, 'running');
+  assert.equal(thirdRunning['position'], undefined);
+  context.adapter.finishNext();
+  const thirdCompleted = await waitQueueStatus(context, thirdQueueId, 'completed');
+  const thirdRunId = String(thirdCompleted['runId']);
+  assert.notEqual(secondRunId, firstRunId);
+  assert.notEqual(thirdRunId, secondRunId);
+  assert.notEqual(thirdRunId, firstRunId);
+
+  const firstOutput = await getJson(
+    context.running.info.url,
+    context.running.token,
+    `/lives/first/output?runId=${encodeURIComponent(firstRunId)}`,
+  );
+  assert.equal(firstOutput.status, 200, firstOutput.text);
+  assert.equal(firstOutput.body?.['liveId'], 'first');
+  assert.equal(
+    firstOutput.body?.['outputs']?.[0]?.value?.text,
+    `echo:${PROMPT_SECRET} A:${INPUT_A}`,
+  );
+  const secondOutput = await getJson(
+    context.running.info.url,
+    context.running.token,
+    `/lives/second/output?runId=${encodeURIComponent(secondRunId)}`,
+  );
+  assert.equal(secondOutput.status, 200, secondOutput.text);
+  assert.equal(secondOutput.body?.['liveId'], 'second');
+  assert.equal(
+    secondOutput.body?.['outputs']?.[0]?.value?.text,
+    `echo:${PROMPT_SECRET} B:${INPUT_B}`,
+  );
+  const thirdOutput = await getJson(
+    context.running.info.url,
+    context.running.token,
+    `/lives/third/output?runId=${encodeURIComponent(thirdRunId)}`,
+  );
+  assert.equal(thirdOutput.status, 200, thirdOutput.text);
+  assert.equal(thirdOutput.body?.['liveId'], 'third');
+  assert.equal(
+    thirdOutput.body?.['outputs']?.[0]?.value?.text,
+    `echo:${PROMPT_SECRET} C:gamma`,
+  );
+
+  // Durable run records, not the fake's prompt list, prove the serial order.
+  const secondStartedAt = Date.parse(String(secondOutput.body?.['startedAt']));
+  const thirdStartedAt = Date.parse(String(thirdOutput.body?.['startedAt']));
+  assert.ok(
+    secondStartedAt >= Date.parse(String(firstOutput.body?.['finishedAt'])),
+    'the second run must not start before the first run finished',
+  );
+  assert.ok(
+    thirdStartedAt >= Date.parse(String(secondOutput.body?.['finishedAt'])),
+    'the third run must not start before the second run finished',
+  );
+
+  for (const liveId of ['first', 'second', 'third']) {
+    assert.equal(
+      (await postJson(context.running.info.url, context.running.token, '/lives/unload', {
+        liveId,
+      })).status,
+      200,
+    );
+  }
+});
+
 test('a full queue answers 429 queue-full', async (t) => {
   const context = await setup();
   t.after(stopCleanly(context));
@@ -302,9 +498,15 @@ test('a queue id does not survive a daemon restart', async (t) => {
   const queued = await context.wake('second', INPUT_B);
   assert.equal(queued.body?.['status'], 'queued');
   const queueId = String(queued.body?.['queueId']);
+  const promptsBeforeRestart = context.adapter.prompts.length;
+  assert.equal(promptsBeforeRestart, 1);
 
   await context.running.server.stop();
   await firstWake.catch(() => undefined);
+  // A daemon that promoted or replayed the waiting item would submit a second
+  // native prompt; the in-memory queue must drop it instead.
+  await delay(50);
+  assert.equal(context.adapter.prompts.length, promptsBeforeRestart);
 
   restarted = await startServer(context.env, { liveProject: context.env.project });
   const afterRestart = await getJson(
@@ -314,4 +516,7 @@ test('a queue id does not survive a daemon restart', async (t) => {
   );
   assert.equal(afterRestart.status, 404, afterRestart.text);
   assert.equal(afterRestart.body?.['code'], 'not-found');
+  // Recovery must not replay the side-effecting queued job either.
+  await delay(50);
+  assert.equal(context.adapter.prompts.length, promptsBeforeRestart);
 });

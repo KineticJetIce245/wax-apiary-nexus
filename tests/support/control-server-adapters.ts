@@ -1,4 +1,9 @@
-import type { ConversationOptions } from '../../src/adapters/harness.js';
+import type {
+  ApprovalDecision,
+  ApprovalOption,
+  ApprovalRequest,
+  ConversationOptions,
+} from '../../src/adapters/harness.js';
 import type { Project } from '../../src/project/kernel.js';
 import {
   SessionRegistry,
@@ -120,6 +125,80 @@ export class SteppedFakeAdapter extends TrackingFakeAdapter {
 export class FailingCloseFakeAdapter extends FakeAdapter {
   override async closeConversation(_nativeId: string): Promise<void> {
     throw new Error('native close failed: NATIVE_CLOSE_SECRET');
+  }
+}
+
+const GUARD_OPTIONS: readonly ApprovalOption[] = [
+  { id: 'accept', kind: 'allow_once', label: 'Allow once' },
+  { id: 'decline', kind: 'reject_once', label: 'Reject' },
+];
+
+interface ParkedGuardRun {
+  readonly executionId: string;
+  readonly requestId: string;
+  readonly text: string;
+}
+
+/**
+ * FakeAdapter that parks every submission behind an interactive approval and
+ * only emits its prompt-derived output once the guard is decided.
+ *
+ * The session stays busy from submit until the decision, so a second wake on
+ * the same session is queued instead of racing the first. Deriving the output
+ * from the rendered prompt lets a guard+queue test prove two LiveHives' outputs
+ * did not cross.
+ */
+export class GuardedEchoAdapter extends FakeAdapter {
+  private readonly outputPrefix: string;
+  private readonly parked: ParkedGuardRun[] = [];
+
+  constructor(options: { readonly outputPrefix?: string } = {}) {
+    super();
+    this.outputPrefix = options.outputPrefix ?? 'guarded:';
+  }
+
+  override async submit(
+    _nativeId: string,
+    executionId: string,
+    text: string,
+  ): Promise<void> {
+    this.prompts.push(text);
+    const request: ApprovalRequest = {
+      requestId: `req-${executionId}`,
+      executionId,
+      summary: 'run a command',
+      options: GUARD_OPTIONS,
+    };
+    this.parked.push({ executionId, requestId: request.requestId, text });
+    setTimeout(() => {
+      this.emit({ type: 'execution/started', executionId });
+      this.emit({ type: 'execution/approval-requested', executionId, request });
+    }, 0);
+  }
+
+  override async respondToApproval(decision: ApprovalDecision): Promise<void> {
+    this.approvals.push(decision);
+    const index = this.parked.findIndex((run) => run.requestId === decision.requestId);
+    if (index === -1) {
+      throw new Error(`Unknown approval request: ${decision.requestId}`);
+    }
+    const [run] = this.parked.splice(index, 1);
+    if (run === undefined) {
+      return;
+    }
+    setTimeout(() => {
+      this.emit({
+        type: 'execution/output',
+        executionId: run.executionId,
+        channel: 'assistant',
+        text: `${this.outputPrefix}${run.text}`,
+      });
+      this.emit({
+        type: 'execution/completed',
+        executionId: run.executionId,
+        stopReason: 'end_turn',
+      });
+    }, 0);
   }
 }
 

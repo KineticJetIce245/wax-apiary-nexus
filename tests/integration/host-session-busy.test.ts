@@ -29,7 +29,7 @@ const integrationOptions = {
 };
 
 // An unknown-answer constraint: the test never knows which integer the model
-// will pick, it only proves that the two runs produced valid, distinct runs.
+// will pick, it only proves that the three runs produced valid, distinct runs.
 const RANDOM_INTEGER_PROMPT =
   'Pick a random integer from 100 through 999. ' +
   'Do not use any tools. Reply with only the integer.';
@@ -54,7 +54,7 @@ interface HttpResult {
 }
 
 test(
-  'real DSH: two loaded LiveHives share one session and queue the second wake',
+  'real DSH: three loaded LiveHives share one session and queue the second and third wake',
   integrationOptions,
   async (t) => {
     if (dshRoot === undefined) {
@@ -111,40 +111,70 @@ test(
         return request('POST', '/lives', { live, project });
       };
 
-      // Both loaded LiveHives hold the same explicit session; neither is busy
-      // yet, so both loads are accepted.
+      // All three loaded LiveHives hold the same explicit session; none is busy
+      // yet, so every load is accepted.
       assert.equal((await load('first')).status, 200);
       assert.equal((await load('second')).status, 200);
+      assert.equal((await load('third')).status, 200);
 
       const firstWake = request('POST', '/lives/wake', {
         liveId: 'first',
         beeId: 'only',
         input: 'first run',
       });
+      // A later assertion failure must not leave this request rejection
+      // unhandled while the test tears the server down.
+      void firstWake.catch(() => undefined);
       await waitForSessionBusy(request, session.sessionId);
 
-      const queued = await request('POST', '/lives/wake', {
+      const secondQueued = await request('POST', '/lives/wake', {
         liveId: 'second',
         beeId: 'only',
         input: 'second run',
       });
-      assert.equal(queued.status, 200, JSON.stringify(queued.body));
-      assert.equal(queued.body['ok'], true);
-      assert.equal(queued.body['status'], 'queued');
-      assert.equal(typeof queued.body['queueId'], 'string');
-      assert.equal(typeof queued.body['position'], 'number');
-      const queueId = String(queued.body['queueId']);
+      assert.equal(secondQueued.status, 200, JSON.stringify(secondQueued.body));
+      assert.equal(secondQueued.body['ok'], true);
+      assert.equal(secondQueued.body['status'], 'queued');
+      assert.equal(secondQueued.body['position'], 1);
+      const secondQueueId = String(secondQueued.body['queueId']);
+
+      const thirdQueued = await request('POST', '/lives/wake', {
+        liveId: 'third',
+        beeId: 'only',
+        input: 'third run',
+      });
+      assert.equal(thirdQueued.status, 200, JSON.stringify(thirdQueued.body));
+      assert.equal(thirdQueued.body['status'], 'queued');
+      assert.equal(thirdQueued.body['position'], 2);
+      const thirdQueueId = String(thirdQueued.body['queueId']);
 
       const firstDone = await firstWake;
       assert.equal(firstDone.status, 200, JSON.stringify(firstDone.body));
       const firstRunId = String(firstDone.body['result']?.['runId']);
       assert.ok(firstRunId.length > 0);
 
-      const completed = await waitForQueueStatus(request, queueId, 'completed');
-      const secondRunId = String(completed['runId']);
-      assert.equal(completed['liveId'], 'second');
-      assert.equal(completed['sessionId'], session.sessionId);
+      // Advancing the first run promotes the second and moves the third up to
+      // position 1; that position is stable until the second run finishes.
+      await waitForQueuePosition(request, thirdQueueId, 1);
+      const secondRunning = await queueView(request, secondQueueId);
+      assert.equal(secondRunning['status'], 'running');
+      assert.equal(secondRunning['liveId'], 'second');
+      const thirdWaiting = await queueView(request, thirdQueueId);
+      assert.equal(thirdWaiting['status'], 'queued');
+      assert.equal(thirdWaiting['position'], 1);
+
+      const secondCompleted = await waitForQueueStatus(request, secondQueueId, 'completed');
+      const secondRunId = String(secondCompleted['runId']);
+      assert.equal(secondCompleted['liveId'], 'second');
+      assert.equal(secondCompleted['sessionId'], session.sessionId);
       assert.notEqual(secondRunId, firstRunId);
+
+      const thirdCompleted = await waitForQueueStatus(request, thirdQueueId, 'completed');
+      const thirdRunId = String(thirdCompleted['runId']);
+      assert.equal(thirdCompleted['liveId'], 'third');
+      assert.equal(thirdCompleted['sessionId'], session.sessionId);
+      assert.notEqual(thirdRunId, firstRunId);
+      assert.notEqual(thirdRunId, secondRunId);
 
       const firstOutput = await request(
         'GET',
@@ -167,34 +197,50 @@ test(
       const secondNumber = Number(secondText);
       assert.ok(secondNumber >= 100 && secondNumber <= 999);
 
-      // Serialization evidence: the queued run could not start before the
-      // first run's durable record was closed.
+      const thirdOutput = await request(
+        'GET',
+        `/lives/third/output?runId=${encodeURIComponent(thirdRunId)}`,
+      );
+      assert.equal(thirdOutput.status, 200, JSON.stringify(thirdOutput.body));
+      assert.equal(thirdOutput.body['liveId'], 'third');
+      const thirdText = outputText(thirdOutput.body);
+      assert.match(thirdText, /^\d{3}$/, `third output: ${thirdText}`);
+      const thirdNumber = Number(thirdText);
+      assert.ok(thirdNumber >= 100 && thirdNumber <= 999);
+
+      // Serialization evidence: each queued run could not start before the run
+      // in front of it closed its durable record.
       assert.ok(
         Date.parse(String(secondOutput.body['startedAt'])) >=
           Date.parse(String(firstOutput.body['finishedAt'])),
-        'the queued run must not start before the first run finished',
+        'the second run must not start before the first run finished',
+      );
+      assert.ok(
+        Date.parse(String(thirdOutput.body['startedAt'])) >=
+          Date.parse(String(secondOutput.body['finishedAt'])),
+        'the third run must not start before the second run finished',
       );
 
       // A run id belongs to exactly one LiveHive.
       const crossed = await request(
         'GET',
-        `/lives/first/output?runId=${encodeURIComponent(secondRunId)}`,
+        `/lives/first/output?runId=${encodeURIComponent(thirdRunId)}`,
       );
       assert.equal(crossed.status, 404);
 
-      assert.equal(
-        (await request('POST', '/lives/unload', { liveId: 'first' })).status,
-        200,
-      );
-      assert.equal(
-        (await request('POST', '/lives/unload', { liveId: 'second' })).status,
-        200,
-      );
+      for (const liveId of ['first', 'second', 'third']) {
+        assert.equal(
+          (await request('POST', '/lives/unload', { liveId })).status,
+          200,
+        );
+      }
 
       t.diagnostic(
-        `observed: shared session queued second wake; ` +
+        `observed: shared session queued two wakes; ` +
           `first=${firstText} (run ${firstRunId.slice(0, 8)}), ` +
-          `second=${secondText} (run ${secondRunId.slice(0, 8)}), queue=${queueId.slice(0, 8)}`,
+          `second=${secondText} (run ${secondRunId.slice(0, 8)}), ` +
+          `third=${thirdText} (run ${thirdRunId.slice(0, 8)}), ` +
+          `queues=${secondQueueId.slice(0, 8)}/${thirdQueueId.slice(0, 8)}`,
       );
     } finally {
       await server.stop().catch(() => undefined);
@@ -228,6 +274,36 @@ async function waitForSessionBusy(
     await delay(25);
   }
   assert.fail('the first real DSH execution never reported the session busy');
+}
+
+async function queueView(
+  request: (method: 'GET' | 'POST', path: string, body?: unknown) => Promise<HttpResult>,
+  queueId: string,
+): Promise<Record<string, any>> {
+  const queued = await request('GET', `/queues/${encodeURIComponent(queueId)}`);
+  assert.equal(queued.status, 200, JSON.stringify(queued.body));
+  return queued.body['queue'] as Record<string, any>;
+}
+
+async function waitForQueuePosition(
+  request: (method: 'GET' | 'POST', path: string, body?: unknown) => Promise<HttpResult>,
+  queueId: string,
+  position: number,
+): Promise<void> {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const view = await queueView(request, queueId);
+    if (view['status'] === 'queued' && view['position'] === position) {
+      return;
+    }
+    assert.equal(
+      view['status'] === 'failed' || view['status'] === 'timeout' || view['status'] === 'dropped',
+      false,
+      `queued run settled as ${String(view['status'])}`,
+    );
+    await delay(100);
+  }
+  assert.fail(`queue item never reached position ${String(position)}`);
 }
 
 async function waitForQueueStatus(

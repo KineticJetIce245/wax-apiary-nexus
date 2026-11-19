@@ -98,5 +98,6 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - Guard allow/reject/cancel tests use a known marker to prove the side effect did or did not happen. They are guard/side-effect evidence, not Rule 9 unknown-answer evidence.
 - `mixed-harness-product` and `session-registry-multi-harness` are adapter/session-level evidence, not graph/daemon cross-harness evidence. `waxd-mixed-harness` is the graph-level proof.
 - `rg '/graphs|/catalog|wax graph|wax trigger' src README.md` is 0; `tests/` intentionally contains negative assertions for the removed surface, so a literal repo-wide zero is not the acceptance rule.
+- While the Codex quota is restricted, use `npm run test:integration:dsh` (10 DSH-only tests) instead of the full 22-test integration. Codex-dependent coverage is deferred, not passed.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

@@ -9,7 +9,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
-import { bWake, liveFrom } from './support/control-server-http.js';
+import { bOutput, bWake, liveFrom } from './support/control-server-http.js';
 
 interface Env {
   readonly adapter: FakeAdapter;
@@ -220,6 +220,16 @@ test('a pending native approval is listed and allowed through the broker', async
   assert.equal(trigger.body?.['result']?.['rest'], true);
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['allow_once']);
   assert.equal((await get(running, '/guards'))['guards'].length, 0);
+
+  // Guard is a wake modifier, not a separate RunOperation: the guarded wake
+  // must still leave a durable trigger run with the output.
+  const run = await bOutput(running.url, running.token, 'guarded');
+  assert.equal(run.status, 200);
+  assert.equal(run.body?.['operation'], 'trigger');
+  assert.equal(typeof run.body?.['runId'], 'string');
+  assert.deepEqual(run.body?.['outputs'], [
+    { nodeId: 'only', value: { kind: 'text', text: 'approved' } },
+  ]);
 
   // A second decision for the same request is a conflict, not a re-open.
   const duplicate = await post(running, '/guard/decide', {

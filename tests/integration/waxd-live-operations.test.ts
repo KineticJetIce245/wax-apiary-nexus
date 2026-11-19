@@ -210,7 +210,11 @@ test(
         const removed = await request(info, token, 'GET', removedPath);
         assert.equal(removed.status, 404, removedPath);
       }
-      t.diagnostic('legacy graph/catalog/status/trigger routes are 404');
+      for (const removedPath of ['/graphs/load', '/graphs/trigger']) {
+        const removed = await request(info, token, 'POST', removedPath, {});
+        assert.equal(removed.status, 404, `POST ${removedPath}`);
+      }
+      t.diagnostic('legacy graph/catalog/status/trigger routes are 404 for GET and POST');
 
       const composed = await request(info, token, 'POST', '/templates', {
         template: template(),
@@ -405,7 +409,12 @@ test(
       assert.match(dispatchOutput, /^\d{6}$/);
       assert.ok(Number(dispatchOutput) >= 100000 && Number(dispatchOutput) <= 999999);
       assert.equal(typeof dispatched.body['sessionId'], 'string');
-      t.diagnostic(`observed dispatch: dsh=${dispatchOutput} (100000..999999)`);
+      const dispatchSessionId = String(dispatched.body['sessionId']);
+      const sessionsAfterDispatch = await request(info, token, 'GET', '/sessions');
+      const dispatchSession = (sessionsAfterDispatch.body['sessions'] as Record<string, unknown>[])
+        .find((session) => session['sessionId'] === dispatchSessionId);
+      assert.equal(dispatchSession?.['harness'], 'dsh');
+      t.diagnostic(`observed dispatch: dsh=${dispatchOutput} (100000..999999), session harness=dsh`);
 
       const finalUnload = await request(info, token, 'POST', '/lives/unload', {
         liveId: 'm9j-live',

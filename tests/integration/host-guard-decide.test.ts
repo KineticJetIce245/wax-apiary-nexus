@@ -371,7 +371,13 @@ test(
         readFileSync(join(project.directory, 'approved-guard.txt'), 'utf8'),
         marker,
       );
-      t.diagnostic('observed: real DSH approval allowed once and the tool wrote the marker file');
+      const run = await request('GET', '/lives/native-guard/output');
+      assert.equal(run.status, 200);
+      assert.equal(run.body['operation'], 'trigger');
+      assert.equal(typeof run.body['runId'], 'string');
+      t.diagnostic(
+        `observed: real DSH approval allowed once; marker written; run=${String(run.body['runId'])}`,
+      );
     } finally {
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);

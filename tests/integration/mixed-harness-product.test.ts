@@ -1,3 +1,6 @@
+// Adapter/session-level test: real Codex + DSH sessions through one
+// AdapterPool/SessionRegistry, not a graph/daemon/WAX routing test. The real
+// cross-harness LiveHive path is covered by waxd-mixed-harness.test.ts.
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -153,21 +153,37 @@ test('GET /lives exposes loaded and unloaded identities from the durable catalog
   const loaded = await bLoad(running.url, running.token, loadBody(env));
   assert.equal(loaded.status, 200);
 
+  const second = await bLoad(running.url, running.token, {
+    definition: definition('second'),
+    bindings: { only: { kind: 'fresh' } },
+    project: env.project,
+  });
+  assert.equal(second.status, 200);
+
   const listResponse = await bList(running.url, running.token);
   assert.equal(listResponse.status, 200);
   const entries = listResponse.body?.['lives'] as Record<string, unknown>[];
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.['liveId'], 'live');
-  assert.equal(entries[0]?.['state'], 'loaded');
-  assert.deepEqual(Object.keys(entries[0] ?? {}).sort(), ['catalog', 'liveId', 'state', 'status']);
+  assert.equal(entries.length, 2);
+  const loadedById = new Map(entries.map((entry) => [entry['liveId'], entry]));
+  assert.equal(loadedById.get('live')?.['state'], 'loaded');
+  assert.equal(loadedById.get('second')?.['state'], 'loaded');
+  assert.deepEqual(Object.keys(loadedById.get('live') ?? {}).sort(), [
+    'catalog',
+    'liveId',
+    'state',
+    'status',
+  ]);
 
   const unloaded = await bUnload(running.url, running.token, 'live');
   assert.equal(unloaded.status, 200);
   const after = await bList(running.url, running.token);
   const afterEntries = after.body?.['lives'] as Record<string, unknown>[];
-  assert.equal(afterEntries[0]?.['state'], 'unloaded');
+  const afterById = new Map(afterEntries.map((entry) => [entry['liveId'], entry]));
+  assert.equal(afterEntries.length, 2);
+  assert.equal(afterById.get('live')?.['state'], 'unloaded');
+  assert.equal(afterById.get('second')?.['state'], 'loaded');
   assert.equal(
-    (afterEntries[0]?.['catalog'] as Record<string, unknown>)?.['lastUnloadReason'],
+    (afterById.get('live')?.['catalog'] as Record<string, unknown>)?.['lastUnloadReason'],
     'unload',
   );
 

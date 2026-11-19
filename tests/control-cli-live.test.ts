@@ -64,6 +64,45 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     'loaded',
   );
 
+  const saveOut = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'save', 'demo', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: saveOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(saveOut.lines[0] ?? '{}') as Record<string, unknown>)['graphId'],
+    'demo',
+  );
+
+  const unloadOut = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'unload', 'demo', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: unloadOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(unloadOut.lines[0] ?? '{}') as Record<string, unknown>)['unloaded'],
+    true,
+  );
+
+  const loadOut = writer();
+  assert.equal(
+    await runLiveCli(
+      ['live', 'load', 'demo', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: loadOut.write, stderr: writer().write },
+    ),
+    0,
+  );
+  assert.equal(
+    (JSON.parse(loadOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'],
+    'demo',
+  );
+
   const wakeOut = writer();
   assert.equal(
     await runLiveCli(

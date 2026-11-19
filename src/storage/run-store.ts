@@ -3,6 +3,10 @@ import { join } from 'node:path';
 
 import { atomicWriteJson } from './atomic-write.js';
 
+/**
+ * A guarded wake is still one `trigger` run; guard decisions are part of that
+ * wake, not a separate RunOperation. `answer` is the other operation.
+ */
 export type RunOperation = 'trigger' | 'answer';
 export type RunStatus = 'completed' | 'hovered' | 'incomplete' | 'failed' | 'cancelled';
 

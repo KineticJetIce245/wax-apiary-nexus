@@ -457,7 +457,8 @@ export class DshAcpAdapter implements HarnessAdapter {
     if (options.length === 0) {
       return Promise.resolve(cancelledPermissionOutcome());
     }
-    const requestId = String(request.id);
+    // ACP request ids are connection-scoped; two DSH processes both start at 0.
+    const requestId = `${active.sessionId}:${String(request.id)}`;
     if (this.pendingApprovals.has(requestId)) {
       return Promise.resolve(cancelledPermissionOutcome());
     }

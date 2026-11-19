@@ -36,9 +36,10 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M10d (committed in `83b3d4c`)** adds final B-only surface assertions: legacy routes 404, removed graph/trigger CLI commands are usage errors, and the real Codex+DSH B chain stays green.
 - **M10e (committed in `0e54524`)** closes review evidence gaps: dispatch session harness, guarded-wake RunStore record, two-live loaded/unloaded list, CLI save/load, POST legacy 404, and explicit evidence boundaries.
 - **M11 (committed in `3407942`)** makes guard expiry explicit: runtime expiry notifies the broker, late decisions return 409 `guard-expired`, and normal allow/reject/cancel is unchanged. The original generic 500 was not reproduced.
-- **M12a (uncommitted)** adds sanitized 500 error-class logging and guard stress/race tests. 145 guard rounds / ~430 decide requests saw zero guard 500s; the original 500 remains unreproduced.
+- **M12a (committed in `1c0e06d`)** adds sanitized 500 error-class logging and guard stress/race tests. 145 guard rounds / ~430 decide requests saw zero guard 500s; the original 500 remains unreproduced.
+- **M12a2 (uncommitted)** namespaces DSH approval requestIds by session and adds concurrent-session/extra-approval coverage. The reproduced 500 was an unhandled extra approval timing out in a test, not a load/broker race.
 - `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
-- The regression suite is 729 tests (728 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 11/11.
+- The regression suite is 731 tests (730 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 12/12.
 
 ## Current commands
 

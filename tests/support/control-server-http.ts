@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { ControlServerInfo } from '../../src/control/server.js';
 import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
@@ -161,6 +162,77 @@ function inputOf(value: unknown): string {
     }
   }
   throw new Error('B wake/answer fixture only supports text input');
+}
+
+export type AutoGuardDecision = 'allow_once' | 'reject_once' | 'cancelled';
+
+export interface GuardAutoDecider {
+  /** Stop polling; safe to call more than once. */
+  stop(): Promise<void>;
+}
+
+/**
+ * Decides guards that appear after the test's explicit decisions.
+ *
+ * DSH may ask for a second approval (for example after a read-only attempt is
+ * escalated) depending on the model's tool path. A guard test that only handles
+ * its first request leaves that second request parked until the workspace
+ * approval timeout, which turns the wake into a ForagerExecutionError 500.
+ * This poller keeps the test deterministic without changing the explicit
+ * first-decision assertions. The caller must pass every request it already
+ * decided so the poller never settles those again.
+ */
+export function autoDecideGuards(
+  url: string,
+  token: string,
+  knownRequestIds: Iterable<string>,
+  decisionFor: (requestId: string) => AutoGuardDecision,
+  onDecide?: (requestId: string, decision: AutoGuardDecision) => void,
+): GuardAutoDecider {
+  const seen = new Set(knownRequestIds);
+  let running = true;
+  const done = (async () => {
+    while (running) {
+      try {
+        const listed = await getJson(url, token, '/guards');
+        const guards = listed.body?.['guards'];
+        if (Array.isArray(guards)) {
+          for (const guard of guards) {
+            if (typeof guard !== 'object' || guard === null) {
+              continue;
+            }
+            const requestId = (guard as Record<string, unknown>)['requestId'];
+            if (typeof requestId !== 'string' || seen.has(requestId)) {
+              continue;
+            }
+            const decision = decisionFor(requestId);
+            const result = await postJson(url, token, '/guard/decide', {
+              requestId,
+              decision,
+            });
+            if (result.status === 200) {
+              seen.add(requestId);
+              onDecide?.(requestId, decision);
+            }
+          }
+        }
+      } catch {
+        // The caller stops this poller before closing the server; a transient
+        // failure here must not turn into an unhandled rejection.
+      }
+      await delay(100);
+    }
+  })();
+  return {
+    stop: async () => {
+      if (!running) {
+        await done;
+        return;
+      }
+      running = false;
+      await done;
+    },
+  };
 }
 
 export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {

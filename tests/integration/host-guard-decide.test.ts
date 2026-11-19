@@ -12,6 +12,10 @@ import { Workspace } from '../../src/session/workspace.js';
 import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
+import {
+  autoDecideGuards,
+  type GuardAutoDecider,
+} from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
@@ -78,6 +82,7 @@ test(
       guardTimeoutMs: 90_000,
     });
 
+    let autoDecider: GuardAutoDecider | undefined;
     try {
       const info = await server.start();
       const token = readFileSync(info.tokenPath, 'utf8').trim();
@@ -135,6 +140,14 @@ test(
       assert.ok(guard !== undefined);
       assert.equal(typeof guard['requestId'], 'string');
       assert.equal(JSON.stringify(listed.body).includes(marker), false);
+      autoDecider = autoDecideGuards(
+        info.url,
+        token,
+        [String(guard['requestId'])],
+        () => 'reject_once',
+        (requestId, decision) =>
+          t.diagnostic(`extra guard decided requestId=${requestId} decision=${decision}`),
+      );
 
       const decided = await request('POST', '/guard/decide', {
         requestId: guard['requestId'],
@@ -152,6 +165,7 @@ test(
           'rejected-guard.txt absent',
       );
     } finally {
+      await autoDecider?.stop();
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);
     }
@@ -179,14 +193,36 @@ test(
       workspaces: new Map([['dsh', workspace]]),
     });
     const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m9d-guard-cancel-state-'));
+    const controlLogs: string[] = [];
+    const workspaceLogs: string[] = [];
+    const unsubscribe = workspace.onEvent((event) => {
+      if (event.type === 'execution/approval-requested') {
+        workspaceLogs.push(`approval requested requestId=${event.request.requestId}`);
+        return;
+      }
+      if (event.type === 'execution/approval-decided') {
+        workspaceLogs.push(
+          `approval decided requestId=${event.requestId} kind=${event.kind}`,
+        );
+        return;
+      }
+      if (event.type === 'execution/state') {
+        workspaceLogs.push(
+          `execution state=${event.state} id=${event.executionId}` +
+            (event.error === undefined ? '' : ` error=${event.error}`),
+        );
+      }
+    });
     const server = new ControlServer({
       registry,
       stateRoot,
       apiary: 'apiary',
       daemonDir: join(stateRoot, 'waxd'),
       guardTimeoutMs: 90_000,
+      logger: (line) => controlLogs.push(line),
     });
 
+    let autoDecider: GuardAutoDecider | undefined;
     try {
       const info = await server.start();
       const token = readFileSync(info.tokenPath, 'utf8').trim();
@@ -243,6 +279,17 @@ test(
       const guard = (listed.body['guards'] as Record<string, unknown>[])[0];
       assert.ok(guard !== undefined);
       assert.equal(typeof guard['requestId'], 'string');
+      autoDecider = autoDecideGuards(
+        info.url,
+        token,
+        [String(guard['requestId'])],
+        () => 'cancelled',
+        (requestId, decision) => {
+          workspaceLogs.push(
+            `extra guard decided requestId=${requestId} decision=${decision}`,
+          );
+        },
+      );
 
       const decided = await request('POST', '/guard/decide', {
         requestId: guard['requestId'],
@@ -251,7 +298,11 @@ test(
       assert.equal(decided.status, 200);
 
       const trigger = await triggerPromise;
-      assert.equal(trigger.status, 200);
+      assert.equal(
+        trigger.status,
+        200,
+        `\ncontrol logs:\n${controlLogs.join('\n')}\nworkspace logs:\n${workspaceLogs.join('\n')}`,
+      );
       assert.equal(trigger.body['result']?.['rest'], true);
       assert.equal(existsSync(join(project.directory, 'cancelled-guard.txt')), false);
       assert.equal((await request('GET', '/guards')).body['guards'].length, 0);
@@ -260,6 +311,8 @@ test(
           'cancelled-guard.txt absent',
       );
     } finally {
+      unsubscribe();
+      await autoDecider?.stop();
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);
     }
@@ -296,6 +349,7 @@ test(
       guardTimeoutMs: 4_000,
     });
 
+    let autoDecider: GuardAutoDecider | undefined;
     try {
       const info = await server.start();
       const token = readFileSync(info.tokenPath, 'utf8').trim();
@@ -352,6 +406,14 @@ test(
       const guard = (listed.body['guards'] as Record<string, unknown>[])[0];
       assert.ok(guard !== undefined);
       assert.equal(typeof guard['requestId'], 'string');
+      autoDecider = autoDecideGuards(
+        info.url,
+        token,
+        [String(guard['requestId'])],
+        () => 'reject_once',
+        (requestId, decision) =>
+          t.diagnostic(`extra guard decided requestId=${requestId} decision=${decision}`),
+      );
 
       const openedAt = Date.now();
       await waitFor(async () => {
@@ -378,6 +440,7 @@ test(
           `elapsedMs=${String(elapsedMs)} errorClass=${String(late.body['code'])}`,
       );
     } finally {
+      await autoDecider?.stop();
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);
     }
@@ -413,6 +476,7 @@ test(
       guardTimeoutMs: 90_000,
     });
 
+    let autoDecider: GuardAutoDecider | undefined;
     try {
       const info = await server.start();
       const token = readFileSync(info.tokenPath, 'utf8').trim();
@@ -475,6 +539,14 @@ test(
         false,
         'guard listing must not carry the prompt body',
       );
+      autoDecider = autoDecideGuards(
+        info.url,
+        token,
+        [String(guard['requestId'])],
+        () => 'allow_once',
+        (requestId, decision) =>
+          t.diagnostic(`extra guard decided requestId=${requestId} decision=${decision}`),
+      );
 
       const decided = await request('POST', '/guard/decide', {
         requestId: guard['requestId'],
@@ -497,6 +569,7 @@ test(
         `observed: real DSH approval allowed once; marker written; run=${String(run.body['runId'])}`,
       );
     } finally {
+      await autoDecider?.stop();
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);
     }

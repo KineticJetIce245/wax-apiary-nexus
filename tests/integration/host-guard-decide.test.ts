@@ -267,6 +267,124 @@ test(
 );
 
 test(
+  'real DSH native approval expiry answers 409 guard-expired to a late decision',
+  integrationOptions,
+  async (t) => {
+    if (dshRoot === undefined) {
+      throw new Error('DSH_ROOT is missing');
+    }
+    const adapter = new DshAcpAdapter({
+      dshRoot,
+      env: { DSH_PERMISSION_MODE: 'read-only' },
+    });
+    await adapter.start();
+    const workspace = new Workspace(adapter, { approvalTimeoutMs: 90_000 });
+    const project: Project = {
+      id: 'project-native-guard-expiry',
+      directory: mkdtempSync(join(tmpdir(), 'wax-m9d-guard-expiry-project-')),
+    };
+    const registry = new SessionRegistry({
+      workspaces: new Map([['dsh', workspace]]),
+    });
+    const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m9d-guard-expiry-state-'));
+    const server = new ControlServer({
+      registry,
+      stateRoot,
+      apiary: 'apiary',
+      daemonDir: join(stateRoot, 'waxd'),
+      liveProject: project,
+      guardTimeoutMs: 4_000,
+    });
+
+    try {
+      const info = await server.start();
+      const token = readFileSync(info.tokenPath, 'utf8').trim();
+      const request = async (
+        method: 'GET' | 'POST',
+        path: string,
+        body?: unknown,
+      ): Promise<{ readonly status: number; readonly body: Record<string, any> }> => {
+        const response = await fetch(`${info.url}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${token}`,
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          signal: AbortSignal.timeout(150_000),
+        });
+        return {
+          status: response.status,
+          body: (await response.json()) as Record<string, any>,
+        };
+      };
+
+      const marker = `EXPIRED-GUARD-${String(Date.now())}`;
+      const loaded = await request('POST', '/lives', {
+        live: liveOf({
+          schemaVersion: 1,
+          id: 'native-guard-expiry',
+          nodes: {
+            only: {
+              kind: 'forager',
+              config: { connection: 'dsh', prompt: 'run {{input}}' },
+            },
+          },
+          edges: [],
+        }, { only: { kind: 'fresh', harness: 'dsh' } }),
+        project,
+      });
+      assert.equal(loaded.status, 200);
+
+      const triggerPromise = request('POST', '/lives/wake', {
+        liveId: 'native-guard-expiry',
+        beeId: 'only',
+        input:
+          `Use the shell tool to create a file named expired-guard.txt in the current directory ` +
+          `with the exact content ${marker}. Report done. Do not use any other directory.`,
+      });
+
+      await waitFor(async () => {
+        const guards = await request('GET', '/guards');
+        return guards.status === 200 && (guards.body['guards'] as unknown[]).length === 1;
+      });
+      const listed = await request('GET', '/guards');
+      const guard = (listed.body['guards'] as Record<string, unknown>[])[0];
+      assert.ok(guard !== undefined);
+      assert.equal(typeof guard['requestId'], 'string');
+
+      const openedAt = Date.now();
+      await waitFor(async () => {
+        const guards = await request('GET', '/guards');
+        const pending = guards.body['guards'] as Record<string, unknown>[];
+        return pending.every((item) => item['requestId'] !== guard['requestId']);
+      }, 30_000);
+      const elapsedMs = Date.now() - openedAt;
+
+      const late = await request('POST', '/guard/decide', {
+        requestId: guard['requestId'],
+        decision: 'allow_once',
+      });
+      assert.equal(late.status, 409);
+      assert.equal(late.body['code'], 'guard-expired');
+      assert.equal(late.body['ok'], false);
+
+      const trigger = await triggerPromise;
+      assert.equal(trigger.status, 200);
+      assert.equal(trigger.body['result']?.['rest'], true);
+      assert.equal(existsSync(join(project.directory, 'expired-guard.txt')), false);
+      t.diagnostic(
+        `observed: requestId=${String(guard['requestId'])} phase=expired ` +
+          `elapsedMs=${String(elapsedMs)} errorClass=${String(late.body['code'])}`,
+      );
+    } finally {
+      await server.stop().catch(() => undefined);
+      await workspace.stop().catch(() => undefined);
+    }
+  },
+);
+
+test(
   'real DSH native approval is parked, listed and allowed once through HTTP',
   integrationOptions,
   async (t) => {

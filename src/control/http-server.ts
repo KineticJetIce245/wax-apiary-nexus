@@ -38,6 +38,7 @@ export class ControlHttpServer {
     const pathForLog = requestPathForLog(request.url);
     let status = 500;
     let code: ControlErrorCode | 'ok' = 'internal';
+    let errorClass: string | undefined;
 
     request.on('error', () => undefined);
     response.on('error', () => undefined);
@@ -77,6 +78,9 @@ export class ControlHttpServer {
       const httpError = toHttpError(error);
       status = httpError.status;
       code = httpError.code;
+      if (status >= 500) {
+        errorClass = errorClassName(error);
+      }
       if (response.headersSent) {
         response.destroy();
       } else {
@@ -89,6 +93,7 @@ export class ControlHttpServer {
         status,
         Date.now() - requestStartedAt,
         code,
+        errorClass,
       );
     }
   }
@@ -182,12 +187,15 @@ export class ControlHttpServer {
     status: number,
     durationMs: number,
     code: ControlErrorCode | 'ok',
+    errorClass: string | undefined,
   ): void {
     try {
+      // The error class only, never its message or any request body detail.
+      const errorField = errorClass === undefined ? '' : ` errorClass=${errorClass}`;
       this.context.logger(
         `control method=${sanitizeLogText(method, 16)} path=${path} ` +
           `status=${String(status)} durationMs=${String(Math.max(0, Math.trunc(durationMs)))} ` +
-          `code=${code}`,
+          `code=${code}${errorField}`,
       );
     } catch {
       // Logging is observability, never a reason to change a response.
@@ -294,6 +302,18 @@ function requestPathForLog(rawUrl: string | undefined): string {
 
 function sanitizeLogText(value: string, maxLength: number): string {
   return value.slice(0, maxLength).replace(/[^\u0021-\u007e]/g, '?');
+}
+
+/**
+ * Classifies an internal failure for the request log. It deliberately returns
+ * only the error name: a message can carry a prompt, native output or token.
+ */
+function errorClassName(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return typeof error;
+  }
+  const name = error.name === '' ? error.constructor.name : error.name;
+  return sanitizeLogText(name === '' ? 'Error' : name, 80);
 }
 
 function sendJson(

@@ -41,9 +41,10 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M12b (committed in `047e03d`)** recovers stale catalog `loaded` entries on daemon startup and validates DSH graceful stop, SIGTERM/SIGKILL restart, pending-guard shutdown, and same-state recovery.
 - **M12c (committed in `ada807c`)** adds `npm run complexity` with a shrinking source/test baseline and splits `runtime/definition.ts` from 951 to 91 lines.
 - **M13a (committed in `7a38d0e`)** maps cancelled executions to 409 `execution-cancelled`; failed/unknown stay 500.
-- **M13b (uncommitted)** adds internal cancellation provenance: approval timer → 409 `approval-timeout`; other cancelled → 409 `execution-cancelled`; failed/unknown stay 500.
+- **M13b (committed in `8ff7e4a`)** adds internal cancellation provenance: approval timer → 409 `approval-timeout`; other cancelled → 409 `execution-cancelled`; failed/unknown stay 500.
+- **M14 (uncommitted)** adds the `wax guard list|decide` CLI and a real DSH guard CLI test.
 - `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
-- The regression suite is 758 tests (757 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 15/15. `npm run complexity` fails on new/growing source >500 or test >800; existing source violations are an exact shrinking baseline.
+- The regression suite is 764 tests (763 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 16/16. `npm run complexity` fails on new/growing source >500 or test >800; existing source violations are an exact shrinking baseline.
 
 ## Current commands
 

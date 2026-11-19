@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -63,9 +64,66 @@ function headers(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
 }
 
+interface RawResult {
+  readonly status: number;
+  readonly body: Record<string, any> | undefined;
+  readonly text: string;
+}
+
+/**
+ * Every request gets its own socket (`agent: false`). A pooled connection can
+ * hold a polling GET behind the still-pending wake POST, which hides the guard
+ * for its whole lifetime and turns transport reuse into a fake timeout.
+ */
+async function call(
+  running: Running,
+  method: 'GET' | 'POST',
+  path: string,
+  payload?: unknown,
+): Promise<RawResult> {
+  const target = new URL(running.url);
+  const body = payload === undefined ? undefined : JSON.stringify(payload);
+  return new Promise<RawResult>((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: target.hostname,
+        port: target.port,
+        method,
+        path,
+        agent: false,
+        headers: {
+          ...headers(running.token),
+          ...(body === undefined ? {} : { 'content-length': Buffer.byteLength(body) }),
+        },
+      },
+      (response) => {
+        let text = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          text += chunk;
+        });
+        response.on('end', () => {
+          let parsed: Record<string, any> | undefined;
+          try {
+            const value: unknown = JSON.parse(text);
+            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+              parsed = value as Record<string, any>;
+            }
+          } catch {
+            parsed = undefined;
+          }
+          resolve({ status: response.statusCode ?? 0, body: parsed, text });
+        });
+      },
+    );
+    request.on('error', reject);
+    request.end(body);
+  });
+}
+
 async function get(running: Running, path: string): Promise<Record<string, any>> {
-  const response = await fetch(`${running.url}${path}`, { headers: headers(running.token) });
-  return { ...(await response.json()) as Record<string, any>, status: response.status };
+  const result = await call(running, 'GET', path);
+  return { ...(result.body ?? {}), status: result.status };
 }
 
 async function post(
@@ -73,12 +131,8 @@ async function post(
   path: string,
   body: unknown,
 ): Promise<Record<string, any>> {
-  const response = await fetch(`${running.url}${path}`, {
-    method: 'POST',
-    headers: headers(running.token),
-    body: JSON.stringify(body),
-  });
-  return { ...(await response.json()) as Record<string, any>, status: response.status };
+  const result = await call(running, 'POST', path, body);
+  return { ...(result.body ?? {}), status: result.status };
 }
 
 function definition(id: string): Record<string, unknown> {
@@ -95,36 +149,92 @@ function definition(id: string): Record<string, unknown> {
   };
 }
 
+/**
+ * Under full-suite load the process can be descheduled for longer than the old
+ * 2 s budget, so the wait must outlive a slow wake without hiding a real bug:
+ * the wake is still required to succeed and the guard to be listed.
+ */
+const WAIT_TIMEOUT_MS = 10_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 async function waitFor(
   predicate: () => Promise<boolean> | boolean,
-  timeoutMs = 2_000,
+  timeoutMs = WAIT_TIMEOUT_MS,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) {
       return;
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await sleep(10);
   }
-  throw new Error('timed out waiting for guard state');
+  throw new Error(
+    `timed out waiting for guard state after ${String(Date.now() - startedAt)} ms`,
+  );
+}
+
+interface WakeOutcome {
+  readonly status: number;
+  readonly text: string;
+}
+
+interface WakeWatch {
+  result?: WakeOutcome;
+  error?: unknown;
 }
 
 async function waitForGuard(
   running: Running,
-  timeoutMs = 2_000,
+  wakePromise?: Promise<WakeOutcome>,
 ): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + WAIT_TIMEOUT_MS;
+  const wake: WakeWatch = {};
+  if (wakePromise !== undefined) {
+    wakePromise.then(
+      (result) => {
+        wake.result = result;
+      },
+      (error: unknown) => {
+        wake.error = error;
+      },
+    );
+  }
+  let lastGuardCount = 0;
   while (Date.now() < deadline) {
+    // A failed wake explains a missing guard immediately; without this the
+    // test would only report a misleading "timed out waiting for a guard".
+    if (wake.error !== undefined) {
+      throw new Error(`wake request failed before a guard appeared: ${String(wake.error)}`);
+    }
+    if (wake.result !== undefined && wake.result.status !== 200) {
+      throw new Error(
+        `wake failed before a guard appeared: status=${String(wake.result.status)} ` +
+          `body=${wake.result.text.slice(0, 200)}`,
+      );
+    }
     const guards = (await get(running, '/guards'))['guards'] as
       | Record<string, unknown>[]
       | undefined;
+    lastGuardCount = guards?.length ?? 0;
     const guard = guards?.[0];
     if (guard !== undefined) {
       return guard;
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await sleep(10);
   }
-  throw new Error('timed out waiting for a guard');
+  const wakeState =
+    wake.result === undefined
+      ? 'still pending'
+      : `settled status=${String(wake.result.status)}`;
+  throw new Error(
+    `timed out waiting for a guard after ${String(Date.now() - startedAt)} ms ` +
+      `(last guards length=${String(lastGuardCount)}, wake=${wakeState})`,
+  );
 }
 
 test('guard decision rejects invalid, missing and unauthenticated requests', async (t) => {
@@ -263,7 +373,7 @@ test('an expired guard decision is rejected without auto-allow', async (t) => {
 
   const startedAt = Date.now();
   const wakePromise = bWake(running.url, running.token, 'expired', 'only', 'go');
-  const guard = await waitForGuard(running);
+  const guard = await waitForGuard(running, wakePromise);
   // An empty guard list means the broker already settled the request at its
   // deadline. The runtime timer fires first and notifies the broker.
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 0);
@@ -300,7 +410,7 @@ test('reject and timeout never auto-allow', async (t) => {
   });
 
   const rejectedPromise = bWake(running.url, running.token, 'guarded', 'only', 'reject');
-  const rejectedGuard = await waitForGuard(running);
+  const rejectedGuard = await waitForGuard(running, rejectedPromise);
   assert.ok(rejectedGuard !== undefined);
   assert.equal(
     (

@@ -8,6 +8,10 @@ export interface PendingGuardSummary {
   readonly summary: string;
   readonly options: readonly string[];
   readonly createdAt: string;
+  /** Attribution; omitted when the originating layer did not know it. */
+  readonly liveId?: string;
+  readonly beeId?: string;
+  readonly sessionId?: string;
 }
 
 export class GuardNotFoundError extends Error {
@@ -102,6 +106,7 @@ export class GuardBroker {
       summary: pending.request.summary,
       options: [...pending.request.options],
       createdAt: pending.createdAt,
+      ...attributionOf(pending.request),
     }));
   }
 
@@ -163,6 +168,17 @@ export class GuardBroker {
       this.settled.delete(oldest);
     }
   }
+}
+
+/** Copy only the attribution the request actually carries; never invent ids. */
+function attributionOf(
+  request: GuardRequest,
+): Pick<PendingGuardSummary, 'liveId' | 'beeId' | 'sessionId'> {
+  return {
+    ...(request.liveId === undefined ? {} : { liveId: request.liveId }),
+    ...(request.beeId === undefined ? {} : { beeId: request.beeId }),
+    ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+  };
 }
 
 function positiveInteger(value: number, name: string): number {

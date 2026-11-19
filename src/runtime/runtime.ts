@@ -1339,7 +1339,7 @@ export class PheromoneRuntime {
       handler === undefined
         ? Promise.resolve<GuardDecision>('reject_once')
         : Promise.resolve()
-            .then(() => handler(request))
+            .then(() => handler({ ...request, beeId: node.id }))
             .catch(() => 'reject_once' as GuardDecision);
 
     let decision: GuardDecision;

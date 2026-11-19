@@ -12,7 +12,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions } from './support/fake-adapter.js';
-import { bLoad, bWake } from './support/control-server-http.js';
+import { bLoad, bWake, getJson } from './support/control-server-http.js';
 import {
   assertNoSecret,
   invokeControl,
@@ -104,40 +104,79 @@ function listCli(env: GuardEnv, extra: readonly string[] = []): Promise<Invocati
   });
 }
 
+/** The sessions the live actually bound; the guard must name one of these. */
+async function sessionIds(env: GuardEnv): Promise<string[]> {
+  const response = await getJson(env.url, env.token, '/sessions');
+  assert.equal(response.status, 200, response.text);
+  const sessions = response.body?.['sessions'] as { sessionId: string }[] | undefined;
+  assert.equal(Array.isArray(sessions), true);
+  return (sessions ?? []).map((session) => session.sessionId);
+}
+
+/**
+ * A full-suite run can deschedule this process past a 2 s budget, which made
+ * the pending-guard wait flaky (1/6 in M15a). The wait is longer, but the
+ * assertions are unchanged and the failure still names the observed state.
+ */
+const WAIT_TIMEOUT_MS = 10_000;
+
 async function waitForGuard(
   env: GuardEnv,
-  timeoutMs = 2_000,
+  timeoutMs = WAIT_TIMEOUT_MS,
 ): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let lastLength = 0;
+  let lastCode: number | undefined;
   while (Date.now() < deadline) {
     const listed = await listCli(env, ['--json']);
+    lastCode = listed.code;
     if (listed.code === 0 && listed.stdout.length === 1) {
       const body = JSON.parse(listed.stdout[0] as string) as {
         guards?: Record<string, unknown>[];
       };
-      const guard = body.guards?.[0];
+      const guards = body.guards ?? [];
+      lastLength = guards.length;
+      const guard = guards[0];
       if (guard !== undefined) {
         return guard;
       }
     }
     await delay(20);
   }
-  throw new Error('timed out waiting for a pending guard');
+  throw new Error(
+    `timed out waiting for a pending guard after ${String(Date.now() - startedAt)} ms ` +
+      `(last CLI list length=${String(lastLength)}, ` +
+      `exit=${lastCode === undefined ? 'none' : String(lastCode)})`,
+  );
 }
 
-async function waitForEmptyGuardList(env: GuardEnv, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+async function waitForEmptyGuardList(
+  env: GuardEnv,
+  timeoutMs = WAIT_TIMEOUT_MS,
+): Promise<void> {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let lastLength: number | undefined;
+  let lastCode: number | undefined;
   while (Date.now() < deadline) {
     const listed = await listCli(env, ['--json']);
+    lastCode = listed.code;
     if (listed.code === 0 && listed.stdout.length === 1) {
       const body = JSON.parse(listed.stdout[0] as string) as { guards?: unknown[] };
+      lastLength = Array.isArray(body.guards) ? body.guards.length : undefined;
       if (Array.isArray(body.guards) && body.guards.length === 0) {
         return;
       }
     }
     await delay(20);
   }
-  throw new Error('timed out waiting for an empty guard list');
+  throw new Error(
+    `timed out waiting for an empty guard list after ` +
+      `${String(Date.now() - startedAt)} ms ` +
+      `(last CLI list length=${String(lastLength ?? 'none')}, ` +
+      `exit=${lastCode === undefined ? 'none' : String(lastCode)})`,
+  );
 }
 
 function countingFetch(): { readonly fetchImpl: typeof fetch; readonly calls: () => number } {
@@ -163,6 +202,50 @@ test('wax guard list reports an empty pending set in text and JSON', async (t) =
   assert.equal(text.stderr.length, 0);
 });
 
+test('wax guard list prints - and omits unknown attribution instead of inventing it', async (t) => {
+  const env = await startGuardEnv(t);
+  const pending = {
+    requestId: 'req-no-attribution',
+    executionId: 'exec-no-attribution',
+    summary: 'run a command',
+    options: ['allow_once', 'reject_once'],
+    createdAt: '2026-11-19T00:00:00.000Z',
+  };
+  const fetchImpl = (async () =>
+    new Response(JSON.stringify({ ok: true, guards: [pending] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+
+  const json = await invokeControl(runGuardCli, ['guard', 'list', '--json'], {
+    daemonDir: env.daemonDir,
+    fetchImpl,
+  });
+  const entry = (singleJson(json)['guards'] as Record<string, unknown>[])[0];
+  assert.ok(entry !== undefined);
+  assert.deepEqual(Object.keys(entry).sort(), [
+    'createdAt',
+    'executionId',
+    'options',
+    'requestId',
+    'summary',
+  ]);
+  assert.equal('liveId' in entry, false);
+  assert.equal('beeId' in entry, false);
+  assert.equal('sessionId' in entry, false);
+
+  const text = await invokeControl(runGuardCli, ['guard', 'list'], {
+    daemonDir: env.daemonDir,
+    fetchImpl,
+  });
+  assert.equal(text.code, 0);
+  assert.deepEqual(text.stdout, [
+    'req-no-attribution live=- bee=- session=- ' +
+      'execution=exec-no-attribution created=2026-11-19T00:00:00.000Z ' +
+      'options=allow_once,reject_once summary=run a command',
+  ]);
+});
+
 test('wax guard list shows pending metadata only and allows it once', async (t) => {
   const promptMarker = `PROMPT-SECRET-${String(Date.now())}`;
   const outputMarker = `OUTPUT-SECRET-${String(Date.now())}`;
@@ -179,6 +262,11 @@ test('wax guard list shows pending metadata only and allows it once', async (t) 
   assert.deepEqual(guard['options'], ['allow_once', 'reject_once']);
   assert.equal(typeof guard['createdAt'], 'string');
   assert.equal(Number.isNaN(Date.parse(String(guard['createdAt']))), false);
+  assert.equal(guard['liveId'], 'guarded-list');
+  assert.equal(guard['beeId'], 'only');
+  assert.equal(typeof guard['sessionId'], 'string');
+  const sessions = await sessionIds(env);
+  assert.deepEqual(sessions, [guard['sessionId']]);
 
   const listed = await listCli(env, ['--json']);
   const body = singleJson(listed);
@@ -188,14 +276,20 @@ test('wax guard list shows pending metadata only and allows it once', async (t) 
   const entry = guards[0];
   assert.ok(entry !== undefined);
   assert.deepEqual(Object.keys(entry).sort(), [
+    'beeId',
     'createdAt',
     'executionId',
+    'liveId',
     'options',
     'requestId',
+    'sessionId',
     'summary',
   ]);
   assert.equal(entry['requestId'], guard['requestId']);
   assert.equal(entry['executionId'], guard['executionId']);
+  assert.equal(entry['liveId'], 'guarded-list');
+  assert.equal(entry['beeId'], 'only');
+  assert.equal(entry['sessionId'], sessions[0]);
   const listedText = JSON.stringify(body);
   assert.equal(listedText.includes(promptMarker), false, 'listing leaked the prompt');
   assert.equal(listedText.includes(outputMarker), false, 'listing leaked the output');
@@ -205,7 +299,8 @@ test('wax guard list shows pending metadata only and allows it once', async (t) 
   const human = await listCli(env);
   assert.equal(human.code, 0);
   assert.deepEqual(human.stdout, [
-    `${String(entry['requestId'])} execution=${String(entry['executionId'])} ` +
+    `${String(entry['requestId'])} live=guarded-list bee=only ` +
+      `session=${String(sessions[0])} execution=${String(entry['executionId'])} ` +
       `created=${String(entry['createdAt'])} options=allow_once,reject_once ` +
       'summary=run a command',
   ]);

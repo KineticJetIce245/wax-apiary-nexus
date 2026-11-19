@@ -171,6 +171,7 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
       executionId,
       summary: request.summary,
       options: request.options.map((option) => option.kind),
+      sessionId: this.conversation.id,
     };
     const handler = this.onApproval;
     const decide =

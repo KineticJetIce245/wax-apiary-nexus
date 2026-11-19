@@ -2,12 +2,24 @@ import type { ForagerNode, Value } from './types.js';
 
 export type GuardDecision = 'allow_once' | 'reject_once' | 'cancelled';
 
-/** A native approval request that the runtime parks as a Guard hover. */
+/**
+ * A native approval request that the runtime parks as a Guard hover.
+ *
+ * The attribution fields are optional because a request can be raised outside
+ * a LiveHive (a runtime driven directly by an executor) or before the owning
+ * layer is known. An absent field means "not known", never an empty id.
+ */
 export interface GuardRequest {
   readonly requestId: string;
   readonly executionId: string;
   readonly summary: string;
   readonly options: readonly string[];
+  /** The LiveHive graph that owns the requesting forager. */
+  readonly liveId?: string;
+  /** The forager node (bee) that requested the approval. */
+  readonly beeId?: string;
+  /** The native session/conversation the approval came from. */
+  readonly sessionId?: string;
 }
 
 /**

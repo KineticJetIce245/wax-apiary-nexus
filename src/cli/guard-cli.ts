@@ -216,12 +216,15 @@ function writeJson(out: Writer, value: unknown): void {
 /**
  * One line per pending guard. The summary is native tool metadata, so it is
  * flattened to keep one guard on one line; prompts, outputs and tokens are not
- * part of the listing at all.
+ * part of the listing at all. Unknown attribution prints `-`, never a made-up
+ * id.
  */
 function guardLine(guard: PendingGuardSummary): string {
   return (
-    `${guard.requestId} execution=${guard.executionId} created=${guard.createdAt} ` +
-    `options=${guard.options.join(',')} summary=${oneLine(guard.summary)}`
+    `${guard.requestId} live=${guard.liveId ?? '-'} bee=${guard.beeId ?? '-'} ` +
+    `session=${guard.sessionId ?? '-'} execution=${guard.executionId} ` +
+    `created=${guard.createdAt} options=${guard.options.join(',')} ` +
+    `summary=${oneLine(guard.summary)}`
   );
 }
 

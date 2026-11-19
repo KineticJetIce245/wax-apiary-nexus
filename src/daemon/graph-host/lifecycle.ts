@@ -6,6 +6,7 @@ import {
 } from '../../session/instantiate-foragers.js';
 import {
   PheromoneRuntime,
+  type GuardRequest,
   type PersistedField,
   type RecoveryReport,
 } from '../../runtime/index.js';
@@ -197,11 +198,17 @@ async function loadGraphLocked(
       throw new GraphHostDisposedError();
     }
 
+    // The LiveHive id is known only here, so the host stamps it onto every
+    // guard request before the control surface can list it. The expiry hook
+    // and the decision itself are unchanged.
+    const onGuard = context.onGuard;
     const runtimeOptions = {
       executeForager: instantiated.routing,
       projectDirectory: options.project.directory,
       now: context.now,
-      ...(context.onGuard === undefined ? {} : { onGuard: context.onGuard }),
+      ...(onGuard === undefined
+        ? {}
+        : { onGuard: (request: GuardRequest) => onGuard({ ...request, liveId: graphId }) }),
       ...(context.onGuardExpired === undefined
         ? {}
         : { onGuardExpired: context.onGuardExpired }),

@@ -316,6 +316,11 @@ test('a pending native approval is listed and allowed through the broker', async
   assert.equal(typeof guard['requestId'], 'string');
   assert.equal(typeof guard['executionId'], 'string');
   assert.deepEqual(guard['options'], ['allow_once', 'reject_once']);
+  assert.equal(guard['liveId'], 'guarded');
+  assert.equal(guard['beeId'], 'only');
+  const sessions = env.registry.list();
+  assert.equal(sessions.length, 1);
+  assert.equal(guard['sessionId'], sessions[0]?.sessionId);
   assert.equal(JSON.stringify(pending).includes('run {{input}}'), false);
 
   const decided = await post(running, '/guard/decide', {

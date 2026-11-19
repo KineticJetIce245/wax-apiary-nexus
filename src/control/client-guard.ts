@@ -58,7 +58,37 @@ function parseGuardSummary(value: unknown): PendingGuardSummary {
     }
     parsedOptions.push(option);
   }
-  return { requestId, executionId, summary, options: parsedOptions, createdAt };
+  const liveId = optionalBoundedString(value, 'liveId');
+  const beeId = optionalBoundedString(value, 'beeId');
+  const sessionId = optionalBoundedString(value, 'sessionId');
+  return {
+    requestId,
+    executionId,
+    summary,
+    options: parsedOptions,
+    createdAt,
+    ...(liveId === undefined ? {} : { liveId }),
+    ...(beeId === undefined ? {} : { beeId }),
+    ...(sessionId === undefined ? {} : { sessionId }),
+  };
+}
+
+/**
+ * Attribution is optional: an old daemon, or a guard raised outside a live,
+ * omits it. A present but malformed id is a protocol error, not a missing id.
+ */
+function optionalBoundedString(
+  value: Record<string, unknown>,
+  field: string,
+): string | undefined {
+  const raw = value[field];
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!isBoundedString(raw, MAX_ID_LENGTH)) {
+    throw invalidGuardSummary();
+  }
+  return raw;
 }
 
 /**

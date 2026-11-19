@@ -183,12 +183,27 @@ test(
       assert.equal(typeof guard['executionId'], 'string');
       assert.equal(typeof guard['summary'], 'string');
       assert.deepEqual(Object.keys(guard).sort(), [
+        'beeId',
         'createdAt',
         'executionId',
+        'liveId',
         'options',
         'requestId',
+        'sessionId',
         'summary',
       ]);
+      const sessions = await request('GET', '/sessions');
+      assert.equal(sessions.status, 200, sessions.text);
+      const boundSessions = sessions.body['sessions'] as
+        | { sessionId: string; harness: string }[]
+        | undefined;
+      assert.equal(boundSessions?.length, 1);
+      const sessionId = String(guard['sessionId']);
+      assert.equal(guard['liveId'], 'native-guard-cli');
+      assert.equal(guard['beeId'], 'only');
+      assert.equal(sessionId.length > 0, true);
+      assert.equal(boundSessions?.[0]?.sessionId, sessionId);
+      assert.equal(boundSessions?.[0]?.harness, 'dsh');
       assert.equal(listed.invocation.stdout[0]?.includes(marker), false);
       assert.equal(listed.invocation.stdout[0]?.includes(prompt), false);
       assert.equal(listed.invocation.stdout[0]?.includes(token), false);
@@ -198,6 +213,12 @@ test(
       assert.equal(human.code, 0, human.stderr.join(' | '));
       assert.equal(human.stdout.length, 1);
       assert.equal((human.stdout[0] as string).includes(requestId), true);
+      assert.equal(
+        (human.stdout[0] as string).includes(
+          `live=native-guard-cli bee=only session=${sessionId}`,
+        ),
+        true,
+      );
       assert.equal((human.stdout[0] as string).includes(marker), false);
       assert.equal((human.stdout[0] as string).includes(token), false);
 

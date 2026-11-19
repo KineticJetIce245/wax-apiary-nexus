@@ -20,6 +20,50 @@ function request(requestId = 'req-1'): GuardRequest {
   };
 }
 
+function attributedRequest(requestId = 'req-attributed'): GuardRequest {
+  return {
+    ...request(requestId),
+    liveId: 'live-1',
+    beeId: 'bee-1',
+    sessionId: 'session-1',
+  };
+}
+
+test('list exposes live, bee and session attribution when the request has it', async () => {
+  const broker = new GuardBroker({ now: () => FIXED_NOW });
+  void broker.request(attributedRequest());
+
+  assert.deepEqual(broker.list(), [
+    {
+      requestId: 'req-attributed',
+      executionId: 'exec-1',
+      summary: 'run a command',
+      options: ['allow_once', 'reject_once'],
+      createdAt: '2026-11-15T12:00:00.000Z',
+      liveId: 'live-1',
+      beeId: 'bee-1',
+      sessionId: 'session-1',
+    },
+  ]);
+  broker.cancelAll();
+});
+
+test('list omits attribution fields the request does not carry', async () => {
+  const broker = new GuardBroker({ now: () => FIXED_NOW });
+  void broker.request({ ...request(), liveId: 'live-only' });
+
+  const [summary] = broker.list();
+  assert.ok(summary !== undefined);
+  assert.equal(summary.liveId, 'live-only');
+  assert.equal(
+    Object.hasOwn(summary, 'beeId'),
+    false,
+    'an unknown bee must be omitted, not set to an empty id',
+  );
+  assert.equal(Object.hasOwn(summary, 'sessionId'), false);
+  broker.cancelAll();
+});
+
 test('request lists metadata and resolves an explicit decision', async () => {
   const broker = new GuardBroker({ now: () => FIXED_NOW });
   const pending = broker.request(request());

@@ -80,6 +80,11 @@ export class ControlServerLifecycle {
       // not overwrite the first server's live token before being refused.
       lock = DaemonLock.acquire(context.lockPath, context.options.apiary);
 
+      // A new server process has no loaded live graph in memory. A persisted
+      // `loaded` entry belongs to the previous daemon (clean stop, crash or
+      // forced termination), so clear the phantom state before serving reads.
+      context.options.catalog?.recoverLoadedEntries();
+
       const token = context.configuredToken ?? randomBytes(32).toString('hex');
       tokenAttempted = true;
       writeSecretFile(context.tokenPath, token);

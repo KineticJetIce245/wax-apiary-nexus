@@ -108,6 +108,33 @@ test('unload retains an identity that was never loaded', () => {
   });
 });
 
+test('recoverLoadedEntries clears stale loaded state without erasing identity', () => {
+  const path = tempCatalogPath();
+  const time = clock();
+  const catalog = new LiveHiveCatalog(path, { now: time.now });
+  catalog.markLoaded('busy');
+  catalog.markLoaded('history');
+  catalog.markUnloaded('history', 'unload');
+  catalog.save();
+
+  time.set('2026-11-13T22:10:00.000Z');
+  const restarted = new LiveHiveCatalog(path, { now: time.now });
+  assert.equal(restarted.recoverLoadedEntries(), 1);
+  assert.deepEqual(restarted.get('busy'), {
+    liveId: 'busy',
+    state: 'unloaded',
+    loadedAt: '2026-11-13T22:00:00.000Z',
+    lastAccessAt: '2026-11-13T22:10:00.000Z',
+  });
+  assert.equal(restarted.get('history')?.lastUnloadReason, 'unload');
+
+  // Idempotent: a second start with no stale entry writes nothing new.
+  assert.equal(restarted.recoverLoadedEntries(), 0);
+  const reread = new LiveHiveCatalog(path, { now: time.now });
+  assert.equal(reread.get('busy')?.state, 'unloaded');
+  assert.equal(reread.get('busy')?.lastUnloadReason, undefined);
+});
+
 test('save leaves no temporary file behind', () => {
   const path = tempCatalogPath();
   const catalog = new LiveHiveCatalog(path, { now: clock().now });

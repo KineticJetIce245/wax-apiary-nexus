@@ -130,6 +130,33 @@ export class LiveHiveCatalog {
     this.entries.set(liveId, { ...previous, lastAccessAt: this.now() });
   }
 
+  /**
+   * Reconcile a catalog read by a new daemon process: no live graph can be
+   * loaded in this process yet, so every persisted `loaded` entry belongs to
+   * the previous daemon and is stale. The recorded identity is kept; only the
+   * phantom loaded state is cleared. Returns the number of entries changed.
+   */
+  recoverLoadedEntries(): number {
+    let changed = 0;
+    for (const entry of this.list()) {
+      if (entry.state !== 'loaded') {
+        continue;
+      }
+      const now = this.now();
+      this.entries.set(entry.liveId, {
+        liveId: entry.liveId,
+        state: 'unloaded',
+        ...(entry.loadedAt === undefined ? {} : { loadedAt: entry.loadedAt }),
+        lastAccessAt: now,
+      });
+      changed += 1;
+    }
+    if (changed > 0) {
+      this.save();
+    }
+    return changed;
+  }
+
   /** Persist the whole catalog with the shared atomic-write path. */
   save(): void {
     const value: StoredCatalog = {

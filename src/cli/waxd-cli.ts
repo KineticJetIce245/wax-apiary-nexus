@@ -55,6 +55,8 @@ export interface WaxdDependencies {
   readonly env?: NodeJS.ProcessEnv;
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
+  /** Test seam: receives the control server's metadata-only request log. */
+  readonly logger?: (line: string) => void;
   /** Tests can stop the foreground daemon without sending a process signal. */
   readonly signal?: AbortSignal;
   /** Default true; tests inject `signal` and disable this. */
@@ -351,6 +353,7 @@ export async function runWaxdCli(
         id: basename(process.cwd()) || 'project',
         directory: process.cwd(),
       },
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
     });
 
     const info = await server.start();

@@ -42,9 +42,9 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M12c (committed in `ada807c`)** adds `npm run complexity` with a shrinking source/test baseline and splits `runtime/definition.ts` from 951 to 91 lines.
 - **M13a (committed in `7a38d0e`)** maps cancelled executions to 409 `execution-cancelled`; failed/unknown stay 500.
 - **M13b (committed in `8ff7e4a`)** adds internal cancellation provenance: approval timer → 409 `approval-timeout`; other cancelled → 409 `execution-cancelled`; failed/unknown stay 500.
-- **M14 (uncommitted)** adds the `wax guard list|decide` CLI and a real DSH guard CLI test.
+- **M14 (committed in `16e4a83`)** adds the `wax guard list|decide` CLI and a real DSH guard CLI test.
 - `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
-- The regression suite is 764 tests (763 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 16/16. `npm run complexity` fails on new/growing source >500 or test >800; existing source violations are an exact shrinking baseline.
+- The regression suite is 764 tests (763 pass + 1 Windows skip); `npm run test:integration:dsh` is 16/16 and the full Codex+DSH integration suite is 28/28 (2026-11-19). `npm run complexity` fails on new/growing source >500 or test >800; existing source violations are an exact shrinking baseline.
 
 ## Current commands
 
@@ -102,11 +102,11 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - RunStore has 1000-record / 1 MiB defaults and is used by wake/answer.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
 - A second LiveHive binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
-- Real mixed Codex+DSH, scheduler, DSH guard, DSH session-busy, and full B LiveHive chain pass; full integration was 22/22 before Codex quota deferral. Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
+- Real mixed Codex+DSH, scheduler, DSH guard, DSH session-busy, and full B LiveHive chain pass; full integration is 28/28 as of 2026-11-19 (22/22 before M13/M14 added cases). Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
 - Guard expiry is now explicit: a late decision returns 409 `guard-expired`; normal allow/reject/cancel still works.
 - Guard allow/reject/cancel tests use a known marker to prove the side effect did or did not happen. They are guard/side-effect evidence, not Rule 9 unknown-answer evidence.
 - `mixed-harness-product` and `session-registry-multi-harness` are adapter/session-level evidence, not graph/daemon cross-harness evidence. `waxd-mixed-harness` is the graph-level proof.
 - `rg '/graphs|/catalog|wax graph|wax trigger' src README.md` is 0; `tests/` intentionally contains negative assertions for the removed surface, so a literal repo-wide zero is not the acceptance rule.
-- While the Codex quota is restricted, use `npm run test:integration:dsh` (10 DSH-only tests) instead of the full 22-test integration. Codex-dependent coverage is deferred, not passed.
+- While the Codex quota is restricted, use `npm run test:integration:dsh` (16 DSH-only tests) instead of the full 28-test integration. Codex-dependent coverage is deferred, not passed.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

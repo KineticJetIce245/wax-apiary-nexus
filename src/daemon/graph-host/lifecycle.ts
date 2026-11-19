@@ -202,6 +202,9 @@ async function loadGraphLocked(
       projectDirectory: options.project.directory,
       now: context.now,
       ...(context.onGuard === undefined ? {} : { onGuard: context.onGuard }),
+      ...(context.onGuardExpired === undefined
+        ? {}
+        : { onGuardExpired: context.onGuardExpired }),
       ...(context.guardTimeoutMs === undefined
         ? {}
         : { guardTimeoutMs: context.guardTimeoutMs }),

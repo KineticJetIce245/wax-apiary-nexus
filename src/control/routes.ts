@@ -1,5 +1,9 @@
 import { SessionBusyError, SessionNotFoundError } from '../session/session-registry.js';
-import { GuardAlreadySettledError, GuardNotFoundError } from './guard-broker.js';
+import {
+  GuardAlreadySettledError,
+  GuardExpiredError,
+  GuardNotFoundError,
+} from './guard-broker.js';
 import { dispatchLiveRoute } from './live-routes.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
@@ -60,6 +64,9 @@ async function dispatchRoutes(
       } catch (error) {
         if (error instanceof GuardNotFoundError) {
           throw new HttpError(404, 'not-found', 'unknown guard request');
+        }
+        if (error instanceof GuardExpiredError) {
+          throw new HttpError(409, 'guard-expired', 'guard request expired');
         }
         if (error instanceof GuardAlreadySettledError) {
           throw new HttpError(409, 'conflict', 'guard request already settled');

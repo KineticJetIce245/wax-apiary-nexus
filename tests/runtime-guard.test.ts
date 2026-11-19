@@ -8,6 +8,7 @@ import {
   type GuardDecision,
   type NodeExecutor,
 } from '../src/runtime/index.js';
+import { GuardBroker, GuardExpiredError } from '../src/control/guard-broker.js';
 
 const START = Date.parse('2026-03-01T00:00:00.000Z');
 
@@ -107,6 +108,46 @@ test('a guard that times out is cancelled and cannot be settled afterwards', asy
   assert.equal(runtime.snapshot().nodes['start']?.hover, undefined);
 
   assert.throws(() => runtime.settleGuard('start', 'r1', 'allow_once'), /no open guard/);
+});
+
+test('a guard timeout notifies the broker so a late decision is expired', async () => {
+  // The broker fallback timer is far longer than the runtime timeout, so only
+  // the runtime's expiry hook can expire this request.
+  const broker = new GuardBroker({ timeoutMs: 60_000 });
+  const { executor, decisions } = guardExecutor();
+  const runtime = new PheromoneRuntime(guardComposition(), {
+    executeForager: executor,
+    now: () => START,
+    guardTimeoutMs: 25,
+    onGuard: (request) => broker.request(request),
+    onGuardExpired: (requestId) => broker.expire(requestId),
+  });
+
+  runtime.trigger('start', { kind: 'text', text: 'x' });
+  await runtime.pump();
+
+  assert.deepEqual(decisions, ['cancelled']);
+  assert.deepEqual(broker.list(), []);
+  assert.throws(() => broker.decide('r1', 'allow_once'), GuardExpiredError);
+});
+
+test('a throwing expiry hook still cancels the guard', async () => {
+  const { executor, decisions } = guardExecutor();
+  const runtime = new PheromoneRuntime(guardComposition(), {
+    executeForager: executor,
+    now: () => START,
+    guardTimeoutMs: 25,
+    onGuard: () => new Promise(() => undefined),
+    onGuardExpired: () => {
+      throw new Error('notification failed');
+    },
+  });
+
+  runtime.trigger('start', { kind: 'text', text: 'x' });
+  await runtime.pump();
+
+  assert.deepEqual(decisions, ['cancelled']);
+  assert.equal(runtime.snapshot().nodes['start']?.hover, undefined);
 });
 
 test('a decision for another request is rejected and does not disturb the open one', async () => {

@@ -24,11 +24,25 @@ export class GuardAlreadySettledError extends Error {
   }
 }
 
+/** The guard reached its deadline; a late decision must not be applied. */
+export class GuardExpiredError extends Error {
+  constructor(readonly requestId: string) {
+    super(`Guard request expired: ${requestId}`);
+    this.name = 'GuardExpiredError';
+  }
+}
+
 export interface GuardBrokerOptions {
-  /** Default 1h, matching the runtime's guard timeout. */
+  /**
+   * Fallback deadline, default 1h and matching the runtime's guard timeout.
+   * In the control server the runtime normally expires first and calls
+   * `expire`; this timer only protects against a missing notification.
+   */
   readonly timeoutMs?: number;
   readonly now?: () => number;
 }
+
+type SettledReason = 'decided' | 'cancelled' | 'expired';
 
 interface PendingGuard {
   readonly request: GuardRequest;
@@ -42,16 +56,18 @@ const SETTLED_MEMORY = 256;
 /**
  * Holds native approval requests until a control caller decides them.
  *
- * Every request is either resolved by `decide`, cancelled by timeout, or
- * cancelled by `cancelAll` during shutdown. The default is never to allow:
- * an unresolved request becomes `cancelled`, and `reject_once`/`cancelled`
- * remain explicit caller choices.
+ * Every request is resolved by `decide`, expired by the runtime's deadline
+ * notification (`expire`) or this broker's fallback timer, or cancelled by
+ * `cancelAll` during shutdown. The default is never to allow: an unresolved
+ * request becomes `cancelled`, and `reject_once`/`cancelled` remain explicit
+ * caller choices. An expired request is remembered as expired so a late
+ * decision answers 409 `guard-expired` instead of looking unknown.
  */
 export class GuardBroker {
   private readonly timeoutMs: number;
   private readonly now: () => string;
   private readonly pending = new Map<string, PendingGuard>();
-  private readonly settled = new Set<string>();
+  private readonly settled = new Map<string, SettledReason>();
 
   constructor(options: GuardBrokerOptions = {}) {
     this.timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_GUARD_TIMEOUT_MS, 'timeoutMs');
@@ -66,7 +82,7 @@ export class GuardBroker {
     this.settled.delete(request.requestId);
     return new Promise<GuardDecision>((resolve) => {
       const timer = setTimeout(() => {
-        this.settle(request.requestId, 'cancelled');
+        this.expire(request.requestId);
       }, this.timeoutMs);
       timer.unref();
       this.pending.set(request.requestId, {
@@ -91,36 +107,56 @@ export class GuardBroker {
 
   decide(requestId: string, decision: GuardDecision): void {
     if (!this.pending.has(requestId)) {
+      if (this.settled.get(requestId) === 'expired') {
+        throw new GuardExpiredError(requestId);
+      }
       if (this.settled.has(requestId)) {
         throw new GuardAlreadySettledError(requestId);
       }
       throw new GuardNotFoundError(requestId);
     }
-    this.settle(requestId, decision);
+    this.settle(requestId, decision, 'decided');
+  }
+
+  /**
+   * Deadline path, called by the runtime's expiry hook (and by the fallback
+   * timer). Idempotent: an already decided, cancelled, expired, or unknown
+   * request is left unchanged, so a late notification can never allow or
+   * reopen a guard.
+   */
+  expire(requestId: string): void {
+    if (!this.pending.has(requestId)) {
+      return;
+    }
+    this.settle(requestId, 'cancelled', 'expired');
   }
 
   /** Shutdown: every pending request is cancelled, never allowed. */
   cancelAll(): void {
     for (const requestId of [...this.pending.keys()]) {
-      this.settle(requestId, 'cancelled');
+      this.settle(requestId, 'cancelled', 'cancelled');
     }
   }
 
-  private settle(requestId: string, decision: GuardDecision): void {
+  private settle(
+    requestId: string,
+    decision: GuardDecision,
+    reason: SettledReason,
+  ): void {
     const pending = this.pending.get(requestId);
     if (pending === undefined) {
       return;
     }
     this.pending.delete(requestId);
     clearTimeout(pending.timer);
-    this.rememberSettled(requestId);
+    this.rememberSettled(requestId, reason);
     pending.resolve(decision);
   }
 
-  private rememberSettled(requestId: string): void {
-    this.settled.add(requestId);
+  private rememberSettled(requestId: string, reason: SettledReason): void {
+    this.settled.set(requestId, reason);
     while (this.settled.size > SETTLED_MEMORY) {
-      const oldest = this.settled.values().next().value;
+      const oldest = this.settled.keys().next().value;
       if (oldest === undefined) {
         return;
       }

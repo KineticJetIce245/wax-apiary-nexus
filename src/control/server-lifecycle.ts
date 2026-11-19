@@ -92,6 +92,7 @@ export class ControlServerLifecycle {
         runStore,
         guardTimeoutMs: context.guardTimeoutMs,
         onGuard: (request) => broker.request(request),
+        onGuardExpired: (requestId) => broker.expire(requestId),
         ...(context.options.catalog === undefined ? {} : { catalog: context.options.catalog }),
         ...(context.options.allowHoverUnload === undefined
           ? {}

@@ -82,6 +82,8 @@ export interface GraphHostOptions {
    * rejects a Guard request; a Guard is never allowed automatically.
    */
   readonly onGuard?: (request: GuardRequest) => Promise<GuardDecision>;
+  /** Called when a runtime guard deadline expires; idempotent. */
+  readonly onGuardExpired?: (requestId: string) => void;
   /**
    * Optional observability for cleanup failures. Cleanup itself never rejects:
    * a failed close must not turn an unload into a residency failure.

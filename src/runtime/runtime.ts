@@ -55,6 +55,8 @@ export interface RuntimeOptions {
   guardTimeoutMs?: number;
   /** Asks a human for a Guard decision. Without one, every Guard is rejected. */
   onGuard?: (request: GuardRequest) => Promise<GuardDecision>;
+  /** Called when the runtime's own guard deadline expires; idempotent. */
+  onGuardExpired?: (requestId: string) => void;
 }
 
 const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
@@ -187,6 +189,7 @@ export class PheromoneRuntime {
   private readonly onLog: RuntimeLogSink | undefined;
   private readonly guardTimeoutMs: number;
   private readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
+  private readonly onGuardExpired: ((requestId: string) => void) | undefined;
   private readonly guardWaiters = new Map<string, { readonly requestId: string; resolve: (decision: GuardDecision) => void }>();
   private readonly states: Map<NodeId, NodeState> = new Map();
   /** Answers that arrived before their user node hovered; preserved, not dropped. */
@@ -215,6 +218,7 @@ export class PheromoneRuntime {
       throw new TypeError('options.guardTimeoutMs must be a positive number');
     }
     this.onGuard = options.onGuard;
+    this.onGuardExpired = options.onGuardExpired;
 
     for (const id of definition.nodes.keys()) {
       this.states.set(id, createNodeState());
@@ -1320,6 +1324,12 @@ export class PheromoneRuntime {
     let expired = false;
     const timer = setTimeout(() => {
       expired = true;
+      try {
+        this.onGuardExpired?.(request.requestId);
+      } catch {
+        // Notifying the broker is best effort. The runtime must still cancel
+        // the guard and must never fall through to the native handler.
+      }
       resolveWaiter('cancelled');
     }, this.guardTimeoutMs);
     timer.unref();

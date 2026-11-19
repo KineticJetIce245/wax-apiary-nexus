@@ -237,11 +237,53 @@ test('a pending native approval is listed and allowed through the broker', async
     decision: 'reject_once',
   });
   assert.equal(duplicate.status, 409);
+  assert.equal(duplicate['code'], 'conflict');
   const unknown = await post(running, '/guard/decide', {
     requestId: 'missing',
     decision: 'allow_once',
   });
   assert.equal(unknown.status, 404);
+  assert.equal(unknown['code'], 'not-found');
+});
+
+test('an expired guard decision is rejected without auto-allow', async (t) => {
+  const adapter = new FakeAdapter({ askApproval: true });
+  const env = makeEnv(adapter);
+  const running = await start(env, 500);
+  t.after(async () => {
+    await running.server.stop();
+    await env.workspace.stop();
+  });
+
+  const loaded = await post(running, '/lives', {
+    live: liveFrom(definition('expired'), { only: { kind: 'fresh' } }),
+    project: env.project,
+  });
+  assert.equal(loaded.status, 200);
+
+  const startedAt = Date.now();
+  const wakePromise = bWake(running.url, running.token, 'expired', 'only', 'go');
+  const guard = await waitForGuard(running);
+  // An empty guard list means the broker already settled the request at its
+  // deadline. The runtime timer fires first and notifies the broker.
+  await waitFor(async () => (await get(running, '/guards'))['guards'].length === 0);
+  const expiredAt = Date.now();
+
+  const late = await post(running, '/guard/decide', {
+    requestId: guard['requestId'],
+    decision: 'allow_once',
+  });
+  assert.equal(late.status, 409);
+  assert.equal(late['code'], 'guard-expired');
+  assert.equal(late['ok'], false);
+  t.diagnostic(
+    `observed: requestId=${String(guard['requestId'])} phase=expired ` +
+      `elapsedMs=${String(expiredAt - startedAt)} errorClass=${String(late['code'])}`,
+  );
+
+  const wake = await wakePromise;
+  assert.equal(wake.status, 200);
+  assert.deepEqual(adapter.approvals.map((item) => item.kind), ['cancelled']);
 });
 
 test('reject and timeout never auto-allow', async (t) => {

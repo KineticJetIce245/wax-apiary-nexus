@@ -91,6 +91,7 @@ export type ControlErrorCode =
   | 'method-not-allowed'
   | 'conflict'
   | 'session-busy'
+  | 'guard-expired'
   | 'too-large'
   | 'unsupported-media-type'
   | 'internal';

@@ -36,6 +36,7 @@ export class GraphHostContext {
   readonly sleep: (ms: number) => Promise<void>;
   readonly maxWaitMs: number;
   readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
+  readonly onGuardExpired: ((requestId: string) => void) | undefined;
   readonly onEvent: ((event: GraphHostEvent) => void) | undefined;
   readonly graphs: GraphRegistry<LiveGraph>;
   readonly lock = new LiveHiveLock();
@@ -83,6 +84,10 @@ export class GraphHostContext {
     this.onGuard = options.onGuard;
     if (this.onGuard !== undefined && typeof this.onGuard !== 'function') {
       throw new TypeError('onGuard must be a function');
+    }
+    this.onGuardExpired = options.onGuardExpired;
+    if (this.onGuardExpired !== undefined && typeof this.onGuardExpired !== 'function') {
+      throw new TypeError('onGuardExpired must be a function');
     }
     this.onEvent = options.onEvent;
     this.schedulers = new SchedulerService({

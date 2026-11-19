@@ -34,9 +34,10 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 - **M10b2** migrated surface coverage to `/lives` and B CLI, and fixed B unload/duplicate-load 409 mapping.
 - **M10c (committed in `c6af169`)** removes the legacy graph control surface and client commands. The HTTP API, CLI, tests and client now expose only `/lives`, `/templates`, `/dispatch`, `/guards` and `/sessions`.
 - **M10d (committed in `83b3d4c`)** adds final B-only surface assertions: legacy routes 404, removed graph/trigger CLI commands are usage errors, and the real Codex+DSH B chain stays green.
-- **M10e (uncommitted)** closes review evidence gaps: dispatch session harness, guarded-wake RunStore record, two-live loaded/unloaded list, CLI save/load, POST legacy 404, and explicit evidence boundaries.
+- **M10e (committed in `0e54524`)** closes review evidence gaps: dispatch session harness, guarded-wake RunStore record, two-live loaded/unloaded list, CLI save/load, POST legacy 404, and explicit evidence boundaries.
+- **M11 (uncommitted)** makes guard expiry explicit: runtime expiry notifies the broker, late decisions return 409 `guard-expired`, and normal allow/reject/cancel is unchanged. The original generic 500 was not reproduced.
 - `--harness` no longer selects a per-harness directory; it only validates/filters. `waxd --harnesses codex,dsh` uses one daemonDir/stateRoot/port/token.
-- The regression suite is 717 tests (716 pass + 1 Windows skip). Full `npm run test:integration` passes 22/22 with 0 skip; all test files are ≤800 lines.
+- The regression suite is 722 tests (721 pass + 1 Windows skip). Full integration is currently deferred while Codex quota is restricted; `npm run test:integration:dsh` is 10/10.
 
 ## Current commands
 
@@ -94,7 +95,8 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - RunStore has 1000-record / 1 MiB defaults and is used by wake/answer.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
 - A second LiveHive binding the same explicit session is rejected with 409 `session-busy`; there is no queue/forward yet. After the first unload, the second can load.
-- Real mixed Codex+DSH, scheduler, DSH guard, DSH session-busy, and full B LiveHive chain pass; full integration is 22/22. Native approval/cancel flake risk remains recorded; OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
+- Real mixed Codex+DSH, scheduler, DSH guard, DSH session-busy, and full B LiveHive chain pass; full integration was 22/22 before Codex quota deferral. Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
+- Guard expiry is now explicit: a late decision returns 409 `guard-expired`; normal allow/reject/cancel still works.
 - Guard allow/reject/cancel tests use a known marker to prove the side effect did or did not happen. They are guard/side-effect evidence, not Rule 9 unknown-answer evidence.
 - `mixed-harness-product` and `session-registry-multi-harness` are adapter/session-level evidence, not graph/daemon cross-harness evidence. `waxd-mixed-harness` is the graph-level proof.
 - `rg '/graphs|/catalog|wax graph|wax trigger' src README.md` is 0; `tests/` intentionally contains negative assertions for the removed surface, so a literal repo-wide zero is not the acceptance rule.

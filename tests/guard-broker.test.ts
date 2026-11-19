@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   GuardAlreadySettledError,
   GuardBroker,
+  GuardExpiredError,
   GuardNotFoundError,
 } from '../src/control/guard-broker.js';
 import type { GuardRequest } from '../src/runtime/index.js';
@@ -70,7 +71,51 @@ test('a pending request times out as cancelled, never allowed', async () => {
   const pending = broker.request(request('slow'));
   assert.equal(await pending, 'cancelled');
   assert.deepEqual(broker.list(), []);
-  assert.throws(() => broker.decide('slow', 'allow_once'), GuardAlreadySettledError);
+  assert.throws(() => broker.decide('slow', 'allow_once'), GuardExpiredError);
+});
+
+test('expired, decided, cancelled and unknown requests stay distinct', async () => {
+  const broker = new GuardBroker({ timeoutMs: 20 });
+
+  const expired = broker.request(request('expired'));
+  assert.equal(await expired, 'cancelled');
+  assert.throws(() => broker.decide('expired', 'allow_once'), GuardExpiredError);
+
+  const decided = broker.request(request('decided'));
+  broker.decide('decided', 'reject_once');
+  assert.equal(await decided, 'reject_once');
+  assert.throws(() => broker.decide('decided', 'allow_once'), GuardAlreadySettledError);
+
+  const cancelled = broker.request(request('cancelled'));
+  broker.cancelAll();
+  assert.equal(await cancelled, 'cancelled');
+  assert.throws(
+    () => broker.decide('cancelled', 'allow_once'),
+    GuardAlreadySettledError,
+    'shutdown cancellation is already-settled, not expired',
+  );
+
+  assert.throws(() => broker.decide('missing', 'allow_once'), GuardNotFoundError);
+});
+
+test('expire is idempotent and never overwrites a decision', async () => {
+  const broker = new GuardBroker({ timeoutMs: 60_000 });
+
+  const expired = broker.request(request('late-expire'));
+  broker.expire('late-expire');
+  broker.expire('late-expire');
+  assert.equal(await expired, 'cancelled');
+  assert.throws(() => broker.decide('late-expire', 'allow_once'), GuardExpiredError);
+
+  const decided = broker.request(request('late-notification'));
+  broker.decide('late-notification', 'allow_once');
+  assert.equal(await decided, 'allow_once');
+  // A late runtime expiry signal must not turn a real decision into expired.
+  broker.expire('late-notification');
+  assert.throws(
+    () => broker.decide('late-notification', 'reject_once'),
+    GuardAlreadySettledError,
+  );
 });
 
 test('cancelAll cancels every pending request on shutdown', async () => {

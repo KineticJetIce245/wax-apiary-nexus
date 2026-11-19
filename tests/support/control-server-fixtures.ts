@@ -10,7 +10,7 @@ import {
 } from '../../src/control/server.js';
 import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
-import { Workspace } from '../../src/session/workspace.js';
+import { Workspace, type WorkspaceOptions } from '../../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions } from './fake-adapter.js';
 
 export const FIXED_NOW = '2026-11-06T22:00:00.000Z';
@@ -56,8 +56,9 @@ export function makeEnv(adapterOptions: FakeAdapterOptions = {}): TestEnv {
 export function makeEnvWithAdapter(
   adapter: FakeAdapter,
   registryNow: () => string = () => FIXED_NOW,
+  workspaceOptions: WorkspaceOptions = {},
 ): TestEnv {
-  const workspace = new Workspace(adapter);
+  const workspace = new Workspace(adapter, workspaceOptions);
   projectSeq += 1;
   const project: Project = {
     id: `project-${String(projectSeq)}`,

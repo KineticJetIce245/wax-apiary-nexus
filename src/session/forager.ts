@@ -11,7 +11,13 @@ import {
   type NodeExecutor,
   type Value,
 } from '../runtime/index.js';
-import type { Conversation, Execution, Workspace, WorkspaceEvent } from './workspace.js';
+import type {
+  Conversation,
+  Execution,
+  ExecutionCancelReason,
+  Workspace,
+  WorkspaceEvent,
+} from './workspace.js';
 
 /** Interactive approval decision supplied by the caller (CLI in Stage 2A). */
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecisionKind>;
@@ -29,17 +35,21 @@ export interface WorkspaceForagerOptions {
 /**
  * Raised when a forager execution does not complete. `failed`, `cancelled` and
  * `unknown` are terminal states of the native execution; none of them is
- * retried or rewritten into a completed result.
+ * retried or rewritten into a completed result. `cancelReason` carries the
+ * Workspace's own provenance for a cancelled stop, when it has one.
  */
 export class ForagerExecutionError extends Error {
+  readonly cancelReason: ExecutionCancelReason | undefined;
+
   constructor(
     readonly nodeId: string,
     readonly state: 'failed' | 'cancelled' | 'unknown',
     detail: string,
-    options?: { readonly cause?: unknown },
+    options?: { readonly cause?: unknown; readonly cancelReason?: ExecutionCancelReason },
   ) {
     super(`forager '${nodeId}' ended as ${state}${detail === '' ? '' : `: ${detail}`}`, options);
     this.name = 'ForagerExecutionError';
+    this.cancelReason = options?.cancelReason;
   }
 }
 
@@ -116,7 +126,9 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     if (settled.state === 'running') {
       throw new ForagerExecutionError(node.id, 'unknown', 'execution did not settle');
     }
-    throw new ForagerExecutionError(node.id, settled.state, settled.error ?? '');
+    throw new ForagerExecutionError(node.id, settled.state, settled.error ?? '', {
+      ...(settled.cancelReason === undefined ? {} : { cancelReason: settled.cancelReason }),
+    });
   }
 
   private waitForTerminal(executionId: string): Promise<Execution> {

@@ -4,7 +4,7 @@
     "src/adapters/codex/adapter.ts": 1025,
     "src/adapters/dsh-acp/adapter.ts": 656,
     "src/runtime/runtime.ts": 2545,
-    "src/session/workspace.ts": 787,
+    "src/session/workspace.ts": 762,
     "src/storage/honey.ts": 509
   }
 }

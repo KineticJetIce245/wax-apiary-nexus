@@ -92,6 +92,7 @@ export type ControlErrorCode =
   | 'conflict'
   | 'session-busy'
   | 'guard-expired'
+  | 'approval-timeout'
   | 'execution-cancelled'
   | 'too-large'
   | 'unsupported-media-type'

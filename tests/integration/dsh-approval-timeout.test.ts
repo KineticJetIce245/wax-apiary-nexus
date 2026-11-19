@@ -80,11 +80,11 @@ function liveDefinition(liveId: string): Record<string, unknown> {
 }
 
 test(
-  'real DSH undecided approval answers 409 execution-cancelled',
+  'real DSH undecided approval answers 409 approval-timeout',
   integrationOptions,
   async (t) => {
     assert.ok(dshRoot !== undefined, 'DSH_ROOT is missing');
-    const liveId = `m13a-approval-timeout-${String(Date.now())}`;
+    const liveId = `m13b-approval-timeout-${String(Date.now())}`;
     const startedAt = Date.now();
     const observed: ObservedEvent[] = [];
     const controlLogs: string[] = [];
@@ -97,13 +97,13 @@ test(
     await adapter.start();
     const workspace = new Workspace(adapter, { approvalTimeoutMs: APPROVAL_TIMEOUT_MS });
     const project: Project = {
-      id: `m13a-approval-timeout-${String(Date.now())}`,
-      directory: mkdtempSync(join(tmpdir(), 'wax-m13a-approval-timeout-')),
+      id: `m13b-approval-timeout-${String(Date.now())}`,
+      directory: mkdtempSync(join(tmpdir(), 'wax-m13b-approval-timeout-')),
     };
     const registry = new SessionRegistry({
       workspaces: new Map([['dsh', workspace]]),
     });
-    const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m13a-approval-timeout-state-'));
+    const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m13b-approval-timeout-state-'));
     const server = new ControlServer({
       registry,
       stateRoot,
@@ -139,8 +139,8 @@ test(
     });
     assert.equal(loaded.status, 200);
 
-    const marker = `M13A-TIMEOUT-${String(Date.now())}`;
-    const fileName = 'm13a-approval-timeout.txt';
+    const marker = `M13B-TIMEOUT-${String(Date.now())}`;
+    const fileName = 'm13b-approval-timeout.txt';
     const wakeStartedAt = Date.now();
     const wake = await bWake(
       info.url,
@@ -157,18 +157,19 @@ test(
 
     assert.equal(wake.status, 409, `${wake.text}\nruntime: ${sequence}`);
     assert.equal(wake.body?.['ok'], false);
-    assert.equal(wake.body?.['code'], 'execution-cancelled');
+    assert.equal(wake.body?.['code'], 'approval-timeout');
     assert.equal(wake.text.includes(marker), false, 'wake response leaked the prompt marker');
     assert.equal(wake.text.includes(token), false, 'wake response leaked the token');
     assert.ok(wakeElapsedMs < 120_000, `wake hung for ${String(wakeElapsedMs)}ms`);
     assert.equal(existsSync(join(project.directory, fileName)), false);
 
-    // The execution settled as cancelled with no error detail: the approval
-    // timeout leaves no distinct signal once the execution record is read.
+    // The Workspace's own approval timer is the initiator, so the execution
+    // record carries that provenance instead of looking like a bare cancel.
     assert.ok(executionId !== undefined, 'expected a native approval request');
     const execution = workspace.getExecution(executionId);
     assert.ok(execution !== undefined);
     assert.equal(execution.state, 'cancelled');
+    assert.equal(execution.cancelReason, 'approval-timeout');
     assert.equal(execution.error, undefined);
 
     const requestedIndex = observed.findIndex(
@@ -200,7 +201,7 @@ test(
       (line) => line.includes('path=/lives/wake') && line.includes('status=409'),
     );
     assert.ok(wakeLine !== undefined, `no 409 wake log line: ${controlLogs.join(' | ')}`);
-    assert.match(wakeLine, / code=execution-cancelled$/);
+    assert.match(wakeLine, / code=approval-timeout$/);
     assert.equal(controlLogs.some((line) => line.includes('status=500')), false);
     for (const line of controlLogs) {
       assert.equal(line.includes(marker), false);
@@ -211,7 +212,7 @@ test(
       `observed: approvalTimeoutMs=${String(APPROVAL_TIMEOUT_MS)} ` +
         `wakeStatus=${String(wake.status)} code=${String(wake.body?.['code'])} ` +
         `wakeElapsedMs=${String(wakeElapsedMs)} executionState=${execution.state} ` +
-        `executionError=none surface=ForagerExecutionError state=cancelled; ` +
+        `cancelReason=${String(execution.cancelReason)} executionError=none; ` +
         `sequence=${sequence}`,
     );
   },

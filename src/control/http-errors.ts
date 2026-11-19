@@ -59,14 +59,16 @@ export function toHttpError(error: unknown): HttpError {
   }
   if (error instanceof ForagerExecutionError) {
     // A cancelled execution is a client-visible outcome, not an internal
-    // fault: the caller (or the approval timeout) cancelled the native turn.
-    // The current execution record carries only the terminal state, so an
-    // approval timeout and an explicit cancel/close share this mapping; this
-    // slice deliberately does not invent an `approval-timeout` code. `failed`
-    // and `unknown` stay internal 500 because neither proves a clean stop.
-    return error.state === 'cancelled'
-      ? new HttpError(409, 'execution-cancelled', 'execution was cancelled')
-      : new HttpError(500, 'internal', 'internal error');
+    // fault. Only the Workspace's native approval timer is reported as
+    // `approval-timeout`; an explicit cancel, close, replace or an
+    // unattributed native cancel stays `execution-cancelled`. `failed` and
+    // `unknown` stay internal 500 because neither proves a clean stop.
+    if (error.state !== 'cancelled') {
+      return new HttpError(500, 'internal', 'internal error');
+    }
+    return error.cancelReason === 'approval-timeout'
+      ? new HttpError(409, 'approval-timeout', 'approval request timed out')
+      : new HttpError(409, 'execution-cancelled', 'execution was cancelled');
   }
   if (error instanceof TypeError) {
     return new HttpError(400, 'bad-request', 'invalid request value');

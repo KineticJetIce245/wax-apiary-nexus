@@ -1,8 +1,10 @@
 /**
- * Session-layer errors shared by the registry and its callers. They live in a
- * separate module so the record mapping helpers can reference the same classes
- * without importing the registry itself.
+ * Session-layer errors shared by the workspace, the registry and their callers.
+ * They live in a separate module so the record mapping helpers can reference the
+ * same classes without importing the workspace or registry itself.
  */
+
+import type { ApprovalDecisionKind } from '../adapters/harness.js';
 
 export class SessionAlreadyRegisteredError extends Error {
   constructor(readonly nativeId: string) {
@@ -69,4 +71,101 @@ export function sweepErrorMessage(error: unknown): string {
     return 'session not found';
   }
   return 'close failed';
+}
+
+// Workspace lifecycle and approval errors. They stay in this shared module so
+// `workspace.ts` stays under its line budget; they are re-exported there for
+// callers that already import from the workspace module.
+
+export class ConversationBusyError extends Error {
+  constructor(readonly executionId: string) {
+    super(`Conversation already has a running execution: ${executionId}`);
+    this.name = 'ConversationBusyError';
+  }
+}
+
+export class ConversationClosingError extends Error {
+  constructor(readonly conversationId: string) {
+    super(`Conversation is closing and cannot accept new executions: ${conversationId}`);
+    this.name = 'ConversationClosingError';
+  }
+}
+
+export class UnknownConversationError extends Error {
+  constructor(readonly conversationId: string) {
+    super(`Unknown conversation: ${conversationId}`);
+    this.name = 'UnknownConversationError';
+  }
+}
+
+export class UnknownExecutionError extends Error {
+  constructor(readonly executionId: string) {
+    super(`Unknown execution: ${executionId}`);
+    this.name = 'UnknownExecutionError';
+  }
+}
+
+/** Cancel did not settle before the replace timeout; no second prompt is sent. */
+export class ReplaceTimeoutError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly timeoutMs: number,
+  ) {
+    super(
+      `Execution ${executionId} did not stop within ${String(timeoutMs)}ms; refusing to submit a second prompt`,
+    );
+    this.name = 'ReplaceTimeoutError';
+  }
+}
+
+/** The previous outcome is unknown, so a second prompt could overlap it. */
+export class ReplaceUnknownError extends Error {
+  constructor(readonly executionId: string) {
+    super(`Execution ${executionId} has an unknown outcome; refusing to replace it`);
+    this.name = 'ReplaceUnknownError';
+  }
+}
+
+export class UnknownApprovalError extends Error {
+  constructor(readonly requestId: string) {
+    super(`Unknown or already settled approval request: ${requestId}`);
+    this.name = 'UnknownApprovalError';
+  }
+}
+
+export class UnsupportedApprovalError extends Error {
+  constructor(readonly kind: ApprovalDecisionKind) {
+    super(`The harness did not offer approval option: ${kind}`);
+    this.name = 'UnsupportedApprovalError';
+  }
+}
+
+export class CancelNotSupportedError extends Error {
+  constructor() {
+    super('The harness does not advertise cancellation support');
+    this.name = 'CancelNotSupportedError';
+  }
+}
+
+export class ResumeNotSupportedError extends Error {
+  constructor() {
+    super('The harness does not advertise resume support');
+    this.name = 'ResumeNotSupportedError';
+  }
+}
+
+/**
+ * A definite refusal from the harness after an execution was created. The
+ * execution is settled as `failed`; the id lets callers (e.g. the workbench
+ * transfer log) keep the failed attempt associated with its execution.
+ */
+export class SubmitFailedError extends Error {
+  constructor(
+    message: string,
+    readonly executionId: string,
+    options?: { readonly cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = 'SubmitFailedError';
+  }
 }

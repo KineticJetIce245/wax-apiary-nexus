@@ -18,6 +18,11 @@ export interface FakeAdapterOptions {
   readonly error?: string;
   /** Emit one approval request before the terminal event. */
   readonly askApproval?: boolean;
+  /**
+   * Terminal emitted after the bridge answers the pending approval with
+   * `cancelled`. Defaults to `terminal`, preserving the old scripted behavior.
+   */
+  readonly approvalCancelTerminal?: FakeTerminal;
 }
 
 const APPROVAL_OPTIONS: readonly ApprovalOption[] = [
@@ -105,8 +110,10 @@ export class FakeAdapter implements HarnessAdapter {
       throw new Error(`Unknown approval request: ${decision.requestId}`);
     }
     this.pendingApproval = undefined;
+    const terminal =
+      decision.kind === 'cancelled' ? this.options.approvalCancelTerminal : undefined;
     setTimeout(() => {
-      this.finish(pending.executionId);
+      this.finish(pending.executionId, terminal);
     }, 0);
   }
 
@@ -119,13 +126,13 @@ export class FakeAdapter implements HarnessAdapter {
     };
   }
 
-  private finish(executionId: string): void {
+  private finish(executionId: string, override?: FakeTerminal): void {
     const output = this.options.output ?? '';
     if (output !== '') {
       this.emit({ type: 'execution/output', executionId, channel: 'assistant', text: output });
     }
 
-    const terminal = this.options.terminal ?? 'completed';
+    const terminal = override ?? this.options.terminal ?? 'completed';
     switch (terminal) {
       case 'completed':
         this.emit({ type: 'execution/completed', executionId, stopReason: 'end_turn' });

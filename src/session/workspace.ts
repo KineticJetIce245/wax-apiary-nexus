@@ -12,6 +12,33 @@ import type {
   StopReason,
 } from '../adapters/harness.js';
 import { SubmitOutcomeUnknownError } from '../adapters/harness.js';
+import {
+  CancelNotSupportedError,
+  ConversationBusyError,
+  ConversationClosingError,
+  ReplaceTimeoutError,
+  ReplaceUnknownError,
+  ResumeNotSupportedError,
+  SubmitFailedError,
+  UnknownApprovalError,
+  UnknownConversationError,
+  UnknownExecutionError,
+  UnsupportedApprovalError,
+} from './session-errors.js';
+
+export {
+  CancelNotSupportedError,
+  ConversationBusyError,
+  ConversationClosingError,
+  ReplaceTimeoutError,
+  ReplaceUnknownError,
+  ResumeNotSupportedError,
+  SubmitFailedError,
+  UnknownApprovalError,
+  UnknownConversationError,
+  UnknownExecutionError,
+  UnsupportedApprovalError,
+} from './session-errors.js';
 
 export interface Conversation {
   readonly id: string;
@@ -21,6 +48,18 @@ export interface Conversation {
   readonly displayName: string;
 }
 
+/**
+ * Why the Workspace moved a running execution to `cancelled`. It is recorded
+ * only when the Workspace itself initiated the stop; an unattributed native
+ * cancel or an approval decision leaves it undefined. It never changes the
+ * execution state and is only exposed once the state is `cancelled`.
+ */
+export type ExecutionCancelReason =
+  | 'approval-timeout'
+  | 'explicit-cancel'
+  | 'replace'
+  | 'close';
+
 export interface Execution {
   readonly id: string;
   readonly conversationId: string;
@@ -29,6 +68,7 @@ export interface Execution {
   readonly attachments: readonly Attachment[];
   readonly stopReason?: StopReason;
   readonly error?: string;
+  readonly cancelReason?: ExecutionCancelReason;
 }
 
 export type WorkspaceEvent =
@@ -70,99 +110,6 @@ export type WorkspaceEvent =
     }
   | { readonly type: 'adapter/error'; readonly message: string };
 
-export class ConversationBusyError extends Error {
-  constructor(readonly executionId: string) {
-    super(`Conversation already has a running execution: ${executionId}`);
-    this.name = 'ConversationBusyError';
-  }
-}
-
-export class ConversationClosingError extends Error {
-  constructor(readonly conversationId: string) {
-    super(`Conversation is closing and cannot accept new executions: ${conversationId}`);
-    this.name = 'ConversationClosingError';
-  }
-}
-
-export class UnknownConversationError extends Error {
-  constructor(readonly conversationId: string) {
-    super(`Unknown conversation: ${conversationId}`);
-    this.name = 'UnknownConversationError';
-  }
-}
-
-export class UnknownExecutionError extends Error {
-  constructor(readonly executionId: string) {
-    super(`Unknown execution: ${executionId}`);
-    this.name = 'UnknownExecutionError';
-  }
-}
-
-/** Cancel did not settle before the replace timeout; no second prompt is sent. */
-export class ReplaceTimeoutError extends Error {
-  constructor(
-    readonly executionId: string,
-    readonly timeoutMs: number,
-  ) {
-    super(
-      `Execution ${executionId} did not stop within ${String(timeoutMs)}ms; refusing to submit a second prompt`,
-    );
-    this.name = 'ReplaceTimeoutError';
-  }
-}
-
-/** The previous outcome is unknown, so a second prompt could overlap it. */
-export class ReplaceUnknownError extends Error {
-  constructor(readonly executionId: string) {
-    super(`Execution ${executionId} has an unknown outcome; refusing to replace it`);
-    this.name = 'ReplaceUnknownError';
-  }
-}
-
-export class UnknownApprovalError extends Error {
-  constructor(readonly requestId: string) {
-    super(`Unknown or already settled approval request: ${requestId}`);
-    this.name = 'UnknownApprovalError';
-  }
-}
-
-export class UnsupportedApprovalError extends Error {
-  constructor(readonly kind: ApprovalDecisionKind) {
-    super(`The harness did not offer approval option: ${kind}`);
-    this.name = 'UnsupportedApprovalError';
-  }
-}
-
-export class CancelNotSupportedError extends Error {
-  constructor() {
-    super('The harness does not advertise cancellation support');
-    this.name = 'CancelNotSupportedError';
-  }
-}
-
-export class ResumeNotSupportedError extends Error {
-  constructor() {
-    super('The harness does not advertise resume support');
-    this.name = 'ResumeNotSupportedError';
-  }
-}
-
-/**
- * A definite refusal from the harness after an execution was created. The
- * execution is settled as `failed`; the id lets callers (e.g. the workbench
- * transfer log) keep the failed attempt associated with its execution.
- */
-export class SubmitFailedError extends Error {
-  constructor(
-    message: string,
-    readonly executionId: string,
-    options?: { readonly cause?: unknown },
-  ) {
-    super(message, options);
-    this.name = 'SubmitFailedError';
-  }
-}
-
 export interface WorkspaceOptions {
   readonly approvalTimeoutMs?: number;
   /** How long replace() waits for a cancelled execution to settle. */
@@ -177,6 +124,7 @@ interface MutableExecution {
   readonly attachments: Attachment[];
   stopReason?: StopReason;
   error?: string;
+  cancelReason?: ExecutionCancelReason;
 }
 
 interface PendingApproval {
@@ -374,6 +322,17 @@ export class Workspace {
   }
 
   async cancel(executionId: string): Promise<void> {
+    await this.cancelExecution(executionId, 'explicit-cancel');
+  }
+
+  /**
+   * Shared cancel path. The reason is recorded only after the execution and
+   * capability checks, so a refused or unsupported cancel leaves no claim.
+   */
+  private async cancelExecution(
+    executionId: string,
+    reason: ExecutionCancelReason,
+  ): Promise<void> {
     this.assertRunning();
     const execution = this.executions.get(executionId);
     if (execution === undefined) {
@@ -386,6 +345,7 @@ export class Workspace {
       throw new CancelNotSupportedError();
     }
 
+    this.markCancelled(executionId, reason);
     const pending = this.pendingApprovalFor(executionId);
     if (pending !== undefined) {
       await this.decideApproval(executionId, pending.request.requestId, 'cancelled');
@@ -421,7 +381,7 @@ export class Workspace {
       throw new ReplaceUnknownError(executionId);
     }
     if (execution.state === 'running') {
-      await this.cancel(executionId);
+      await this.cancelExecution(executionId, 'replace');
       const deadline = Date.now() + this.replaceTimeoutMs;
       while (Date.now() < deadline) {
         const current = this.executions.get(executionId);
@@ -452,6 +412,9 @@ export class Workspace {
     // outcome is still unknown must not accept a new execution.
     this.closingConversations.add(conversationId);
     const activeId = this.activeExecutionByConversation.get(conversationId);
+    if (activeId !== undefined) {
+      this.markCancelled(activeId, 'close');
+    }
 
     try {
       if (activeId !== undefined) {
@@ -652,6 +615,7 @@ export class Workspace {
       if (pending === undefined) {
         return;
       }
+      this.markCancelled(executionId, 'approval-timeout');
       this.pendingApprovals.delete(requestId);
       this.emit({ type: 'execution/approval-decided', executionId, requestId, kind: 'cancelled' });
       void this.adapter
@@ -691,6 +655,14 @@ export class Workspace {
       clearTimeout(pending.timer);
     }
     this.pendingApprovals.delete(requestId);
+  }
+
+  /** First initiator wins: a later timeout cannot rewrite an explicit cancel. */
+  private markCancelled(executionId: string, reason: ExecutionCancelReason): void {
+    const execution = this.executions.get(executionId);
+    if (execution !== undefined && execution.cancelReason === undefined) {
+      execution.cancelReason = reason;
+    }
   }
 
   private finish(
@@ -770,6 +742,9 @@ function snapshot(execution: MutableExecution): Execution {
     attachments: execution.attachments.map((attachment) => ({ ...attachment })),
     ...(execution.stopReason === undefined ? {} : { stopReason: execution.stopReason }),
     ...(execution.error === undefined ? {} : { error: execution.error }),
+    ...(execution.state === 'cancelled' && execution.cancelReason !== undefined
+      ? { cancelReason: execution.cancelReason }
+      : {}),
   };
 }
 

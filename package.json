@@ -11,8 +11,8 @@
     "wax": "node dist/src/cli/cli.js",
     "waxd": "node dist/src/cli/waxd.js",
     "test": "node scripts/test.mjs",
-    "test:integration": "npm run build && node --test \"dist/tests/integration/**/*.test.js\"",
-    "test:integration:dsh": "npm run build && node --test dist/tests/integration/dsh-acp.test.js dist/tests/integration/dsh-approval-timeout.test.js dist/tests/integration/host-guard-decide.test.js dist/tests/integration/host-guard-cli.test.js dist/tests/integration/host-guard-concurrent.test.js dist/tests/integration/host-session-busy.test.js dist/tests/integration/waxd-dsh-shutdown-restart.test.js dist/tests/integration/waxd-dsh-forced-restart.test.js dist/tests/integration/dsh-approval-isolation.test.js"
+    "test:integration": "npm run build && node scripts/test-runner.mjs \"dist/tests/integration/**/*.test.js\"",
+    "test:integration:dsh": "npm run build && node scripts/test-runner.mjs dist/tests/integration/dsh-acp.test.js dist/tests/integration/dsh-approval-timeout.test.js dist/tests/integration/host-guard-decide.test.js dist/tests/integration/host-guard-cli.test.js dist/tests/integration/host-guard-concurrent.test.js dist/tests/integration/host-session-busy.test.js dist/tests/integration/waxd-dsh-shutdown-restart.test.js dist/tests/integration/waxd-dsh-forced-restart.test.js dist/tests/integration/dsh-approval-isolation.test.js"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

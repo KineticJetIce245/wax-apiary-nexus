@@ -67,6 +67,14 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   private readonly onApproval: ApprovalHandler | undefined;
   private readonly terminals = new Map<string, Execution>();
   private readonly waiters = new Map<string, (execution: Execution) => void>();
+  /**
+   * Executions submitted by this executor. The Workspace is shared by every
+   * forager bound to it, so the event subscription must ignore executions that
+   * belong to another forager even when they share one conversation.
+   */
+  private readonly ownedExecutionIds = new Set<string>();
+  /** How many `submit()` calls are awaited, the window in which the id is unknown. */
+  private pendingSubmissions = 0;
   private readonly unsubscribe: () => void;
   private lastProduced: Value | undefined;
   private activeContext: ExecutionContext | undefined;
@@ -104,12 +112,16 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
       rendered.trim() === '' && attachments.length > 0 ? ATTACHMENT_ONLY_PROMPT : rendered;
 
     this.activeContext = context;
+    this.pendingSubmissions += 1;
     let submitted: Execution;
     try {
       submitted = await this.workspace.submit(this.conversation.id, prompt, attachments);
+      this.ownedExecutionIds.add(submitted.id);
     } catch (error) {
       this.activeContext = undefined;
       throw new ForagerExecutionError(node.id, 'failed', messageOf(error), { cause: error });
+    } finally {
+      this.pendingSubmissions -= 1;
     }
 
     let settled: Execution;
@@ -146,9 +158,21 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   }
 
   private handleEvent(event: WorkspaceEvent): void {
+    if (event.type === 'adapter/error') {
+      // Not attributable to an execution; this executor ignores adapter errors.
+      return;
+    }
+    const execution = this.workspace.getExecution(event.executionId);
+    if (
+      execution === undefined ||
+      execution.conversationId !== this.conversation.id ||
+      !this.ownsExecution(execution.id)
+    ) {
+      return;
+    }
+
     if (event.type === 'execution/state') {
-      const execution = this.workspace.getExecution(event.executionId);
-      if (execution === undefined || execution.state === 'running') {
+      if (execution.state === 'running') {
         return;
       }
       this.terminals.set(execution.id, execution);
@@ -163,6 +187,24 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     if (event.type === 'execution/approval-requested') {
       void this.settleApproval(event.executionId, event.request);
     }
+  }
+
+  /**
+   * Whether `executionId` was submitted by this executor. A native adapter may
+   * emit an approval before `submit()` resolves, so the id is not known then;
+   * the Workspace marks the conversation busy before it awaits the adapter, so
+   * at most one submission is in flight per executor and that execution is
+   * adopted while the window is open.
+   */
+  private ownsExecution(executionId: string): boolean {
+    if (this.ownedExecutionIds.has(executionId)) {
+      return true;
+    }
+    if (this.pendingSubmissions === 0) {
+      return false;
+    }
+    this.ownedExecutionIds.add(executionId);
+    return true;
   }
 
   private async settleApproval(executionId: string, request: ApprovalRequest): Promise<void> {

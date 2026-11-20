@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import type { ApprovalRequest } from '../src/adapters/harness.js';
+import type { ApprovalDecision, ApprovalRequest } from '../src/adapters/harness.js';
 import { ForagerExecutionError, WorkspaceForagerExecutor, type ApprovalHandler } from '../src/session/forager.js';
 import { createKernel } from '../src/project/kernel.js';
 import { parseComposition, type ForagerNode, type Value } from '../src/runtime/index.js';
@@ -312,3 +312,136 @@ test('dispose stops approval handling but keeps the last output', async (t) => {
 
   assert.deepEqual(bridge.executor.lastOutput, { kind: 'text', text: 'LAST' });
 });
+
+/** Emits its approval from inside submit(), before submit() resolves. */
+class SubmitApprovalAdapter extends FakeAdapter {
+  private currentExecutionId: string | undefined;
+  private readonly text: string;
+
+  constructor(text = 'EARLY') {
+    super();
+    this.text = text;
+  }
+
+  override async submit(_nativeId: string, executionId: string, text: string): Promise<void> {
+    this.prompts.push(text);
+    this.currentExecutionId = executionId;
+    this.emit({ type: 'execution/started', executionId });
+    this.emit({
+      type: 'execution/approval-requested',
+      executionId,
+      request: {
+        requestId: `req-${executionId}`,
+        executionId,
+        summary: 'run a command',
+        options: [
+          { id: 'accept', kind: 'allow_once', label: 'Allow once' },
+          { id: 'decline', kind: 'reject_once', label: 'Reject' },
+        ],
+      },
+    });
+  }
+
+  override async respondToApproval(decision: ApprovalDecision): Promise<void> {
+    this.approvals.push(decision);
+    const executionId = this.currentExecutionId;
+    if (executionId === undefined) {
+      throw new Error('approval without a submission');
+    }
+    setTimeout(() => {
+      this.emit({
+        type: 'execution/output',
+        executionId,
+        channel: 'assistant',
+        text: this.text,
+      });
+      this.emit({ type: 'execution/completed', executionId, stopReason: 'end_turn' });
+    }, 0);
+  }
+}
+
+/**
+ * Two foragers share one Workspace conversation in the live daemon. Only the
+ * executor that submitted the execution may decide its approval: an idle
+ * sibling would otherwise take `defaultDecision` and reject it.
+ */
+async function twoExecutors(
+  conversationOf: 'shared' | 'separate',
+): Promise<{
+  adapter: FakeAdapter;
+  workspace: Workspace;
+  owner: WorkspaceForagerExecutor;
+  sibling: WorkspaceForagerExecutor;
+}> {
+  const adapter = new FakeAdapter({ askApproval: true, output: 'APPROVED' });
+  await adapter.start();
+  const workspace = new Workspace(adapter);
+  const project = createKernel().registerProject(mkdtempSync(join(tmpdir(), 'wax-forager-')));
+  const ownerConversation = await workspace.createConversation(project);
+  const siblingConversation =
+    conversationOf === 'shared' ? ownerConversation : await workspace.createConversation(project);
+  const sibling = new WorkspaceForagerExecutor({
+    workspace,
+    conversation: siblingConversation,
+  });
+  const owner = new WorkspaceForagerExecutor({
+    workspace,
+    conversation: ownerConversation,
+    onApproval: async () => 'allow_once',
+  });
+  return {
+    adapter,
+    workspace,
+    owner,
+    sibling,
+  };
+}
+
+for (const conversationOf of ['shared', 'separate'] as const) {
+  test(`an idle sibling forager never decides a ${conversationOf} approval`, async (t) => {
+    const fixture = await twoExecutors(conversationOf);
+    t.after(async () => {
+      fixture.owner.dispose();
+      fixture.sibling.dispose();
+      await fixture.workspace.stop();
+    });
+
+    const value = await fixture.owner.execute(foragerNode(), { kind: 'text', text: 'go' });
+
+    assert.deepEqual(value, { kind: 'text', text: 'APPROVED' });
+    assert.deepEqual(
+      fixture.adapter.approvals.map((decision) => decision.kind),
+      ['allow_once'],
+      'only the owning executor may decide the approval',
+    );
+  });
+}
+
+test(
+  'an approval emitted before submit returns is adopted by its own executor',
+  { timeout: 2_000 },
+  async (t) => {
+    const adapter = new SubmitApprovalAdapter('EARLY');
+    await adapter.start();
+    const workspace = new Workspace(adapter);
+    const project = createKernel().registerProject(mkdtempSync(join(tmpdir(), 'wax-forager-')));
+    const conversation = await workspace.createConversation(project);
+    const executor = new WorkspaceForagerExecutor({
+      workspace,
+      conversation,
+      onApproval: async () => 'allow_once',
+    });
+    t.after(async () => {
+      executor.dispose();
+      await workspace.stop();
+    });
+
+    const value = await executor.execute(foragerNode(), { kind: 'text', text: 'early' });
+
+    assert.deepEqual(value, { kind: 'text', text: 'EARLY' });
+    assert.deepEqual(
+      adapter.approvals.map((decision) => decision.kind),
+      ['allow_once'],
+    );
+  },
+);

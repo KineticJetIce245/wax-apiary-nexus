@@ -106,19 +106,6 @@ async function waitQueueStatus(
 
 test(
   'a queued wake parks no guard until the running guard is allowed',
-  {
-    // M16d product bug: every WorkspaceForagerExecutor subscribes to the whole
-    // Workspace and `handleEvent` does not filter by conversation, so the idle
-    // second live's executor also handles the first live's approval event. With
-    // no active execution it takes the `defaultDecision` path and decides
-    // `reject_once` on the shared conversation. Observed with two co-loaded
-    // LiveHives: approvals=[reject_once], execution completed, guard still
-    // listed, session not busy. One loaded live parks the guard correctly.
-    // This test is ready for a src fix; it is not evidence while skipped.
-    skip:
-      'M16d product bug: a co-loaded second live auto-rejects the first live\'s ' +
-      'approval (workspace-wide approval-event fan-out in WorkspaceForagerExecutor)',
-  },
   async (t) => {
     const context = await setup();
     t.after(async () => {

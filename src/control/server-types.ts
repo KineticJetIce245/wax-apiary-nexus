@@ -95,6 +95,7 @@ export type ControlErrorCode =
   | 'guard-expired'
   | 'approval-timeout'
   | 'execution-cancelled'
+  | 'dispatch-timeout'
   | 'too-large'
   | 'unsupported-media-type'
   | 'internal';

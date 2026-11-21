@@ -11,6 +11,7 @@ import {
   type NodeExecutor,
   type Value,
 } from '../runtime/index.js';
+import { ConversationBusyError, SessionBusyError } from './session-errors.js';
 import type {
   Conversation,
   Execution,
@@ -119,6 +120,12 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
       this.ownedExecutionIds.add(submitted.id);
     } catch (error) {
       this.activeContext = undefined;
+      if (error instanceof ConversationBusyError) {
+        // Another caller (for example `POST /dispatch`) holds the same native
+        // conversation. That is a session-level busy outcome, not a failed
+        // execution: reporting it as `failed` would turn it into a 500.
+        throw new SessionBusyError(this.conversation.id);
+      }
       throw new ForagerExecutionError(node.id, 'failed', messageOf(error), { cause: error });
     } finally {
       this.pendingSubmissions -= 1;

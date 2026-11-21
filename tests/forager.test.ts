@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import type { ApprovalDecision, ApprovalRequest } from '../src/adapters/harness.js';
 import { ForagerExecutionError, WorkspaceForagerExecutor, type ApprovalHandler } from '../src/session/forager.js';
+import { SessionBusyError } from '../src/session/session-errors.js';
 import { createKernel } from '../src/project/kernel.js';
 import { parseComposition, type ForagerNode, type Value } from '../src/runtime/index.js';
 import { Workspace } from '../src/session/workspace.js';
@@ -445,3 +446,30 @@ test(
     );
   },
 );
+
+test('a conversation already held by another execution surfaces SessionBusyError', async (t) => {
+  const adapter = new FakeAdapter({ askApproval: true });
+  await adapter.start();
+  const workspace = new Workspace(adapter);
+  const project = createKernel().registerProject(mkdtempSync(join(tmpdir(), 'wax-forager-')));
+  const conversation = await workspace.createConversation(project);
+  const executor = new WorkspaceForagerExecutor({ workspace, conversation });
+  t.after(async () => {
+    executor.dispose();
+    await workspace.stop();
+  });
+
+  // The pending approval keeps the first execution running, so the
+  // conversation is busy when the executor submits its own prompt.
+  await workspace.submit(conversation.id, 'hold');
+
+  await assert.rejects(
+    executor.execute(foragerNode(), { kind: 'text', text: 'wake' }),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionBusyError);
+      assert.equal(error.sessionId, conversation.id);
+      return true;
+    },
+  );
+  assert.equal(adapter.prompts.length, 1, 'the busy submit never reaches the adapter');
+});

@@ -1,3 +1,9 @@
+import {
+  DispatchConflictError,
+  DispatchExecutionError,
+  DispatchSessionNotFoundError,
+  DispatchTimeoutError,
+} from '../b/dispatch-service.js';
 import { LiveHiveServiceError } from '../b/live-hive-service-errors.js';
 import {
   GraphAnswerError,
@@ -11,12 +17,17 @@ import { CompositionValidationError, QueueFullError } from '../runtime/index.js'
 import { SessionQueueFullError } from '../daemon/session-execution-queue.js';
 import { ForagerExecutionError } from '../session/forager.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
+import { ConversationBusyError, SessionBusyError } from '../session/session-errors.js';
 import { HttpError } from './server-types.js';
 
 /** Stable HTTP mapping; no native/prompt/output text is ever forwarded. */
 export function toHttpError(error: unknown): HttpError {
   if (error instanceof HttpError) {
     return error;
+  }
+  const mapped = mapSessionAndDispatchError(error);
+  if (mapped !== undefined) {
+    return mapped;
   }
   if (error instanceof LiveHiveServiceError) {
     switch (error.kind) {
@@ -83,4 +94,31 @@ export function toHttpError(error: unknown): HttpError {
     return new HttpError(500, 'internal', 'internal error');
   }
   return new HttpError(500, 'internal', 'internal error');
+}
+
+/**
+ * Session-layer and dispatch errors. Both layers define their own classes and
+ * otherwise fall through to `internal`, so they are mapped explicitly here.
+ * A busy conversation and a busy session are the same client-visible outcome:
+ * the caller must retry later, not treat the run as an internal fault.
+ */
+function mapSessionAndDispatchError(error: unknown): HttpError | undefined {
+  if (error instanceof ConversationBusyError || error instanceof SessionBusyError) {
+    return new HttpError(409, 'session-busy', 'session is busy');
+  }
+  if (error instanceof DispatchSessionNotFoundError) {
+    return new HttpError(404, 'not-found', 'dispatch session is not registered');
+  }
+  if (error instanceof DispatchConflictError) {
+    return new HttpError(409, 'conflict', 'dispatch session parameters conflict with the session');
+  }
+  if (error instanceof DispatchTimeoutError) {
+    return new HttpError(409, 'dispatch-timeout', 'dispatch timed out');
+  }
+  if (error instanceof DispatchExecutionError) {
+    return error.state === 'cancelled'
+      ? new HttpError(409, 'execution-cancelled', 'execution was cancelled')
+      : new HttpError(500, 'internal', 'internal error');
+  }
+  return undefined;
 }

@@ -1,0 +1,1467 @@
+{
+  "schemaVersion": 1,
+  "metrics": {
+    "src/adapters/codex/adapter.ts::class CodexAppServerAdapter": {
+      "bodyLines": 802,
+      "publicMethods": 10,
+      "constructorDependencies": 1
+    },
+    "src/adapters/codex/adapter.ts::function approvalSummary": {
+      "lines": 29,
+      "cyclomatic": 12,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "src/adapters/codex/adapter.ts::method CodexAppServerAdapter.handleItem": {
+      "lines": 74,
+      "cyclomatic": 21,
+      "nesting": 4,
+      "parameters": 3
+    },
+    "src/adapters/codex/adapter.ts::method CodexAppServerAdapter.handleNotification": {
+      "lines": 76,
+      "cyclomatic": 25,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/adapters/codex/adapter.ts::method CodexAppServerAdapter.handleServerRequest": {
+      "lines": 57,
+      "cyclomatic": 19,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "src/adapters/codex/adapter.ts::method CodexAppServerAdapter.start": {
+      "lines": 91,
+      "cyclomatic": 8,
+      "nesting": 3,
+      "parameters": 0
+    },
+    "src/adapters/codex/adapter.ts::method CodexAppServerAdapter.submit": {
+      "lines": 61,
+      "cyclomatic": 13,
+      "nesting": 2,
+      "parameters": 4
+    },
+    "src/adapters/codex/rpc-client.ts::method CodexRpcClient.handleLine": {
+      "lines": 35,
+      "cyclomatic": 12,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/adapters/dsh-acp/adapter.ts::class DshAcpAdapter": {
+      "bodyLines": 508,
+      "publicMethods": 10,
+      "constructorDependencies": 1
+    },
+    "src/adapters/dsh-acp/adapter.ts::method DshAcpAdapter.handleNotification": {
+      "lines": 43,
+      "cyclomatic": 14,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/adapters/dsh-acp/adapter.ts::method DshAcpAdapter.start": {
+      "lines": 82,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 0
+    },
+    "src/adapters/dsh-acp/adapter.ts::method DshAcpAdapter.submit": {
+      "lines": 73,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 4
+    },
+    "src/b/live-hive-codec.ts::function toCompositionDefinition": {
+      "lines": 51,
+      "cyclomatic": 9,
+      "nesting": 3,
+      "parameters": 1
+    },
+    "src/b/live-hive-repository.ts::class LiveHiveRepository": {
+      "bodyLines": 171,
+      "publicMethods": 16,
+      "constructorDependencies": 2
+    },
+    "src/b/live-hive-service.ts::function bindingsFor": {
+      "lines": 30,
+      "cyclomatic": 14,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/b/schedule-validation.ts::function parseScheduleItem": {
+      "lines": 38,
+      "cyclomatic": 12,
+      "nesting": 2,
+      "parameters": 5
+    },
+    "src/b/validation.ts::function parseBee": {
+      "lines": 31,
+      "cyclomatic": 12,
+      "nesting": 1,
+      "parameters": 3
+    },
+    "src/b/validation.ts::function parseHiveGraph": {
+      "lines": 50,
+      "cyclomatic": 14,
+      "nesting": 2,
+      "parameters": 3
+    },
+    "src/b/validation.ts::function validateGraphReferences": {
+      "lines": 30,
+      "cyclomatic": 11,
+      "nesting": 4,
+      "parameters": 4
+    },
+    "src/cli/cli-shared.ts::function selectHarness": {
+      "lines": 27,
+      "cyclomatic": 13,
+      "nesting": 1,
+      "parameters": 3
+    },
+    "src/cli/cli.ts::function runCli": {
+      "lines": 36,
+      "cyclomatic": 11,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "src/cli/control-cli.ts::function parseCliTokens": {
+      "lines": 48,
+      "cyclomatic": 13,
+      "nesting": 3,
+      "parameters": 3
+    },
+    "src/cli/control-cli.ts::function runSessionCli": {
+      "lines": 53,
+      "cyclomatic": 13,
+      "nesting": 4,
+      "parameters": 2
+    },
+    "src/cli/dispatch-cli.ts::function dispatchCommand": {
+      "lines": 35,
+      "cyclomatic": 12,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "src/cli/guard-cli.ts::function runGuardCli": {
+      "lines": 47,
+      "cyclomatic": 11,
+      "nesting": 4,
+      "parameters": 2
+    },
+    "src/cli/live-cli.ts::function executeLive": {
+      "lines": 29,
+      "cyclomatic": 11,
+      "nesting": 1,
+      "parameters": 5
+    },
+    "src/cli/live-cli.ts::function liveCommand": {
+      "lines": 25,
+      "cyclomatic": 11,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "src/cli/waxd-cli.ts::function parseWaxdArgs": {
+      "lines": 97,
+      "cyclomatic": 30,
+      "nesting": 3,
+      "parameters": 2
+    },
+    "src/cli/waxd-cli.ts::function runWaxdCli": {
+      "lines": 129,
+      "cyclomatic": 13,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/control/client-discovery.ts::function discoverDaemon": {
+      "lines": 51,
+      "cyclomatic": 12,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "src/control/client-discovery.ts::function parseLoopbackUrl": {
+      "lines": 42,
+      "cyclomatic": 16,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "src/control/client-guard.ts::function parseGuardSummary": {
+      "lines": 39,
+      "cyclomatic": 12,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/control/client.ts::method ControlClient.request": {
+      "lines": 65,
+      "cyclomatic": 10,
+      "nesting": 2,
+      "parameters": 3
+    },
+    "src/control/http-errors.ts::function toHttpError": {
+      "lines": 71,
+      "cyclomatic": 26,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/control/http-server.ts::arrow <anonymous@121>": {
+      "lines": 61,
+      "cyclomatic": 5,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/control/http-server.ts::method ControlHttpServer.handle": {
+      "lines": 67,
+      "cyclomatic": 9,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/control/http-server.ts::method ControlHttpServer.readBody": {
+      "lines": 63,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "src/control/live-routes.ts::function dispatchLiveRoute": {
+      "lines": 42,
+      "cyclomatic": 14,
+      "nesting": 1,
+      "parameters": 5
+    },
+    "src/control/route-match.ts::function matchRoute": {
+      "lines": 107,
+      "cyclomatic": 45,
+      "nesting": 3,
+      "parameters": 2
+    },
+    "src/control/routes.ts::function dispatchRoutes": {
+      "lines": 119,
+      "cyclomatic": 36,
+      "nesting": 3,
+      "parameters": 5
+    },
+    "src/control/server-context.ts::constructor ControlServerContext": {
+      "lines": 106,
+      "cyclomatic": 34,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/control/server-lifecycle.ts::method ControlServerLifecycle.startInternal": {
+      "lines": 148,
+      "cyclomatic": 19,
+      "nesting": 2,
+      "parameters": 0
+    },
+    "src/daemon/daemon-lock.ts::function parseLock": {
+      "lines": 24,
+      "cyclomatic": 11,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "src/daemon/daemon-lock.ts::method DaemonLock.acquire": {
+      "lines": 76,
+      "cyclomatic": 14,
+      "nesting": 3,
+      "parameters": 2
+    },
+    "src/daemon/graph-host.ts::class GraphHost": {
+      "bodyLines": 91,
+      "publicMethods": 13,
+      "constructorDependencies": 1
+    },
+    "src/daemon/graph-host/context.ts::constructor GraphHostContext": {
+      "lines": 78,
+      "cyclomatic": 20,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/daemon/graph-host/execution.ts::function pumpToQuiescence": {
+      "lines": 57,
+      "cyclomatic": 15,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/daemon/graph-host/lifecycle.ts::function loadGraphLocked": {
+      "lines": 174,
+      "cyclomatic": 28,
+      "nesting": 3,
+      "parameters": 4
+    },
+    "src/daemon/graph-host/lifecycle.ts::function releaseGraphResources": {
+      "lines": 62,
+      "cyclomatic": 14,
+      "nesting": 3,
+      "parameters": 5
+    },
+    "src/daemon/live-hive-catalog.ts::function parseEntry": {
+      "lines": 31,
+      "cyclomatic": 13,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "src/daemon/scheduler.ts::class Scheduler": {
+      "bodyLines": 260,
+      "publicMethods": 4,
+      "constructorDependencies": 1
+    },
+    "src/daemon/scheduler.ts::function parseSchedulerState": {
+      "lines": 61,
+      "cyclomatic": 20,
+      "nesting": 3,
+      "parameters": 1
+    },
+    "src/daemon/scheduler.ts::function reconcileState": {
+      "lines": 51,
+      "cyclomatic": 10,
+      "nesting": 3,
+      "parameters": 3
+    },
+    "src/daemon/scheduler.ts::method Scheduler.runDue": {
+      "lines": 62,
+      "cyclomatic": 14,
+      "nesting": 3,
+      "parameters": 0
+    },
+    "src/graph/binding.ts::function validateBindings": {
+      "lines": 101,
+      "cyclomatic": 15,
+      "nesting": 3,
+      "parameters": 4
+    },
+    "src/graph/binding.ts::function validateFreshMetadata": {
+      "lines": 46,
+      "cyclomatic": 13,
+      "nesting": 2,
+      "parameters": 4
+    },
+    "src/graph/binding.ts::function validateSessionBinding": {
+      "lines": 75,
+      "cyclomatic": 11,
+      "nesting": 1,
+      "parameters": 6
+    },
+    "src/graph/registry.ts::method GraphRegistry.sweep": {
+      "lines": 56,
+      "cyclomatic": 9,
+      "nesting": 2,
+      "parameters": 0
+    },
+    "src/graph/residency.ts::class GraphResidency": {
+      "bodyLines": 129,
+      "publicMethods": 16,
+      "constructorDependencies": 2
+    },
+    "src/runtime/definition-flow-config.ts::function parseForkConfig": {
+      "lines": 53,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 3
+    },
+    "src/runtime/definition-flow-config.ts::function parseMergeConfig": {
+      "lines": 88,
+      "cyclomatic": 21,
+      "nesting": 6,
+      "parameters": 3
+    },
+    "src/runtime/definition-nodes.ts::arrow <anonymous@190>": {
+      "lines": 55,
+      "cyclomatic": 13,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/runtime/definition-nodes.ts::function parseEdges": {
+      "lines": 74,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 3
+    },
+    "src/runtime/definition-nodes.ts::function parseNodes": {
+      "lines": 101,
+      "cyclomatic": 31,
+      "nesting": 8,
+      "parameters": 3
+    },
+    "src/runtime/definition-nodes.ts::function validateEdgeShape": {
+      "lines": 66,
+      "cyclomatic": 18,
+      "nesting": 4,
+      "parameters": 3
+    },
+    "src/runtime/definition-task-config.ts::function parseConditionConfig": {
+      "lines": 49,
+      "cyclomatic": 11,
+      "nesting": 2,
+      "parameters": 3
+    },
+    "src/runtime/definition-task-config.ts::function parseUserConfig": {
+      "lines": 53,
+      "cyclomatic": 15,
+      "nesting": 3,
+      "parameters": 3
+    },
+    "src/runtime/definition-task-config.ts::function parseWorkerConfig": {
+      "lines": 83,
+      "cyclomatic": 12,
+      "nesting": 4,
+      "parameters": 4
+    },
+    "src/runtime/definition-triggers.ts::arrow <anonymous@77>": {
+      "lines": 50,
+      "cyclomatic": 12,
+      "nesting": 3,
+      "parameters": 2
+    },
+    "src/runtime/definition-triggers.ts::function parseTriggers": {
+      "lines": 69,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 3
+    },
+    "src/runtime/field.ts::function snapshotField": {
+      "lines": 57,
+      "cyclomatic": 14,
+      "nesting": 3,
+      "parameters": 3
+    },
+    "src/runtime/json-value.ts::function walk": {
+      "lines": 51,
+      "cyclomatic": 16,
+      "nesting": 3,
+      "parameters": 3
+    },
+    "src/runtime/runtime.ts::class PheromoneRuntime": {
+      "bodyLines": 2215,
+      "publicMethods": 9,
+      "constructorDependencies": 2
+    },
+    "src/runtime/runtime.ts::function evaluateCondition": {
+      "lines": 27,
+      "cyclomatic": 11,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.activate": {
+      "lines": 55,
+      "cyclomatic": 7,
+      "nesting": 4,
+      "parameters": 3
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.applyField": {
+      "lines": 123,
+      "cyclomatic": 24,
+      "nesting": 4,
+      "parameters": 1
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.arriveAtMerge": {
+      "lines": 170,
+      "cyclomatic": 26,
+      "nesting": 2,
+      "parameters": 3
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.assertAttachmentAnswer": {
+      "lines": 31,
+      "cyclomatic": 12,
+      "nesting": 1,
+      "parameters": 3
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.assertUserValue": {
+      "lines": 33,
+      "cyclomatic": 11,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.expireOverdueQueues": {
+      "lines": 53,
+      "cyclomatic": 10,
+      "nesting": 4,
+      "parameters": 0
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.exportField": {
+      "lines": 53,
+      "cyclomatic": 17,
+      "nesting": 3,
+      "parameters": 0
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.failFork": {
+      "lines": 54,
+      "cyclomatic": 15,
+      "nesting": 4,
+      "parameters": 3
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.failMissingJoins": {
+      "lines": 42,
+      "cyclomatic": 12,
+      "nesting": 3,
+      "parameters": 0
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.nextWakeAt": {
+      "lines": 30,
+      "cyclomatic": 12,
+      "nesting": 3,
+      "parameters": 0
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.outputTargets": {
+      "lines": 60,
+      "cyclomatic": 18,
+      "nesting": 4,
+      "parameters": 2
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.pruneJoinTombstones": {
+      "lines": 37,
+      "cyclomatic": 11,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.pump": {
+      "lines": 51,
+      "cyclomatic": 7,
+      "nesting": 4,
+      "parameters": 0
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.pushPheromone": {
+      "lines": 59,
+      "cyclomatic": 11,
+      "nesting": 1,
+      "parameters": 5
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.requestGuard": {
+      "lines": 83,
+      "cyclomatic": 7,
+      "nesting": 2,
+      "parameters": 4
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.restoreJoins": {
+      "lines": 130,
+      "cyclomatic": 31,
+      "nesting": 4,
+      "parameters": 2
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.runNode": {
+      "lines": 56,
+      "cyclomatic": 12,
+      "nesting": 2,
+      "parameters": 3
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.settleCompleteJoins": {
+      "lines": 67,
+      "cyclomatic": 16,
+      "nesting": 4,
+      "parameters": 0
+    },
+    "src/runtime/runtime.ts::method PheromoneRuntime.takeRunnable": {
+      "lines": 55,
+      "cyclomatic": 13,
+      "nesting": 3,
+      "parameters": 1
+    },
+    "src/runtime/worker.ts::arrow <anonymous@212>": {
+      "lines": 184,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "src/runtime/worker.ts::function resolveWorkerCwd": {
+      "lines": 69,
+      "cyclomatic": 13,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "src/runtime/worker.ts::function runWorker": {
+      "lines": 206,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "src/session/connection.ts::function parseConnectionConfig": {
+      "lines": 29,
+      "cyclomatic": 15,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/session/connection.ts::function resolveCodexExecutable": {
+      "lines": 45,
+      "cyclomatic": 19,
+      "nesting": 3,
+      "parameters": 2
+    },
+    "src/session/instantiate-foragers.ts::function instantiateForagers": {
+      "lines": 273,
+      "cyclomatic": 42,
+      "nesting": 7,
+      "parameters": 1
+    },
+    "src/session/session-sweeper.ts::function sweepIdleSessions": {
+      "lines": 48,
+      "cyclomatic": 11,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/session/workspace.ts::class Workspace": {
+      "bodyLines": 597,
+      "publicMethods": 13,
+      "constructorDependencies": 2
+    },
+    "src/session/workspace.ts::method Workspace.closeConversation": {
+      "lines": 49,
+      "cyclomatic": 11,
+      "nesting": 3,
+      "parameters": 1
+    },
+    "src/session/workspace.ts::method Workspace.handleAdapterEvent": {
+      "lines": 117,
+      "cyclomatic": 27,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "src/session/workspace.ts::method Workspace.replace": {
+      "lines": 36,
+      "cyclomatic": 12,
+      "nesting": 3,
+      "parameters": 3
+    },
+    "src/session/workspace.ts::method Workspace.resumeConversation": {
+      "lines": 42,
+      "cyclomatic": 11,
+      "nesting": 2,
+      "parameters": 3
+    },
+    "src/session/workspace.ts::method Workspace.submit": {
+      "lines": 55,
+      "cyclomatic": 9,
+      "nesting": 2,
+      "parameters": 3
+    },
+    "src/storage/conversation-store.ts::function isRecord": {
+      "lines": 21,
+      "cyclomatic": 12,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "src/storage/honey.ts::function assertValueShape": {
+      "lines": 36,
+      "cyclomatic": 12,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/storage/honey.ts::function parseHover": {
+      "lines": 24,
+      "cyclomatic": 11,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/storage/honey.ts::function parseJoins": {
+      "lines": 127,
+      "cyclomatic": 25,
+      "nesting": 3,
+      "parameters": 2
+    },
+    "src/storage/honey.ts::function parseNodeState": {
+      "lines": 40,
+      "cyclomatic": 12,
+      "nesting": 2,
+      "parameters": 2
+    },
+    "src/storage/honey.ts::function parsePheromone": {
+      "lines": 67,
+      "cyclomatic": 26,
+      "nesting": 3,
+      "parameters": 2
+    },
+    "src/storage/run-store.ts::function parseRecord": {
+      "lines": 30,
+      "cyclomatic": 14,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "src/storage/run-store.ts::function validateRecord": {
+      "lines": 26,
+      "cyclomatic": 13,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-cli-graph.test.ts::arrow <anonymous@18>": {
+      "lines": 74,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-cli-guard.test.ts::arrow <anonymous@249>": {
+      "lines": 80,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-cli-live.test.ts::arrow <anonymous@21>": {
+      "lines": 216,
+      "cyclomatic": 15,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-cli-queue.test.ts::arrow <anonymous@195>": {
+      "lines": 60,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 0
+    },
+    "tests/control-cli-session.test.ts::arrow <anonymous@211>": {
+      "lines": 66,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-cli-session.test.ts::arrow <anonymous@278>": {
+      "lines": 65,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-cli-session.test.ts::arrow <anonymous@344>": {
+      "lines": 94,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-cli-session.test.ts::arrow <anonymous@67>": {
+      "lines": 143,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-cli-waxd.test.ts::arrow <anonymous@160>": {
+      "lines": 53,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/control-cli-waxd.test.ts::arrow <anonymous@321>": {
+      "lines": 51,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 0
+    },
+    "tests/control-cli-waxd.test.ts::arrow <anonymous@538>": {
+      "lines": 69,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-cli-waxd.test.ts::arrow <anonymous@72>": {
+      "lines": 87,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/control-server-approval-isolation.test.ts::arrow <anonymous@105>": {
+      "lines": 58,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-catalog.test.ts::arrow <anonymous@139>": {
+      "lines": 54,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-server-error-log.test.ts::arrow <anonymous@71>": {
+      "lines": 92,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-execution-outcome.test.ts::arrow <anonymous@67>": {
+      "lines": 55,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-server-graph.test.ts::arrow <anonymous@161>": {
+      "lines": 103,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-graph.test.ts::arrow <anonymous@348>": {
+      "lines": 102,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-graph.test.ts::arrow <anonymous@74>": {
+      "lines": 86,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-guard-races.test.ts::arrow <anonymous@196>": {
+      "lines": 59,
+      "cyclomatic": 4,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/control-server-guard-races.test.ts::arrow <anonymous@29>": {
+      "lines": 65,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-guard-stress.test.ts::arrow <anonymous@28>": {
+      "lines": 58,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-guard.test.ts::arrow <anonymous@291>": {
+      "lines": 72,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-server-http.test.ts::arrow <anonymous@205>": {
+      "lines": 81,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-http.test.ts::arrow <anonymous@61>": {
+      "lines": 60,
+      "cyclomatic": 3,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-server-lives.test.ts::arrow <anonymous@42>": {
+      "lines": 129,
+      "cyclomatic": 3,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/control-server-queue-guard.test.ts::arrow <anonymous@109>": {
+      "lines": 126,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-queue.test.ts::arrow <anonymous@147>": {
+      "lines": 76,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-server-queue.test.ts::arrow <anonymous@303>": {
+      "lines": 107,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-session-busy.test.ts::arrow <anonymous@30>": {
+      "lines": 83,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-session.test.ts::arrow <anonymous@291>": {
+      "lines": 75,
+      "cyclomatic": 3,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/control-server-session.test.ts::arrow <anonymous@66>": {
+      "lines": 137,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/conversation-store.test.ts::arrow <anonymous@147>": {
+      "lines": 55,
+      "cyclomatic": 3,
+      "nesting": 2,
+      "parameters": 0
+    },
+    "tests/conversation-store.test.ts::arrow <anonymous@210>": {
+      "lines": 75,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/dsh-acp-approvals.test.ts::arrow <anonymous@112>": {
+      "lines": 63,
+      "cyclomatic": 1,
+      "nesting": 1,
+      "parameters": 0
+    },
+    "tests/dsh-acp-approvals.test.ts::arrow <anonymous@176>": {
+      "lines": 58,
+      "cyclomatic": 1,
+      "nesting": 1,
+      "parameters": 0
+    },
+    "tests/graph-binding-store.test.ts::arrow <anonymous@159>": {
+      "lines": 79,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 0
+    },
+    "tests/graph-host-execution.test.ts::arrow <anonymous@188>": {
+      "lines": 57,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-execution.test.ts::arrow <anonymous@371>": {
+      "lines": 63,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-execution.test.ts::arrow <anonymous@480>": {
+      "lines": 64,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-execution.test.ts::arrow <anonymous@90>": {
+      "lines": 97,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@106>": {
+      "lines": 59,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@166>": {
+      "lines": 53,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@269>": {
+      "lines": 64,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@334>": {
+      "lines": 53,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@388>": {
+      "lines": 57,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@497>": {
+      "lines": 51,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@122>": {
+      "lines": 62,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@185>": {
+      "lines": 65,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@251>": {
+      "lines": 54,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@306>": {
+      "lines": 58,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@365>": {
+      "lines": 56,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@51>": {
+      "lines": 70,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@210>": {
+      "lines": 57,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@268>": {
+      "lines": 61,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@330>": {
+      "lines": 95,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@426>": {
+      "lines": 59,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@90>": {
+      "lines": 74,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/graph-host-read.test.ts::arrow <anonymous@157>": {
+      "lines": 85,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-residency.test.ts::arrow <anonymous@246>": {
+      "lines": 57,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-residency.test.ts::arrow <anonymous@304>": {
+      "lines": 54,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-residency.test.ts::arrow <anonymous@68>": {
+      "lines": 88,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/graph-host-scheduler.test.ts::arrow <anonymous@83>": {
+      "lines": 60,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/honey.test.ts::arrow <anonymous@385>": {
+      "lines": 58,
+      "cyclomatic": 4,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/honey.test.ts::arrow <anonymous@444>": {
+      "lines": 58,
+      "cyclomatic": 4,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/instantiate-foragers-fresh-once.test.ts::arrow <anonymous@177>": {
+      "lines": 52,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/instantiate-foragers-fresh-once.test.ts::arrow <anonymous@335>": {
+      "lines": 59,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/instantiate-foragers-multi-harness.test.ts::arrow <anonymous@55>": {
+      "lines": 72,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/instantiate-foragers-validation.test.ts::arrow <anonymous@424>": {
+      "lines": 55,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/instantiate-foragers-validation.test.ts::arrow <anonymous@520>": {
+      "lines": 51,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/integration/dsh-approval-isolation.test.ts::arrow <anonymous@82>": {
+      "lines": 129,
+      "cyclomatic": 6,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/dsh-approval-timeout.test.ts::arrow <anonymous@85>": {
+      "lines": 134,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-cli.test.ts::arrow <anonymous@92>": {
+      "lines": 171,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-concurrent.test.ts::arrow <anonymous@80>": {
+      "lines": 226,
+      "cyclomatic": 5,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@178>": {
+      "lines": 142,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@325>": {
+      "lines": 123,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@453>": {
+      "lines": 124,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@58>": {
+      "lines": 115,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-session-busy.test.ts::arrow <anonymous@59>": {
+      "lines": 191,
+      "cyclomatic": 6,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/integration/mixed-harness-product.test.ts::arrow <anonymous@82>": {
+      "lines": 100,
+      "cyclomatic": 7,
+      "nesting": 3,
+      "parameters": 1
+    },
+    "tests/integration/session-registry-multi-harness.test.ts::arrow <anonymous@63>": {
+      "lines": 115,
+      "cyclomatic": 8,
+      "nesting": 3,
+      "parameters": 1
+    },
+    "tests/integration/waxd-dsh-forced-restart.test.ts::arrow <anonymous@37>": {
+      "lines": 223,
+      "cyclomatic": 13,
+      "nesting": 3,
+      "parameters": 1
+    },
+    "tests/integration/waxd-dsh-shutdown-restart.test.ts::arrow <anonymous@35>": {
+      "lines": 230,
+      "cyclomatic": 4,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/integration/waxd-live-operations.test.ts::arrow <anonymous@152>": {
+      "lines": 298,
+      "cyclomatic": 22,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/integration/waxd-mixed-harness.test.ts::arrow <anonymous@148>": {
+      "lines": 236,
+      "cyclomatic": 24,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/integration/waxd-partial-restart.test.ts::arrow <anonymous@183>": {
+      "lines": 62,
+      "cyclomatic": 4,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/integration/waxd-scheduler.test.ts::arrow <anonymous@87>": {
+      "lines": 150,
+      "cyclomatic": 5,
+      "nesting": 2,
+      "parameters": 1
+    },
+    "tests/live-hive-catalog.test.ts::arrow <anonymous@44>": {
+      "lines": 51,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/live-hive-objects.test.ts::arrow <anonymous@144>": {
+      "lines": 64,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-fork-merge.test.ts::arrow <anonymous@236>": {
+      "lines": 53,
+      "cyclomatic": 4,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-fork-merge.test.ts::arrow <anonymous@362>": {
+      "lines": 64,
+      "cyclomatic": 4,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-fork-merge.test.ts::arrow <anonymous@427>": {
+      "lines": 53,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-fuzz.test.ts::function checkpoint": {
+      "lines": 73,
+      "cyclomatic": 3,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/runtime-fuzz.test.ts::function nestedHoverGraph": {
+      "lines": 62,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-fuzz.test.ts::function runSeed": {
+      "lines": 336,
+      "cyclomatic": 17,
+      "nesting": 7,
+      "parameters": 2
+    },
+    "tests/runtime-merge-structured.test.ts::arrow <anonymous@219>": {
+      "lines": 67,
+      "cyclomatic": 4,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@333>": {
+      "lines": 54,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@388>": {
+      "lines": 62,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@41>": {
+      "lines": 52,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@451>": {
+      "lines": 53,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@94>": {
+      "lines": 238,
+      "cyclomatic": 8,
+      "nesting": 1,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@125>": {
+      "lines": 55,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@224>": {
+      "lines": 82,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@307>": {
+      "lines": 54,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@362>": {
+      "lines": 53,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue-backpressure.test.ts::arrow <anonymous@186>": {
+      "lines": 105,
+      "cyclomatic": 3,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue-backpressure.test.ts::arrow <anonymous@354>": {
+      "lines": 52,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue-backpressure.test.ts::arrow <anonymous@79>": {
+      "lines": 71,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue-ttl.test.ts::arrow <anonymous@145>": {
+      "lines": 68,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue.test.ts::arrow <anonymous@232>": {
+      "lines": 59,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue.test.ts::arrow <anonymous@292>": {
+      "lines": 95,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue.test.ts::arrow <anonymous@388>": {
+      "lines": 100,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue.test.ts::arrow <anonymous@489>": {
+      "lines": 64,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-routing.test.ts::arrow <anonymous@168>": {
+      "lines": 94,
+      "cyclomatic": 7,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/runtime-routing.test.ts::arrow <anonymous@263>": {
+      "lines": 53,
+      "cyclomatic": 1,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/runtime-worker.test.ts::arrow <anonymous@534>": {
+      "lines": 60,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/scheduler.test.ts::function harness": {
+      "lines": 55,
+      "cyclomatic": 3,
+      "nesting": 0,
+      "parameters": 2
+    },
+    "tests/session-registry-multi-harness.test.ts::arrow <anonymous@109>": {
+      "lines": 59,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/session-registry-multi-harness.test.ts::arrow <anonymous@169>": {
+      "lines": 87,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/support/control-cli-daemons.ts::function startMultiWaxd": {
+      "lines": 61,
+      "cyclomatic": 2,
+      "nesting": 0,
+      "parameters": 2
+    },
+    "tests/support/control-cli-daemons.ts::function startWaxd": {
+      "lines": 58,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 3
+    },
+    "tests/support/control-server-http.ts::arrow <anonymous@194>": {
+      "lines": 32,
+      "cyclomatic": 10,
+      "nesting": 5,
+      "parameters": 0
+    },
+    "tests/support/control-server-http.ts::function announcedButUnsentBody": {
+      "lines": 52,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 3
+    },
+    "tests/support/control-server-http.ts::function autoDecideGuards": {
+      "lines": 52,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 5
+    },
+    "tests/support/dsh-daemon-harness.ts::function startChildDaemon": {
+      "lines": 83,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "tests/support/fake-adapter.ts::method FakeAdapter.finish": {
+      "lines": 21,
+      "cyclomatic": 11,
+      "nesting": 1,
+      "parameters": 2
+    },
+    "tests/support/harness-adapter-contract.ts::function assertHarnessAdapterContract": {
+      "lines": 61,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/support/runtime-nested-advanced.ts::function siblingInnerForksComposition": {
+      "lines": 54,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/support/runtime-nested-fixtures.ts::function threeLevelHoverComposition": {
+      "lines": 53,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/waxd-catalog.test.ts::arrow <anonymous@48>": {
+      "lines": 76,
+      "cyclomatic": 1,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/workspace.test.ts::arrow <anonymous@271>": {
+      "lines": 58,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    }
+  }
+}

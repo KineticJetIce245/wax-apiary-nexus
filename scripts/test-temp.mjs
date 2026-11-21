@@ -16,16 +16,25 @@
  *
  * Usage:
  *   node scripts/test-temp.mjs --self-check
+ *   node scripts/test-temp.mjs --e2e
+ *
+ * `--self-check` covers the run-root contract itself. `--e2e` drives the real
+ * test entry points (`scripts/test.mjs`, `scripts/test-runner.mjs`) and asserts
+ * the cleanup paths: a failing build, a failing cleanup (`CLEANUP_FAILED`), and
+ * cleanup on SIGINT. The e2e mode needs no build and never touches `dist/`.
  *
  * Exit codes: 0 = checks passed, 1 = a check failed.
  */
 
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   realpathSync,
+  renameSync,
   rmdirSync,
   symlinkSync,
   unlinkSync,
@@ -33,11 +42,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const RUN_ROOT_NAME = /^wax-test-\d+-\d+$/;
 const WILDCARD = /[*?[\]]/;
 const MAX_ATTEMPTS = 5;
+const MAX_LINK_ATTEMPTS = 20;
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 /** A refused or failed run-root operation. `exitCode` is always non-zero. */
 export class RunRootError extends Error {
@@ -337,37 +348,128 @@ function checkForeignName() {
   return 'foreign name refused, own root untouched';
 }
 
+/**
+ * Next candidate name for a junction probe. It must never equal the run root
+ * that is being linked to: a symlink cannot be created where a directory
+ * already exists, and silently colliding with our own root is exactly the bug
+ * that used to turn this check into a skip. `lastStamp` is monotonic, so every
+ * name handed out is distinct from every earlier run root in this process.
+ */
+function nextReparseName(targetName) {
+  for (let attempt = 0; attempt < MAX_LINK_ATTEMPTS; attempt += 1) {
+    const candidate = nextName();
+    if (candidate !== targetName) {
+      return candidate;
+    }
+  }
+  throw new Error(`cannot pick a link name distinct from ${targetName}`);
+}
+
+/**
+ * Create a junction to `targetRoot` under a name that is free. An `EEXIST`
+ * (a previous crashed run left the name behind) is retried with the next
+ * candidate; any other creation error is a hard failure. `preferredNames` lets
+ * the self-check force an `EEXIST` on the first attempt.
+ */
+function createReparseProbe(targetRoot, preferredNames = []) {
+  const targetName = basename(targetRoot);
+  const tempRoot = systemTempRoot();
+  let lastError;
+  for (let attempt = 0; attempt < MAX_LINK_ATTEMPTS; attempt += 1) {
+    const linkName = preferredNames[attempt] ?? nextReparseName(targetName);
+    if (linkName === targetName || !RUN_ROOT_NAME.test(linkName)) {
+      continue;
+    }
+    const linkPath = join(tempRoot, linkName);
+    try {
+      symlinkSync(targetRoot, linkPath, 'junction');
+    } catch (error) {
+      lastError = error;
+      if (error.code === 'EEXIST') {
+        continue;
+      }
+      throw new Error(`cannot create junction ${linkPath}: ${error.code} ${error.message}`);
+    }
+    return { linkName, linkPath };
+  }
+  throw new Error(
+    `cannot create a unique junction for ${targetRoot}: ${lastError?.message ?? 'all names taken'}`,
+  );
+}
+
 function checkReparsePoint() {
   const target = createRunRoot();
-  const linkName = `wax-test-${Date.now()}-${process.pid}`;
-  const linkPath = join(systemTempRoot(), linkName);
+  let probe;
   try {
-    symlinkSync(target.root, linkPath, 'junction');
-  } catch (error) {
-    cleanupRunRoot(target);
-    return `skipped (cannot create junction: ${error.code})`;
-  }
-  try {
-    expectReject('reparse-point', linkPath, linkName, 'reparse-point');
+    probe = createReparseProbe(target.root);
+    if (probe.linkName === target.name) {
+      throw new Error('the junction link must not reuse the run root name');
+    }
+    if (!lstatSync(probe.linkPath).isSymbolicLink()) {
+      throw new Error(`junction ${probe.linkPath} is not a reparse point`);
+    }
+    expectReject('reparse-point', probe.linkPath, probe.linkName, 'reparse-point');
     if (!existsSync(target.root)) {
       throw new Error('a reparse point must not delete its target');
     }
-    cleanupRunRoot({ root: linkPath, name: linkName });
-    throw new Error('a reparse point must not be deleted as a run root');
-  } catch (error) {
-    if (!(error instanceof RunRootError) || error.reason !== 'reparse-point') {
-      throw error;
+    let cleanupRejection;
+    try {
+      cleanupRunRoot({ root: probe.linkPath, name: probe.linkName });
+    } catch (error) {
+      cleanupRejection = error;
+    }
+    if (
+      !(cleanupRejection instanceof RunRootError) ||
+      cleanupRejection.reason !== 'reparse-point' ||
+      cleanupRejection.exitCode !== 1
+    ) {
+      throw new Error(
+        `deleting a reparse point as a run root must be refused, got ${
+          cleanupRejection?.message ?? 'no error'
+        }`,
+      );
+    }
+    if (!existsSync(target.root)) {
+      throw new Error('a refused cleanup of a reparse point must not delete its target');
     }
   } finally {
-    if (existsSync(linkPath)) {
-      removeEntry(linkPath);
+    if (probe !== undefined && existsSync(probe.linkPath)) {
+      removeEntry(probe.linkPath);
     }
     cleanupRunRoot(target);
   }
-  if (existsSync(linkPath)) {
+  if (probe !== undefined && existsSync(probe.linkPath)) {
     throw new Error('junction probe was not removed');
   }
-  return 'junction refused as reparse point, target untouched';
+  return `junction ${probe.linkName} created, refused as reparse point, target untouched`;
+}
+
+/**
+ * Force the `EEXIST` retry: occupy the first preferred name with a real
+ * junction, then ask for a probe that wants that name. The second junction must
+ * end up under a different name and still be refused as a reparse point.
+ */
+function checkReparseRetry() {
+  const target = createRunRoot();
+  let blocker;
+  let probe;
+  try {
+    blocker = createReparseProbe(target.root);
+    probe = createReparseProbe(target.root, [blocker.linkName]);
+    if (probe.linkName === blocker.linkName) {
+      throw new Error('EEXIST retry reused the occupied link name');
+    }
+    expectReject('retry', probe.linkPath, probe.linkName, 'reparse-point');
+  } finally {
+    if (probe !== undefined && existsSync(probe.linkPath)) {
+      removeEntry(probe.linkPath);
+    }
+    if (blocker !== undefined && existsSync(blocker.linkPath)) {
+      removeEntry(blocker.linkPath);
+    }
+    cleanupRunRoot(target);
+  }
+  return `EEXIST on ${blocker.linkName} retried to ${probe.linkName}`;
 }
 
 function checkBareStringRefused() {
@@ -403,6 +505,7 @@ function runSelfCheck() {
     ['foreign-name', checkForeignName],
     ['bare-string', checkBareStringRefused],
     ['reparse-point', checkReparsePoint],
+    ['reparse-retry', checkReparseRetry],
   ];
   let failed = 0;
   for (const [label, check] of checks) {
@@ -421,6 +524,324 @@ function runSelfCheck() {
   process.stdout.write(`self-check: ok (${checks.length} checks)\n`);
 }
 
+// ---------------------------------------------------------------------------
+// End-to-end cleanup checks (`--e2e`).
+//
+// These drive the real entry points in a scratch project inside one disposable
+// probe root. `test.mjs` is run with its cwd set to the scratch project, so its
+// `dist` is the scratch `dist` and the repository build output is never touched
+// or rebuilt; the scratch `build` script is a deliberate one-line failure.
+// ---------------------------------------------------------------------------
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function waxTempDirectories() {
+  return readdirSync(systemTempRoot(), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('wax-'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function combinedOutput(result) {
+  return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+}
+
+function assertNoCleanupFailure(label, result) {
+  if (combinedOutput(result).includes('CLEANUP_FAILED')) {
+    throw new Error(`${label}: the cleanup unexpectedly failed:\n${combinedOutput(result)}`);
+  }
+}
+
+function runRootFromSummary(stdout) {
+  const match = /runRoot=(.+?) files=(\d+) cleaned=true/.exec(stdout);
+  if (match === null) {
+    throw new Error(`no cleaned run-root summary in:\n${stdout}`);
+  }
+  return { root: match[1], files: Number(match[2]) };
+}
+
+function writeScratchPackage(scratch) {
+  const pkg = {
+    name: 'wax-e2e-build-failure',
+    private: true,
+    scripts: { build: 'node fail-build.mjs' },
+  };
+  writeFileSync(join(scratch, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+  writeFileSync(
+    join(scratch, 'fail-build.mjs'),
+    "process.stderr.write('e2e fixture: build fails on purpose\\n');\nprocess.exit(3);\n",
+  );
+  mkdirSync(join(scratch, 'dist'));
+  writeFileSync(join(scratch, 'dist', 'stale.js'), 'stale build output\n');
+}
+
+/** A failing build must still propagate its exit code and clean the run root. */
+function e2eBuildFailure(scratchRoot) {
+  const scratch = join(scratchRoot, 'build-failure');
+  mkdirSync(scratch);
+  writeScratchPackage(scratch);
+  const result = spawnSync(process.execPath, [join(SCRIPT_DIR, 'test.mjs')], {
+    cwd: scratch,
+    env: childEnv(scratchRoot),
+    encoding: 'utf8',
+  });
+  assertNoCleanupFailure('build-failure', result);
+  const summary = runRootFromSummary(result.stdout ?? '');
+  if (result.status !== 3) {
+    throw new Error(
+      `test.mjs must pass the build exit code 3 through, got ${result.status}:\n${combinedOutput(result)}`,
+    );
+  }
+  if (existsSync(summary.root)) {
+    throw new Error(`build-failure: declared run root still exists: ${summary.root}`);
+  }
+  if (existsSync(join(scratch, 'dist'))) {
+    throw new Error('build-failure: the stale scratch dist was not archived and removed');
+  }
+  return {
+    detail: `test.mjs exit=3, ${summary.root} cleaned, stale dist removed (files=${summary.files})`,
+    roots: [summary.root],
+  };
+}
+
+/**
+ * A cleanup that cannot validate its root must print `CLEANUP_FAILED` and exit
+ * non-zero. A test fixture renames the run root away, so the runner's finally
+ * sees `not-found` instead of the root it created.
+ */
+function e2eCleanupFailure(scratchRoot) {
+  const scratch = join(scratchRoot, 'cleanup-failure');
+  mkdirSync(scratch);
+  const log = join(scratch, 'renamed-root.txt');
+  const fixture = join(scratch, 'detach-root.test.mjs');
+  writeFileSync(
+    fixture,
+    [
+      "import { renameSync, writeFileSync } from 'node:fs';",
+      "import { dirname, join } from 'node:path';",
+      'const runRoot = process.env.TEMP;',
+      'let renamed;',
+      'for (let attempt = 0; attempt < 20 && renamed === undefined; attempt += 1) {',
+      '  const candidate = join(dirname(runRoot), `wax-test-${Date.now()}-${process.pid}`);',
+      '  try {',
+      '    renameSync(runRoot, candidate);',
+      '    renamed = candidate;',
+      '  } catch (error) {',
+      "    if (!['EEXIST', 'EPERM', 'EACCES'].includes(error.code)) throw error;",
+      '    await new Promise((resolve) => setTimeout(resolve, 10));',
+      '  }',
+      '}',
+      "if (renamed === undefined) throw new Error('could not detach the run root');",
+      'writeFileSync(process.env.WAX_E2E_LOG, `${renamed}\\n`);',
+      '',
+    ].join('\n'),
+  );
+  const result = spawnSync(process.execPath, [join(SCRIPT_DIR, 'test-runner.mjs'), fixture], {
+    cwd: scratch,
+    env: { ...childEnv(scratchRoot), WAX_E2E_LOG: log },
+    encoding: 'utf8',
+  });
+  const output = combinedOutput(result);
+  if (result.status !== 1) {
+    throw new Error(`test-runner must exit 1 on cleanup failure, got ${result.status}:\n${output}`);
+  }
+  if (!/CLEANUP_FAILED .*wax-test-/.test(output)) {
+    throw new Error(`cleanup failure did not print CLEANUP_FAILED:\n${output}`);
+  }
+  if (!/cleanup: run root not-found/.test(output)) {
+    throw new Error(`cleanup failure did not report not-found:\n${output}`);
+  }
+  if (/cleaned=true/.test(output)) {
+    throw new Error('a failed cleanup must not print a cleaned summary');
+  }
+  const renamed = readFileSync(log, 'utf8').trim();
+  if (!existsSync(renamed)) {
+    throw new Error(`the detached root is missing: ${renamed}`);
+  }
+  return {
+    detail: `test-runner exit=1 + CLEANUP_FAILED, detached root ${renamed} (removed by probe cleanup)`,
+    roots: [renamed],
+  };
+}
+
+/** The SIGINT handler installed by the runner must clean its roots and exit 130. */
+function e2eSimulatedSigint(scratchRoot) {
+  const scratch = join(scratchRoot, 'sigint');
+  mkdirSync(scratch);
+  const log = join(scratch, 'root.txt');
+  const fixture = join(scratch, 'sigint-probe.mjs');
+  const importUrl = pathToFileURL(join(SCRIPT_DIR, 'test-temp.mjs')).href;
+  writeFileSync(
+    fixture,
+    [
+      `import { createRunRoot } from ${JSON.stringify(importUrl)};`,
+      "import { writeFileSync } from 'node:fs';",
+      'const handle = createRunRoot();',
+      'writeFileSync(process.env.WAX_E2E_LOG, `${handle.root}\\n`);',
+      "process.emit('SIGINT');",
+      "process.stdout.write('signal handler did not exit the process\\n');",
+      '',
+    ].join('\n'),
+  );
+  const result = spawnSync(process.execPath, [fixture], {
+    cwd: scratch,
+    env: { ...childEnv(scratchRoot), WAX_E2E_LOG: log },
+    encoding: 'utf8',
+  });
+  const output = combinedOutput(result);
+  if (result.status !== 130) {
+    throw new Error(`SIGINT handler must exit 130, got ${result.status}:\n${output}`);
+  }
+  if (/signal handler did not exit/.test(output)) {
+    throw new Error('the process continued after SIGINT');
+  }
+  const root = readFileSync(log, 'utf8').trim();
+  if (existsSync(root)) {
+    throw new Error(`SIGINT handler did not clean its run root: ${root}`);
+  }
+  return { detail: `child exit=130, ${root} cleaned`, roots: [root] };
+}
+
+/**
+ * Real console Ctrl+C cannot be delivered from a non-interactive Windows
+ * process: `child.kill('SIGINT')` terminates the child without running JS
+ * handlers. The probe documents that limitation instead of claiming a pass.
+ */
+async function e2eRealSigint(scratchRoot) {
+  const scratch = join(scratchRoot, 'real-sigint');
+  mkdirSync(scratch);
+  const log = join(scratch, 'root.txt');
+  const fixture = join(scratch, 'alive-probe.mjs');
+  const importUrl = pathToFileURL(join(SCRIPT_DIR, 'test-temp.mjs')).href;
+  writeFileSync(
+    fixture,
+    [
+      `import { createRunRoot } from ${JSON.stringify(importUrl)};`,
+      "import { writeFileSync } from 'node:fs';",
+      'const handle = createRunRoot();',
+      'writeFileSync(process.env.WAX_E2E_LOG, `${handle.root}\\n`);',
+      'setInterval(() => {}, 1000);',
+      '',
+    ].join('\n'),
+  );
+  const child = spawn(process.execPath, [fixture], {
+    cwd: scratch,
+    env: { ...childEnv(scratchRoot), WAX_E2E_LOG: log },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let childOutput = '';
+  child.stdout.on('data', (chunk) => {
+    childOutput += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    childOutput += chunk;
+  });
+  let root;
+  for (let attempt = 0; attempt < 200 && root === undefined; attempt += 1) {
+    sleepSync(25);
+    if (existsSync(log)) {
+      root = readFileSync(log, 'utf8').trim();
+    }
+  }
+  if (root === undefined || root.length === 0) {
+    child.kill();
+    throw new Error(`real-sigint probe never reported its root:\n${childOutput}`);
+  }
+  child.kill('SIGINT');
+  const exit = await new Promise((resolveExit) => {
+    child.once('exit', (code, signal) => resolveExit({ code, signal }));
+  });
+  const survived = existsSync(root);
+  return {
+    blocked: true,
+    detail:
+      `child.kill('SIGINT') -> code=${exit.code} signal=${exit.signal}, ` +
+      `run root survived=${survived} (OS termination skips Node signal handlers); ` +
+      `root ${root} removed by probe cleanup`,
+    roots: [root],
+  };
+}
+
+async function runE2E() {
+  const before = waxTempDirectories();
+  const probe = createRunRoot();
+  const declaredRoots = [];
+  const results = [];
+  let failed = 0;
+
+  const scenarios = [
+    ['build-failure', () => e2eBuildFailure(probe.root), true],
+    ['cleanup-failure', () => e2eCleanupFailure(probe.root), true],
+    ['sigint-simulated', () => e2eSimulatedSigint(probe.root), true],
+    ['sigint-real', () => e2eRealSigint(probe.root), false],
+  ];
+
+  try {
+    for (const [label, scenario, blockedIsFailure] of scenarios) {
+      try {
+        const outcome = await scenario();
+        if (outcome.blocked !== true) {
+          process.stdout.write(`e2e: ${label}: PASS ${outcome.detail}\n`);
+          results.push({ label, status: 'PASS' });
+        } else {
+          process.stdout.write(`e2e: ${label}: BLOCKED ${outcome.detail}\n`);
+          results.push({ label, status: 'BLOCKED' });
+          if (blockedIsFailure) {
+            failed += 1;
+          }
+        }
+        declaredRoots.push(...outcome.roots);
+      } catch (error) {
+        failed += 1;
+        process.stdout.write(`e2e: ${label}: FAIL ${error.message}\n`);
+        results.push({ label, status: 'FAIL' });
+      }
+    }
+  } finally {
+    let cleaned;
+    let cleanupError;
+    try {
+      cleaned = cleanupRunRoot(probe);
+    } catch (error) {
+      cleanupError = error;
+    }
+    if (cleaned === undefined) {
+      process.stderr.write(`CLEANUP_FAILED ${probe.root}\n`);
+      process.stderr.write(`cleanup: ${cleanupError?.message ?? 'unknown error'}\n`);
+      failed += 1;
+    }
+    const after = waxTempDirectories();
+    const afterRunRoots = after.filter((name) => name.startsWith('wax-test-'));
+    const planted = declaredRoots.filter((root) => existsSync(root));
+    process.stdout.write(
+      `e2e: temp wax-* before=${before.length} after=${after.length} ` +
+        `wax-test-*=${afterRunRoots.length}\n`,
+    );
+    if (planted.length > 0) {
+      failed += 1;
+      process.stdout.write(`e2e: declared roots still exist: ${planted.join(', ')}\n`);
+    }
+    if (afterRunRoots.length > 0) {
+      failed += 1;
+      process.stdout.write(`e2e: leftover wax-test-* dirs: ${afterRunRoots.join(', ')}\n`);
+    }
+    if (cleaned !== undefined) {
+      process.stdout.write(`${formatRunRootSummary(cleaned)}\n`);
+    }
+  }
+
+  const passed = results.filter((entry) => entry.status === 'PASS').length;
+  const blocked = results.filter((entry) => entry.status === 'BLOCKED').length;
+  if (failed > 0) {
+    process.stdout.write(`e2e: failed ${failed}/${scenarios.length}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(`e2e: ok (${passed} passed, ${blocked} blocked)\n`);
+}
+
 const invokedDirectly =
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
@@ -428,8 +849,10 @@ const invokedDirectly =
 if (invokedDirectly) {
   if (process.argv.includes('--self-check')) {
     runSelfCheck();
+  } else if (process.argv.includes('--e2e')) {
+    await runE2E();
   } else {
-    process.stderr.write('usage: node scripts/test-temp.mjs --self-check\n');
+    process.stderr.write('usage: node scripts/test-temp.mjs --self-check|--e2e\n');
     process.exitCode = 2;
   }
 }

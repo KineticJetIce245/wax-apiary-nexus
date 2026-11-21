@@ -158,6 +158,32 @@ export class LiveHiveClient extends ControlClient {
   }
 }
 
+/**
+ * Queue-only addition. `LiveHiveClient` already sits at the 12-public-method
+ * class budget, so the queue read lives on this narrow subclass instead of
+ * growing the core client. The queue is in memory only, so a 404 is a normal
+ * "unknown item" answer and is never retried.
+ */
+export class QueueClient extends LiveHiveClient {
+  /**
+   * One queue item by id, exactly as the server reports it. Only the two
+   * fields every item must carry are validated; the caller decides how to
+   * display the optional ones.
+   */
+  async getQueue(queueId: string): Promise<Record<string, unknown>> {
+    const body = await this.request('GET', `/queues/${encodeURIComponent(queueId)}`);
+    const queue = body['queue'];
+    if (typeof queue !== 'object' || queue === null || Array.isArray(queue)) {
+      throw protocolError("control response missing 'queue' object");
+    }
+    const item = queue as Record<string, unknown>;
+    if (typeof item['queueId'] !== 'string' || typeof item['status'] !== 'string') {
+      throw protocolError("control response queue item missing 'queueId'/'status'");
+    }
+    return item;
+  }
+}
+
 /** Template-only additions; keeps the core LiveHiveClient at the method cap. */
 export class TemplateClient extends LiveHiveClient {
   async composeTemplate(template: HiveTemplate): Promise<string> {

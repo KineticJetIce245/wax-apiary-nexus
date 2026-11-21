@@ -38,7 +38,6 @@ export {
   GraphHostDisposedError,
   GraphLoadError,
   GraphNotFoundError,
-  GraphSessionBusyError,
 } from './graph-host/types.js';
 
 /**

@@ -10,7 +10,6 @@ import {
   GraphHostDisposedError,
   GraphLoadError,
   GraphNotFoundError,
-  GraphSessionBusyError,
 } from '../daemon/graph-host.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
 import { CompositionValidationError, QueueFullError } from '../runtime/index.js';
@@ -52,9 +51,6 @@ export function toHttpError(error: unknown): HttpError {
   }
   if (error instanceof GraphNotFoundError) {
     return new HttpError(404, 'not-found', 'graph is not loaded');
-  }
-  if (error instanceof GraphSessionBusyError) {
-    return new HttpError(409, 'session-busy', 'session is busy');
   }
   if (error instanceof GraphAnswerError) {
     switch (error.reason) {

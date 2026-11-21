@@ -35,7 +35,10 @@ interface Bridge {
 }
 
 async function setup(options: FakeAdapterOptions, onApproval?: ApprovalHandler): Promise<Bridge> {
-  const adapter = new FakeAdapter(options);
+  return setupWith(new FakeAdapter(options), onApproval);
+}
+
+async function setupWith(adapter: FakeAdapter, onApproval?: ApprovalHandler): Promise<Bridge> {
   await adapter.start();
   const workspace = new Workspace(adapter);
   const project = createKernel().registerProject(mkdtempSync(join(tmpdir(), 'wax-forager-')));
@@ -444,6 +447,113 @@ test(
       adapter.approvals.map((decision) => decision.kind),
       ['allow_once'],
     );
+  },
+);
+
+/**
+ * Exposes the execution id and a way to emit a stale approval for it, the way a
+ * native adapter may replay a request after its terminal event. With
+ * `finishInsideSubmit`, the terminal lands before `submit()` resolves.
+ */
+class LateApprovalAdapter extends FakeAdapter {
+  executionId: string | undefined;
+  private readonly finishInsideSubmit: boolean;
+
+  constructor(options: FakeAdapterOptions = {}, finishInsideSubmit = false) {
+    super(options);
+    this.finishInsideSubmit = finishInsideSubmit;
+  }
+
+  override async submit(_nativeId: string, executionId: string, text: string): Promise<void> {
+    this.executionId = executionId;
+    if (!this.finishInsideSubmit) {
+      await super.submit(_nativeId, executionId, text);
+      return;
+    }
+    this.prompts.push(text);
+    this.emit({ type: 'execution/started', executionId });
+    this.emit({ type: 'execution/completed', executionId, stopReason: 'end_turn' });
+  }
+
+  emitLateApproval(): void {
+    const executionId = this.executionId;
+    if (executionId === undefined) {
+      throw new Error('no submitted execution');
+    }
+    this.emit({
+      type: 'execution/approval-requested',
+      executionId,
+      request: {
+        requestId: `late-${executionId}`,
+        executionId,
+        summary: 'late approval',
+        options: [
+          { id: 'accept', kind: 'allow_once', label: 'Allow once' },
+          { id: 'decline', kind: 'reject_once', label: 'Reject' },
+        ],
+      },
+    });
+  }
+}
+
+/** White-box view of the executor's ownership ledger; it has no public getter. */
+function ownedIds(executor: WorkspaceForagerExecutor): Set<string> {
+  return (executor as unknown as { readonly ownedExecutionIds: Set<string> }).ownedExecutionIds;
+}
+
+/**
+ * The Workspace already auto-cancels an approval for a settled execution, so
+ * this test pins the executor's own cleanup: the terminal event must remove the
+ * id, and the stale request must not reach the approval handler.
+ */
+test('a late approval after the terminal event is not adopted', { timeout: 2_000 }, async (t) => {
+  const adapter = new LateApprovalAdapter({ askApproval: true, output: 'DONE' });
+  let handled = 0;
+  const bridge = await setupWith(adapter, async () => {
+    handled += 1;
+    return 'allow_once';
+  });
+  t.after(async () => {
+    bridge.executor.dispose();
+    await bridge.workspace.stop();
+  });
+
+  const value = await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
+  assert.deepEqual(value, { kind: 'text', text: 'DONE' });
+  assert.equal(handled, 1);
+  assert.deepEqual([...ownedIds(bridge.executor)], [], 'the terminal event must release the id');
+
+  adapter.emitLateApproval();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(handled, 1, 'a settled execution must not hand its late approval to the handler');
+  assert.deepEqual([...ownedIds(bridge.executor)], [], 'the stale request must not re-own the id');
+});
+
+test(
+  'a terminal emitted before submit() resolves does not revive ownership',
+  { timeout: 2_000 },
+  async (t) => {
+    const adapter = new LateApprovalAdapter({}, true);
+    let handled = 0;
+    const bridge = await setupWith(adapter, async () => {
+      handled += 1;
+      return 'allow_once';
+    });
+    t.after(async () => {
+      bridge.executor.dispose();
+      await bridge.workspace.stop();
+    });
+
+    const value = await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
+    assert.deepEqual(value, { kind: 'text', text: '' });
+    assert.equal(handled, 0);
+    assert.deepEqual([...ownedIds(bridge.executor)], [], 'submit() must not re-add the settled id');
+
+    adapter.emitLateApproval();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(handled, 0, 'the stale request must not reach the handler');
   },
 );
 

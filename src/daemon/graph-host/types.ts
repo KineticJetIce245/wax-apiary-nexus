@@ -232,21 +232,6 @@ export class GraphLoadError extends Error {
   }
 }
 
-/** An explicit session binding is already owned by another loaded graph. */
-export class GraphSessionBusyError extends Error {
-  constructor(
-    readonly graphId: GraphId,
-    readonly sessionId: string,
-    readonly ownerGraphId: GraphId,
-  ) {
-    super(
-      `Session '${sessionId}' is already bound to loaded graph '${ownerGraphId}' ` +
-        `(requested by graph '${graphId}')`,
-    );
-    this.name = 'GraphSessionBusyError';
-  }
-}
-
 /** Why `GraphHost.answer` refused an answer. */
 export type GraphAnswerErrorReason =
   | 'unknown-node'

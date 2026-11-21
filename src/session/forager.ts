@@ -117,7 +117,12 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     let submitted: Execution;
     try {
       submitted = await this.workspace.submit(this.conversation.id, prompt, attachments);
-      this.ownedExecutionIds.add(submitted.id);
+      // A native adapter may emit the terminal state before `submit()`
+      // resolves. That handler already released the id; re-adding it here would
+      // let a late approval for the settled execution be adopted.
+      if (!this.terminals.has(submitted.id)) {
+        this.ownedExecutionIds.add(submitted.id);
+      }
     } catch (error) {
       this.activeContext = undefined;
       if (error instanceof ConversationBusyError) {
@@ -183,6 +188,9 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
         return;
       }
       this.terminals.set(execution.id, execution);
+      // Ownership ends with the terminal event. Keeping the id would let this
+      // executor adopt an approval that arrives after the execution settled.
+      this.ownedExecutionIds.delete(execution.id);
       const waiter = this.waiters.get(execution.id);
       if (waiter !== undefined) {
         this.waiters.delete(execution.id);
@@ -204,6 +212,11 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
    * adopted while the window is open.
    */
   private ownsExecution(executionId: string): boolean {
+    if (this.terminals.has(executionId)) {
+      // Settled executions keep their terminal record for `waitForTerminal`,
+      // but they are no longer eligible for ownership.
+      return false;
+    }
     if (this.ownedExecutionIds.has(executionId)) {
       return true;
     }

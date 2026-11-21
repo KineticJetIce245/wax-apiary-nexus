@@ -62,7 +62,7 @@ test(
         project,
       });
       assert.equal(loaded.status, 200, JSON.stringify(loaded.body));
-      assert.equal(loaded.body['status']?.['graphId'], liveId);
+      assert.equal(loaded.body['liveId'], liveId);
       assert.equal(existsSync(livePath), true);
 
       // One completed real run, then a save: it proves the durable state exists
@@ -212,7 +212,7 @@ test(
         `/lives/${liveId}/inspect`,
       );
       assert.equal(inspected.status, 200);
-      assert.equal(inspected.body['status']?.['graphId'], liveId);
+      assert.equal(inspected.body['liveId'], liveId);
 
       const secondWake = await request(second.info.url, secondToken, 'POST', '/lives/wake', {
         liveId,

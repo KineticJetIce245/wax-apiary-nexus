@@ -28,6 +28,17 @@ async function boundLive(env: TestEnv): Promise<LiveHive> {
   };
 }
 
+/** Public status must not carry internal engine identity. */
+function publicStatusOf(value: unknown): Record<string, unknown> {
+  assert.equal(typeof value, 'object');
+  assert.notEqual(value, null);
+  const status = value as Record<string, unknown>;
+  assert.equal(Object.hasOwn(status, 'graphId'), false);
+  assert.equal(Object.hasOwn(status, 'graphRevision'), false);
+  assert.equal(typeof status['rest'], 'boolean');
+  return status;
+}
+
 test('B routes create, wake, save, inspect, unload and load a live hive', async (t) => {
   const env = makeEnv({ output: 'b-route-output' });
   const running = await startServer(env, { liveProject: env.project });
@@ -39,7 +50,10 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   const created = await postJson(running.info.url, running.token, '/lives', { live });
   assert.equal(created.status, 200);
   assert.equal(created.body?.['liveId'], 'demo');
-  assert.equal(created.body?.['status']?.['graphId'], 'demo');
+  assert.equal(publicStatusOf(created.body?.['status'])['rest'], true);
+  const duplicate = await postJson(running.info.url, running.token, '/lives', { live });
+  assert.equal(duplicate.status, 409);
+  assert.equal(publicStatusOf(duplicate.body?.['status'])['rest'], true);
   const livePath = join(env.stateRoot, 'lives', 'demo', 'live.json');
   assert.equal(existsSync(livePath), true);
   const listedLoaded = await getJson(running.info.url, running.token, '/lives');
@@ -50,6 +64,11 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     )?.['state'],
     'loaded',
   );
+  for (const entry of listedLoaded.body?.['lives'] as Record<string, unknown>[]) {
+    if (entry['status'] !== undefined) {
+      publicStatusOf(entry['status']);
+    }
+  }
 
   const woke = await postJson(running.info.url, running.token, '/lives/wake', {
     liveId: 'demo',
@@ -57,7 +76,8 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     input: 'hello',
   });
   assert.equal(woke.status, 200);
-  assert.equal(woke.body?.['result']?.['graphId'], 'demo');
+  assert.equal(woke.body?.['result']?.['liveId'], 'demo');
+  publicStatusOf(woke.body?.['result']?.['status']);
   const runId = String(woke.body?.['result']?.['runId']);
   assert.ok(runId.length > 0);
 
@@ -65,12 +85,12 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     liveId: 'demo',
   });
   assert.equal(saved.status, 200);
-  assert.equal(saved.body?.['status']?.['graphId'], 'demo');
+  publicStatusOf(saved.body?.['status']);
 
   const inspect = await getJson(running.info.url, running.token, '/lives/demo/inspect');
   assert.equal(inspect.status, 200);
   assert.equal(inspect.body?.['liveId'], 'demo');
-  assert.equal(inspect.body?.['status']?.['rest'], true);
+  assert.equal(publicStatusOf(inspect.body?.['status'])['rest'], true);
   assert.ok(Array.isArray(inspect.body?.['outputs']));
 
   const unloaded = await postJson(running.info.url, running.token, '/lives/unload', {
@@ -118,7 +138,8 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     liveId: 'demo',
   });
   assert.equal(loaded.status, 200);
-  assert.equal(loaded.body?.['status']?.['graphId'], 'demo');
+  assert.equal(loaded.body?.['liveId'], 'demo');
+  assert.equal(publicStatusOf(loaded.body?.['status'])['rest'], true);
 
   const next: LiveHive = {
     ...live,
@@ -132,7 +153,20 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     hive: next,
   });
   assert.equal(migrated.status, 200);
-  assert.equal(migrated.body?.['status']?.['graphId'], 'demo');
+  assert.equal(migrated.body?.['liveId'], 'demo');
+  assert.equal(publicStatusOf(migrated.body?.['status'])['rest'], true);
+
+  const publicPayloads = [
+    created.text,
+    duplicate.text,
+    woke.text,
+    saved.text,
+    inspect.text,
+    loaded.text,
+    migrated.text,
+  ].join('\n');
+  assert.equal(publicPayloads.includes('graphId'), false);
+  assert.equal(publicPayloads.includes('graphRevision'), false);
 });
 
 test('B answer resolves a user hover', async (t) => {
@@ -171,7 +205,8 @@ test('B answer resolves a user hover', async (t) => {
     input: 'answer',
   });
   assert.equal(answered.status, 200);
-  assert.equal(answered.body?.['result']?.['graphId'], 'ask');
+  assert.equal(answered.body?.['result']?.['liveId'], 'ask');
+  publicStatusOf(answered.body?.['result']?.['status']);
 });
 
 test('templates compose/list and instantiate routes materialize a live', async (t) => {
@@ -210,7 +245,7 @@ test('templates compose/list and instantiate routes materialize a live', async (
   );
   assert.equal(instantiated.status, 200);
   assert.equal(instantiated.body?.['liveId'], 'from-template');
-  assert.equal(instantiated.body?.['status']?.['graphId'], 'from-template');
+  assert.equal(publicStatusOf(instantiated.body?.['status'])['rest'], true);
 
   const inspect = await getJson(
     running.info.url,
@@ -218,7 +253,8 @@ test('templates compose/list and instantiate routes materialize a live', async (
     '/lives/from-template/inspect',
   );
   assert.equal(inspect.status, 200);
-  assert.equal(inspect.body?.['status']?.['graphId'], 'from-template');
+  assert.equal(inspect.body?.['liveId'], 'from-template');
+  assert.equal(publicStatusOf(inspect.body?.['status'])['rest'], true);
 });
 
 test('dispatch route runs a temporary session and rejects bad bodies', async (t) => {

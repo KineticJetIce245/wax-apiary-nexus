@@ -187,7 +187,7 @@ test(
     assert.equal(allowed.status, 200, allowed.text);
     const doneA = await wakeA;
     assert.equal(doneA.status, 200, doneA.text);
-    assert.equal(doneA.body?.['result']?.['graphId'], liveA);
+    assert.equal(doneA.body?.['result']?.['liveId'], liveA);
     const written = existsSync(join(project.directory, fileName))
       ? readFileSync(join(project.directory, fileName), 'utf8')
       : undefined;
@@ -196,7 +196,7 @@ test(
     // The co-loaded idle live still works after the fix; it never interfered.
     const doneB = await bWake(info.url, token, liveB, 'only', 'Reply with just OK.');
     assert.equal(doneB.status, 200, doneB.text);
-    assert.equal(doneB.body?.['result']?.['graphId'], liveB);
+    assert.equal(doneB.body?.['result']?.['liveId'], liveB);
 
     for (const liveId of [liveA, liveB]) {
       const unloaded = await bUnload(info.url, token, liveId);

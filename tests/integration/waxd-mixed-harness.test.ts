@@ -233,7 +233,7 @@ test(
         project,
       });
       assert.equal(loaded.status, 200);
-      assert.equal(loaded.body['status']?.['graphId'], 'mixed-harness');
+      assert.equal(loaded.body['liveId'], 'mixed-harness');
 
       const codexTrigger = await request(info, token, 'POST', '/lives/wake', {
         liveId: 'mixed-harness',

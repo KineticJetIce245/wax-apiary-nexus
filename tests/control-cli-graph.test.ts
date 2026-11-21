@@ -49,8 +49,12 @@ test('wax live round-trips new, inspect, list, wake and unload over real HTTP', 
       daemonDir: daemon.daemonDir,
     }),
   );
-  assert.equal((inspected['status'] as Record<string, unknown>)['graphId'], 'cli-live');
+  assert.equal(inspected['liveId'], 'cli-live');
   assert.equal((inspected['status'] as Record<string, unknown>)['rest'], true);
+  assert.equal(
+    Object.hasOwn(inspected['status'] as Record<string, unknown>, 'graphId'),
+    false,
+  );
 
   const listed = singleJson(
     await invokeControl(runLiveCli, ['live', 'list', '--json'], {
@@ -67,9 +71,14 @@ test('wax live round-trips new, inspect, list, wake and unload over real HTTP', 
     { daemonDir: daemon.daemonDir },
   );
   const result = singleJson(wake);
-  assert.equal(result['graphId'], 'cli-live');
+  assert.equal(result['liveId'], 'cli-live');
   assert.equal(result['rest'], true);
   assert.equal(result['persisted'], true);
+  assert.equal(Object.hasOwn(result, 'graphId'), false);
+  assert.equal(
+    Object.hasOwn(result['status'] as Record<string, unknown>, 'graphRevision'),
+    false,
+  );
   assert.match(daemon.adapter.prompts[0] as string, /hello live/);
 
   const unload = singleJson(

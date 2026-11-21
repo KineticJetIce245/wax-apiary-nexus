@@ -10,6 +10,7 @@ import {
   parseWakeLiveBody,
 } from './b-validation.js';
 import type { LiveHiveService } from '../b/live-hive-service.js';
+import { toPublicRunResult, toPublicStatus } from '../b/public-status.js';
 import { GraphLoadError } from '../daemon/graph-host.js';
 import { isQueuedRun } from '../daemon/session-execution-queue.js';
 import { queryParam } from './route-output.js';
@@ -33,7 +34,17 @@ export async function dispatchLiveRoute(
     case 'lives-migrate':
       return dispatchLifecycle(service, route.kind, payload);
     case 'lives-list':
-      return { ok: true, lives: service.read.list() };
+      return {
+        ok: true,
+        lives: service.read.list().map((entry) => ({
+          liveId: entry.liveId,
+          state: entry.state,
+          ...(entry.status === undefined
+            ? {}
+            : { status: toPublicStatus(entry.status) }),
+          ...(entry.catalog === undefined ? {} : { catalog: entry.catalog }),
+        })),
+      };
     case 'lives-wake':
     case 'lives-answer':
       return dispatchLiveRun(service, route.kind, payload);
@@ -76,25 +87,25 @@ async function dispatchLifecycle(
     const result = await loadWithConflict(service, body.live.liveId, () =>
       service.new(body.live, body.project),
     );
-    return { ok: true, liveId: result.liveId, status: result.status };
+    return { ok: true, liveId: result.liveId, status: toPublicStatus(result.status) };
   }
   if (kind === 'lives-load') {
     const body = parseLoadLiveBody(payload);
     const result = await loadWithConflict(service, body.liveId, () =>
       service.load(body.liveId, body.live ?? body.path, body.project),
     );
-    return { ok: true, liveId: result.liveId, status: result.status };
+    return { ok: true, liveId: result.liveId, status: toPublicStatus(result.status) };
   }
   if (kind === 'lives-instantiate') {
     const body = parseInstantiateBody(payload);
     const result = await loadWithConflict(service, body.liveId, () =>
       service.instantiate(body.templateId, body.liveId, body.overrides, body.project),
     );
-    return { ok: true, liveId: result.liveId, status: result.status };
+    return { ok: true, liveId: result.liveId, status: toPublicStatus(result.status) };
   }
   const body = parseMigrateLiveBody(payload);
   const result = await service.migrate(body.liveId, body.hive, body.project);
-  return { ok: true, liveId: result.liveId, status: result.status };
+  return { ok: true, liveId: result.liveId, status: toPublicStatus(result.status) };
 }
 
 async function dispatchLiveRun(
@@ -115,12 +126,14 @@ async function dispatchLiveRun(
         position: result.position,
       };
     }
-    return { ok: true, result };
+    return { ok: true, result: toPublicRunResult(result) };
   }
   const body = parseAnswerLiveBody(payload);
   return {
     ok: true,
-    result: await service.answer(body.liveId, body.beeId, body.input, body.token),
+    result: toPublicRunResult(
+      await service.answer(body.liveId, body.beeId, body.input, body.token),
+    ),
   };
 }
 
@@ -131,7 +144,7 @@ async function dispatchLiveState(
 ): Promise<Record<string, unknown>> {
   if (route.kind === 'lives-save') {
     const body = parseLiveIdBody(payload);
-    return { ok: true, status: await service.save(body.liveId) };
+    return { ok: true, status: toPublicStatus(await service.save(body.liveId)) };
   }
   if (route.kind === 'lives-unload') {
     const body = parseLiveIdBody(payload);
@@ -142,7 +155,7 @@ async function dispatchLiveState(
         throw new HttpError(404, 'not-found', 'live hive is not loaded');
       }
       throw new HttpError(409, 'conflict', 'live hive is not unloadable', {
-        body: { status },
+        body: { status: toPublicStatus(status) },
       });
     }
     return { ok: true, unloaded: true };
@@ -155,7 +168,9 @@ async function dispatchLiveState(
   return {
     ok: true,
     liveId: inspected.liveId,
-    ...(inspected.status === undefined ? {} : { status: inspected.status }),
+    ...(inspected.status === undefined
+      ? {}
+      : { status: toPublicStatus(inspected.status) }),
     outputs: inspected.outputs,
     ...(inspected.catalog === undefined ? {} : { catalog: inspected.catalog }),
   };
@@ -177,7 +192,7 @@ async function loadWithConflict<T>(
   const current = currentStatus(service, liveId);
   if (current !== undefined) {
     throw new HttpError(409, 'conflict', 'live hive is already loaded', {
-      body: { status: current },
+      body: { status: toPublicStatus(current) },
     });
   }
   try {
@@ -186,7 +201,9 @@ async function loadWithConflict<T>(
     if (error instanceof GraphLoadError) {
       const status = currentStatus(service, liveId);
       throw new HttpError(409, 'conflict', 'live hive is already loaded', {
-        ...(status === undefined ? {} : { body: { status } }),
+        ...(status === undefined
+          ? {}
+          : { body: { status: toPublicStatus(status) } }),
       });
     }
     throw error;

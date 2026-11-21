@@ -50,6 +50,9 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
   waxd/
     sessions.json
     live-catalog.json
+    graph-bindings.json
+    runs/<runId>.json
+  templates/<templateId>.json
   lives/<liveId>/
     live.json
     honey/field.json
@@ -70,7 +73,7 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 
 ## 7. Public names and internal engine names
 
-The public object layer is B: `LiveHive`, `Bee`, `Beeline`, `BeeBinding`, `HiveTemplate`, `Schedule` and `Dispatch`. The control API and CLI expose `/lives`, `/templates`, `/dispatch`, `/guards`, `/sessions`, `wax live`, `wax wake`, `wax answer`, `wax template`, `wax dispatch` and `wax session`.
+The public object layer is B: `LiveHive`, `Bee`, `Beeline`, `BeeBinding`, `HiveTemplate`, `Schedule` and `Dispatch`. The control API and CLI expose `/lives`, `/templates`, `/dispatch`, `/queues`, `/guards`, `/sessions`, `wax live`, `wax wake`, `wax answer`, `wax template`, `wax dispatch`, `wax guard` and `wax session`.
 
 `GraphHost`, `GraphStatus`, `GraphId` and `CompositionDefinition` remain internal execution-engine names. They are not a second object model and are not exposed by the HTTP or CLI surface. Renaming them is a separate internal cleanup.
 

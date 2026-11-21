@@ -228,7 +228,7 @@ test(
         project,
       });
       assert.equal(instantiated.status, 200);
-      assert.equal(instantiated.body['status']?.['graphId'], 'm9j-live');
+      assert.equal(instantiated.body['liveId'], 'm9j-live');
 
       const firstSessions = await request(info, token, 'GET', '/sessions');
       const sessionList = firstSessions.body['sessions'] as Record<string, unknown>[];
@@ -320,7 +320,7 @@ test(
         project,
       });
       assert.equal(reloaded.status, 200, JSON.stringify(reloaded.body));
-      assert.equal(reloaded.body['status']?.['graphId'], 'm9j-live');
+      assert.equal(reloaded.body['liveId'], 'm9j-live');
       const reloadSessions = await request(info, token, 'GET', '/sessions');
       const reloadIds = (reloadSessions.body['sessions'] as Record<string, unknown>[])
         .map((session) => String(session['sessionId']))

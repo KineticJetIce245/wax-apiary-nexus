@@ -60,6 +60,17 @@ import {
   readResponse,
 } from './support/control-server-http.js';
 
+/** Public status must not carry internal engine identity. */
+function publicStatusOf(value: unknown): Record<string, unknown> {
+  assert.equal(typeof value, 'object');
+  assert.notEqual(value, null);
+  const status = value as Record<string, unknown>;
+  assert.equal(Object.hasOwn(status, 'graphId'), false);
+  assert.equal(Object.hasOwn(status, 'graphRevision'), false);
+  assert.equal(typeof status['rest'], 'boolean');
+  return status;
+}
+
 test('load, status, trigger, status and unload work over real HTTP without leaking bodies', async (t) => {
   const env = makeEnv({ output: OUTPUT_SECRET });
   t.after(async () => {
@@ -83,8 +94,8 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   responses.push(load.text);
   assert.equal(load.status, 200);
   assert.equal(load.body?.['ok'], true);
-  assert.equal(load.body?.['status']?.['graphId'], 'main');
-  assert.equal(load.body?.['status']?.['rest'], true);
+  assert.equal(load.body?.['liveId'], 'main');
+  assert.equal(publicStatusOf(load.body?.['status'])['rest'], true);
   bodies.push(load.body);
 
   const list = await bList(info.url, token);
@@ -92,13 +103,14 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   assert.equal(list.status, 200);
   const lives = list.body?.['lives'] as Record<string, any>[];
   assert.equal(lives?.[0]?.['liveId'], 'main');
-  assert.equal(lives?.[0]?.['status']?.['graphId'], 'main');
+  assert.equal(publicStatusOf(lives?.[0]?.['status'])['rest'], true);
   bodies.push(list.body);
 
   const one = await bInspect(info.url, token, 'main');
   responses.push(one.text);
   assert.equal(one.status, 200);
-  assert.equal(one.body?.['status']?.['graphId'], 'main');
+  assert.equal(one.body?.['liveId'], 'main');
+  assert.equal(publicStatusOf(one.body?.['status'])['rest'], true);
   bodies.push(one.body);
 
   const trigger = await bWake(info.url, token, 'main', 'only', INPUT_SECRET);
@@ -285,7 +297,7 @@ test('unknown graphs return 404 and a duplicate load returns 409 with current st
   const duplicate = await bLoad(info.url, token, body);
   assert.equal(duplicate.status, 409);
   assert.equal(duplicate.body?.['code'], 'conflict');
-  assert.equal(duplicate.body?.['status']?.['graphId'], 'dup');
+  assert.equal(publicStatusOf(duplicate.body?.['status'])['rest'], true);
   assert.equal(env.adapter.displayNames.length, created);
   assert.equal(env.registry.list().length, 1);
 });
@@ -325,8 +337,7 @@ test('unloading a non-Rest graph returns 409 with its current status', async (t)
   const unload = await bUnload(info.url, token, 'hover');
   assert.equal(unload.status, 409);
   assert.equal(unload.body?.['code'], 'conflict');
-  assert.equal(unload.body?.['status']?.['graphId'], 'hover');
-  assert.equal(unload.body?.['status']?.['rest'], false);
+  assert.equal(publicStatusOf(unload.body?.['status'])['rest'], false);
   assert.equal(unload.body?.['status']?.['hovered'], true);
 
   const still = await bInspect(info.url, token, 'hover');

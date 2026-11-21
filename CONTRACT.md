@@ -97,6 +97,7 @@ Session = {
 - One session has at most one active execution.
 - An explicit session is authoritative for harness/model/reasoning; a conflicting creation spec is an error.
 - Multiple bees/LiveHives may share a session only with queue/forward support, or the send must return `session-busy`; never silent.
+- `dispatch` is not queued. If its target session is already executing, the control API returns 409 `session-busy`; it never waits silently and never starts a second execution.
 
 ## 6. `PheromoneField`
 
@@ -132,6 +133,7 @@ GET  /lives/:id/output          latest or runId-keyed output
 GET  /templates                 list templates
 POST /templates                 compose a HiveTemplate
 POST /dispatch                  temporary bee
+GET  /queues/:queueId           queued wake status
 GET  /guards                    pending guard requests
 POST /guard/decide              decide one guard request
 GET  /sessions                  global sessions
@@ -142,6 +144,8 @@ GET  /health
 
 - One endpoint, one token.
 - `--harness` filters/validates; it does not select a per-harness daemon.
+- `POST /dispatch` is not queued. A busy target session returns 409 `session-busy`, an unknown session 404 `not-found`, conflicting session params 409 `conflict`, a cancelled execution 409 `execution-cancelled`, and a dispatch that exceeds its timeout 409 `dispatch-timeout`.
+- `GET /queues/:queueId` reports `queued|running|completed|failed|timeout|dropped`, plus the `runId` once the run starts. The queue is in memory only, so an unknown or restarted-daemon queue id answers 404 `not-found`.
 - No fork route. The legacy graph and catalog routes are not present and have no aliases.
 
 ## 9. CLI
@@ -153,6 +157,7 @@ wax wake <liveId> <beeId>
 wax answer <liveId> <beeId>
 wax template compose|list
 wax dispatch
+wax guard list|decide <requestId> --decision allow_once|reject_once|cancelled
 wax session list|close|sweep
 ```
 

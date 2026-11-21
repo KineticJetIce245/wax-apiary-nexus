@@ -136,7 +136,11 @@ test('an idle session keeps the synchronous 200 result', async (t) => {
   assert.equal(response.status, 200, response.text);
   assert.equal(response.body?.['ok'], true);
   assert.equal(response.body?.['status'], undefined);
-  assert.equal(response.body?.['result']?.['graphId'], 'first');
+  assert.equal(response.body?.['result']?.['liveId'], 'first');
+  assert.equal(
+    Object.hasOwn(response.body?.['result']?.['status'] ?? {}, 'graphId'),
+    false,
+  );
   assert.equal(typeof response.body?.['result']?.['runId'], 'string');
 });
 
@@ -285,7 +289,7 @@ test('a full session queue does not block another session on the same daemon', a
   const isolated = await isolatedWake;
   assert.equal(isolated.status, 200, isolated.text);
   assert.equal(isolated.body?.['status'], undefined);
-  assert.equal(isolated.body?.['result']?.['graphId'], 'third');
+  assert.equal(isolated.body?.['result']?.['liveId'], 'third');
   assert.equal(typeof isolated.body?.['result']?.['runId'], 'string');
 
   const promoted = await waitQueueStatus(context, queueIds[0]!, 'running');

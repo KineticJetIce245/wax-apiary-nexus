@@ -76,10 +76,9 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     ),
     0,
   );
-  assert.equal(
-    (JSON.parse(saveOut.lines[0] ?? '{}') as Record<string, unknown>)['graphId'],
-    'demo',
-  );
+  const savedStatus = JSON.parse(saveOut.lines[0] ?? '{}') as Record<string, unknown>;
+  assert.equal(Object.hasOwn(savedStatus, 'graphId'), false);
+  assert.equal(savedStatus['rest'], true);
 
   const unloadOut = writer();
   assert.equal(
@@ -145,8 +144,12 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     0,
   );
   assert.equal(
-    (JSON.parse(wakeOut.lines[0] ?? '{}') as Record<string, unknown>)['graphId'],
+    (JSON.parse(wakeOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'],
     'demo',
+  );
+  assert.equal(
+    Object.hasOwn(JSON.parse(wakeOut.lines[0] ?? '{}') as Record<string, unknown>, 'graphId'),
+    false,
   );
 
   const topWakeOut = writer();
@@ -158,8 +161,12 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     0,
   );
   assert.equal(
-    (JSON.parse(topWakeOut.lines[0] ?? '{}') as Record<string, unknown>)['graphId'],
+    (JSON.parse(topWakeOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'],
     'demo',
+  );
+  assert.equal(
+    Object.hasOwn(JSON.parse(topWakeOut.lines[0] ?? '{}') as Record<string, unknown>, 'graphId'),
+    false,
   );
 
   const templateFile = join(directory, 'template.json');
@@ -257,13 +264,16 @@ test('top-level wax wake/answer resolves a user hover', async (t) => {
     ),
     0,
   );
+  const wakeOut = writer();
   assert.equal(
     await runWakeCli(
       ['wake', 'ask', 'ask', '--input', 'open', '--daemon-dir', env.daemonDir],
-      { stdout: writer().write, stderr: writer().write },
+      { stdout: wakeOut.write, stderr: writer().write },
     ),
     0,
   );
+  assert.match(wakeOut.lines.join('\n'), /^ask rest=/);
+  assert.equal(wakeOut.lines.join('\n').includes('graphId'), false);
   assert.equal(
     await runAnswerCli(
       ['answer', 'ask', 'ask', '--input', 'answer', '--daemon-dir', env.daemonDir],

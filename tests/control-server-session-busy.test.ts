@@ -81,7 +81,8 @@ test('a second loaded graph may share the same session; unload is refcounted', a
     assert.equal(first.status, 200, JSON.stringify(first.body));
     const second = await load('second');
     assert.equal(second.status, 200, JSON.stringify(second.body));
-    assert.equal(second.body['status']?.['graphId'], 'second');
+    assert.equal(second.body['liveId'], 'second');
+    assert.equal(Object.hasOwn(second.body['status'] ?? {}, 'graphId'), false);
     assert.equal(JSON.stringify(first.body).includes(PROMPT_SECRET), false);
     assert.equal(JSON.stringify(second.body).includes(PROMPT_SECRET), false);
     assert.equal(JSON.stringify(second.body).includes('secret-output'), false);
@@ -95,12 +96,12 @@ test('a second loaded graph may share the same session; unload is refcounted', a
       input: 'still here',
     });
     assert.equal(wake.status, 200, JSON.stringify(wake.body));
-    assert.equal(wake.body['result']?.['graphId'], 'second');
+    assert.equal(wake.body['result']?.['liveId'], 'second');
     assert.equal(typeof wake.body['result']?.['runId'], 'string');
 
     const reload = await load('first');
     assert.equal(reload.status, 200);
-    assert.equal(reload.body['status']?.['graphId'], 'first');
+    assert.equal(reload.body['liveId'], 'first');
 
     assert.equal((await post('/lives/unload', { liveId: 'second' })).status, 200);
     assert.equal((await post('/lives/unload', { liveId: 'first' })).status, 200);

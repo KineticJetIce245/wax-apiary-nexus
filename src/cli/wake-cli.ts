@@ -78,7 +78,7 @@ function printResult(out: Writer, result: unknown): void {
     return;
   }
   out(
-    `${String(record['graphId'])} rest=${String(record['rest'])} ` +
+    `${String(record['liveId'])} rest=${String(record['rest'])} ` +
       `hovered=${String(record['hovered'])} pumps=${String(record['pumps'])} ` +
       `persisted=${String(record['persisted'])}`,
   );

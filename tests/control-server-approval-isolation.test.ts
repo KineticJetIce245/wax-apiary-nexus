@@ -130,7 +130,7 @@ test('a co-loaded live on another session never decides the running live approva
   await decide(context, String(alphaGuard['requestId']), 'allow_once');
   const alphaDone = await alphaWake;
   assert.equal(alphaDone.status, 200, alphaDone.text);
-  assert.equal(alphaDone.body?.['result']?.['graphId'], 'alpha');
+  assert.equal(alphaDone.body?.['result']?.['liveId'], 'alpha');
   await until(async () => (await guardList(context)).length === 0, 'the alpha guard to drain');
 
   const betaWake = postJson(context.running.info.url, context.running.token, '/lives/wake', {
@@ -144,7 +144,7 @@ test('a co-loaded live on another session never decides the running live approva
   await decide(context, String(betaGuard['requestId']), 'allow_once');
   const betaDone = await betaWake;
   assert.equal(betaDone.status, 200, betaDone.text);
-  assert.equal(betaDone.body?.['result']?.['graphId'], 'beta');
+  assert.equal(betaDone.body?.['result']?.['liveId'], 'beta');
 
   assert.deepEqual(
     context.adapter.approvals.map((decision) => decision.kind),

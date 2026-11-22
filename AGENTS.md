@@ -35,6 +35,13 @@ Request approval before:
 - Changing persistence, concurrency, or permission semantics.
 - Expanding the approved project scope.
 
+When evidence invalidates an assumption the current design depends on, or when
+ownership of a control point, queue, or source of truth is ambiguous, stop and
+ask the owner before reinterpreting or changing the design. Present the observed
+evidence, the assumption it contradicts, the viable options and tradeoffs, and
+what remains unverified. Do not present a new boundary as if it were the
+original design.
+
 ### 4. Verification Required
 
 Every completed experiment must provide:
@@ -78,6 +85,7 @@ Stop and request review when:
 
 - Evidence contradicts the current architecture.
 - A core assumption cannot be verified.
+- A control boundary, queue owner, or source of truth is ambiguous.
 - A security or data-integrity risk is discovered.
 - A proposed change crosses an architectural boundary.
 - The next step requires a major irreversible decision.

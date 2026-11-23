@@ -1158,8 +1158,8 @@
       "parameters": 1
     },
     "tests/integration/session-registry-multi-harness.test.ts::arrow <anonymous@63>": {
-      "lines": 115,
-      "cyclomatic": 8,
+      "lines": 102,
+      "cyclomatic": 7,
       "nesting": 3,
       "parameters": 1
     },

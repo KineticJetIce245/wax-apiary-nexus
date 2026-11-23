@@ -89,7 +89,7 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - `--harness` validates/filters; it does not select a per-harness daemon.
 - Guard requests are not separate RunStore records; a guarded wake still produces one `trigger` run. The guard decision is part of that wake.
 - Public status and run results do not expose the internal engine identity: a status is `rest`, `hovered`, `nodes`, optional `recovery`, and `residency`; a run result names the live as `liveId`. `graphId` and `graphRevision` never appear in HTTP or CLI output.
-- RunStore has 1000-record / 1 MiB defaults and is used by wake/answer.
+- RunStore has 1000-record / 1 MiB defaults and is used by wake/answer; an ephemeral dispatch graph also writes one run record (it has no LiveHive/catalog/Honey record).
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
 - Several loaded LiveHives may share one explicit session. A WAX prompt is admitted by the harness-side adapter: one active execution per session, per-session FIFO, low priority relative to direct user use. `wax queue status` reports adapter admission; the queue is in memory only, so a restarted daemon answers 404 for old ids and never replays pending work. `answer` is not queued; `dispatch` runs an ephemeral one-bee graph through the same admission path and is not persisted as a LiveHive.
 - Real mixed Codex+DSH, scheduler, DSH guard, approval isolation, and the full B LiveHive chain have passing integration coverage. Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.

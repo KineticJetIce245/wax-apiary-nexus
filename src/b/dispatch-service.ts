@@ -1,14 +1,30 @@
-import type { Project } from '../project/kernel.js';
+import { randomUUID } from 'node:crypto';
+
 import type { ExecutionState } from '../adapters/harness.js';
-import type { SessionRecord, SessionRegistry } from '../session/session-registry.js';
-import type { Workspace } from '../session/workspace.js';
+import type { GraphHost, GraphRunResult } from '../daemon/graph-host.js';
+import { isQueuedRun, type QueuedRun } from '../daemon/session-execution-queue.js';
+import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
+import type { Project } from '../project/kernel.js';
+import {
+  parseComposition,
+  type CompositionDefinition,
+  type Value,
+} from '../runtime/index.js';
+import { ForagerExecutionError } from '../session/forager.js';
+import { BindingValidationError } from '../session/instantiate-foragers.js';
+import type { SessionRegistry } from '../session/session-registry.js';
+import { SessionBusyError } from '../session/session-errors.js';
 import { parseSessionParams } from './validation.js';
 import type { SessionParams } from './types.js';
 
 export type { SessionParams } from './types.js';
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
-const POLL_INTERVAL_MS = 25;
+/** A timed-out trigger gets this long to unwind before release is deferred. */
+const CANCEL_SETTLE_GRACE_MS = 250;
+/** The only bee in the ephemeral dispatch graph. */
+const BEE_ID = 'bee';
+const TIMEOUT = Symbol('dispatch-timeout');
 
 export interface DispatchOptions {
   /** Create a temporary session with these parameters. */
@@ -28,6 +44,13 @@ export interface DispatchResult {
 
 export interface DispatchServiceOptions {
   readonly registry: SessionRegistry;
+  /**
+   * Host that loads, triggers and unloads the ephemeral one-bee graph. It is
+   * the same host as the loaded LiveHives so dispatch shares their execution
+   * queue and approval path; the graph itself is marked ephemeral and is not
+   * persisted.
+   */
+  readonly graphHost: GraphHost;
   /** Project used by fresh dispatches when the call does not supply one. */
   readonly defaultProject?: Project;
   /** Default timeout; five minutes when omitted. */
@@ -69,13 +92,24 @@ export class DispatchTimeoutError extends DispatchError {
   }
 }
 
+interface DispatchTarget {
+  readonly bindings: GraphBindings;
+  readonly project: Project;
+}
+
 /**
- * Execute one temporary bee. It creates or reuses a session through the global
- * registry, submits the input and waits for that execution. It never creates a
- * LiveHive/HiveTemplate, writes a field, or retries after an unknown outcome.
+ * Execute one temporary bee as an ephemeral one-bee graph. The graph is loaded
+ * through `GraphHost`, woken once, read for its forager output and unloaded; it
+ * never becomes a LiveHive, a `live.json` or a catalog entry. A fresh session
+ * is created by the graph binding; an explicit session is bound as-is, with the
+ * same conflict checks as before. Nothing is replayed after an unknown outcome.
+ *
+ * A host that has a `RunStore` may still keep a run record for the trigger;
+ * that is run history, not LiveHive persistence.
  */
 export class DispatchService {
   private readonly registry: SessionRegistry;
+  private readonly graphHost: GraphHost;
   private readonly defaultProject: Project | undefined;
   private readonly defaultTimeoutMs: number;
 
@@ -86,7 +120,11 @@ export class DispatchService {
     if (typeof options.registry !== 'object' || options.registry === null) {
       throw new TypeError('DispatchService requires a SessionRegistry');
     }
+    if (typeof options.graphHost !== 'object' || options.graphHost === null) {
+      throw new TypeError('DispatchService requires a GraphHost');
+    }
     this.registry = options.registry;
+    this.graphHost = options.graphHost;
     this.defaultProject = options.defaultProject;
     this.defaultTimeoutMs = validateTimeout(
       options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -113,37 +151,85 @@ export class DispatchService {
       options.timeoutMs ?? this.defaultTimeoutMs,
       'timeoutMs',
     );
-    const target =
-      options.sessionId === undefined
-        ? await this.createFresh(params as SessionParams, options)
-        : await this.useExisting(options.sessionId, params);
-
-    return {
-      output: await this.execute(target.workspace, target.record.sessionId, input, timeoutMs),
-      sessionId: target.record.sessionId,
-    };
+    return this.runEphemeral(input, this.resolveTarget(params, options), timeoutMs);
   }
 
-  private async createFresh(
-    params: SessionParams,
+  private async runEphemeral(
+    input: string,
+    target: DispatchTarget,
+    timeoutMs: number,
+  ): Promise<DispatchResult> {
+    const graphId = `dispatch-${randomUUID()}`;
+    const definition = buildDispatchDefinition(graphId);
+    let loaded = false;
+    let settled: Promise<void> | undefined;
+    try {
+      await this.graphHost.loadGraph({
+        definition,
+        bindings: target.bindings,
+        project: target.project,
+        idleTtlMs: 0,
+        ephemeral: true,
+      });
+      loaded = true;
+      const sessionId = this.graphHost.bindingsOf(graphId).get(BEE_ID);
+      if (sessionId === undefined) {
+        throw new DispatchError('dispatch graph has no session binding');
+      }
+      const trigger = this.graphHost.trigger(graphId, BEE_ID, textValue(input));
+      settled = trigger.then(
+        () => undefined,
+        () => undefined,
+      );
+      const result = await this.waitForTrigger(trigger, settled, timeoutMs, sessionId);
+      if (isQueuedRun(result)) {
+        // The ephemeral graph took no queue slot; report the same busy outcome
+        // the direct path produced instead of waiting on another graph's run.
+        throw new SessionBusyError(sessionId);
+      }
+      return { output: this.requireOutput(graphId), sessionId };
+    } catch (error) {
+      throw normalizeDispatchError(error);
+    } finally {
+      if (loaded) {
+        await this.releaseGraph(graphId, settled);
+      }
+    }
+  }
+
+  private resolveTarget(
+    params: SessionParams | undefined,
     options: DispatchOptions,
-  ): Promise<{ record: SessionRecord; workspace: Workspace }> {
+  ): DispatchTarget {
+    return options.sessionId === undefined
+      ? this.resolveFreshTarget(params, options)
+      : this.resolveExistingTarget(params, options.sessionId);
+  }
+
+  private resolveFreshTarget(
+    params: SessionParams | undefined,
+    options: DispatchOptions,
+  ): DispatchTarget {
+    if (params === undefined) {
+      throw new TypeError('dispatch requires sessionParams or sessionId');
+    }
     const project = options.project ?? this.defaultProject;
     if (project === undefined) {
       throw new DispatchError('dispatch needs a project for a fresh session');
     }
-    const record = await this.registry.create(project, {
+    const fresh: ForagerBinding = {
+      kind: 'fresh',
       ...(params.harness === undefined ? {} : { harness: params.harness }),
       ...(params.model === undefined ? {} : { model: params.model }),
       ...(params.reasoning === undefined ? {} : { reasoning: params.reasoning }),
-    });
-    return { record, workspace: this.registry.workspaceFor(record.harness) };
+    };
+    return { project, bindings: { [BEE_ID]: fresh } };
   }
 
-  private async useExisting(
-    sessionId: string,
+  private resolveExistingTarget(
     params: SessionParams | undefined,
-  ): Promise<{ record: SessionRecord; workspace: Workspace }> {
+    sessionId: string,
+  ): DispatchTarget {
     const record = this.registry.get(sessionId);
     if (record === undefined) {
       throw new DispatchSessionNotFoundError(sessionId);
@@ -155,43 +241,135 @@ export class DispatchService {
       if (params.model !== undefined && params.model !== record.model) {
         throw new DispatchConflictError('sessionParams.model conflicts with the session');
       }
-      if (
-        params.reasoning !== undefined &&
-        params.reasoning !== record.reasoning
-      ) {
+      if (params.reasoning !== undefined && params.reasoning !== record.reasoning) {
         throw new DispatchConflictError('sessionParams.reasoning conflicts with the session');
       }
     }
-    const attached = await this.registry.ensureAttached(sessionId);
-    return { record: attached, workspace: this.registry.workspaceFor(attached.harness) };
+    return {
+      project: { id: record.projectId, directory: record.projectDirectory },
+      bindings: { [BEE_ID]: { kind: 'session', sessionId: record.sessionId } },
+    };
   }
 
-  private async execute(
-    workspace: Workspace,
-    sessionId: string,
-    input: string,
+  /**
+   * Wait for the graph run, or for the dispatch timeout. On timeout it cancels
+   * the execution this dispatch started (never a user turn), gives the runtime
+   * a short grace to unwind, and rejects. A trigger that outlives the grace is
+   * released by `releaseGraph` once it settles.
+   */
+  private async waitForTrigger(
+    trigger: Promise<GraphRunResult | QueuedRun>,
+    settled: Promise<void>,
     timeoutMs: number,
-  ): Promise<string> {
-    const execution = await workspace.submit(sessionId, input);
-    const deadline = Date.now() + timeoutMs;
-    while (true) {
-      const current = workspace.getExecution(execution.id);
-      if (current !== undefined && current.state !== 'running') {
-        if (current.state !== 'completed') {
-          throw new DispatchExecutionError(current.state);
-        }
-        return current.output;
+    sessionId: string,
+  ): Promise<GraphRunResult | QueuedRun> {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<typeof TIMEOUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
+      timer.unref();
+    });
+    try {
+      const first = await Promise.race([trigger, deadline]);
+      if (first !== TIMEOUT) {
+        return first;
       }
-      if (Date.now() >= deadline) {
-        // Timeout must reject promptly even if a native cancel stalls. The
-        // cancellation is attempted once and is never followed by a replay.
-        void workspace.cancel(execution.id).catch(() => undefined);
-        throw new DispatchTimeoutError(timeoutMs);
+      this.cancelActive(sessionId);
+      // The old direct path rejected without waiting for a stalled native
+      // cancel. Keep the rejection prompt, but let a cooperative adapter settle
+      // so the graph can usually still be unloaded in this call.
+      await Promise.race([settled, delay(CANCEL_SETTLE_GRACE_MS)]);
+      throw new DispatchTimeoutError(timeoutMs);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
       }
-      const remaining = Math.max(1, deadline - Date.now());
-      await delay(Math.min(POLL_INTERVAL_MS, remaining));
     }
   }
+
+  /** Fire-and-forget: a stalled native cancel must not delay the timeout. */
+  private cancelActive(sessionId: string): void {
+    try {
+      const record = this.registry.get(sessionId);
+      if (record === undefined) {
+        return;
+      }
+      void this.registry
+        .workspaceFor(record.harness)
+        .cancel(sessionId, true)
+        .catch(() => undefined);
+    } catch {
+      // The cancel is best effort; the timeout error is the useful outcome.
+    }
+  }
+
+  private requireOutput(graphId: string): string {
+    const value = this.graphHost.outputsOf(graphId).get(BEE_ID);
+    if (value === undefined || value.kind !== 'text') {
+      throw new DispatchError('dispatch graph produced no output');
+    }
+    if (value.text.trim() === '') {
+      throw new DispatchError('dispatch graph produced empty output');
+    }
+    return value.text;
+  }
+
+  /**
+   * Unload the ephemeral graph. A busy (still-running) trigger makes the host
+   * refuse; the unload is then retried once the runtime settles. It never
+   * retains a loaded graph after a clean run or a settled failure.
+   */
+  private async releaseGraph(
+    graphId: string,
+    settled: Promise<void> | undefined,
+  ): Promise<void> {
+    let unloaded = false;
+    try {
+      unloaded = await this.graphHost.unload(graphId);
+    } catch {
+      unloaded = false;
+    }
+    if (unloaded || settled === undefined) {
+      return;
+    }
+    void settled
+      .then(() => this.graphHost.unload(graphId))
+      .catch(() => undefined);
+  }
+}
+
+/** The runtime representation of the ephemeral one-bee LiveHive graph. */
+function buildDispatchDefinition(graphId: string): CompositionDefinition {
+  return parseComposition({
+    schemaVersion: 1,
+    id: graphId,
+    nodes: {
+      [BEE_ID]: {
+        kind: 'forager',
+        // `connection` is metadata only: the binding chooses the session and
+        // therefore the harness that actually runs this bee.
+        config: { connection: 'dispatch', prompt: '{{input}}' },
+      },
+    },
+    edges: [],
+  });
+}
+
+function normalizeDispatchError(error: unknown): unknown {
+  if (error instanceof ForagerExecutionError) {
+    return new DispatchExecutionError(error.state);
+  }
+  if (error instanceof BindingValidationError) {
+    // The session became busy between the conflict check and the load. Keep the
+    // established 409 session-busy outcome instead of a 400 binding error.
+    const busy = error.issues.filter((issue) => issue.code === 'busy-session');
+    if (busy.length > 0 && busy.length === error.issues.length) {
+      const sessionId = busy[0]?.sessionId;
+      if (sessionId !== undefined) {
+        return new SessionBusyError(sessionId);
+      }
+    }
+  }
+  return error;
 }
 
 function validateTimeout(value: number, field: string): number {
@@ -199,6 +377,10 @@ function validateTimeout(value: number, field: string): number {
     throw new TypeError(`${field} must be a positive integer`);
   }
   return value;
+}
+
+function textValue(input: string): Value {
+  return { kind: 'text', text: input };
 }
 
 function delay(ms: number): Promise<void> {

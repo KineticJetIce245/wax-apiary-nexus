@@ -12,9 +12,15 @@ export class GraphHostRead {
 
   /** Read-only view; it never acquires, touches or loads a graph. */
   status(): readonly GraphStatus[] {
-    return this.context.graphs.list().map((entry) =>
-      this.statusFrom(entry.id, entry.value, entry.value.runtime.snapshot(), entry.residency),
-    );
+    // A dispatch graph is a transient execution detail, not a LiveHive: it is
+    // deliberately absent from the list view even during its short lifetime.
+    // `statusOf` still reads it for the host's own result path.
+    return this.context.graphs
+      .list()
+      .filter((entry) => !entry.value.ephemeral)
+      .map((entry) =>
+        this.statusFrom(entry.id, entry.value, entry.value.runtime.snapshot(), entry.residency),
+      );
   }
 
   /** Read-only view of one graph; `undefined` when it is not loaded. */

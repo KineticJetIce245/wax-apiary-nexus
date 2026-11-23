@@ -115,6 +115,13 @@ export interface LoadGraphOptions {
    * empty field when the composition revision changed.
    */
   readonly restoreHoney?: boolean;
+  /**
+   * A dispatch graph: one request creates it, runs it and unloads it. It is a
+   * normal loaded graph for trigger/output/unload, but the host never creates
+   * a Honey store, catalog entry or `lives/` file for it. The caller must still
+   * unload it; it is not a persistent LiveHive.
+   */
+  readonly ephemeral?: boolean;
 }
 
 export interface GraphNodeStatus {
@@ -270,10 +277,12 @@ export interface LiveGraph {
   readonly project: Project;
   readonly instantiated: InstantiatedForagers;
   readonly runtime: PheromoneRuntime;
-  /** Absent for a purely in-memory host. */
+  /** Absent for a purely in-memory host and for an ephemeral dispatch graph. */
   readonly honey: HoneyStore | undefined;
   /** What Honey restore could not keep running; absent without a restore. */
   readonly recovery: RecoveryReport | undefined;
+  /** True for a dispatch graph; it is never persisted or listed as a LiveHive. */
+  readonly ephemeral: boolean;
 }
 
 

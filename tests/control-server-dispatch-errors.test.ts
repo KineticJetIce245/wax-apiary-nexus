@@ -41,6 +41,18 @@ class HoldingAdapter extends FakeAdapter {
   }
 }
 
+async function waitForPrompt(
+  adapter: FakeAdapter,
+  prompt: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!adapter.prompts.includes(prompt)) {
+    assert.ok(Date.now() < deadline, `prompt never ran: ${prompt}`);
+    await delay(5);
+  }
+}
+
 async function startEnv(t: TestContext, env: TestEnv): Promise<RunningServer> {
   const running = await startServer(env, { liveProject: env.project });
   t.after(async () => {
@@ -176,7 +188,7 @@ function foragerDefinition(id: string): Record<string, unknown> {
 }
 
 test(
-  'a wake that collides with a running dispatch maps to 409 session-busy',
+  'a wake that collides with a running dispatch is queued, not run concurrently',
   { timeout: 10_000 },
   async (t) => {
     const adapter = new HoldingAdapter();
@@ -207,10 +219,13 @@ test(
       await delay(5);
     }
 
+    // Dispatch now runs as a graph, so the loaded wake goes through the same
+    // per-session queue: it is queued behind dispatch instead of submitting a
+    // second concurrent execution to the conversation.
     const wake = await bWake(running.info.url, running.token, 'wake-vs-dispatch', 'only', 'go');
-    assert.equal(wake.status, 409, wake.text);
-    assert.equal(wake.body?.['code'], 'session-busy');
-    assert.equal(wake.body?.['error'], 'session is busy');
+    assert.equal(wake.status, 200, wake.text);
+    assert.equal(wake.body?.['status'], 'queued');
+    assert.equal(typeof wake.body?.['queueId'], 'string');
 
     // Release the dispatch instead of waiting for its timeout: an explicit
     // cancel is a client-visible outcome and must stay 409, not 500.
@@ -220,5 +235,8 @@ test(
     const settled = await withTimeout(dispatch, 2_000, 'dispatch');
     assert.equal(settled.status, 409, settled.text);
     assert.equal(settled.body?.['code'], 'execution-cancelled');
+
+    // The queued wake is served after the dispatch releases the session.
+    await waitForPrompt(adapter, 'wake go');
   },
 );

@@ -115,7 +115,9 @@ async function triggerLocked(
     live.runtime.trigger(nodeId, value);
     outcome = await pumpToQuiescence(context, live);
     touchSessions(context, live);
-    context.updateCatalog(graphId, 'access', (catalog) => catalog.markAccessed(graphId));
+    if (!live.ephemeral) {
+      context.updateCatalog(graphId, 'access', (catalog) => catalog.markAccessed(graphId));
+    }
   } finally {
     lease.release();
   }

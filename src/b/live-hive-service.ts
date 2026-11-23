@@ -69,6 +69,7 @@ export class LiveHiveService {
       options.dispatchService ??
       new DispatchService({
         registry: options.registry,
+        graphHost: options.graphHost,
         ...(options.defaultProject === undefined
           ? {}
           : { defaultProject: options.defaultProject }),

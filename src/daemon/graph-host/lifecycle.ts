@@ -100,8 +100,11 @@ export class GraphHostLifecycle {
     // must not queue behind a running trigger. tryRun still guarantees it can
     // never run concurrently with another mutating operation for this id.
     const outcome = await this.context.lock.tryRun(graphId, async () => {
+      // An ephemeral dispatch graph never entered the catalog, so its unload
+      // must not create an entry. Read the flag while the entry still exists.
+      const ephemeral = this.context.graphs.peek(graphId)?.value.ephemeral === true;
       const unloaded = await this.context.graphs.unload(graphId);
-      if (unloaded) {
+      if (unloaded && !ephemeral) {
         this.context.updateCatalog(graphId, 'unload', (catalog) =>
           catalog.markUnloaded(graphId, 'unload'),
         );
@@ -113,8 +116,19 @@ export class GraphHostLifecycle {
 
   /** One TTL pass; the registry skips unsafe entries and still needs no lock. */
   async sweep(): Promise<SweepReport> {
+    // Dispatch graphs have TTL disabled, but a sweep racing an unload must
+    // still avoid writing a catalog entry for an id that never had one.
+    const ephemeral = new Set(
+      this.context.graphs
+        .list()
+        .filter((entry) => entry.value.ephemeral)
+        .map((entry) => entry.id),
+    );
     const report = await this.context.graphs.sweep();
     for (const graphId of report.unloaded) {
+      if (ephemeral.has(graphId)) {
+        continue;
+      }
       this.context.updateCatalog(graphId, 'sweep', (catalog) =>
         catalog.markUnloaded(graphId, 'sweep'),
       );
@@ -138,6 +152,28 @@ export class GraphHostLifecycle {
   }
 }
 
+function isEphemeral(options: LoadGraphOptions): boolean {
+  return options.ephemeral === true;
+}
+
+function honeyForLoad(
+  context: GraphHostContext,
+  graphId: GraphId,
+  ephemeral: boolean | undefined,
+): ReturnType<NonNullable<GraphHostContext['honeyForGraph']>> | undefined {
+  return ephemeral === true ? undefined : context.honeyForGraph?.(graphId);
+}
+
+function markLoaded(
+  context: GraphHostContext,
+  graphId: GraphId,
+  ephemeral: boolean | undefined,
+): void {
+  if (ephemeral !== true) {
+    context.updateCatalog(graphId, 'load', (catalog) => catalog.markLoaded(graphId));
+  }
+}
+
 async function loadGraphLocked(
   context: GraphHostContext,
   read: GraphHostRead,
@@ -153,11 +189,10 @@ async function loadGraphLocked(
     assertNonNegativeInteger(options.idleTtlMs, 'idleTtlMs');
   }
 
-  const honey = context.honeyForGraph?.(graphId);
+  const honey = honeyForLoad(context, graphId, options.ephemeral);
   let persisted: PersistedField | undefined;
   let schedulerState: SchedulerState | undefined;
-  // A host that does not restore still keeps `honey` for trigger/unload
-  // flushes; only the load read is skipped.
+  // A host that does not restore still keeps `honey` for trigger/unload flushes.
   if (honey !== undefined && (options.restoreHoney ?? context.restoreHoney)) {
     try {
       // Load before creating any session: a corrupt or unsupported Honey
@@ -248,6 +283,7 @@ async function loadGraphLocked(
       runtime,
       honey,
       recovery,
+      ephemeral: isEphemeral(options),
     };
     // Start the scheduler before the registry load. Its fire callback is
     // deferred through a microtask, so it cannot run before the graph is
@@ -292,7 +328,7 @@ async function loadGraphLocked(
     if (status === undefined) {
       throw new GraphLoadError(graphId, `Graph failed to register: ${graphId}`);
     }
-    context.updateCatalog(graphId, 'load', (catalog) => catalog.markLoaded(graphId));
+    markLoaded(context, graphId, options.ephemeral);
     return status;
   } catch (error) {
     if (schedulerStarted) {
@@ -319,7 +355,7 @@ async function disposeAll(context: GraphHostContext): Promise<void> {
       // Non-blocking: a busy graph stays loaded; an idle one unloads safely.
       await context.lock.tryRun(entry.id, async () => {
         const unloaded = await context.graphs.unload(entry.id);
-        if (unloaded) {
+        if (unloaded && !entry.value.ephemeral) {
           context.updateCatalog(entry.id, 'dispose', (catalog) =>
             catalog.markUnloaded(entry.id, 'dispose'),
           );

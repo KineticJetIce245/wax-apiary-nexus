@@ -321,8 +321,8 @@ export class Workspace {
     this.emit({ type: 'execution/approval-decided', executionId, requestId, kind });
   }
 
-  async cancel(executionId: string): Promise<void> {
-    await this.cancelExecution(executionId, 'explicit-cancel');
+  async cancel(executionId: string, byConversation = false): Promise<void> {
+    await this.cancelExecution(byConversation ? this.activeExecutionByConversation.get(executionId) ?? executionId : executionId, 'explicit-cancel');
   }
 
   /**

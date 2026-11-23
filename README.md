@@ -29,7 +29,7 @@ waxd
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 - `GraphHost`, `GraphStatus` and `GraphId` remain internal engine names. They are not public WAX objects and may be renamed later.
-- M17j is the migration to the harness-side prompt adapter; the code may still contain the previous `SessionExecutionQueue` until that slice lands. M17j3a approval pass-through is superseded by ACP full approval ownership and must be removed.
+- M17j is the migration to the harness-side prompt adapter; the code may still contain the previous `SessionExecutionQueue` until that slice lands. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
 
 ## Current commands
 
@@ -103,7 +103,7 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 
 ## Known conflicts and migration gaps
 
-- **Approval ownership conflict:** target architecture is ACP full ownership (no unowned/pass-through), but the working tree still contains M17j3a's `promptSource` / `approvalPassThrough` code and the local DSH branch `m17j3-acp-ownership`. Those are superseded and must be reverted; do not treat the current code as the target contract.
+- **Approval ownership:** target is ACP full ownership (no unowned/pass-through). M17j3a's `promptSource` / `approvalPassThrough` code was reverted; the local DSH branch `m17j3-acp-ownership` is historical and the checkout is back at detached `9c2670d3bc`. Do not treat the branch as the target.
 - **Admission conflict:** M17j4 dispatch still uses the legacy WAX `SessionExecutionQueue`; when that queue is busy it returns 409 `session-busy`. The target is harness-side admission; this remains a migration gap.
 - **GUI conflict:** DSH/Codex GUI is a separate live owner. It can list/resume persisted sessions but cannot attach to a live ACP/app-server thread or receive its pending approval. Accepted resolution: ACP is automation-only; no GUI approval hook.
 - **Verification gap:** M17j3a was tested only with fake ACP/DSH fixtures; it is not real Rule 9 evidence. The DSH source branch was not built or merged, and full unit/integration suites were not rerun for this docs decision.

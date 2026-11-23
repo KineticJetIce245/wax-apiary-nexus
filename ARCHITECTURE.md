@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through is superseded and must be removed); admission still uses the legacy WAX session queue until M17j3.
+Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through was superseded and reverted); admission still uses the legacy WAX session queue until M17j3.
 
 ## 1. One sentence
 

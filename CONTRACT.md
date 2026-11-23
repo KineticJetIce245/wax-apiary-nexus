@@ -1,6 +1,6 @@
 # WAX Apiary neXus — LiveHive Contract
 
-Status: **target contract**. The code is a B-core prototype; this contract defines the target object/API shape for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through is superseded); admission still goes through the legacy WAX session queue until M17j3.
+Status: **target contract**. The code is a B-core prototype; this contract defines the target object/API shape for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through was superseded and reverted); admission still goes through the legacy WAX session queue until M17j3.
 
 ## 1. Scope
 

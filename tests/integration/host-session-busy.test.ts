@@ -6,6 +6,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { DshAcpAdapter } from '../../src/adapters/dsh-acp/adapter.js';
+import type { HarnessEvent } from '../../src/adapters/harness.js';
 import { ControlServer } from '../../src/control/server.js';
 import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
@@ -23,7 +24,7 @@ const hasKey =
 const integrationOptions = {
   skip:
     dshRoot === undefined || builtCli === undefined || !existsSync(builtCli) || !hasKey
-      ? 'Real shared-session queue test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
+      ? 'Real shared-session admission test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
       : false,
   timeout: 300_000,
 };
@@ -52,26 +53,29 @@ interface HttpResult {
   readonly status: number;
   readonly body: Record<string, any>;
 }
-
 test(
-  'real DSH: three loaded LiveHives share one session and queue the second and third wake',
+  'real DSH: three loaded LiveHives share one session; wakes wait in the adapter FIFO',
   integrationOptions,
   async (t) => {
     if (dshRoot === undefined) {
       throw new Error('DSH_ROOT is missing');
     }
     const adapter = new DshAcpAdapter({ dshRoot });
+    const adapterEvents: HarnessEvent[] = [];
+    adapter.onEvent((event) => {
+      adapterEvents.push(event);
+    });
     await adapter.start();
     const workspace = new Workspace(adapter);
     const registry = new SessionRegistry({
       workspaces: new Map([['dsh', workspace]]),
     });
     const project: Project = {
-      id: 'project-real-session-queue',
-      directory: mkdtempSync(join(tmpdir(), 'wax-m16b-real-project-')),
+      id: 'project-real-session-admission',
+      directory: mkdtempSync(join(tmpdir(), 'wax-m17j-real-project-')),
     };
     const session = await registry.create(project);
-    const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m16b-real-state-'));
+    const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m17j-real-state-'));
     const server = new ControlServer({
       registry,
       stateRoot,
@@ -127,99 +131,51 @@ test(
       void firstWake.catch(() => undefined);
       await waitForSessionBusy(request, session.sessionId);
 
-      const secondQueued = await request('POST', '/lives/wake', {
+      // With the legacy WAX session queue gone, these requests are admitted by
+      // the DSH adapter and stay open until their prompt is sent. There is no
+      // queued handle and no second concurrent session/prompt.
+      const secondWake = request('POST', '/lives/wake', {
         liveId: 'second',
         beeId: 'only',
         input: 'second run',
       });
-      assert.equal(secondQueued.status, 200, JSON.stringify(secondQueued.body));
-      assert.equal(secondQueued.body['ok'], true);
-      assert.equal(secondQueued.body['status'], 'queued');
-      assert.equal(secondQueued.body['position'], 1);
-      const secondQueueId = String(secondQueued.body['queueId']);
-
-      const thirdQueued = await request('POST', '/lives/wake', {
+      void secondWake.catch(() => undefined);
+      const thirdWake = request('POST', '/lives/wake', {
         liveId: 'third',
         beeId: 'only',
         input: 'third run',
       });
-      assert.equal(thirdQueued.status, 200, JSON.stringify(thirdQueued.body));
-      assert.equal(thirdQueued.body['status'], 'queued');
-      assert.equal(thirdQueued.body['position'], 2);
-      const thirdQueueId = String(thirdQueued.body['queueId']);
+      void thirdWake.catch(() => undefined);
 
+      // The removed admission surface must be gone, not a dead route.
+      assert.equal((await request('GET', '/queues/anything')).status, 404);
+
+      const secondDone = await secondWake;
+      assert.equal(secondDone.status, 200, JSON.stringify(secondDone.body));
+      const secondRunId = String(secondDone.body['result']?.['runId']);
+      assert.ok(secondRunId.length > 0);
+      const thirdDone = await thirdWake;
+      assert.equal(thirdDone.status, 200, JSON.stringify(thirdDone.body));
+      const thirdRunId = String(thirdDone.body['result']?.['runId']);
+      assert.ok(thirdRunId.length > 0);
       const firstDone = await firstWake;
       assert.equal(firstDone.status, 200, JSON.stringify(firstDone.body));
       const firstRunId = String(firstDone.body['result']?.['runId']);
-      assert.ok(firstRunId.length > 0);
 
-      // Advancing the first run promotes the second and moves the third up to
-      // position 1; that position is stable until the second run finishes.
-      await waitForQueuePosition(request, thirdQueueId, 1);
-      const secondRunning = await queueView(request, secondQueueId);
-      assert.equal(secondRunning['status'], 'running');
-      assert.equal(secondRunning['liveId'], 'second');
-      const thirdWaiting = await queueView(request, thirdQueueId);
-      assert.equal(thirdWaiting['status'], 'queued');
-      assert.equal(thirdWaiting['position'], 1);
+      const runIds = new Set([firstRunId, secondRunId, thirdRunId]);
+      assert.equal(runIds.size, 3, 'each wake must produce its own run record');
 
-      const secondCompleted = await waitForQueueStatus(request, secondQueueId, 'completed');
-      const secondRunId = String(secondCompleted['runId']);
-      assert.equal(secondCompleted['liveId'], 'second');
-      assert.equal(secondCompleted['sessionId'], session.sessionId);
-      assert.notEqual(secondRunId, firstRunId);
+      const texts = await readRunOutputs(request, {
+        first: firstRunId,
+        second: secondRunId,
+        third: thirdRunId,
+      });
 
-      const thirdCompleted = await waitForQueueStatus(request, thirdQueueId, 'completed');
-      const thirdRunId = String(thirdCompleted['runId']);
-      assert.equal(thirdCompleted['liveId'], 'third');
-      assert.equal(thirdCompleted['sessionId'], session.sessionId);
-      assert.notEqual(thirdRunId, firstRunId);
-      assert.notEqual(thirdRunId, secondRunId);
-
-      const firstOutput = await request(
-        'GET',
-        `/lives/first/output?runId=${encodeURIComponent(firstRunId)}`,
-      );
-      assert.equal(firstOutput.status, 200, JSON.stringify(firstOutput.body));
-      const firstText = outputText(firstOutput.body);
-      assert.match(firstText, /^\d{3}$/, `first output: ${firstText}`);
-      const firstNumber = Number(firstText);
-      assert.ok(firstNumber >= 100 && firstNumber <= 999);
-
-      const secondOutput = await request(
-        'GET',
-        `/lives/second/output?runId=${encodeURIComponent(secondRunId)}`,
-      );
-      assert.equal(secondOutput.status, 200, JSON.stringify(secondOutput.body));
-      assert.equal(secondOutput.body['liveId'], 'second');
-      const secondText = outputText(secondOutput.body);
-      assert.match(secondText, /^\d{3}$/, `second output: ${secondText}`);
-      const secondNumber = Number(secondText);
-      assert.ok(secondNumber >= 100 && secondNumber <= 999);
-
-      const thirdOutput = await request(
-        'GET',
-        `/lives/third/output?runId=${encodeURIComponent(thirdRunId)}`,
-      );
-      assert.equal(thirdOutput.status, 200, JSON.stringify(thirdOutput.body));
-      assert.equal(thirdOutput.body['liveId'], 'third');
-      const thirdText = outputText(thirdOutput.body);
-      assert.match(thirdText, /^\d{3}$/, `third output: ${thirdText}`);
-      const thirdNumber = Number(thirdText);
-      assert.ok(thirdNumber >= 100 && thirdNumber <= 999);
-
-      // Serialization evidence: each queued run could not start before the run
-      // in front of it closed its durable record.
-      assert.ok(
-        Date.parse(String(secondOutput.body['startedAt'])) >=
-          Date.parse(String(firstOutput.body['finishedAt'])),
-        'the second run must not start before the first run finished',
-      );
-      assert.ok(
-        Date.parse(String(thirdOutput.body['startedAt'])) >=
-          Date.parse(String(secondOutput.body['finishedAt'])),
-        'the third run must not start before the second run finished',
-      );
+      // Serialization evidence: the adapter's own event stream proves that the
+      // next execution started only after the previous one reached terminal.
+      // Run-record timestamps are WAX bookkeeping and may overlap the next
+      // native prompt by a short graph-flush window, so they are not used here.
+      assertAdapterSerialized(adapterEvents);
 
       // A run id belongs to exactly one LiveHive.
       const crossed = await request(
@@ -236,11 +192,10 @@ test(
       }
 
       t.diagnostic(
-        `observed: shared session queued two wakes; ` +
-          `first=${firstText} (run ${firstRunId.slice(0, 8)}), ` +
-          `second=${secondText} (run ${secondRunId.slice(0, 8)}), ` +
-          `third=${thirdText} (run ${thirdRunId.slice(0, 8)}), ` +
-          `queues=${secondQueueId.slice(0, 8)}/${thirdQueueId.slice(0, 8)}`,
+        `observed: shared session admitted three wakes FIFO; ` +
+          `first=${texts.first} (run ${firstRunId.slice(0, 8)}), ` +
+          `second=${texts.second} (run ${secondRunId.slice(0, 8)}), ` +
+          `third=${texts.third} (run ${thirdRunId.slice(0, 8)})`,
       );
     } finally {
       await server.stop().catch(() => undefined);
@@ -249,8 +204,71 @@ test(
   },
 );
 
-function outputText(body: Record<string, any>): string {
-  const entries = body['outputs'] as Record<string, unknown>[] | undefined;
+async function readRunOutputs(
+  request: (method: 'GET' | 'POST', path: string) => Promise<HttpResult>,
+  runIds: { readonly first: string; readonly second: string; readonly third: string },
+): Promise<{ readonly first: string; readonly second: string; readonly third: string }> {
+  const first = await request('GET', `/lives/first/output?runId=${encodeURIComponent(runIds.first)}`);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const firstText = outputText(first.body);
+  assert.match(firstText, /^\d{3}$/, `first output: ${firstText}`);
+  const firstNumber = Number(firstText);
+  assert.ok(firstNumber >= 100 && firstNumber <= 999);
+
+  const second = await request('GET', `/lives/second/output?runId=${encodeURIComponent(runIds.second)}`);
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(second.body['liveId'], 'second');
+  const secondText = outputText(second.body);
+  assert.match(secondText, /^\d{3}$/, `second output: ${secondText}`);
+  const secondNumber = Number(secondText);
+  assert.ok(secondNumber >= 100 && secondNumber <= 999);
+
+  const third = await request('GET', `/lives/third/output?runId=${encodeURIComponent(runIds.third)}`);
+  assert.equal(third.status, 200, JSON.stringify(third.body));
+  assert.equal(third.body['liveId'], 'third');
+  const thirdText = outputText(third.body);
+  assert.match(thirdText, /^\d{3}$/, `third output: ${thirdText}`);
+  const thirdNumber = Number(thirdText);
+  assert.ok(thirdNumber >= 100 && thirdNumber <= 999);
+
+  return { first: firstText, second: secondText, third: thirdText };
+}
+
+function assertAdapterSerialized(events: readonly HarnessEvent[]): void {
+  const started = events
+    .filter((event): event is Extract<HarnessEvent, { type: 'execution/started' }> =>
+      event.type === 'execution/started')
+    .map((event) => event.executionId);
+  const terminal = events
+    .filter((event) =>
+      event.type === 'execution/completed' ||
+      event.type === 'execution/failed' ||
+      event.type === 'execution/cancelled' ||
+      event.type === 'execution/unknown')
+    .map((event) => event.executionId);
+  assert.equal(started.length, 3, 'adapter did not start exactly three executions');
+  assert.equal(terminal.length, 3, 'adapter did not settle exactly three executions');
+  const eventIndex = (type: 'execution/started', executionId: string): number =>
+    events.findIndex((event) => event.type === type && event.executionId === executionId);
+  const terminalIndex = (executionId: string): number =>
+    events.findIndex((event) =>
+      (event.type === 'execution/completed' ||
+        event.type === 'execution/failed' ||
+        event.type === 'execution/cancelled' ||
+        event.type === 'execution/unknown') &&
+      event.executionId === executionId);
+  for (let index = 1; index < started.length; index += 1) {
+    const previous = started[index - 1];
+    const current = started[index];
+    assert.ok(previous !== undefined && current !== undefined);
+    assert.ok(
+      terminalIndex(previous) < eventIndex('execution/started', current),
+      `execution ${current} started before ${previous} reached terminal`,
+    );
+  }
+}
+
+function outputText(body: Record<string, any>): string {  const entries = body['outputs'] as Record<string, unknown>[] | undefined;
   const value = entries?.[0]?.['value'] as Record<string, unknown> | undefined;
   const text = typeof value?.['text'] === 'string' ? value['text'].trim() : '';
   assert.ok(text.length > 0, 'run record has no forager output text');
@@ -274,57 +292,4 @@ async function waitForSessionBusy(
     await delay(25);
   }
   assert.fail('the first real DSH execution never reported the session busy');
-}
-
-async function queueView(
-  request: (method: 'GET' | 'POST', path: string, body?: unknown) => Promise<HttpResult>,
-  queueId: string,
-): Promise<Record<string, any>> {
-  const queued = await request('GET', `/queues/${encodeURIComponent(queueId)}`);
-  assert.equal(queued.status, 200, JSON.stringify(queued.body));
-  return queued.body['queue'] as Record<string, any>;
-}
-
-async function waitForQueuePosition(
-  request: (method: 'GET' | 'POST', path: string, body?: unknown) => Promise<HttpResult>,
-  queueId: string,
-  position: number,
-): Promise<void> {
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    const view = await queueView(request, queueId);
-    if (view['status'] === 'queued' && view['position'] === position) {
-      return;
-    }
-    assert.equal(
-      view['status'] === 'failed' || view['status'] === 'timeout' || view['status'] === 'dropped',
-      false,
-      `queued run settled as ${String(view['status'])}`,
-    );
-    await delay(100);
-  }
-  assert.fail(`queue item never reached position ${String(position)}`);
-}
-
-async function waitForQueueStatus(
-  request: (method: 'GET' | 'POST', path: string, body?: unknown) => Promise<HttpResult>,
-  queueId: string,
-  status: string,
-): Promise<Record<string, any>> {
-  const deadline = Date.now() + 240_000;
-  while (Date.now() < deadline) {
-    const queued = await request('GET', `/queues/${encodeURIComponent(queueId)}`);
-    assert.equal(queued.status, 200, JSON.stringify(queued.body));
-    const view = queued.body['queue'] as Record<string, any>;
-    if (view['status'] === status) {
-      return view;
-    }
-    assert.equal(
-      view['status'] === 'failed' || view['status'] === 'timeout' || view['status'] === 'dropped',
-      false,
-      `queued run settled as ${String(view['status'])}`,
-    );
-    await delay(250);
-  }
-  assert.fail(`queue item never reached '${status}'`);
 }

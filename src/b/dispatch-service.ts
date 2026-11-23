@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 
 import type { ExecutionState } from '../adapters/harness.js';
 import type { GraphHost, GraphRunResult } from '../daemon/graph-host.js';
-import { isQueuedRun, type QueuedRun } from '../daemon/session-execution-queue.js';
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
 import type { Project } from '../project/kernel.js';
 import {
@@ -47,8 +46,8 @@ export interface DispatchServiceOptions {
   /**
    * Host that loads, triggers and unloads the ephemeral one-bee graph. It is
    * the same host as the loaded LiveHives so dispatch shares their execution
-   * queue and approval path; the graph itself is marked ephemeral and is not
-   * persisted.
+   * and approval path; the graph itself is marked ephemeral and is not
+   * persisted. A busy session waits in the harness adapter's own FIFO.
    */
   readonly graphHost: GraphHost;
   /** Project used by fresh dispatches when the call does not supply one. */
@@ -182,11 +181,6 @@ export class DispatchService {
         () => undefined,
       );
       const result = await this.waitForTrigger(trigger, settled, timeoutMs, sessionId);
-      if (isQueuedRun(result)) {
-        // The ephemeral graph took no queue slot; report the same busy outcome
-        // the direct path produced instead of waiting on another graph's run.
-        throw new SessionBusyError(sessionId);
-      }
       return { output: this.requireOutput(graphId), sessionId };
     } catch (error) {
       throw normalizeDispatchError(error);
@@ -258,11 +252,11 @@ export class DispatchService {
    * released by `releaseGraph` once it settles.
    */
   private async waitForTrigger(
-    trigger: Promise<GraphRunResult | QueuedRun>,
+    trigger: Promise<GraphRunResult>,
     settled: Promise<void>,
     timeoutMs: number,
     sessionId: string,
-  ): Promise<GraphRunResult | QueuedRun> {
+  ): Promise<GraphRunResult> {
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<typeof TIMEOUT>((resolve) => {
       timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);

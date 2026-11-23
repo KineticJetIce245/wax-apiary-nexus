@@ -7,12 +7,12 @@ import test from 'node:test';
 import {
   GraphHost,
   GraphLoadError,
-  isQueuedRun,
 } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import type { Project } from '../src/project/kernel.js';
 import { parseComposition } from '../src/runtime/index.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
+import { SessionBusyError } from '../src/session/session-errors.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 import {
@@ -205,7 +205,7 @@ test('a rejected load releases only the reservation it added', async (t) => {
   assert.equal(await env.host.unload('valid'), true);
 });
 
-test('a busy shared session returns a queue handle instead of a busy error', async (t) => {
+test('a busy shared session rejects a second trigger when the adapter cannot queue', async (t) => {
   const fixture = makeFixtureEnv(new RecordingAdapter());
   fixture.adapter.holdSubmissions = true;
   const host = new GraphHost({ registry: fixture.registry });
@@ -225,28 +225,20 @@ test('a busy shared session returns a queue handle instead of a busy error', asy
 
   const held = host.trigger('first', 'only', { kind: 'text', text: 'one' });
   await fixture.adapter.waitForSubmit(1);
-  const queued = await host.trigger('second', 'only', { kind: 'text', text: 'two' });
-  assert.ok(isQueuedRun(queued));
-  assert.equal(queued.liveId, 'second');
-  assert.equal(queued.beeId, 'only');
-  assert.equal(queued.sessionId, session.sessionId);
-  assert.equal(queued.position, 1);
-  assert.equal(host.queues.get(queued.queueId)?.status, 'queued');
 
-  // Only the first run was parked; the promoted run must finish normally.
+  // The adapter does not advertise `queue`, so the Workspace refuses the
+  // overlap instead of admitting a second execution it would never send.
+  await assert.rejects(
+    host.trigger('second', 'only', { kind: 'text', text: 'two' }),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionBusyError);
+      assert.equal(error.sessionId, session.sessionId);
+      return true;
+    },
+  );
+
   fixture.adapter.holdSubmissions = false;
   fixture.adapter.releaseHeld();
-  await held;
-  await until(() => host.queues.get(queued.queueId)?.status === 'completed');
-  assert.equal(typeof host.queues.get(queued.queueId)?.runId, 'string');
+  const first = await held;
+  assert.equal(first.graphId, 'first');
 });
-
-async function until(check: () => boolean): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (!check()) {
-    if (Date.now() > deadline) {
-      assert.fail('timed out waiting for the queue item to settle');
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-  }
-}

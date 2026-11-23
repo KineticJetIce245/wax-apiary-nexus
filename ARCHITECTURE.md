@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through was superseded and reverted); admission still uses the legacy WAX session queue until M17j3.
+Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through was superseded and reverted); M17j3 moved prompt admission into the WAX `DshAcpAdapter` (DSH source untouched) and removed the legacy WAX session queue.
 
 ## 1. One sentence
 
@@ -12,7 +12,7 @@ A **LiveHive** is a loaded graph of **bees** connected by **beelines**; each bee
 L4  Control / CLI        ControlServer / ControlClient / wax (B surface only)
 L3  LiveHive host        LiveHiveService / GraphHost / LiveHiveCatalog / LiveHiveLock
 L2  Session              SessionRegistry / AdapterPool / Workspace
-L1  Adapter              CodexAdapter / DshAcpAdapter + harness-side prompt admission
+L1  Adapter              CodexAdapter / DshAcpAdapter + adapter-owned prompt admission
 L0  Native harness       Codex app-server / DSH ACP server
 ```
 
@@ -46,10 +46,12 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 ### 4.1 Prompt admission and approval ownership
 
 `SessionExecutionQueue` is removed as the WAX session-admission authority. The
-harness-side adapter owns a per-session FIFO queue for WAX-originated prompts:
+WAX `DshAcpAdapter` owns a per-session FIFO queue for WAX-originated prompts;
+the DSH source is untouched and its native one-prompt rule is honored by this
+adapter queue:
 
 ```text
-Bee wants prompt -> harness-side adapter admission -> native session
+Bee wants prompt -> WAX DshAcpAdapter admission -> native session
                     (pending / active / terminal)
 ```
 
@@ -95,7 +97,7 @@ Bee wants prompt -> harness-side adapter admission -> native session
 
 - `live.json` is keyed by `beeId` for `bees` and `bindings`; `beelines` are keyed by `beelineId`.
 - `sessions.json` is global; each session record carries its harness.
-- Harness-side prompt admission/pending is memory-only; no replay after restart. A dispatch graph is ephemeral and is not persisted as a LiveHive.
+- Adapter prompt admission/pending is memory-only; no replay after restart. A dispatch graph is ephemeral and is not persisted as a LiveHive.
 - No revision file; a content hash may be added later for audit only.
 
 ## 6. Concurrency and failure
@@ -103,14 +105,14 @@ Bee wants prompt -> harness-side adapter admission -> native session
 - One `waxd` process, one state root, one ControlServer.
 - One AdapterPool; each harness has one Workspace. A failed harness is marked `unavailable` and does not block the daemon.
 - `LiveHiveLock` serializes all mutating operations per LiveHive; different LiveHives may run in parallel.
-- One session has at most one active execution. Sharing a session across LiveHives is serialized by the harness-side adapter; an explicit busy path may return `session-busy`, never a silent second execution.
+- One session has at most one active execution. Sharing a session across LiveHives is serialized by the WAX `DshAcpAdapter` FIFO; an explicit busy path may return `session-busy`, never a silent second execution.
 - WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ## 7. Public names and internal engine names
 
-The public object layer is B: `LiveHive`, `Bee`, `Beeline`, `BeeBinding`, `HiveTemplate`, `Schedule` and `Dispatch`. The control API and CLI expose `/lives`, `/templates`, `/dispatch`, `/queues`, `/guards`, `/sessions`, `wax live`, `wax wake`, `wax answer`, `wax template`, `wax dispatch`, `wax queue`, `wax guard` and `wax session`.
+The public object layer is B: `LiveHive`, `Bee`, `Beeline`, `BeeBinding`, `HiveTemplate`, `Schedule` and `Dispatch`. The control API and CLI expose `/lives`, `/templates`, `/dispatch`, `/guards`, `/sessions`, `wax live`, `wax wake`, `wax answer`, `wax template`, `wax dispatch`, `wax guard` and `wax session`.
 
 `GraphHost`, `GraphStatus`, `GraphId` and `CompositionDefinition` remain internal execution-engine names. They are not a second object model and are not exposed by the HTTP or CLI surface. Renaming them is a separate internal cleanup.
 

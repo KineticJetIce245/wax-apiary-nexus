@@ -46,11 +46,7 @@ export async function assertHarnessAdapterContract(fixture: HarnessAdapterContra
       'adapter did not emit execution/started for the submitted execution',
     );
 
-    await assert.rejects(
-      adapter.submit(first, 'contract-exec-2', 'overlap'),
-      /active execution|already/i,
-      'adapter accepted a second overlapping submit',
-    );
+    await assertOverlapContract(adapter, first);
 
     unsubscribe();
     const observed = events.length;
@@ -81,8 +77,24 @@ export async function assertHarnessAdapterContract(fixture: HarnessAdapterContra
   }
 }
 
-function assertCapabilities(adapter: HarnessAdapter): void {
-  const capabilities = adapter.capabilities;
+/**
+ * A queue-capable adapter admits the overlap and sends it later; the scripted
+ * harness never completes the first turn, so it stays pending until stop()
+ * clears the queue. Every other adapter must reject the overlap.
+ */
+async function assertOverlapContract(adapter: HarnessAdapter, nativeId: string): Promise<void> {
+  if (adapter.capabilities.queue === true) {
+    await adapter.submit(nativeId, 'contract-exec-2', 'overlap');
+    return;
+  }
+  await assert.rejects(
+    adapter.submit(nativeId, 'contract-exec-2', 'overlap'),
+    /active execution|already/i,
+    'adapter accepted a second overlapping submit',
+  );
+}
+
+function assertCapabilities(adapter: HarnessAdapter): void {  const capabilities = adapter.capabilities;
   assert.ok(
     capabilities.approval === 'interactive' ||
       capabilities.approval === 'policy-only' ||
@@ -91,6 +103,9 @@ function assertCapabilities(adapter: HarnessAdapter): void {
   );
   for (const key of ['cancel', 'streaming', 'rename', 'resume'] as const) {
     assert.equal(typeof capabilities[key], 'boolean', `${key} capability must be a boolean`);
+  }
+  if (capabilities.queue !== undefined) {
+    assert.equal(typeof capabilities.queue, 'boolean', 'queue capability must be a boolean');
   }
 }
 

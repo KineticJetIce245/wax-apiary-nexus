@@ -49,12 +49,12 @@
       "parameters": 1
     },
     "src/adapters/dsh-acp/adapter.ts::class DshAcpAdapter": {
-      "bodyLines": 508,
+      "bodyLines": 487,
       "publicMethods": 10,
       "constructorDependencies": 1
     },
     "src/adapters/dsh-acp/adapter.ts::method DshAcpAdapter.handleNotification": {
-      "lines": 43,
+      "lines": 42,
       "cyclomatic": 14,
       "nesting": 2,
       "parameters": 2
@@ -64,12 +64,6 @@
       "cyclomatic": 4,
       "nesting": 1,
       "parameters": 0
-    },
-    "src/adapters/dsh-acp/adapter.ts::method DshAcpAdapter.submit": {
-      "lines": 73,
-      "cyclomatic": 4,
-      "nesting": 1,
-      "parameters": 4
     },
     "src/b/live-hive-codec.ts::function toCompositionDefinition": {
       "lines": 51,
@@ -117,12 +111,6 @@
       "cyclomatic": 13,
       "nesting": 1,
       "parameters": 3
-    },
-    "src/cli/cli.ts::function runCli": {
-      "lines": 36,
-      "cyclomatic": 11,
-      "nesting": 1,
-      "parameters": 2
     },
     "src/cli/control-cli.ts::function parseCliTokens": {
       "lines": 48,
@@ -197,8 +185,8 @@
       "parameters": 3
     },
     "src/control/http-errors.ts::function toHttpError": {
-      "lines": 71,
-      "cyclomatic": 26,
+      "lines": 66,
+      "cyclomatic": 25,
       "nesting": 2,
       "parameters": 1
     },
@@ -227,14 +215,14 @@
       "parameters": 5
     },
     "src/control/route-match.ts::function matchRoute": {
-      "lines": 107,
-      "cyclomatic": 45,
+      "lines": 104,
+      "cyclomatic": 43,
       "nesting": 3,
       "parameters": 2
     },
     "src/control/routes.ts::function dispatchRoutes": {
-      "lines": 119,
-      "cyclomatic": 36,
+      "lines": 107,
+      "cyclomatic": 33,
       "nesting": 3,
       "parameters": 5
     },
@@ -263,12 +251,12 @@
       "parameters": 2
     },
     "src/daemon/graph-host.ts::class GraphHost": {
-      "bodyLines": 91,
+      "bodyLines": 84,
       "publicMethods": 13,
       "constructorDependencies": 1
     },
     "src/daemon/graph-host/context.ts::constructor GraphHostContext": {
-      "lines": 78,
+      "lines": 77,
       "cyclomatic": 20,
       "nesting": 2,
       "parameters": 1
@@ -595,19 +583,13 @@
       "parameters": 2
     },
     "src/session/workspace.ts::class Workspace": {
-      "bodyLines": 597,
+      "bodyLines": 596,
       "publicMethods": 13,
       "constructorDependencies": 2
     },
-    "src/session/workspace.ts::method Workspace.closeConversation": {
-      "lines": 49,
-      "cyclomatic": 11,
-      "nesting": 3,
-      "parameters": 1
-    },
     "src/session/workspace.ts::method Workspace.handleAdapterEvent": {
-      "lines": 117,
-      "cyclomatic": 27,
+      "lines": 85,
+      "cyclomatic": 20,
       "nesting": 2,
       "parameters": 1
     },
@@ -615,18 +597,6 @@
       "lines": 36,
       "cyclomatic": 12,
       "nesting": 3,
-      "parameters": 3
-    },
-    "src/session/workspace.ts::method Workspace.resumeConversation": {
-      "lines": 42,
-      "cyclomatic": 11,
-      "nesting": 2,
-      "parameters": 3
-    },
-    "src/session/workspace.ts::method Workspace.submit": {
-      "lines": 55,
-      "cyclomatic": 9,
-      "nesting": 2,
       "parameters": 3
     },
     "src/storage/conversation-store.ts::function isRecord": {
@@ -694,12 +664,6 @@
       "cyclomatic": 15,
       "nesting": 0,
       "parameters": 1
-    },
-    "tests/control-cli-queue.test.ts::arrow <anonymous@195>": {
-      "lines": 60,
-      "cyclomatic": 2,
-      "nesting": 1,
-      "parameters": 0
     },
     "tests/control-cli-session.test.ts::arrow <anonymous@211>": {
       "lines": 66,
@@ -831,24 +795,6 @@
       "lines": 129,
       "cyclomatic": 3,
       "nesting": 2,
-      "parameters": 1
-    },
-    "tests/control-server-queue-guard.test.ts::arrow <anonymous@109>": {
-      "lines": 126,
-      "cyclomatic": 2,
-      "nesting": 1,
-      "parameters": 1
-    },
-    "tests/control-server-queue.test.ts::arrow <anonymous@147>": {
-      "lines": 76,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/control-server-queue.test.ts::arrow <anonymous@303>": {
-      "lines": 107,
-      "cyclomatic": 2,
-      "nesting": 1,
       "parameters": 1
     },
     "tests/control-server-session-busy.test.ts::arrow <anonymous@30>": {
@@ -1146,8 +1092,8 @@
       "parameters": 1
     },
     "tests/integration/host-session-busy.test.ts::arrow <anonymous@59>": {
-      "lines": 191,
-      "cyclomatic": 6,
+      "lines": 146,
+      "cyclomatic": 3,
       "nesting": 2,
       "parameters": 1
     },
@@ -1434,7 +1380,7 @@
       "parameters": 2
     },
     "tests/support/harness-adapter-contract.ts::function assertHarnessAdapterContract": {
-      "lines": 61,
+      "lines": 57,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1

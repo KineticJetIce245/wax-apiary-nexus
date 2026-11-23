@@ -1,11 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AttachmentDraft } from '../../shared/content.js';
 import type { Project } from '../../project/kernel.js';
 import { assertProjectDirectory } from '../../project/project-directory.js';
 import { buildDshPrompt } from './content.js';
+import { sessionTitleSidecarName } from './sidecar.js';
 import type {
   ApprovalDecision,
   ApprovalOption,
@@ -18,6 +18,9 @@ import type {
   StopReason,
 } from '../harness.js';
 import { AcpRpcClient, AcpRpcError } from './client.js';
+import { SessionPromptQueue } from './prompt-queue.js';
+
+export { canonicalCwd, sessionTitleSidecarName } from './sidecar.js';
 
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 30_000;
@@ -41,11 +44,6 @@ export interface DshAcpAdapterOptions {
   readonly nativeTitles?: boolean;
   /** Directory holding `<sha256(canonicalCwd)>.json` title sidecars. */
   readonly sidecarDir?: string;
-}
-
-interface ActiveExecution {
-  readonly sessionId: string;
-  readonly executionId: string;
 }
 
 interface PendingApproval {
@@ -74,7 +72,7 @@ export class DshAcpAdapter implements HarnessAdapter {
   private readonly nativeTitles: boolean;
   private readonly sidecarDir: string | undefined;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
-  private readonly active = new Map<string, ActiveExecution>();
+  private readonly prompts: SessionPromptQueue;
   private readonly closing = new Set<string>();
   private imagePrompts = false;
   private readonly cwdBySession = new Map<string, string>();
@@ -106,7 +104,17 @@ export class DshAcpAdapter implements HarnessAdapter {
       // G016 verified session/resume across a process restart; the ACP server
       // has no session/load, and resume() below does not replay history.
       resume: true,
+      // One native session accepts one WAX prompt at a time; overlapping
+      // submits wait here in FIFO order instead of reaching ACP concurrently.
+      queue: true,
     };
+    this.prompts = new SessionPromptQueue({
+      send: (nativeId, prompt) =>
+        this.requireClient().request('session/prompt', prompt.params),
+      emit: (event) => this.emit(event),
+      terminal: (executionId, result) => terminalEventForResult(executionId, result),
+      failure: (executionId, error) => failureEventForError(executionId, error),
+    });
   }
 
   onEvent(handler: (event: HarnessEvent) => void): () => void {
@@ -201,6 +209,8 @@ export class DshAcpAdapter implements HarnessAdapter {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    // Settle waiting prompts before teardown so they report cancelled, not unknown.
+    this.prompts.abortAll('cancelled', 'DSH ACP adapter stopped');
     const child = this.child;
     if (child !== undefined) {
       const exited = new Promise<void>((resolve) => {
@@ -220,7 +230,7 @@ export class DshAcpAdapter implements HarnessAdapter {
       pending.resolve(cancelledPermissionOutcome());
     }
     this.pendingApprovals.clear();
-    this.active.clear();
+    this.prompts.clearActive();
     this.closing.clear();
     this.cwdBySession.clear();
     this.client?.close();
@@ -286,7 +296,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     text: string,
     attachments?: readonly AttachmentDraft[],
   ): Promise<void> {
-    const client = this.requireClient();
+    this.requireClient();
     if (this.closing.has(nativeId)) {
       throw new Error(`ACP session is closing and cannot accept new work: ${nativeId}`);
     }
@@ -295,68 +305,29 @@ export class DshAcpAdapter implements HarnessAdapter {
       throw new Error(`Unknown ACP session: ${nativeId}`);
     }
     assertProjectDirectory(cwd);
-    if (this.active.has(nativeId)) {
-      throw new Error(`ACP session already has an active execution: ${nativeId}`);
-    }
-    this.active.set(nativeId, { sessionId: nativeId, executionId });
-    this.emit({ type: 'execution/started', executionId });
-
-    void client
-      .request('session/prompt', {
+    this.prompts.submit(nativeId, {
+      executionId,
+      params: {
         sessionId: nativeId,
         prompt: buildDshPrompt(text, attachments, this.imagePrompts),
-      })
-      .then((result) => {
-        if (this.active.get(nativeId)?.executionId !== executionId) {
-          return;
-        }
-        this.active.delete(nativeId);
-        const stopReason = mapStopReason(asRecord(result)?.stopReason);
-        switch (stopReason) {
-          case 'end_turn':
-            this.emit({ type: 'execution/completed', executionId, stopReason });
-            return;
-          case 'cancelled':
-            this.emit({ type: 'execution/cancelled', executionId });
-            return;
-          case 'max_tokens':
-          case 'max_turn_requests':
-          case 'refusal':
-            this.emit({
-              type: 'execution/failed',
-              executionId,
-              error: `Prompt ended with stop reason: ${stopReason}`,
-            });
-            return;
-          case 'unknown':
-            this.emit({
-              type: 'execution/unknown',
-              executionId,
-              reason: 'ACP returned an unknown stopReason',
-            });
-            return;
-        }
-      })
-      .catch((error: unknown) => {
-        if (this.active.get(nativeId)?.executionId !== executionId) {
-          return;
-        }
-        this.active.delete(nativeId);
-        if (error instanceof AcpRpcError) {
-          this.emit({ type: 'execution/failed', executionId, error: error.message });
-          return;
-        }
-        this.emit({
-          type: 'execution/unknown',
-          executionId,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      });
+      },
+    });
   }
+
+  /**
+   * Remove one not-yet-started prompt; the active prompt is untouched. The
+   * execution still receives its one terminal event, so a forager waiting on a
+   * queued prompt is never stranded by an explicit cancel.
+   */
+  readonly dropQueued = (nativeId: string, executionId: string): Promise<boolean> =>
+    Promise.resolve(this.prompts.drop(nativeId, executionId));
 
   async cancel(nativeId: string): Promise<void> {
     const client = this.requireClient();
     this.cancelPendingApprovals(nativeId);
+    // A native cancel cannot revive a queued prompt; WAX-cancelled queue items
+    // are settled here so nothing is sent after the caller asked to stop.
+    this.prompts.abortWaiting(nativeId, 'cancelled', 'ACP session cancelled');
     client.notify('session/cancel', { sessionId: nativeId });
   }
 
@@ -384,12 +355,15 @@ export class DshAcpAdapter implements HarnessAdapter {
     const client = this.requireClient();
     this.closing.add(nativeId);
     this.cancelPendingApprovals(nativeId);
-    const active = this.active.get(nativeId);
+    // Clear admitted prompts before asking the native side to close; a close
+    // whose outcome is unknown must not leave work that could still be sent.
+    this.prompts.abortWaiting(nativeId, 'cancelled', 'ACP session closed');
+    const active = this.prompts.activeOf(nativeId);
     await client.request('session/close', { sessionId: nativeId }, this.sessionTimeoutMs);
     this.closing.delete(nativeId);
     this.cwdBySession.delete(nativeId);
-    if (active !== undefined && this.active.get(nativeId)?.executionId === active.executionId) {
-      this.active.delete(nativeId);
+    if (active !== undefined && this.prompts.activeOf(nativeId)?.executionId === active.executionId) {
+      this.prompts.forgetActive(nativeId);
       this.emit({ type: 'execution/cancelled', executionId: active.executionId });
     }
   }
@@ -409,11 +383,10 @@ export class DshAcpAdapter implements HarnessAdapter {
     if (sessionId === undefined || update === undefined) {
       return;
     }
-    const active = this.active.get(sessionId);
-    if (active === undefined) {
+    const executionId = this.prompts.activeOf(sessionId)?.executionId;
+    if (executionId === undefined) {
       return;
     }
-    const executionId = active.executionId;
     const kind = asString(update.sessionUpdate);
     if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
       const content = asRecord(update.content);
@@ -449,7 +422,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     }
     const params = asRecord(request.params);
     const sessionId = asString(params?.sessionId);
-    const active = sessionId === undefined ? undefined : this.active.get(sessionId);
+    const active = sessionId === undefined ? undefined : this.prompts.activeOf(sessionId);
     if (active === undefined) {
       return Promise.resolve(cancelledPermissionOutcome());
     }
@@ -488,14 +461,16 @@ export class DshAcpAdapter implements HarnessAdapter {
       return;
     }
     this.started = false;
-    for (const active of this.active.values()) {
+    const reason = `DSH ACP process error: ${error.message}`;
+    for (const active of this.prompts.activeEntries()) {
       this.emit({
         type: 'execution/unknown',
         executionId: active.executionId,
-        reason: `DSH ACP process error: ${error.message}`,
+        reason,
       });
     }
-    this.active.clear();
+    this.prompts.clearActive();
+    this.prompts.abortAll('unknown', reason);
     this.closing.clear();
     this.cwdBySession.clear();
     for (const pending of this.pendingApprovals.values()) {
@@ -511,14 +486,16 @@ export class DshAcpAdapter implements HarnessAdapter {
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     const wasStarted = this.started;
     this.started = false;
-    for (const active of this.active.values()) {
+    const reason = `DSH ACP process exited (code=${String(code)}, signal=${String(signal)})`;
+    for (const active of this.prompts.activeEntries()) {
       this.emit({
         type: 'execution/unknown',
         executionId: active.executionId,
-        reason: `DSH ACP process exited (code=${String(code)}, signal=${String(signal)})`,
+        reason,
       });
     }
-    this.active.clear();
+    this.prompts.clearActive();
+    this.prompts.abortAll('unknown', reason);
     this.closing.clear();
     this.cwdBySession.clear();
     for (const pending of this.pendingApprovals.values()) {
@@ -570,32 +547,6 @@ export class DshAcpAdapter implements HarnessAdapter {
   }
 }
 
-/**
- * Canonical cwd spelling shared with the `wax-bridge` DSH plugin: resolved
- * real path, Windows `\\?\` prefix stripped, and lowercased on Windows.
- * @param path - project directory.
- * @returns canonical path used as the title-sidecar key.
- */
-export function canonicalCwd(path: string): string {
-  let resolved: string;
-  try {
-    resolved = realpathSync.native(path);
-  } catch {
-    resolved = resolve(path);
-  }
-  const noPrefix = resolved.replace(/^\\\\\?\\/, '');
-  return process.platform === 'win32' ? noPrefix.toLowerCase() : noPrefix;
-}
-
-/**
- * Deterministic title-sidecar filename for one project directory.
- * @param directory - project directory.
- * @returns `<sha256(canonicalCwd)>.json`.
- */
-export function sessionTitleSidecarName(directory: string): string {
-  return `${createHash('sha256').update(canonicalCwd(directory)).digest('hex')}.json`;
-}
-
 export function mapStopReason(value: unknown): StopReason {
   switch (value) {
     case 'end_turn':
@@ -607,6 +558,43 @@ export function mapStopReason(value: unknown): StopReason {
     default:
       return 'unknown';
   }
+}
+
+/** Exactly one terminal event for one ACP prompt result. */
+function terminalEventForResult(executionId: string, result: unknown): HarnessEvent {
+  const stopReason = mapStopReason(asRecord(result)?.stopReason);
+  switch (stopReason) {
+    case 'end_turn':
+      return { type: 'execution/completed', executionId, stopReason };
+    case 'cancelled':
+      return { type: 'execution/cancelled', executionId };
+    case 'max_tokens':
+    case 'max_turn_requests':
+    case 'refusal':
+      return {
+        type: 'execution/failed',
+        executionId,
+        error: `Prompt ended with stop reason: ${stopReason}`,
+      };
+    default:
+      return {
+        type: 'execution/unknown',
+        executionId,
+        reason: 'ACP returned an unknown stopReason',
+      };
+  }
+}
+
+/** A definite RPC failure is `failed`; a lost/unknown outcome is `unknown`. */
+function failureEventForError(executionId: string, error: unknown): HarnessEvent {
+  if (error instanceof AcpRpcError) {
+    return { type: 'execution/failed', executionId, error: error.message };
+  }
+  return {
+    type: 'execution/unknown',
+    executionId,
+    reason: error instanceof Error ? error.message : String(error),
+  };
 }
 
 export function mapApprovalOptions(value: unknown): ApprovalOption[] {

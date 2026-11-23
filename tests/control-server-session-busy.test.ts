@@ -75,8 +75,8 @@ test('a second loaded graph may share the same session; unload is refcounted', a
         project,
       });
 
-    // Both loaded LiveHives now hold the same explicit session; the queue, not
-    // a 409, serializes their executions.
+    // Both loaded LiveHives now hold the same explicit session; sharing is
+    // allowed and each wake is admitted by the harness adapter.
     const first = await load('first');
     assert.equal(first.status, 200, JSON.stringify(first.body));
     const second = await load('second');

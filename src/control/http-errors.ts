@@ -13,7 +13,6 @@ import {
 } from '../daemon/graph-host.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
 import { CompositionValidationError, QueueFullError } from '../runtime/index.js';
-import { SessionQueueFullError } from '../daemon/session-execution-queue.js';
 import { ForagerExecutionError } from '../session/forager.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
 import { ConversationBusyError, SessionBusyError } from '../session/session-errors.js';
@@ -64,11 +63,6 @@ export function toHttpError(error: unknown): HttpError {
   }
   if (error instanceof QueueFullError) {
     return new HttpError(409, 'conflict', 'graph queue is full');
-  }
-  if (error instanceof SessionQueueFullError) {
-    // The queue accepted work for this session until its depth limit; asking
-    // the client to retry later is the documented `queue-full` contract.
-    return new HttpError(429, 'queue-full', 'session queue is full');
   }
   if (error instanceof ForagerExecutionError) {
     // A cancelled execution is a client-visible outcome, not an internal

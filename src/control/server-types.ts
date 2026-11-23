@@ -136,7 +136,6 @@ export type RouteKind =
   | 'lives-migrate'
   | 'lives-inspect'
   | 'lives-output'
-  | 'queue-status'
   | 'templates'
   | 'dispatch';
 
@@ -144,7 +143,6 @@ export interface Route {
   readonly kind: RouteKind;
   readonly methods: readonly string[];
   readonly graphId?: string;
-  readonly queueId?: string;
 }
 
 export type { Project };

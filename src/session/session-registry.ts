@@ -186,6 +186,18 @@ export class SessionRegistry implements BindingLookup {
   }
 
   /**
+   * True when the session's adapter serializes its own prompts. A busy session
+   * may still be bound: the prompt waits in that adapter's FIFO.
+   */
+  canQueue(sessionId: string): boolean {
+    const record = this.records.find(sessionId);
+    if (record === undefined) {
+      return false;
+    }
+    return this.workspaces.get(record.harness)?.canQueue() ?? false;
+  }
+
+  /**
    * Close an idle session. A busy session is refused rather than cancelled:
    * callers must settle or stop the execution first. The record is removed only
    * after the workspace close succeeds. A hydrated session that was never

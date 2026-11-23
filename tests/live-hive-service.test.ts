@@ -6,7 +6,6 @@ import test, { type TestContext } from 'node:test';
 
 import {
   GraphHost,
-  isQueuedRun,
   type GraphRunResult,
 } from '../src/daemon/graph-host.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
@@ -23,8 +22,8 @@ import { FakeAdapter } from './support/fake-adapter.js';
 import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
 
 /**
- * Wake a fixture live whose sessions are unique per live. A queued handle here
- * would hide the synchronous result the test asserts on.
+ * Wake a fixture live whose sessions are unique per live. Admission is in the
+ * harness adapter, so a resolved call is the synchronous run the test asserts on.
  */
 async function wakeNow(
   service: LiveHiveService,
@@ -32,12 +31,7 @@ async function wakeNow(
   beeId: string,
   input: string,
 ): Promise<GraphRunResult> {
-  const result = await service.wake(liveId, beeId, input);
-  assert.equal(isQueuedRun(result), false, 'fixture session should be free');
-  if (isQueuedRun(result)) {
-    throw new Error(`unexpected queued wake for '${liveId}/${beeId}'`);
-  }
-  return result;
+  return service.wake(liveId, beeId, input);
 }
 
 interface Harness {

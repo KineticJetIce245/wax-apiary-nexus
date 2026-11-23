@@ -59,9 +59,6 @@ export function matchRoute(rawUrl: string | undefined, method?: string): Route |
     if (first === 'guard' && second === 'decide') {
       return { kind: 'guard-decide', methods: ['POST'] };
     }
-    if (first === 'queues' && second.length <= MAX_ID_LENGTH) {
-      return { kind: 'queue-status', methods: ['GET'], queueId: second };
-    }
     if (first === 'lives') {
       switch (second) {
         case 'load':

@@ -11,7 +11,6 @@ import type {
 import {
   GraphAnswerError,
   GraphHost,
-  isQueuedRun,
   type GraphNodeStatus,
   type GraphRunResult,
   type GraphStatus,
@@ -226,9 +225,8 @@ export function text(value: string): Value {
 
 /**
  * Await a trigger in a fixture whose sessions are unique per live, so it must
- * run immediately. A queued result would mean a shared session slipped into a
- * test that expects a synchronous run, so fail loudly instead of reading
- * undefined fields off the handle.
+ * run immediately. Prompt admission is in the adapter; a busy session would
+ * reject here, so a resolved run is the synchronous result a test expects.
  */
 export async function triggerRun(
   host: GraphHost,
@@ -236,11 +234,7 @@ export async function triggerRun(
   nodeId: NodeId,
   value: Value,
 ): Promise<GraphRunResult> {
-  const result = await host.trigger(graphId, nodeId, value);
-  if (isQueuedRun(result)) {
-    assert.fail(`trigger '${graphId}/${nodeId}' was unexpectedly queued`);
-  }
-  return result;
+  return host.trigger(graphId, nodeId, value);
 }
 
 export function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {

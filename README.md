@@ -21,7 +21,7 @@ waxd
 - **LiveHive is the first-class object.** A LiveHive has `bees`, `beelines`, `beeId -> sessionId` bindings, optional `schedules`, and a `PheromoneField`.
 - **Bee is the execution slot.** A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
 - **Beeline is a connection.** Conditions choose outgoing beelines; fork/merge use branches.
-- **`wake` is the execution verb.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps. A session-bound prompt is admitted by the harness-side adapter, not by a second WAX session queue.
+- **`wake` is the execution verb.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps. A session-bound prompt is admitted by the WAX `DshAcpAdapter`, not by a second WAX session queue.
 - **WAX is low priority.** If a user is using the session directly, a WAX prompt waits in adapter admission.
 - **ACP owns approvals.** An ACP session is the sole owner of its approval channel; there is no unowned-approval pass-through and no GUI approval. ACP is automation-only: a GUI may list/resume a persisted session but cannot receive or answer its live approvals. A separate send-message ingress may be reserved, but it cannot decide approvals.
 - **`dispatch` is an ephemeral one-bee LiveHive graph.** It runs once through the same admission/approval path, returns output, and is disposed; it is not a persistent LiveHive and does not write directly to a session.
@@ -29,7 +29,7 @@ waxd
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 - `GraphHost`, `GraphStatus` and `GraphId` remain internal engine names. They are not public WAX objects and may be renamed later.
-- M17j is the migration to the harness-side prompt adapter; the code may still contain the previous `SessionExecutionQueue` until that slice lands. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
+- M17j moved prompt admission into the WAX `DshAcpAdapter` (DSH source untouched). `DshAcpAdapter` owns a per-session FIFO (`capabilities.queue`); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns the run result (or 409 `session-busy` for an adapter without a queue), never an admission handle. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
 
 ## Current commands
 
@@ -42,7 +42,6 @@ wax template compose <template.json>|list
 wax dispatch --input <text>
 wax guard list
 wax guard decide <requestId> --decision allow_once|reject_once|cancelled
-wax queue status <queueId> [--json]
 wax session list|close <sessionId>|sweep
 ```
 
@@ -67,7 +66,6 @@ POST /templates
 POST /dispatch
 GET  /guards
 POST /guard/decide
-GET  /queues/:queueId
 GET  /sessions
 POST /sessions/close
 POST /sessions/sweep
@@ -92,7 +90,7 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - Public status and run results do not expose the internal engine identity: a status is `rest`, `hovered`, `nodes`, optional `recovery`, and `residency`; a run result names the live as `liveId`. `graphId` and `graphRevision` never appear in HTTP or CLI output.
 - RunStore has 1000-record / 1 MiB defaults and is used by wake/answer; an ephemeral dispatch graph also writes one run record (it has no LiveHive/catalog/Honey record).
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
-- Several loaded LiveHives may share one explicit session. A WAX prompt is admitted by the harness-side adapter: one active execution per session, per-session FIFO, low priority relative to direct user use. `wax queue status` reports adapter admission; the queue is in memory only, so a restarted daemon answers 404 for old ids and never replays pending work. `answer` is not queued; `dispatch` runs an ephemeral one-bee graph through the same admission path and is not persisted as a LiveHive. M17j4 dispatch still uses the legacy WAX `SessionExecutionQueue`; when that queue is busy it returns 409 `session-busy` until M17j3 moves admission to the harness adapter.
+- Several loaded LiveHives may share one explicit session. A WAX prompt is admitted by the WAX `DshAcpAdapter`: one active execution per session, per-session FIFO, low priority relative to direct user use. The queue is in memory only: a restarted daemon never replays pending work, and there is no public queue id to poll. `answer` is not queued; `dispatch` runs an ephemeral one-bee graph through the same admission path and is not persisted as a LiveHive. A non-queue adapter still rejects a second concurrent prompt with 409 `session-busy`.
 - Real mixed Codex+DSH, scheduler, DSH guard, approval isolation, and the full B LiveHive chain have passing integration coverage. Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
 - WAX does not control direct Web/TUI prompts. ACP sessions are automation-only: ACP owns their approvals, and the GUI cannot receive or answer them. This is accepted behavior, not a pending GUI feature; there is no approval pass-through. A future send-message ingress is separate from approvals.
 - Guard expiry is now explicit: a late decision returns 409 `guard-expired`; normal allow/reject/cancel still works.
@@ -104,8 +102,8 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 ## Known conflicts and migration gaps
 
 - **Approval ownership:** target is ACP full ownership (no unowned/pass-through). M17j3a's `promptSource` / `approvalPassThrough` code was reverted; the local DSH branch `m17j3-acp-ownership` is historical and the checkout is back at detached `9c2670d3bc`. Do not treat the branch as the target.
-- **Admission conflict:** M17j4 dispatch still uses the legacy WAX `SessionExecutionQueue`; when that queue is busy it returns 409 `session-busy`. The target is harness-side admission; this remains a migration gap.
+- **Admission ownership:** the WAX `DshAcpAdapter` is the only prompt-admission authority; DSH source is untouched. The legacy WAX `SessionExecutionQueue`, `QueuedRun`, `GET /queues/:queueId` and `wax queue status` are removed with no aliases. `DshAcpAdapter` advertises `queue: true`; `CodexAppServerAdapter` keeps the explicit 409 `session-busy` path. `wax wake` never returns a queued handle.
 - **GUI conflict:** DSH/Codex GUI is a separate live owner. It can list/resume persisted sessions but cannot attach to a live ACP/app-server thread or receive its pending approval. Accepted resolution: ACP is automation-only; no GUI approval hook.
-- **Verification gap:** M17j3a was tested only with fake ACP/DSH fixtures; it is not real Rule 9 evidence. The DSH source branch was not built or merged, and full unit/integration suites were not rerun for this docs decision.
+- **Verification gap:** M17j3a was tested only with fake ACP/DSH fixtures and was reverted. The M17j3 queue slice has unit/fake-ACP tests plus the real-DSH shared-session test; the full unit and integration suites were run after the queue change (see progress). Full-suite reruns after this docs-only correction are not needed for behavior.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

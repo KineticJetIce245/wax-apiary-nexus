@@ -219,7 +219,7 @@ export async function instantiateForagers(
           | undefined;
         if (resolved !== undefined) {
           const resolvedSessionId = resolved.sessionId;
-          if (registry.isBusy(resolvedSessionId)) {
+          if (isBusyWithoutQueue(registry, resolvedSessionId)) {
             throw new SessionBindingUnavailableError(node.id, resolvedSessionId, 'busy');
           }
           try {
@@ -377,11 +377,15 @@ export async function instantiateForagers(
   }
 }
 
+/** Reusing a busy session is only safe when its adapter owns a prompt FIFO. */
+function isBusyWithoutQueue(registry: SessionRegistry, sessionId: string): boolean {
+  return registry.isBusy(sessionId) && !registry.canQueue(sessionId);
+}
+
 function freshMetadata(binding: Extract<ForagerBinding, { kind: 'fresh' }>): {
   readonly model?: string;
   readonly reasoning?: string;
-} {
-  return {
+} {  return {
     ...(binding.model === undefined ? {} : { model: binding.model }),
     ...(binding.reasoning === undefined ? {} : { reasoning: binding.reasoning }),
   };

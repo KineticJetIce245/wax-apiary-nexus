@@ -317,9 +317,9 @@ test('wax live rejects bad usage and unknown live ids without retrying', async (
   );
   assert.match(dispatchErr.lines.join('\n'), /usage: wax dispatch/);
 });
-test('wax wake prints a queued handle instead of retrying', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'wax-cli-queued-'));
-  writeFileSync(join(dir, 'token'), 'queued-token-0123456789', 'utf8');
+test('wax wake rejects a response without a run result', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wax-cli-wake-'));
+  writeFileSync(join(dir, 'token'), 'wake-token-0123456789', 'utf8');
   writeFileSync(
     join(dir, 'server.json'),
     JSON.stringify({
@@ -333,22 +333,26 @@ test('wax wake prints a queued handle instead of retrying', async () => {
     'utf8',
   );
   const out = writer();
+  const err = writer();
   const requests: string[] = [];
   const code = await runWakeCli(
     ['wake', 'demo', 'only', '--input', 'x', '--daemon-dir', dir],
     {
       stdout: out.write,
-      stderr: writer().write,
+      stderr: err.write,
       fetchImpl: (async (input: string | URL | Request) => {
         requests.push(String(input));
-        return new Response(
-          JSON.stringify({ ok: true, status: 'queued', queueId: 'q-1', position: 2 }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }) as typeof fetch,
     },
   );
-  assert.equal(code, 0);
-  assert.deepEqual(out.lines, ['queued q-1 position=2']);
+  // There is no admission handle any more: a wake either returns its run
+  // result or fails; a malformed body must not be printed as success.
+  assert.equal(code, 1);
+  assert.deepEqual(out.lines, []);
+  assert.match(err.lines.join('\n'), /missing 'result'/);
   assert.equal(requests.length, 1);
 });

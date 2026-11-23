@@ -12,7 +12,6 @@ import type {
   GraphStatus,
   LoadGraphOptions,
 } from './graph-host/types.js';
-import type { QueuedRun, SessionExecutionQueue } from './session-execution-queue.js';
 
 export type {
   GraphAnswerErrorReason,
@@ -23,16 +22,6 @@ export type {
   GraphStatus,
   LoadGraphOptions,
 } from './graph-host/types.js';
-export type {
-  QueueItemView,
-  QueuedRun,
-  SessionQueueStatus,
-} from './session-execution-queue.js';
-export {
-  isQueuedRun,
-  SessionQueueDisposedError,
-  SessionQueueFullError,
-} from './session-execution-queue.js';
 export {
   GraphAnswerError,
   GraphHostDisposedError,
@@ -54,19 +43,12 @@ export class GraphHost {
   private readonly execution: GraphHostExecution;
   private readonly ownership: SessionOwnership;
   private readonly lifecycle: GraphHostLifecycle;
-  /**
-   * Read-only queue lookup for `GET /queues/:queueId`. It is a field, not a
-   * method, so the host's public method surface does not grow; queue mutation
-   * stays inside `trigger` and unload.
-   */
-  readonly queues: Pick<SessionExecutionQueue, 'get'>;
 
   constructor(options: GraphHostOptions) {
     this.context = new GraphHostContext(options);
     this.read = new GraphHostRead(this.context);
     this.execution = new GraphHostExecution(this.context, this.read);
     this.ownership = new SessionOwnership();
-    this.queues = this.context.sessionQueue;
     this.lifecycle = new GraphHostLifecycle(
       this.context,
       this.read,
@@ -79,7 +61,7 @@ export class GraphHost {
     return this.lifecycle.loadGraph(options);
   }
 
-  trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult | QueuedRun> {
+  trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult> {
     return this.execution.trigger(graphId, nodeId, value);
   }
 

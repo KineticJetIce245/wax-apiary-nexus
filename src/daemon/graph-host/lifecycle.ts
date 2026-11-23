@@ -142,10 +142,8 @@ export class GraphHostLifecycle {
       return this.context.disposePromise;
     }
     this.context.disposed = true;
-    // Stop timers even for a non-Rest graph that dispose cannot unload. The
-    // queue drops its waiting work instead of replaying it after a restart.
+    // Stop timers even for a non-Rest graph that dispose cannot unload.
     this.context.schedulers.stopAll();
-    this.context.sessionQueue.dispose();
     this.ownership.clear();
     this.context.disposePromise = disposeAll(this.context);
     return this.context.disposePromise;
@@ -384,10 +382,9 @@ async function flushAndRelease(
   }
   // The flush succeeded (or there was none); no further scheduled occurrence
   // may target a graph that is about to disappear, its waiting executions are
-  // dropped (a running one keeps its handle), and its explicit-session
+  // settled by the adapter/session close path, and its explicit-session
   // reservations become available to another graph.
   context.schedulers.stop(graphId);
-  context.sessionQueue.dropByLive(graphId);
   ownership.release(graphId);
   await releaseGraphResources(context, graphId, live.instantiated, live.bindings, 'retain');
 }

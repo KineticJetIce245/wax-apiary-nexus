@@ -67,6 +67,12 @@ export interface BindingRecord {
 export interface BindingLookup {
   get(sessionId: string): BindingRecord | undefined;
   isBusy(sessionId: string): boolean;
+  /**
+   * True when the session's adapter admits overlapping prompts FIFO. A busy
+   * queue-capable session is usable immediately (the prompt waits in the
+   * adapter), so binding validation does not reject it as `busy-session`.
+   */
+  canQueue?(sessionId: string): boolean;
 }
 
 /**
@@ -278,7 +284,7 @@ function validateSessionBinding(
     });
   }
 
-  if (lookup.isBusy(sessionId)) {
+  if (isBusyWithoutAdmissionQueue(lookup, sessionId)) {
     issues.push({
       code: 'busy-session',
       message: `session '${sessionId}' bound by forager '${nodeId}' is busy`,
@@ -286,6 +292,11 @@ function validateSessionBinding(
       sessionId,
     });
   }
+}
+
+/** A busy session is usable only when its adapter owns a prompt FIFO. */
+function isBusyWithoutAdmissionQueue(lookup: BindingLookup, sessionId: string): boolean {
+  return lookup.isBusy(sessionId) && lookup.canQueue?.(sessionId) !== true;
 }
 
 function validateFreshMetadata(

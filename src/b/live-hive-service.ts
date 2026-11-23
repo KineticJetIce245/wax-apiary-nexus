@@ -7,7 +7,6 @@ import type { RunStore } from '../storage/run-store.js';
 import { DispatchService } from './dispatch-service.js';
 import type { HiveTemplate, LiveHive, SessionParams } from './types.js';
 import { LiveHiveReadService } from './live-hive-read.js';
-import type { QueuedRun } from '../daemon/session-execution-queue.js';
 import { LiveHiveRepository } from './live-hive-repository.js';
 import { toCompositionDefinition } from './live-hive-codec.js';
 import { LiveHiveServiceError } from './live-hive-service-errors.js';
@@ -151,15 +150,15 @@ export class LiveHiveService {
   }
 
   /**
-   * Run one bee. A free session returns the run result; a session already
-   * executing for another loaded LiveHive returns a queue handle instead of a
-   * busy error. Answers are never queued.
+   * Run one bee. A session shared with other LiveHives is serialized by the
+   * harness adapter: a queue-capable adapter waits there, a non-queue adapter
+   * rejects with `session-busy`. Answers are never queued.
    */
   async wake(
     liveId: string,
     beeId: string,
     input: string,
-  ): Promise<GraphRunResult | QueuedRun> {
+  ): Promise<GraphRunResult> {
     this.repository.requireLiveId(liveId);
     return this.options.graphHost.trigger(liveId, beeId, textValue(input));
   }

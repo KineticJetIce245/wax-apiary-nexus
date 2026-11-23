@@ -120,18 +120,6 @@ async function dispatchRoutes(
       const report = await context.sweepIdleSessions();
       return { ok: true, report };
     }
-    case 'queue-status': {
-      const queueId = route.queueId;
-      if (queueId === undefined) {
-        throw new HttpError(404, 'not-found', 'not found');
-      }
-      const queue = host.queues.get(queueId);
-      if (queue === undefined) {
-        // In-memory only: a restarted daemon answers 404 for an old queue id.
-        throw new HttpError(404, 'not-found', 'unknown queue item');
-      }
-      return { ok: true, queue };
-    }
     case 'lives-create':
     case 'lives-list':
     case 'lives-load':

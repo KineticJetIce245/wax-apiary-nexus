@@ -72,11 +72,6 @@ function printResult(out: Writer, result: unknown): void {
   const record = typeof result === 'object' && result !== null
     ? (result as Record<string, unknown>)
     : {};
-  if (record['status'] === 'queued') {
-    // The session was busy; the run happens later. Never poll or retry here.
-    out(`queued ${String(record['queueId'])} position=${String(record['position'])}`);
-    return;
-  }
   out(
     `${String(record['liveId'])} rest=${String(record['rest'])} ` +
       `hovered=${String(record['hovered'])} pumps=${String(record['pumps'])} ` +

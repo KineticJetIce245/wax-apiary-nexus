@@ -12,19 +12,23 @@ import type {
   StopReason,
 } from '../adapters/harness.js';
 import { SubmitOutcomeUnknownError } from '../adapters/harness.js';
+import { ConversationResumer } from './conversation-resumer.js';
+import { ExecutionLedger, type MutableExecution } from './execution-ledger.js';
+import type { ExecutionCancelReason } from './execution-ledger.js';
 import {
   CancelNotSupportedError,
   ConversationBusyError,
   ConversationClosingError,
   ReplaceTimeoutError,
   ReplaceUnknownError,
-  ResumeNotSupportedError,
   SubmitFailedError,
   UnknownApprovalError,
   UnknownConversationError,
   UnknownExecutionError,
   UnsupportedApprovalError,
 } from './session-errors.js';
+
+export type { ExecutionCancelReason } from './execution-ledger.js';
 
 export {
   CancelNotSupportedError,
@@ -47,18 +51,6 @@ export interface Conversation {
   /** WAX display alias; falls back to the native id when none was requested. */
   readonly displayName: string;
 }
-
-/**
- * Why the Workspace moved a running execution to `cancelled`. It is recorded
- * only when the Workspace itself initiated the stop; an unattributed native
- * cancel or an approval decision leaves it undefined. It never changes the
- * execution state and is only exposed once the state is `cancelled`.
- */
-export type ExecutionCancelReason =
-  | 'approval-timeout'
-  | 'explicit-cancel'
-  | 'replace'
-  | 'close';
 
 export interface Execution {
   readonly id: string;
@@ -116,17 +108,6 @@ export interface WorkspaceOptions {
   readonly replaceTimeoutMs?: number;
 }
 
-interface MutableExecution {
-  readonly id: string;
-  readonly conversationId: string;
-  state: ExecutionState;
-  output: string;
-  readonly attachments: Attachment[];
-  stopReason?: StopReason;
-  error?: string;
-  cancelReason?: ExecutionCancelReason;
-}
-
 interface PendingApproval {
   readonly request: ApprovalRequest;
   timer?: NodeJS.Timeout;
@@ -140,9 +121,8 @@ export class Workspace {
   private readonly approvalTimeoutMs: number;
   private readonly replaceTimeoutMs: number;
   private readonly conversations = new Map<string, Conversation>();
-  private readonly resumingConversations = new Set<string>();
-  private readonly executions = new Map<string, MutableExecution>();
-  private readonly activeExecutionByConversation = new Map<string, string>();
+  private readonly resumer: ConversationResumer;
+  private readonly ledger = new ExecutionLedger();
   private readonly closingConversations = new Set<string>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly listeners = new Set<(event: WorkspaceEvent) => void>();
@@ -160,6 +140,12 @@ export class Workspace {
       throw new Error(`replaceTimeoutMs must be a positive number: ${String(options.replaceTimeoutMs)}`);
     }
     this.unsubscribe = adapter.onEvent((event) => this.handleAdapterEvent(event));
+    this.resumer = new ConversationResumer(
+      adapter,
+      this.conversations,
+      new Set(),
+      () => this.assertRunning(),
+    );
   }
 
   get approvalTimeout(): number {
@@ -203,41 +189,7 @@ export class Workspace {
     nativeId: string,
     conversationId?: string,
   ): Promise<Conversation> {
-    this.assertRunning();
-    assertProjectDirectory(project.directory);
-    if (this.adapter.capabilities.resume !== true || this.adapter.resume === undefined) {
-      throw new ResumeNotSupportedError();
-    }
-    if (
-      conversationId !== undefined &&
-      (this.conversations.has(conversationId) || this.resumingConversations.has(conversationId))
-    ) {
-      throw new Error(`Conversation already exists or is being resumed: ${conversationId}`);
-    }
-    if (conversationId !== undefined) {
-      // Reserve the id before awaiting the native call so two concurrent
-      // resumes of the same id cannot both succeed.
-      this.resumingConversations.add(conversationId);
-    }
-    const storedProject: Project = { id: project.id, directory: project.directory };
-    try {
-      await this.adapter.resume(nativeId, storedProject.directory);
-    } catch (error) {
-      if (conversationId !== undefined) {
-        this.resumingConversations.delete(conversationId);
-      }
-      throw error;
-    }
-    const conversation: Conversation = {
-      id: conversationId ?? randomUUID(),
-      project: storedProject,
-      nativeId,
-      displayName: nativeId,
-    };
-    this.conversations.set(conversation.id, conversation);
-    if (conversationId !== undefined) {
-      this.resumingConversations.delete(conversationId);
-    }
+    const conversation = await this.resumer.resume(project, nativeId, conversationId);
     return snapshotConversation(conversation);
   }
 
@@ -259,20 +211,14 @@ export class Workspace {
       throw new Error('Prompt text must not be empty');
     }
 
-    const active = this.activeExecutionByConversation.get(conversationId);
-    if (active !== undefined) {
+    const active = this.ledger.activeId(conversationId);
+    const queueing = this.adapter.capabilities.queue === true;
+    if (!queueing && active !== undefined) {
       throw new ConversationBusyError(active);
     }
-
-    const execution: MutableExecution = {
-      id: randomUUID(),
-      conversationId,
-      state: 'running',
-      output: '',
-      attachments: [],
-    };
-    this.executions.set(execution.id, execution);
-    this.activeExecutionByConversation.set(conversationId, execution.id);
+    // Admit before calling the adapter: a queue-capable adapter may emit
+    // `execution/started` synchronously when the conversation is free.
+    const execution = this.ledger.create(conversationId, queueing);
 
     try {
       await this.adapter.submit(
@@ -307,7 +253,7 @@ export class Workspace {
     if (pending === undefined || pending.request.executionId !== executionId) {
       throw new UnknownApprovalError(requestId);
     }
-    const execution = this.executions.get(executionId);
+    const execution = this.ledger.get(executionId);
     if (execution === undefined || execution.state !== 'running') {
       this.clearPending(requestId);
       throw new UnknownApprovalError(requestId);
@@ -322,7 +268,22 @@ export class Workspace {
   }
 
   async cancel(executionId: string, byConversation = false): Promise<void> {
-    await this.cancelExecution(byConversation ? this.activeExecutionByConversation.get(executionId) ?? executionId : executionId, 'explicit-cancel');
+    const target = byConversation
+      ? this.executionForConversation(executionId) ?? executionId
+      : executionId;
+    await this.cancelExecution(target, 'explicit-cancel');
+  }
+
+  /**
+   * Legacy conversation-scoped cancel (dispatch timeout). A pending execution
+   * is preferred, newest first: it is the caller's own admitted prompt, while
+   * the active execution may belong to an older run on the shared session.
+   */
+  private executionForConversation(conversationId: string): string | undefined {
+    return (
+      this.ledger.newestPendingId(conversationId) ??
+      this.ledger.activeId(conversationId)
+    );
   }
 
   /**
@@ -334,7 +295,7 @@ export class Workspace {
     reason: ExecutionCancelReason,
   ): Promise<void> {
     this.assertRunning();
-    const execution = this.executions.get(executionId);
+    const execution = this.ledger.get(executionId);
     if (execution === undefined) {
       throw new UnknownExecutionError(executionId);
     }
@@ -346,6 +307,10 @@ export class Workspace {
     }
 
     this.markCancelled(executionId, reason);
+    if (!execution.started) {
+      await this.cancelQueued(execution);
+      return;
+    }
     const pending = this.pendingApprovalFor(executionId);
     if (pending !== undefined) {
       await this.decideApproval(executionId, pending.request.requestId, 'cancelled');
@@ -354,6 +319,32 @@ export class Workspace {
     const conversation = this.conversations.get(execution.conversationId);
     if (conversation !== undefined) {
       await this.adapter.cancel(conversation.nativeId);
+    }
+  }
+
+  /**
+   * Remove one admitted-but-unsent execution. A per-execution drop never
+   * touches the active prompt; without it the adapter's native cancel is the
+   * only fallback and may also stop the prompt in front. Either way the caller
+   * must not be left waiting, so the execution is settled here if the adapter
+   * did not already emit its terminal event.
+   */
+  private async cancelQueued(execution: MutableExecution): Promise<void> {
+    const conversation = this.conversations.get(execution.conversationId);
+    if (conversation !== undefined && this.adapter.dropQueued !== undefined) {
+      const dropped = await this.adapter.dropQueued(conversation.nativeId, execution.id);
+      if (dropped) {
+        if (execution.state === 'running') {
+          this.finish(execution, 'cancelled');
+        }
+        return;
+      }
+    }
+    if (conversation !== undefined) {
+      await this.adapter.cancel(conversation.nativeId);
+    }
+    if (execution.state === 'running') {
+      this.finish(execution, 'cancelled');
     }
   }
 
@@ -373,7 +364,7 @@ export class Workspace {
     if (text.trim() === '') {
       throw new Error('Prompt text must not be empty');
     }
-    const execution = this.executions.get(executionId);
+    const execution = this.ledger.get(executionId);
     if (execution === undefined) {
       throw new UnknownExecutionError(executionId);
     }
@@ -384,13 +375,13 @@ export class Workspace {
       await this.cancelExecution(executionId, 'replace');
       const deadline = Date.now() + this.replaceTimeoutMs;
       while (Date.now() < deadline) {
-        const current = this.executions.get(executionId);
+        const current = this.ledger.get(executionId);
         if (current === undefined || current.state !== 'running') {
           break;
         }
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
       }
-      const current = this.executions.get(executionId);
+      const current = this.ledger.get(executionId);
       if (current !== undefined && current.state === 'running') {
         throw new ReplaceTimeoutError(executionId, this.replaceTimeoutMs);
       }
@@ -407,47 +398,61 @@ export class Workspace {
     if (conversation === undefined) {
       throw new UnknownConversationError(conversationId);
     }
-
-    // Mark the conversation before awaiting anything: a close whose native
-    // outcome is still unknown must not accept a new execution.
+    // Mark before awaiting: a close with an unknown native outcome must not
+    // accept a new execution.
     this.closingConversations.add(conversationId);
-    const activeId = this.activeExecutionByConversation.get(conversationId);
+    const activeId = this.ledger.activeId(conversationId);
+    this.settleQueuedForClose(conversationId, activeId);
+    try {
+      await this.closeNative(activeId, conversation.nativeId);
+    } catch (error) {
+      this.settleFailedClose(activeId, error);
+      throw error;
+    }
+    this.conversations.delete(conversationId);
+    this.ledger.forget(conversationId);
+    this.closingConversations.delete(conversationId);
+    const active = activeId === undefined ? undefined : this.ledger.get(activeId);
+    if (active !== undefined) {
+      this.finish(active, 'cancelled');
+    }
+  }
+
+  /** Mark the active and queued executions closing; settle the queued ones now. */
+  private settleQueuedForClose(conversationId: string, activeId: string | undefined): void {
     if (activeId !== undefined) {
       this.markCancelled(activeId, 'close');
     }
-
-    try {
-      if (activeId !== undefined) {
-        const pending = this.pendingApprovalFor(activeId);
-        if (pending !== undefined) {
-          await this.decideApproval(activeId, pending.request.requestId, 'cancelled');
-        }
-      }
-      await this.adapter.closeConversation(conversation.nativeId);
-    } catch (error) {
-      if (activeId !== undefined) {
-        const execution = this.executions.get(activeId);
-        if (execution !== undefined && execution.state === 'running') {
-          this.finish(
-            execution,
-            'unknown',
-            undefined,
-            `Conversation close failed: ${messageOf(error)}`,
-            { preserveActive: true },
-          );
-        }
-      }
-      throw error;
-    }
-
-    this.conversations.delete(conversationId);
-    this.activeExecutionByConversation.delete(conversationId);
-    this.closingConversations.delete(conversationId);
-    if (activeId !== undefined) {
-      const execution = this.executions.get(activeId);
-      if (execution !== undefined) {
+    for (const pendingId of this.ledger.pendingIds(conversationId)) {
+      this.markCancelled(pendingId, 'close');
+      const execution = this.ledger.get(pendingId);
+      if (execution !== undefined && execution.state === 'running') {
         this.finish(execution, 'cancelled');
       }
+    }
+  }
+
+  /** Cancel the active approval, then ask the adapter to close natively. */
+  private async closeNative(activeId: string | undefined, nativeId: string): Promise<void> {
+    if (activeId !== undefined) {
+      const pending = this.pendingApprovalFor(activeId);
+      if (pending !== undefined) {
+        await this.decideApproval(activeId, pending.request.requestId, 'cancelled');
+      }
+    }
+    await this.adapter.closeConversation(nativeId);
+  }
+
+  /** A failed close leaves a running active execution unknown but reserved. */
+  private settleFailedClose(activeId: string | undefined, error: unknown): void {
+    if (activeId === undefined) {
+      return;
+    }
+    const execution = this.ledger.get(activeId);
+    if (execution !== undefined && execution.state === 'running') {
+      this.finish(execution, 'unknown', undefined, `Conversation close failed: ${messageOf(error)}`, {
+        preserveActive: true,
+      });
     }
   }
 
@@ -457,7 +462,7 @@ export class Workspace {
     }
     this.stopped = true;
 
-    for (const execution of this.executions.values()) {
+    for (const execution of this.ledger.all()) {
       if (execution.state === 'running') {
         this.finish(execution, 'unknown', undefined, 'Workspace stopped before the execution settled');
       }
@@ -477,24 +482,21 @@ export class Workspace {
     return conversation === undefined ? undefined : snapshotConversation(conversation);
   }
 
-  /**
-   * Read-only busy query. It reports whether an execution is currently
-   * associated with the conversation; it does not reserve the conversation or
-   * change execution state. Unknown conversations are not busy.
-   */
   isConversationBusy(conversationId: string): boolean {
-    return this.activeExecutionByConversation.has(conversationId);
+    return this.ledger.isBusy(conversationId);
   }
 
+  readonly canQueue = (): boolean => this.adapter.capabilities.queue === true;
+
   getExecution(executionId: string): Execution | undefined {
-    const execution = this.executions.get(executionId);
+    const execution = this.ledger.get(executionId);
     return execution === undefined ? undefined : snapshot(execution);
   }
 
   private handleAdapterEvent(event: HarnessEvent): void {
     switch (event.type) {
       case 'execution/output': {
-        const execution = this.runningExecution(event.executionId);
+        const execution = this.ledger.running(event.executionId);
         if (execution === undefined) {
           return;
         }
@@ -505,14 +507,14 @@ export class Workspace {
         return;
       }
       case 'execution/tool': {
-        if (this.runningExecution(event.executionId) === undefined) {
+        if (this.ledger.running(event.executionId) === undefined) {
           return;
         }
         this.emit(event);
         return;
       }
       case 'execution/attachment': {
-        const execution = this.runningExecution(event.executionId);
+        const execution = this.ledger.running(event.executionId);
         if (execution === undefined || event.attachment.path.trim() === '') {
           return;
         }
@@ -526,7 +528,7 @@ export class Workspace {
         return;
       }
       case 'execution/approval-requested': {
-        const execution = this.runningExecution(event.executionId);
+        const execution = this.ledger.running(event.executionId);
         if (execution === undefined) {
           void this.adapter
             .respondToApproval({ requestId: event.request.requestId, kind: 'cancelled' })
@@ -551,61 +553,55 @@ export class Workspace {
         this.emit(event);
         return;
       }
-      case 'execution/completed': {
-        const execution = this.executions.get(event.executionId);
-        if (execution === undefined) {
-          return;
-        }
-        if (execution.state === 'running') {
-          this.finish(execution, 'completed', event.stopReason);
-        } else {
-          this.releasePreservedActive(execution);
-        }
+      case 'execution/completed':
+        this.settleExecution(event.executionId, 'completed', event.stopReason);
         return;
-      }
-      case 'execution/failed': {
-        const execution = this.executions.get(event.executionId);
-        if (execution === undefined) {
-          return;
-        }
-        if (execution.state === 'running') {
-          this.finish(execution, 'failed', undefined, event.error);
-        } else {
-          this.releasePreservedActive(execution);
-        }
+      case 'execution/failed':
+        this.settleExecution(event.executionId, 'failed', event.error);
         return;
-      }
-      case 'execution/cancelled': {
-        const execution = this.executions.get(event.executionId);
-        if (execution === undefined) {
-          return;
-        }
-        if (execution.state === 'running') {
-          this.finish(execution, 'cancelled');
-        } else {
-          this.releasePreservedActive(execution);
-        }
+      case 'execution/cancelled':
+        this.settleExecution(event.executionId, 'cancelled');
         return;
-      }
-      case 'execution/unknown': {
-        const execution = this.executions.get(event.executionId);
-        if (execution === undefined) {
-          return;
-        }
-        if (execution.state === 'running') {
-          this.finish(execution, 'unknown', undefined, event.reason);
-        } else {
-          this.releasePreservedActive(execution);
-        }
+      case 'execution/unknown':
+        this.settleExecution(event.executionId, 'unknown', event.reason);
         return;
-      }
       case 'execution/started': {
+        const execution = this.ledger.running(event.executionId);
+        if (execution !== undefined) {
+          this.ledger.markStarted(execution);
+        }
         return;
       }
       case 'adapter/error': {
         this.emit(event);
         return;
       }
+    }
+  }
+
+  /**
+   * Apply one native terminal event. A running execution is settled; a late
+   * event only releases the association preserved for an unknown outcome.
+   */
+  private settleExecution(
+    executionId: string,
+    state: 'completed' | 'failed' | 'cancelled' | 'unknown',
+    detail?: string,
+  ): void {
+    const execution = this.ledger.get(executionId);
+    if (execution === undefined) {
+      return;
+    }
+    if (execution.state !== 'running') {
+      this.ledger.dissociate(execution);
+      return;
+    }
+    if (state === 'completed') {
+      this.finish(execution, state, detail as StopReason | undefined);
+    } else if (state === 'cancelled') {
+      this.finish(execution, state);
+    } else {
+      this.finish(execution, state, undefined, detail);
     }
   }
 
@@ -621,7 +617,7 @@ export class Workspace {
       void this.adapter
         .respondToApproval({ requestId, kind: 'cancelled' })
         .then(() => {
-          const execution = this.executions.get(executionId);
+          const execution = this.ledger.get(executionId);
           const conversation =
             execution === undefined ? undefined : this.conversations.get(execution.conversationId);
           if (conversation !== undefined) {
@@ -659,7 +655,7 @@ export class Workspace {
 
   /** First initiator wins: a later timeout cannot rewrite an explicit cancel. */
   private markCancelled(executionId: string, reason: ExecutionCancelReason): void {
-    const execution = this.executions.get(executionId);
+    const execution = this.ledger.get(executionId);
     if (execution !== undefined && execution.cancelReason === undefined) {
       execution.cancelReason = reason;
     }
@@ -683,7 +679,7 @@ export class Workspace {
       execution.error = error;
     }
     if (options.preserveActive !== true) {
-      this.activeExecutionByConversation.delete(execution.conversationId);
+      this.ledger.dissociate(execution);
     }
     for (const requestId of [...this.pendingApprovals.keys()]) {
       const pending = this.pendingApprovals.get(requestId);
@@ -698,22 +694,6 @@ export class Workspace {
       ...(stopReason === undefined ? {} : { stopReason }),
       ...(error === undefined ? {} : { error }),
     });
-  }
-
-  private runningExecution(executionId: string): MutableExecution | undefined {
-    const execution = this.executions.get(executionId);
-    return execution?.state === 'running' ? execution : undefined;
-  }
-
-  /**
-   * An execution that was settled as unknown while its conversation stayed
-   * busy has now received a native terminal event; release the association so
-   * the conversation can accept new work. The execution state is not rewritten.
-   */
-  private releasePreservedActive(execution: MutableExecution): void {
-    if (this.activeExecutionByConversation.get(execution.conversationId) === execution.id) {
-      this.activeExecutionByConversation.delete(execution.conversationId);
-    }
   }
 
   private emit(event: WorkspaceEvent): void {

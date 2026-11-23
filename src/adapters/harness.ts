@@ -56,6 +56,13 @@ export interface HarnessCapabilities {
    * An upstream harness supporting resume is not sufficient to advertise it.
    */
   readonly resume: boolean;
+  /**
+   * True only when `submit` admits overlapping prompts for one native session
+   * and sends them FIFO, one at a time. When true the Workspace does not reject
+   * a second submit; it records the execution as pending until the adapter
+   * emits `execution/started`. Adapters without a tested queue leave it unset.
+   */
+  readonly queue?: boolean;
 }
 
 /** WAX-owned identity attached to a native conversation at creation time. */
@@ -120,10 +127,12 @@ export interface HarnessAdapter {
 
   /**
    * Start one prompt turn. The adapter must emit exactly one terminal event for
-   * this execution; the Workspace enforces one active execution per conversation.
-   * Optional attachments are local files already associated with a completed
-   * execution (or staged by the user); an adapter may ignore types it cannot
-   * carry natively.
+   * this execution. A queue-capable adapter (`capabilities.queue`) resolves
+   * after admission even when the prompt waits behind an active turn and emits
+   * `execution/started` only when it actually sends; every other adapter sends
+   * immediately. Optional attachments are local files already associated with a
+   * completed execution (or staged by the user); an adapter may ignore types it
+   * cannot carry natively.
    */
   submit(
     nativeId: string,
@@ -133,6 +142,15 @@ export interface HarnessAdapter {
   ): Promise<void>;
 
   cancel(nativeId: string): Promise<void>;
+
+  /**
+   * Remove one prompt that `submit` admitted but has not started yet. Only a
+   * queue-capable adapter implements this; it must emit `execution/cancelled`
+   * for the dropped execution (the caller still observes one terminal event per
+   * admitted execution). Returns false when the execution is already active,
+   * terminal or unknown.
+   */
+  dropQueued?(nativeId: string, executionId: string): Promise<boolean>;
 
   /** Resolve a pending approval request. Unknown request ids must reject. */
   respondToApproval(decision: ApprovalDecision): Promise<void>;

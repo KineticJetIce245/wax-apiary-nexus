@@ -39,6 +39,11 @@ class HoldingAdapter extends FakeAdapter {
       this.emit({ type: 'execution/cancelled', executionId });
     }
   }
+
+  /** Settle one held execution without cancelling the whole conversation. */
+  release(executionId: string): void {
+    this.emit({ type: 'execution/completed', executionId, stopReason: 'end_turn' });
+  }
 }
 
 async function waitForPrompt(
@@ -188,7 +193,7 @@ function foragerDefinition(id: string): Record<string, unknown> {
 }
 
 test(
-  'a wake that collides with a running dispatch is queued, not run concurrently',
+  'a wake that collides with a running dispatch gets 409 session-busy (non-queue adapter)',
   { timeout: 10_000 },
   async (t) => {
     const adapter = new HoldingAdapter();
@@ -219,13 +224,12 @@ test(
       await delay(5);
     }
 
-    // Dispatch now runs as a graph, so the loaded wake goes through the same
-    // per-session queue: it is queued behind dispatch instead of submitting a
-    // second concurrent execution to the conversation.
+    // Codex does not advertise an adapter queue, so the loaded wake is refused
+    // with the explicit busy outcome instead of waiting or starting a second
+    // execution on the same conversation.
     const wake = await bWake(running.info.url, running.token, 'wake-vs-dispatch', 'only', 'go');
-    assert.equal(wake.status, 200, wake.text);
-    assert.equal(wake.body?.['status'], 'queued');
-    assert.equal(typeof wake.body?.['queueId'], 'string');
+    assert.equal(wake.status, 409, wake.text);
+    assert.equal(wake.body?.['code'], 'session-busy');
 
     // Release the dispatch instead of waiting for its timeout: an explicit
     // cancel is a client-visible outcome and must stay 409, not 500.
@@ -236,7 +240,22 @@ test(
     assert.equal(settled.status, 409, settled.text);
     assert.equal(settled.body?.['code'], 'execution-cancelled');
 
-    // The queued wake is served after the dispatch releases the session.
-    await waitForPrompt(adapter, 'wake go');
+    // The session is free again after the dispatch settles; a retried wake runs
+    // normally instead of inheriting an admission handle.
+    await retryWakeAfterRelease(running.info.url, running.token, adapter);
   },
 );
+
+async function retryWakeAfterRelease(
+  url: string,
+  token: string,
+  adapter: HoldingAdapter,
+): Promise<void> {
+  const retried = bWake(url, token, 'wake-vs-dispatch', 'only', 'go2');
+  await waitForPrompt(adapter, 'wake go2');
+  const executionId = adapter.executionIds.at(-1);
+  assert.ok(executionId !== undefined);
+  adapter.release(executionId);
+  const result = await retried;
+  assert.equal(result.status, 200, result.text);
+}

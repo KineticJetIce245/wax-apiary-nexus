@@ -16,7 +16,6 @@ import type { HoneyStore } from '../../storage/honey.js';
 import type { RunStore } from '../../storage/run-store.js';
 import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import type { SchedulerTimers } from '../scheduler.js';
-import type { SessionExecutionQueueOptions } from '../session-execution-queue.js';
 
 export interface GraphHostOptions {
   readonly registry: SessionRegistry;
@@ -32,12 +31,6 @@ export interface GraphHostOptions {
   readonly guardTimeoutMs?: number;
   /** Test seam for scheduler timers. */
   readonly schedulerTimers?: SchedulerTimers;
-  /**
-   * Session execution queue tuning. The queue itself is always present: a free
-   * session runs synchronously, a busy one is enqueued. Tests inject the timer
-   * seam here so the 5-minute wait can be exercised without real time.
-   */
-  readonly sessionQueue?: SessionExecutionQueueOptions;
   /**
    * Allow an explicit unload or TTL sweep of a graph whose only non-Rest state
    * is quiescent hover(s): at least one user or guard hover and no active,

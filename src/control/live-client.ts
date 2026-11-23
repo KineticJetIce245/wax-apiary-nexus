@@ -68,20 +68,12 @@ export class LiveHiveClient extends ControlClient {
   }
 
   /**
-   * Wake one bee. A free session returns the run result; a busy shared session
-   * returns the queue handle (`status: 'queued'`) so callers can report it and
-   * query the queue instead of retrying.
+   * Wake one bee. A session shared with another run is serialized by the
+   * harness adapter (queue-capable) or rejected with 409 `session-busy`; there
+   * is no admission handle to poll.
    */
   async wake(liveId: string, beeId: string, input: string): Promise<unknown> {
     const body = await this.request('POST', '/lives/wake', { liveId, beeId, input });
-    if (body['status'] === 'queued') {
-      const queueId = body['queueId'];
-      const position = body['position'];
-      if (typeof queueId !== 'string' || typeof position !== 'number') {
-        throw protocolError("queued wake response missing 'queueId'/'position'");
-      }
-      return { status: 'queued', queueId, position };
-    }
     return requireField(body, 'result');
   }
 
@@ -155,32 +147,6 @@ export class LiveHiveClient extends ControlClient {
       throw protocolError("control response missing dispatch output/sessionId");
     }
     return { output, sessionId };
-  }
-}
-
-/**
- * Queue-only addition. `LiveHiveClient` already sits at the 12-public-method
- * class budget, so the queue read lives on this narrow subclass instead of
- * growing the core client. The queue is in memory only, so a 404 is a normal
- * "unknown item" answer and is never retried.
- */
-export class QueueClient extends LiveHiveClient {
-  /**
-   * One queue item by id, exactly as the server reports it. Only the two
-   * fields every item must carry are validated; the caller decides how to
-   * display the optional ones.
-   */
-  async getQueue(queueId: string): Promise<Record<string, unknown>> {
-    const body = await this.request('GET', `/queues/${encodeURIComponent(queueId)}`);
-    const queue = body['queue'];
-    if (typeof queue !== 'object' || queue === null || Array.isArray(queue)) {
-      throw protocolError("control response missing 'queue' object");
-    }
-    const item = queue as Record<string, unknown>;
-    if (typeof item['queueId'] !== 'string' || typeof item['status'] !== 'string') {
-      throw protocolError("control response queue item missing 'queueId'/'status'");
-    }
-    return item;
   }
 }
 

@@ -1,6 +1,6 @@
 # WAX Apiary neXus — LiveHive Contract
 
-Status: **target contract**. The code is a B-core prototype; this contract defines the target object/API shape for new work. M17j4 dispatch now uses an ephemeral graph, but its admission still goes through the legacy WAX session queue until M17j3.
+Status: **target contract**. The code is a B-core prototype; this contract defines the target object/API shape for new work. M17j4 dispatch graph and M17j3a approval ownership are implemented; admission still goes through the legacy WAX session queue until M17j3.
 
 ## 1. Scope
 

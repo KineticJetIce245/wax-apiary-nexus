@@ -1,6 +1,6 @@
 # WAX Apiary neXus — LiveHive Contract
 
-Status: **target contract**. The code is a B-core prototype; this contract defines the target object/API shape for new work. M17j4 dispatch graph and M17j3a approval ownership are implemented; admission still goes through the legacy WAX session queue until M17j3.
+Status: **target contract**. The code is a B-core prototype; this contract defines the target object/API shape for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through is superseded); admission still goes through the legacy WAX session queue until M17j3.
 
 ## 1. Scope
 
@@ -96,6 +96,8 @@ Session = {
 - A session is a native Harness lease; WAX stores routing metadata only.
 - One session has at most one active execution. An explicit session is authoritative for harness/model/reasoning; a conflicting creation spec is an error.
 - WAX-originated prompts are admitted by the harness-side adapter, which owns one FIFO per session. Multiple bees/LiveHives may share a session; WAX is low priority and waits while a user is using it. There is no second WAX session-admission queue.
+- An ACP session is the sole owner of its approval channel. Every approval from that session is handled by ACP/WAX; there is no unowned-approval handoff, GUI approval, or pass-through. ACP is automation-only: a DSH/Codex GUI may list or resume the persisted session but cannot receive or answer its live approvals.
+- A separate send-message ingress may submit a new message to an ACP session; it cannot decide or cancel approvals and does not share the approval channel.
 - `dispatch` creates an ephemeral one-bee LiveHive graph, runs it through the same admission/approval path, and disposes it. It does not submit directly to a session and does not persist as a LiveHive. If the target session is busy, it waits in adapter admission up to the dispatch timeout and then returns 409 `dispatch-timeout`; it never returns an admission queue handle and never starts a second execution.
 
 ## 6. `PheromoneField`
@@ -145,7 +147,7 @@ GET  /health
 - `--harness` filters/validates; it does not select a per-harness daemon.
 - `POST /dispatch` creates an ephemeral one-bee graph, runs it, returns the output/sessionId, and disposes the graph; it is not persisted as a LiveHive. If the target session is busy, it waits in harness-side admission up to the dispatch timeout, then returns 409 `dispatch-timeout`; it never writes directly to the session, returns a queue handle, or starts a second execution. Unknown/conflict/cancelled errors retain the existing 404/409 mapping.
 - `GET /queues/:queueId` reports adapter admission state for a WAX-originated request: `queued|running|completed|failed|timeout|dropped`, plus the `runId` once the run starts. The queue is in memory only; an unknown or restarted-daemon queue id answers 404 `not-found`. `answer` is not queued.
-- `GET /guards` and `POST /guard/decide` cover only WAX-attributed approvals. Unowned approvals may be forwarded to a display surface but are not managed or decided by waxd; the adapter must never auto-cancel them.
+- `GET /guards` and `POST /guard/decide` cover approvals owned by WAX/ACP sessions. ACP owns its session's entire approval channel; there is no unowned-approval or GUI pass-through. A future send-message ingress is separate and cannot decide approvals.
 - No fork route. The legacy graph and catalog routes are not present and have no aliases.
 
 ## 9. CLI
@@ -175,4 +177,4 @@ The legacy graph client commands are not present and have no aliases.
 7. Load makes memory authoritative; save/unload overwrite disk.
 8. No Agent/Revision/Definition/Actor objects; no fork command. Dispatch is an ephemeral graph, not a persistent LiveHive.
 9. Logs never contain prompt/output/token bodies; output uses explicit routes.
-10. Never auto-allow Guard; never auto-cancel an unowned approval; never replay side-effecting work.
+10. Never auto-allow Guard; ACP owns its session's approval channel with no GUI/pass-through; never replay side-effecting work.

@@ -22,13 +22,14 @@ waxd
 - **Bee is the execution slot.** A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
 - **Beeline is a connection.** Conditions choose outgoing beelines; fork/merge use branches.
 - **`wake` is the execution verb.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps. A session-bound prompt is admitted by the harness-side adapter, not by a second WAX session queue.
-- **WAX is low priority.** If a user is using the session directly, a WAX prompt waits in adapter admission. The adapter only handles approvals for its own active execution; unowned approvals are forwarded/passed and never auto-cancelled.
+- **WAX is low priority.** If a user is using the session directly, a WAX prompt waits in adapter admission.
+- **ACP owns approvals.** An ACP session is the sole owner of its approval channel; there is no unowned-approval pass-through and no GUI approval. ACP is automation-only: a GUI may list/resume a persisted session but cannot receive or answer its live approvals. A separate send-message ingress may be reserved, but it cannot decide approvals.
 - **`dispatch` is an ephemeral one-bee LiveHive graph.** It runs once through the same admission/approval path, returns output, and is disposed; it is not a persistent LiveHive and does not write directly to a session.
 - **Save and unload both write `live.json`.** Load makes memory authoritative; disk changes are ignored until the next save/unload.
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 - `GraphHost`, `GraphStatus` and `GraphId` remain internal engine names. They are not public WAX objects and may be renamed later.
-- M17j is the migration to the harness-side prompt adapter; the code may still contain the previous `SessionExecutionQueue` until that slice lands.
+- M17j is the migration to the harness-side prompt adapter; the code may still contain the previous `SessionExecutionQueue` until that slice lands. M17j3a approval pass-through is superseded by ACP full approval ownership and must be removed.
 
 ## Current commands
 
@@ -93,11 +94,18 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
 - Several loaded LiveHives may share one explicit session. A WAX prompt is admitted by the harness-side adapter: one active execution per session, per-session FIFO, low priority relative to direct user use. `wax queue status` reports adapter admission; the queue is in memory only, so a restarted daemon answers 404 for old ids and never replays pending work. `answer` is not queued; `dispatch` runs an ephemeral one-bee graph through the same admission path and is not persisted as a LiveHive. M17j4 dispatch still uses the legacy WAX `SessionExecutionQueue`; when that queue is busy it returns 409 `session-busy` until M17j3 moves admission to the harness adapter.
 - Real mixed Codex+DSH, scheduler, DSH guard, approval isolation, and the full B LiveHive chain have passing integration coverage. Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
-- WAX does not control direct Web/TUI prompts. Unowned approvals may be forwarded/displayed, but waxd must not manage or decide them; the adapter must never auto-cancel them. A future approvals surface may show these events; the decision stays with the native handler.
+- WAX does not control direct Web/TUI prompts. ACP sessions are automation-only: ACP owns their approvals, and the GUI cannot receive or answer them. This is accepted behavior, not a pending GUI feature; there is no approval pass-through. A future send-message ingress is separate from approvals.
 - Guard expiry is now explicit: a late decision returns 409 `guard-expired`; normal allow/reject/cancel still works.
 - Guard allow/reject/cancel tests use a known marker to prove the side effect did or did not happen. They are guard/side-effect evidence, not Rule 9 unknown-answer evidence.
 - `mixed-harness-product` and `session-registry-multi-harness` are adapter/session-level evidence, not graph/daemon cross-harness evidence. `waxd-mixed-harness` is the graph-level proof.
 - `rg '/graphs|/catalog|wax graph|wax trigger' src README.md` is 0; `tests/` intentionally contains negative assertions for the removed surface, so a literal repo-wide zero is not the acceptance rule.
 - Codex-dependent integration coverage needs a configured `CODEX_EXE` and Codex quota; when unavailable, the DSH-only integration suite is the fallback and Codex coverage is deferred rather than passed.
+
+## Known conflicts and migration gaps
+
+- **Approval ownership conflict:** target architecture is ACP full ownership (no unowned/pass-through), but the working tree still contains M17j3a's `promptSource` / `approvalPassThrough` code and the local DSH branch `m17j3-acp-ownership`. Those are superseded and must be reverted; do not treat the current code as the target contract.
+- **Admission conflict:** M17j4 dispatch still uses the legacy WAX `SessionExecutionQueue`; when that queue is busy it returns 409 `session-busy`. The target is harness-side admission; this remains a migration gap.
+- **GUI conflict:** DSH/Codex GUI is a separate live owner. It can list/resume persisted sessions but cannot attach to a live ACP/app-server thread or receive its pending approval. Accepted resolution: ACP is automation-only; no GUI approval hook.
+- **Verification gap:** M17j3a was tested only with fake ACP/DSH fixtures; it is not real Rule 9 evidence. The DSH source branch was not built or merged, and full unit/integration suites were not rerun for this docs decision.
 
 Local design documents live outside this repository in `../docs/`; they are not tracked here.

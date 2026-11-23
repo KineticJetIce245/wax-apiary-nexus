@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph and M17j3a approval ownership are implemented; admission still uses the legacy WAX session queue until M17j3.
+Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through is superseded and must be removed); admission still uses the legacy WAX session queue until M17j3.
 
 ## 1. One sentence
 
@@ -59,14 +59,20 @@ Bee wants prompt -> harness-side adapter admission -> native session
 - Pending is adapter admission state, not a Bee hover and not a Pheromone queue.
 - The adapter registers the execution context (WAX executionId, liveId, beeId,
   sessionId, nativeSessionId) before sending and keeps it until terminal.
-- The adapter handles approvals only for its own active execution. Unowned
-  approvals are forwarded/passed to the native handler or a display-only
-  approvals surface; WAX must not decide them and must never auto-cancel them.
+- The ACP session is the sole owner of its approval channel. Every approval
+  produced by an ACP session is handled by the ACP client/WAX; there is no
+  unowned-approval handoff and no pass-through to a GUI/native handler.
+- ACP is automation-only. A DSH/Codex GUI may list or resume a persisted
+  session, but it is a different live owner: it does not receive the ACP
+  session's pending approvals and cannot answer them.
+- A separate **send-message ingress** may exist for submitting a new message to
+  an ACP session. It only enqueues/sends a message; it is not an approval
+  channel and cannot decide or cancel approvals.
 - Direct Web/TUI prompts bypass the adapter. Admission priority is best-effort:
   WAX does not start while the session is visibly busy; once a WAX turn is
   running, user steer/preemption needs the reserved steer path.
 - `wax answer` remains a graph/user-hover operation and is not an admission
-  queue. `wax guard` remains only for WAX-attributed approvals.
+  queue. `wax guard` covers ACP/WAX-owned approvals.
 - `dispatch` creates an ephemeral one-bee LiveHive graph, runs it through the
   same admission/approval path, and disposes it; it does not write directly to
   a session and does not persist as a LiveHive.
@@ -99,7 +105,7 @@ Bee wants prompt -> harness-side adapter admission -> native session
 - `LiveHiveLock` serializes all mutating operations per LiveHive; different LiveHives may run in parallel.
 - One session has at most one active execution. Sharing a session across LiveHives is serialized by the harness-side adapter; an explicit busy path may return `session-busy`, never a silent second execution.
 - WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
-- Approval ownership is execution-scoped. The adapter never auto-allows and never cancels an approval it does not own.
+- Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ## 7. Public names and internal engine names

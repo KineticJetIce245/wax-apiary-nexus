@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work.
+Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j adds a harness-side prompt admission/approval boundary; code migration is in progress.
 
 ## 1. One sentence
 
@@ -12,7 +12,7 @@ A **LiveHive** is a loaded graph of **bees** connected by **beelines**; each bee
 L4  Control / CLI        ControlServer / ControlClient / wax (B surface only)
 L3  LiveHive host        LiveHiveService / GraphHost / LiveHiveCatalog / LiveHiveLock
 L2  Session              SessionRegistry / AdapterPool / Workspace
-L1  Adapter              CodexAdapter / DshAcpAdapter
+L1  Adapter              CodexAdapter / DshAcpAdapter + harness-side prompt admission
 L0  Native harness       Codex app-server / DSH ACP server
 ```
 
@@ -30,18 +30,46 @@ Dependency direction is upward only: L3 may call L2/L1; L2 does not know the con
 | `HiveTemplate` | Optional saved graph + per-bee default session params; not required to create a LiveHive |
 | `RoleLabel` | Comment/label on a bee; not an instance, not a route |
 | `PheromoneField` | Runtime state: pheromones, queues, pending, active, hover, joins/tombstones |
-| `Dispatch` | Immediate execution of a temporary bee; not a LiveHive |
+| `Dispatch` | Ephemeral one-bee LiveHive graph for one request; created, run and disposed; not a persistent LiveHive and not a direct session write |
 
 There is no Agent object, no Revision/Definition object, and no Actor object.
 
 ## 4. Execution
 
 1. `load` reads `live.json` (bees/beelines/bindings) and Honey (`field.json`); after load, memory is authoritative.
-2. `wake(liveId, beeId, input)` places a Pheromone at the bee and pumps.
+2. `wake(liveId, beeId, input)` places a Pheromone at the bee and pumps. A session-bound forager's prompt is admitted by the harness-side adapter; WAX does not keep a second session queue.
 3. A forager bee uses its bound session (or creates one per sessionMode); a worker bee runs argv; condition/fork/merge are control bees; user waits on hover; guard waits on approval.
 4. Outputs follow outgoing beelines; a bee with no outgoing beeline is terminal. The field is at Rest when no active/pending/queued/hover/join remains.
 5. `save` and `unload` write `live.json` and flush field/scheduler/log to Honey; `unload` then releases field/runtime but keeps sessions.
 6. There is no revision or CAS. `field.json` is a snapshot, not an event log; active pheromones restore as unknown/stuck and are not replayed.
+
+### 4.1 Prompt admission and approval ownership
+
+`SessionExecutionQueue` is removed as the WAX session-admission authority. The
+harness-side adapter owns a per-session FIFO queue for WAX-originated prompts:
+
+```text
+Bee wants prompt -> harness-side adapter admission -> native session
+                    (pending / active / terminal)
+```
+
+- One native session has at most one WAX execution at a time; different sessions
+  may run in parallel. WAX is low priority: if a user is already using the
+  session, the WAX request waits.
+- Pending is adapter admission state, not a Bee hover and not a Pheromone queue.
+- The adapter registers the execution context (WAX executionId, liveId, beeId,
+  sessionId, nativeSessionId) before sending and keeps it until terminal.
+- The adapter handles approvals only for its own active execution. Unowned
+  approvals are forwarded/passed to the native handler or a display-only
+  approvals surface; WAX must not decide them and must never auto-cancel them.
+- Direct Web/TUI prompts bypass the adapter. Admission priority is best-effort:
+  WAX does not start while the session is visibly busy; once a WAX turn is
+  running, user steer/preemption needs the reserved steer path.
+- `wax answer` remains a graph/user-hover operation and is not an admission
+  queue. `wax guard` remains only for WAX-attributed approvals.
+- `dispatch` creates an ephemeral one-bee LiveHive graph, runs it through the
+  same admission/approval path, and disposes it; it does not write directly to
+  a session and does not persist as a LiveHive.
 
 ## 5. Persistence
 
@@ -61,6 +89,7 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 
 - `live.json` is keyed by `beeId` for `bees` and `bindings`; `beelines` are keyed by `beelineId`.
 - `sessions.json` is global; each session record carries its harness.
+- Harness-side prompt admission/pending is memory-only; no replay after restart. A dispatch graph is ephemeral and is not persisted as a LiveHive.
 - No revision file; a content hash may be added later for audit only.
 
 ## 6. Concurrency and failure
@@ -68,7 +97,9 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - One `waxd` process, one state root, one ControlServer.
 - One AdapterPool; each harness has one Workspace. A failed harness is marked `unavailable` and does not block the daemon.
 - `LiveHiveLock` serializes all mutating operations per LiveHive; different LiveHives may run in parallel.
-- One session has at most one active execution. Sharing a session across LiveHives requires queue/forward or an explicit `session-busy` error; never silent.
+- One session has at most one active execution. Sharing a session across LiveHives is serialized by the harness-side adapter; an explicit busy path may return `session-busy`, never a silent second execution.
+- WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
+- Approval ownership is execution-scoped. The adapter never auto-allows and never cancels an approval it does not own.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ## 7. Public names and internal engine names

@@ -12,6 +12,7 @@ The code is a B-core prototype with a single daemon and one control endpoint.
 waxd
   ├─ AdapterPool            codex / dsh → one Workspace each
   ├─ SessionRegistry        global; session.harness decides the Workspace
+  ├─ Harness prompt adapter  per-session admission, active execution, approval ownership
   ├─ LiveHiveService       new / load / wake / answer / guard / save / unload / migrate / dispatch
   │    └─ GraphHost         internal execution engine for bees/beelines/PheromoneField
   └─ ControlServer          one local endpoint, one token
@@ -20,11 +21,14 @@ waxd
 - **LiveHive is the first-class object.** A LiveHive has `bees`, `beelines`, `beeId -> sessionId` bindings, optional `schedules`, and a `PheromoneField`.
 - **Bee is the execution slot.** A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
 - **Beeline is a connection.** Conditions choose outgoing beelines; fork/merge use branches.
-- **`wake` is the execution verb.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps.
+- **`wake` is the execution verb.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps. A session-bound prompt is admitted by the harness-side adapter, not by a second WAX session queue.
+- **WAX is low priority.** If a user is using the session directly, a WAX prompt waits in adapter admission. The adapter only handles approvals for its own active execution; unowned approvals are forwarded/passed and never auto-cancelled.
+- **`dispatch` is an ephemeral one-bee LiveHive graph.** It runs once through the same admission/approval path, returns output, and is disposed; it is not a persistent LiveHive and does not write directly to a session.
 - **Save and unload both write `live.json`.** Load makes memory authoritative; disk changes are ignored until the next save/unload.
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 - `GraphHost`, `GraphStatus` and `GraphId` remain internal engine names. They are not public WAX objects and may be renamed later.
+- M17j is the migration to the harness-side prompt adapter; the code may still contain the previous `SessionExecutionQueue` until that slice lands.
 
 ## Current commands
 
@@ -86,8 +90,9 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 - Public status and run results do not expose the internal engine identity: a status is `rest`, `hovered`, `nodes`, optional `recovery`, and `residency`; a run result names the live as `liveId`. `graphId` and `graphRevision` never appear in HTTP or CLI output.
 - RunStore has 1000-record / 1 MiB defaults and is used by wake/answer.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.
-- Several loaded LiveHives may share one explicit session. A wake that finds the session busy is queued FIFO (16 waiting per session, 5 min wait): the response carries `queueId` / `position`, and `GET /queues/:queueId` reports `queued|running|completed|failed|timeout|dropped` plus the `runId` once it starts. The queue is in memory only, so a restarted daemon answers 404 for old queue ids and never replays queued work. `answer` and `dispatch` are not queued; `wax live wake` prints the queued handle as JSON.
-- Real mixed Codex+DSH, scheduler, DSH guard, shared-session queue, approval isolation, and the full B LiveHive chain have passing integration coverage. Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
+- Several loaded LiveHives may share one explicit session. A WAX prompt is admitted by the harness-side adapter: one active execution per session, per-session FIFO, low priority relative to direct user use. `wax queue status` reports adapter admission; the queue is in memory only, so a restarted daemon answers 404 for old ids and never replays pending work. `answer` is not queued; `dispatch` runs an ephemeral one-bee graph through the same admission path and is not persisted as a LiveHive.
+- Real mixed Codex+DSH, scheduler, DSH guard, approval isolation, and the full B LiveHive chain have passing integration coverage. Native approval/cancel flake risk remains recorded; the original generic guard 500 was not reproduced by the deterministic test. OS SIGTERM cleanup, Windows token ACL, and physical power-loss durability remain unverified.
+- WAX does not control direct Web/TUI prompts. Unowned approvals may be forwarded/displayed, but waxd must not manage or decide them; the adapter must never auto-cancel them. A future approvals surface may show these events; the decision stays with the native handler.
 - Guard expiry is now explicit: a late decision returns 409 `guard-expired`; normal allow/reject/cancel still works.
 - Guard allow/reject/cancel tests use a known marker to prove the side effect did or did not happen. They are guard/side-effect evidence, not Rule 9 unknown-answer evidence.
 - `mixed-harness-product` and `session-registry-multi-harness` are adapter/session-level evidence, not graph/daemon cross-harness evidence. `waxd-mixed-harness` is the graph-level proof.

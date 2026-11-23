@@ -238,7 +238,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     const client = this.requireClient();
     const params: Record<string, unknown> = {
       cwd: project.directory,
-      mcpServers: this.mcpServers,
+      mcpServers: this.mcpServers, _meta: { promptSource: 'wax' },
     };
     // The DSH plugin cannot see ACP `_meta`; the title travels through a
     // per-cwd sidecar written before session/new and removed afterwards.
@@ -274,7 +274,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     const client = this.requireClient();
     await client.request(
       'session/resume',
-      { sessionId: nativeId, cwd },
+      { sessionId: nativeId, cwd, _meta: { promptSource: 'wax' } },
       this.sessionTimeoutMs,
     );
     this.cwdBySession.set(nativeId, cwd);
@@ -451,7 +451,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     const sessionId = asString(params?.sessionId);
     const active = sessionId === undefined ? undefined : this.active.get(sessionId);
     if (active === undefined) {
-      return Promise.resolve(cancelledPermissionOutcome());
+      return Promise.resolve(cancelledPermissionOutcome(true));
     }
     const options = mapApprovalOptions(params?.options);
     if (options.length === 0) {
@@ -636,8 +636,8 @@ function isApprovalOptionKind(value: string | undefined): value is ApprovalOptio
   );
 }
 
-function cancelledPermissionOutcome(): unknown {
-  return { outcome: { outcome: 'cancelled' } };
+function cancelledPermissionOutcome(passThrough = false): unknown {
+  return { outcome: { outcome: 'cancelled' }, ...(passThrough ? { _meta: { approvalPassThrough: true } } : {}) };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

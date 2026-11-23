@@ -231,3 +231,64 @@ test('cancelling one session leaves the other duplicate approval pending', async
     await adapter.stop().catch(() => undefined);
   }
 });
+
+const FAKE_ACP_UNOWNED_APPROVAL = String.raw`
+const fs = require('node:fs');
+const readline = require('node:readline');
+const recordPath = process.argv[4];
+const rl = readline.createInterface({ input: process.stdin });
+function send(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+function sendRequest(id, method, params) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+}
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send(message.id, { protocolVersion: 1 });
+    return;
+  }
+  if (message.method === 'session/new') {
+    send(message.id, { sessionId: 'unowned-session' });
+    sendRequest(7, 'session/request_permission', {
+      sessionId: 'unowned-session',
+      toolCall: { toolCallId: 'tool-unowned', title: 'unowned' },
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+      ],
+    });
+    return;
+  }
+  if (message.id !== undefined && message.method === undefined) {
+    fs.appendFileSync(recordPath, JSON.stringify(message) + '\n');
+  }
+});
+`;
+
+test('passes an unowned approval instead of cancelling it', async () => {
+  const root = makeFakeDshRoot(FAKE_ACP_UNOWNED_APPROVAL);
+  const projectDir = mkdtempSync(join(tmpdir(), 'uw-unowned-approval-project-'));
+  const recordPath = join(projectDir, 'approval-responses.jsonl');
+  const adapter = new DshAcpAdapter({
+    dshRoot: root,
+    dshArgs: [recordPath],
+    sessionTimeoutMs: 1_000,
+  });
+  const approvals = approvalEvents(adapter);
+
+  try {
+    await adapter.start();
+    await adapter.createConversation({ id: 'unowned', directory: projectDir });
+    const lines = await waitForResponses(recordPath, 1);
+    assert.equal(lines.length, 1);
+    const response = JSON.parse(lines[0] ?? '{}') as {
+      readonly result?: { readonly _meta?: { readonly approvalPassThrough?: boolean } };
+    };
+    assert.equal(response.result?._meta?.approvalPassThrough, true);
+    assert.equal(approvals.length, 0);
+  } finally {
+    await adapter.stop().catch(() => undefined);
+  }
+});

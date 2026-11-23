@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j adds a harness-side prompt admission/approval boundary; code migration is in progress.
+Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j adds a harness-side prompt admission/approval boundary; code migration is in progress (M17j4 dispatch graph is implemented but still uses the legacy WAX session queue until M17j3).
 
 ## 1. One sentence
 

@@ -158,6 +158,7 @@ wax answer <liveId> <beeId>
 wax template compose|list
 wax dispatch
 wax guard list|decide <requestId> --decision allow_once|reject_once|cancelled
+wax queue status <queueId> [--json]
 wax session list|close|sweep
 ```
 

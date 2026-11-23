@@ -41,6 +41,7 @@ wax template compose <template.json>|list
 wax dispatch --input <text>
 wax guard list
 wax guard decide <requestId> --decision allow_once|reject_once|cancelled
+wax queue status <queueId> [--json]
 wax session list|close <sessionId>|sweep
 ```
 

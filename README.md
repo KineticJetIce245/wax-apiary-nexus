@@ -29,7 +29,7 @@ waxd
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 - `GraphHost`, `GraphStatus` and `GraphId` remain internal engine names. They are not public WAX objects and may be renamed later.
-- M17j moved prompt admission into the WAX `DshAcpAdapter` (DSH source untouched). `DshAcpAdapter` owns a per-session FIFO (`capabilities.queue`); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns the run result (or 409 `session-busy` for an adapter without a queue), never an admission handle. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
+- M17j is closed (2026-11-23): prompt admission lives in the WAX `DshAcpAdapter` (DSH source untouched); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns the run result (or 409 `session-busy` for an adapter without a queue), never an admission handle. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted. M17i rename remains deferred post-M17.
 
 ## Current commands
 

@@ -202,6 +202,8 @@ Keep reports concise:
 
 ## Guiding Principle
 
+**Less is good.** Prefer fewer concepts, fewer layers, fewer states, and less code that does the same job.
+
 **A boring, understandable implementation that works is better than an elegant framework nobody needs.**
 
 # Sensitive Information and Git Tracking

@@ -8,7 +8,13 @@ import { atomicWriteJson } from './atomic-write.js';
  * wake, not a separate RunOperation. `answer` is the other operation.
  */
 export type RunOperation = 'trigger' | 'answer';
-export type RunStatus = 'completed' | 'hovered' | 'incomplete' | 'failed' | 'cancelled';
+export type RunStatus =
+  | 'completed'
+  | 'hovered'
+  | 'incomplete'
+  | 'failed'
+  | 'cancelled'
+  | 'unknown';
 
 export interface RunOutput {
   readonly nodeId: string;
@@ -21,6 +27,8 @@ export interface RunRecord {
   readonly runId: string;
   readonly requestId: string;
   readonly liveId: string;
+  /** Trace whose Pheromones this run covers; absent on pre-M18 records. */
+  readonly traceId?: string;
   readonly operation: RunOperation;
   readonly status: RunStatus;
   readonly outputs: readonly RunOutput[];

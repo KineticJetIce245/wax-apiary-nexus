@@ -11,12 +11,15 @@ import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
 import {
+  admissionRunId,
   autoDecideGuards,
   bLoad,
+  bRun,
   bUnload,
   bWake,
   getJson,
   postJson,
+  waitForRunTerminal,
 } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
@@ -86,7 +89,6 @@ test(
     const liveB = `m16e-iso-b-${suffix}`;
     const marker = `M16E-ISO-MARKER-${suffix}`;
     const fileName = `m16e-iso-${suffix}.txt`;
-
     const adapter = new DshAcpAdapter({
       dshRoot,
       env: { DSH_PERMISSION_MODE: 'read-only' },
@@ -115,10 +117,8 @@ test(
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);
     });
-
     const info = await server.start();
     const token = readFileSync(info.tokenPath, 'utf8').trim();
-
     // Two different sessions, one live each: the fan-out is not about sharing
     // a conversation; any two loaded live foragers collide.
     for (const liveId of [liveA, liveB]) {
@@ -136,7 +136,7 @@ test(
     );
     assert.deepEqual([...(liveIds ?? [])].sort(), [liveA, liveB].sort());
 
-    const wakeA = bWake(
+    const wakeA = await bWake(
       info.url,
       token,
       liveA,
@@ -144,22 +144,17 @@ test(
       `Use the shell tool to create a file named ${fileName} in the current directory ` +
         `with the exact content ${marker}. Report done. Do not use any other directory.`,
     );
+    assert.equal(wakeA.status, 202, wakeA.text);
+    const runIdA = admissionRunId(wakeA.body);
     const guardA = await waitForGuard(info.url, token, liveA, GUARD_TIMEOUT_MS / 2);
-
-    // Give the idle live every chance to auto-reject (the old defect decided
-    // within milliseconds). A settled wake here means the approval was answered
-    // by someone other than the guard holder.
-    const settledWhileGuarded = await Promise.race([
-      wakeA.then(
-        () => true,
-        () => true,
-      ),
-      delay(5_000).then(() => false),
-    ]);
-    assert.equal(
-      settledWhileGuarded,
-      false,
-      'the running live wake settled while its approval was still parked',
+    // Admission has already returned; the run must still be non-terminal while
+    // its approval is parked, proving the guard was not auto-answered.
+    const midA = await bRun(info.url, token, liveA, runIdA);
+    assert.equal(midA.status, 200, midA.text);
+    const midState = midA.body?.['run']?.['state'];
+    assert.ok(
+      ['accepted', 'running'].includes(String(midState)),
+      `run settled while its approval was parked: ${String(midState)}`,
     );
     const stillListed = await getJson(info.url, token, '/guards');
     assert.equal(stillListed.status, 200, stillListed.text);
@@ -185,18 +180,25 @@ test(
       decision: 'allow_once',
     });
     assert.equal(allowed.status, 200, allowed.text);
-    const doneA = await wakeA;
+    const doneA = await waitForRunTerminal(info.url, token, liveA, runIdA, 180_000);
     assert.equal(doneA.status, 200, doneA.text);
-    assert.equal(doneA.body?.['result']?.['liveId'], liveA);
+    assert.equal(doneA.body?.['run']?.['state'], 'completed');
     const written = existsSync(join(project.directory, fileName))
       ? readFileSync(join(project.directory, fileName), 'utf8')
       : undefined;
     assert.equal(written, marker, 'the allowed write did not happen');
 
     // The co-loaded idle live still works after the fix; it never interfered.
-    const doneB = await bWake(info.url, token, liveB, 'only', 'Reply with just OK.');
-    assert.equal(doneB.status, 200, doneB.text);
-    assert.equal(doneB.body?.['result']?.['liveId'], liveB);
+    const admissionB = await bWake(info.url, token, liveB, 'only', 'Reply with just OK.');
+    assert.equal(admissionB.status, 202, admissionB.text);
+    const doneB = await waitForRunTerminal(
+      info.url,
+      token,
+      liveB,
+      admissionRunId(admissionB.body),
+      180_000,
+    );
+    assert.equal(doneB.body?.['run']?.['state'], 'completed');
 
     for (const liveId of [liveA, liveB]) {
       const unloaded = await bUnload(info.url, token, liveId);
@@ -205,7 +207,7 @@ test(
     t.diagnostic(
       `liveA=${liveA} liveB=${liveB} guardLive=${String(guardA['liveId'])} ` +
         `guardOptions=${JSON.stringify(guardA['options'])} ` +
-        `wakeAStatus=${String(doneA.status)} fileWritten=true`,
+        `runState=${String(doneA.body?.['run']?.['state'])} fileWritten=true`,
     );
   },
 );

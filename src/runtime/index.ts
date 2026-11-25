@@ -4,11 +4,12 @@ export {
   MAX_MERGE_TIMEOUT_MS,
 } from './definition.js';
 export { createMemoryLog } from './log.js';
+export { FieldRestoreError } from './errors.js';
+export { traceStateFromSnapshot } from './field.js';
 export { renderPrompt, serializeValue } from './executor.js';
 export { assertJsonValue } from './json-value.js';
 export {
   COMPLETED_JOIN_TTL_MS,
-  FieldRestoreError,
   GuardDecisionError,
   MAX_COMPLETED_JOINS_PER_MERGE,
   PheromoneRuntime,
@@ -60,6 +61,8 @@ export type {
   Pheromone,
   PheromoneFieldSnapshot,
   RecoveryReport,
+  RuntimeAdmission,
+  RuntimeRunObserver,
   TriggerDefinition,
   TriggerSchedule,
   UserConfig,

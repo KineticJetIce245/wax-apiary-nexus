@@ -58,6 +58,7 @@ import {
   getJson,
   postJson,
   readResponse,
+  waitForRunTerminal,
 } from './support/control-server-http.js';
 
 /** Public status must not carry internal engine identity. */
@@ -69,6 +70,53 @@ function publicStatusOf(value: unknown): Record<string, unknown> {
   assert.equal(Object.hasOwn(status, 'graphRevision'), false);
   assert.equal(typeof status['rest'], 'boolean');
   return status;
+}
+
+async function waitForHover(url: string, token: string, liveId: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const inspected = await bInspect(url, token, liveId);
+    if (inspected.body?.['status']?.['hovered'] === true) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`live '${liveId}' did not open a hover`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+type WakeResult = Awaited<ReturnType<typeof bWake>>;
+
+async function wakeAndWaitRun(
+  url: string,
+  token: string,
+  liveId: string,
+  beeId: string,
+  input: string,
+): Promise<{ readonly trigger: WakeResult; readonly finished: Awaited<ReturnType<typeof waitForRunTerminal>> }> {
+  const trigger = await bWake(url, token, liveId, beeId, input);
+  assert.equal(trigger.status, 202);
+  assert.equal(trigger.body?.['status'], 'accepted');
+  const finished = await waitForRunTerminal(
+    url,
+    token,
+    liveId,
+    String(trigger.body?.['runId']),
+  );
+  return { trigger, finished };
+}
+
+async function wakeBeeAndWait(
+  url: string,
+  token: string,
+  liveId: string,
+  beeId: string,
+  input: string,
+): Promise<string> {
+  const { trigger, finished } = await wakeAndWaitRun(url, token, liveId, beeId, input);
+  assert.equal(finished.body?.['run']?.['state'], 'completed');
+  return String(trigger.body?.['runId']);
 }
 
 test('load, status, trigger, status and unload work over real HTTP without leaking bodies', async (t) => {
@@ -113,13 +161,10 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   assert.equal(publicStatusOf(one.body?.['status'])['rest'], true);
   bodies.push(one.body);
 
-  const trigger = await bWake(info.url, token, 'main', 'only', INPUT_SECRET);
+  const { trigger, finished } = await wakeAndWaitRun(info.url, token, 'main', 'only', INPUT_SECRET);
   responses.push(trigger.text);
-  assert.equal(trigger.status, 200);
-  assert.equal(trigger.body?.['result']?.['rest'], true);
-  assert.equal(trigger.body?.['result']?.['persisted'], true);
-  assert.ok((trigger.body?.['result']?.['pumps'] as number) >= 1);
-  bodies.push(trigger.body);
+  assert.equal(finished.body?.['run']?.['state'], 'completed');
+  bodies.push(trigger.body, finished.body);
 
   const after = await bInspect(info.url, token, 'main');
   assert.equal(after.status, 200);
@@ -151,7 +196,9 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   assertNoSecrets(`${responses.join('\n')}\n${logs.join('\n')}`, token);
   for (const key of collectKeys(bodies)) {
     assert.equal(
-      ['prompt', 'output', 'token', 'value', 'pheromones'].includes(key),
+      // `value` is the explicit new run API output shape; status/list still
+      // never carry a Value body under this key.
+      ['prompt', 'output', 'token', 'pheromones'].includes(key),
       false,
       `response leaked key '${key}'`,
     );
@@ -197,23 +244,26 @@ test('GET /lives/<id>/output returns sorted forager output and never logs values
   assert.equal(empty.status, 200);
   assert.equal(empty.body?.['liveId'], 'outputs');
   assert.deepEqual(empty.body?.['outputs'], []);
-
   let latestRunId = '';
+  const runIds = new Map<string, string>();
   for (const nodeId of ['zeta', 'alpha']) {
-    const trigger = await bWake(info.url, token, 'outputs', nodeId, `${nodeId}-input`);
-    assert.equal(trigger.status, 200);
-    assert.equal(typeof trigger.body?.['result']?.['runId'], 'string');
-    assert.equal(typeof trigger.body?.['result']?.['requestId'], 'string');
-    latestRunId = trigger.body?.['result']?.['runId'] as string;
+    const runId = await wakeBeeAndWait(info.url, token, 'outputs', nodeId, `${nodeId}-input`);
+    runIds.set(nodeId, runId);
+    latestRunId = runId;
   }
-
   const response = await bOutput(info.url, token, 'outputs');
   assert.equal(response.status, 200);
   assert.equal(response.body?.['ok'], true);
   assert.equal(response.body?.['liveId'], 'outputs');
   assert.equal(response.body?.['runId'], latestRunId);
+  // Outputs are per run: the latest run is alpha only, not a global snapshot.
   assert.deepEqual(response.body?.['outputs'], [
     { nodeId: 'alpha', value: { kind: 'text', text: OUTPUT_SECRET } },
+  ]);
+  const zetaRunId = runIds.get('zeta');
+  assert.ok(zetaRunId !== undefined);
+  const zetaRun = await bOutput(info.url, token, 'outputs', zetaRunId);
+  assert.deepEqual(zetaRun.body?.['outputs'], [
     { nodeId: 'zeta', value: { kind: 'text', text: OUTPUT_SECRET } },
   ]);
   // An explicit runId reads that run; an unknown one is a 404.
@@ -222,17 +272,13 @@ test('GET /lives/<id>/output returns sorted forager output and never logs values
   assert.deepEqual(explicitRun.body?.['outputs'], response.body?.['outputs']);
   const unknownRun = await bOutput(info.url, token, 'outputs', 'missing');
   assert.equal(unknownRun.status, 404);
-
   const status = await bInspect(info.url, token, 'outputs');
   assert.equal(status.status, 200);
-
   const unknown = await bOutput(info.url, token, 'missing');
   assert.equal(unknown.status, 404);
   assert.equal(unknown.body?.['code'], 'not-found');
-
   const tooLong = await bOutput(info.url, token, 'a'.repeat(513));
   assert.equal(tooLong.status, 404);
-
   const wrongMethod = await postJson(info.url, token, '/lives/outputs/output', {});
   assert.equal(wrongMethod.status, 405);
   assert.equal(wrongMethod.body?.['code'], 'method-not-allowed');
@@ -247,7 +293,6 @@ test('GET /lives/<id>/output returns sorted forager output and never logs values
   const retainedRun = await bOutput(info.url, token, 'outputs', latestRunId);
   assert.equal(retainedRun.status, 200);
   assert.deepEqual(retainedRun.body?.['outputs'], response.body?.['outputs']);
-
   // Metadata-only logging: no output value, prompt or bearer token.
   const logText = logs.join('\n');
   assert.equal(logText.includes(OUTPUT_SECRET), false);
@@ -330,9 +375,8 @@ test('unloading a non-Rest graph returns 409 with its current status', async (t)
   assert.equal(load.body?.['status']?.['rest'], true);
 
   const trigger = await bWake(info.url, token, 'hover', 'ask', INPUT_SECRET);
-  assert.equal(trigger.status, 200);
-  assert.equal(trigger.body?.['result']?.['rest'], false);
-  assert.equal(trigger.body?.['result']?.['hovered'], true);
+  assert.equal(trigger.status, 202);
+  await waitForHover(info.url, token, 'hover');
 
   const unload = await bUnload(info.url, token, 'hover');
   assert.equal(unload.status, 409);
@@ -369,8 +413,8 @@ test('answer resolves an open user hover over real HTTP and rejects invalid targ
 
   const trigger = await bWake(info.url, token, 'answer-memory', 'ask', INPUT_SECRET);
   responses.push(trigger.text);
-  assert.equal(trigger.status, 200);
-  assert.equal(trigger.body?.['result']?.['hovered'], true);
+  assert.equal(trigger.status, 202);
+  await waitForHover(info.url, token, 'answer-memory');
   const hoverToken = hoverTokenOf(running.server, 'answer-memory', 'ask');
 
   const wrongToken = await bAnswer(

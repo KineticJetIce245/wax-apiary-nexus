@@ -15,6 +15,7 @@ import { assertNonNegativeInteger, messageOf } from './context.js';
 import type { LiveHiveHostContext } from './context.js';
 import type { LiveHiveHostExecution } from './execution.js';
 import type { LiveHiveHostRead } from './read.js';
+import { createRunObserver } from './run-tracker.js';
 import type { SessionOwnership } from './session-ownership.js';
 import {
   LiveHiveHostDisposedError,
@@ -148,7 +149,12 @@ export class LiveHiveHostLifecycle {
     // Stop timers even for a non-Rest graph that dispose cannot unload.
     this.context.schedulers.stopAll();
     this.ownership.clear();
-    this.context.disposePromise = disposeAll(this.context);
+    this.context.disposePromise = disposeAll(this.context).then(() => {
+      // A graph kept loaded by a busy activation is abandoned with the host.
+      for (const entry of this.context.graphs.list()) {
+        this.context.runs.abandonLive(entry.id);
+      }
+    });
     return this.context.disposePromise;
   }
 }
@@ -253,9 +259,9 @@ async function loadGraphLocked(
       ...(context.guardTimeoutMs === undefined
         ? {}
         : { guardTimeoutMs: context.guardTimeoutMs }),
+      onRun: createRunObserver(context.runs),
     };
-    let runtime: PheromoneRuntime;
-    let recovery: RecoveryReport | undefined;
+    let runtime: PheromoneRuntime;    let recovery: RecoveryReport | undefined;
     if (persisted === undefined) {
       runtime = new PheromoneRuntime(options.definition, runtimeOptions);
     } else {
@@ -383,6 +389,8 @@ async function flushAndRelease(
   if (live.honey !== undefined) {
     await live.honey.save(live.runtime.exportField());
   }
+  // A parked or abandoned run has no live execution to track after release.
+  context.runs.abandonLive(graphId);
   // The flush succeeded (or there was none); no further scheduled occurrence
   // may target a graph that is about to disappear, its waiting executions are
   // settled by the adapter/session close path, and its explicit-session

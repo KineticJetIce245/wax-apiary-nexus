@@ -1,4 +1,5 @@
 import type { LiveHiveStatus } from '../daemon/graph-host.js';
+import type { LiveHiveRunState, LiveHiveRunView } from '../daemon/graph-host.js';
 import type { LiveHiveCatalogEntry } from '../daemon/live-hive-catalog.js';
 import type { RunRecord, RunStatus, RunStore } from '../storage/run-store.js';
 import type { LiveHiveHost } from '../daemon/graph-host.js';
@@ -107,5 +108,42 @@ export class LiveHiveReadService {
       ...(record.finishedAt === undefined ? {} : { finishedAt: record.finishedAt }),
       ...(record.error === undefined ? {} : { error: record.error }),
     };
+  }
+
+  /** One run from the live tracker, falling back to the durable record. */
+  run(liveId: string, runId: string): LiveHiveRunView {
+    const id = this.repository.requireLiveId(liveId);
+    const tracked = this.liveHiveHost.runs.get(id, runId);
+    if (tracked !== undefined) {
+      return tracked;
+    }
+    const record = this.runStore?.get(runId);
+    if (record === undefined || record.liveId !== id) {
+      throw new LiveHiveServiceError('not-found', 'run is not available');
+    }
+    return {
+      runId: record.runId,
+      traceId: record.traceId ?? '',
+      state: stateOfRecord(record.status),
+      outputs: record.outputs,
+      ...(record.error === undefined ? {} : { error: record.error }),
+      startedAt: record.startedAt,
+      ...(record.finishedAt === undefined ? {} : { finishedAt: record.finishedAt }),
+    };
+  }
+}
+
+function stateOfRecord(status: RunStatus): LiveHiveRunState {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'unknown':
+      return 'unknown';
+    default:
+      return 'unknown';
   }
 }

@@ -10,6 +10,7 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import { LiveHiveHost, LiveHiveHostLoadError } from '../src/daemon/graph-host.js';
+import type { LiveHiveHostEvent } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { Project } from '../src/project/kernel.js';
@@ -419,16 +420,30 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   assert.equal(env.registry.list().length, 2);
 });
 
+function assertHoverFlushEvent(events: readonly LiveHiveHostEvent[]): void {
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === 'graph.cleanup-failed' &&
+        event.phase === 'routing' &&
+        event.error === SAVE_ERROR,
+    ),
+    'the failed background Honey flush must be reported',
+  );
+}
+
 test('a failed Honey flush blocks a hover-only unload and keeps it loaded', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-flush-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'hover-flush'));
+  const events: LiveHiveHostEvent[] = [];
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
     allowHoverUnload: true,
+    onEvent: (event) => events.push(event),
   });
   t.after(async () => {
     honey.failSave = false;
@@ -446,8 +461,7 @@ test('a failed Honey flush blocks a hover-only unload and keeps it loaded', asyn
   honey.failSave = true;
   const triggered = await triggerRun(host, 'hover-flush', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
-  assert.equal(triggered.persisted, false);
-  assert.equal(triggered.persistError, SAVE_ERROR);
+  assertHoverFlushEvent(events);
 
   assert.equal(await host.unload('hover-flush'), false);
   const retained = host.statusOf('hover-flush');

@@ -10,6 +10,7 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import { LiveHiveHost, LiveHiveHostLoadError } from '../src/daemon/graph-host.js';
+import type { LiveHiveHostEvent } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { Project } from '../src/project/kernel.js';
@@ -265,15 +266,30 @@ test('a failed flush blocks unload and keeps sessions and routing open', async (
   assert.equal(workspaceListenerCount(env.workspace), 0);
 });
 
+function assertFlushFailureEvent(events: readonly LiveHiveHostEvent[]): void {
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === 'graph.cleanup-failed' &&
+        event.phase === 'routing' &&
+        event.error === SAVE_ERROR,
+    ),
+    'the failed background Honey flush must be reported',
+  );
+  assert.equal(JSON.stringify(events).includes('two'), false);
+}
+
 test('a failed trigger flush is reported without replaying the trigger', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-trigger-fail-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'trigger-fail'));
+  const events: LiveHiveHostEvent[] = [];
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
+    onEvent: (event) => events.push(event),
   });
   t.after(async () => {
     honey.failSave = false;
@@ -300,10 +316,7 @@ test('a failed trigger flush is reported without replaying the trigger', async (
   honey.failSave = true;
   const failed = await triggerRun(host, 'trigger-fail', 'only', text('two'));
   assert.equal(failed.rest, true);
-  assert.equal(failed.persisted, false);
-  assert.equal(failed.persistError, SAVE_ERROR);
-  assert.equal(Object.hasOwn(failed, 'persistError'), true);
-  assert.equal(failed.persistError?.includes('two'), false);
+  assertFlushFailureEvent(events);
   assert.equal(failed.status.rest, true);
   assert.equal(failed.status.residency.state, 'loaded');
   // The trigger ran exactly once and was not replayed after the save failure.
@@ -319,7 +332,6 @@ test('a failed trigger flush is reported without replaying the trigger', async (
   clock.advance(100);
   const third = await triggerRun(host, 'trigger-fail', 'only', text('three'));
   assert.equal(third.persisted, true);
-  assert.equal(Object.hasOwn(third, 'persistError'), false);
   assert.deepEqual(env.adapter.allPrompts, ['run one', 'run two', 'run three']);
   assert.equal(
     honey.load()?.nodes['only']?.lastActivatedAt,

@@ -121,8 +121,37 @@ export async function request(
  * Resolves instead of rejecting: a shutdown is allowed to destroy the socket of
  * the in-flight wake, but it must not answer that request with an HTTP 500.
  */
-export async function requestOutcome(
+export function runIdOf(body: Record<string, any> | undefined): string {
+  const runId = body?.['runId'];
+  if (typeof runId !== 'string' || runId === '') {
+    throw new Error("wake response is missing a string 'runId'");
+  }
+  return runId;
+}
+
+const TERMINAL_RUN_STATES = new Set(['completed', 'failed', 'cancelled', 'unknown']);
+
+/** Poll one run until it leaves accepted/running. */
+export async function waitForRun(
   url: string,
+  token: string,
+  liveId: string,
+  runId: string,
+  timeoutMs = 120_000,
+): Promise<HttpResult> {
+  return waitFor(async () => {
+    const result = await request(
+      url,
+      token,
+      'GET',
+      `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
+    );
+    const state = result.body?.['run']?.['state'];
+    return TERMINAL_RUN_STATES.has(state) ? result : undefined;
+  }, timeoutMs, `run ${runId}`);
+}
+
+export async function requestOutcome(  url: string,
   token: string,
   method: 'GET' | 'POST',
   path: string,

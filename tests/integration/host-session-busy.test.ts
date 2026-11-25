@@ -14,6 +14,11 @@ import { Workspace } from '../../src/session/workspace.js';
 import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
+import {
+  admissionRunId,
+  waitForRunTerminalWith,
+  type RunApiCall,
+} from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
@@ -53,6 +58,17 @@ interface HttpResult {
   readonly status: number;
   readonly body: Record<string, any>;
 }
+async function waitForThreeRuns(
+  request: RunApiCall,
+  runIds: readonly string[],
+): Promise<void> {
+  await Promise.all(
+    runIds.map((runId, index) =>
+      waitForRunTerminalWith(request, ['first', 'second', 'third'][index]!, runId, 240_000),
+    ),
+  );
+}
+
 test(
   'real DSH: three loaded LiveHives share one session; wakes wait in the adapter FIFO',
   integrationOptions,
@@ -151,20 +167,20 @@ test(
       assert.equal((await request('GET', '/queues/anything')).status, 404);
 
       const secondDone = await secondWake;
-      assert.equal(secondDone.status, 200, JSON.stringify(secondDone.body));
-      const secondRunId = String(secondDone.body['result']?.['runId']);
-      assert.ok(secondRunId.length > 0);
+      assert.equal(secondDone.status, 202, JSON.stringify(secondDone.body));
+      const secondRunId = admissionRunId(secondDone.body);
       const thirdDone = await thirdWake;
-      assert.equal(thirdDone.status, 200, JSON.stringify(thirdDone.body));
-      const thirdRunId = String(thirdDone.body['result']?.['runId']);
-      assert.ok(thirdRunId.length > 0);
+      assert.equal(thirdDone.status, 202, JSON.stringify(thirdDone.body));
+      const thirdRunId = admissionRunId(thirdDone.body);
       const firstDone = await firstWake;
-      assert.equal(firstDone.status, 200, JSON.stringify(firstDone.body));
-      const firstRunId = String(firstDone.body['result']?.['runId']);
+      assert.equal(firstDone.status, 202, JSON.stringify(firstDone.body));
+      const firstRunId = admissionRunId(firstDone.body);
 
+      // Admission returns immediately; wait for each run's own terminal before
+      // reading outputs. The DSH adapter still serializes the three prompts.
+      await waitForThreeRuns(request, [firstRunId, secondRunId, thirdRunId]);
       const runIds = new Set([firstRunId, secondRunId, thirdRunId]);
       assert.equal(runIds.size, 3, 'each wake must produce its own run record');
-
       const texts = await readRunOutputs(request, {
         first: firstRunId,
         second: secondRunId,

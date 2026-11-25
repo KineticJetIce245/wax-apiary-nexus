@@ -21,7 +21,7 @@ waxd
 - **LiveHive is the first-class object.** A LiveHive has `bees`, `beelines`, `beeId -> sessionId` bindings, optional `schedules`, and a `PheromoneField`.
 - **Bee is the execution slot.** A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
 - **Beeline is a connection.** Conditions choose outgoing beelines; fork/merge use branches.
-- **`wake` is the execution verb.** `wake(liveId, beeId, input)` creates a Pheromone at the bee and pumps. A session-bound prompt is admitted by the WAX `DshAcpAdapter`, not by a second WAX session queue.
+- **`wake` is admission.** `wake(liveId, beeId, input)` creates a Pheromone, puts it in the target bee's mailbox, and returns `202 {runId, traceId, status:"accepted"}`; the per-bee drain runs outside the HTTP request. Poll `GET /lives/:id/runs/:runId` for state/output. A session-bound prompt is admitted by the WAX `DshAcpAdapter`, not by a second WAX session queue.
 - **WAX is low priority.** If a user is using the session directly, a WAX prompt waits in adapter admission.
 - **ACP owns approvals.** An ACP session is the sole owner of its approval channel; there is no unowned-approval pass-through and no GUI approval. ACP is automation-only: a GUI may list/resume a persisted session but cannot receive or answer its live approvals. A separate send-message ingress may be reserved, but it cannot decide approvals.
 - **`dispatch` is an ephemeral one-bee LiveHive graph.** It runs once through the same admission/approval path, returns output, and is disposed; it is not a persistent LiveHive and does not write directly to a session.
@@ -29,7 +29,8 @@ waxd
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 - `LiveHiveHost`, `LiveHiveStatus` and `LiveHiveId` remain internal engine names. They are not public WAX objects and are not exposed by the HTTP or CLI surface.
-- M17j is closed (2026-11-23): prompt admission lives in the WAX `DshAcpAdapter` (DSH source untouched); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns the run result (or 409 `session-busy` for an adapter without a queue), never an admission handle. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
+- M17j is closed (2026-11-23): prompt admission lives in the WAX `DshAcpAdapter` (DSH source untouched); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns an admission handle (`runId`), never a final result. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
+- M18 phase 2 (2026-11-25): `wake` is admission-only; runs are tracked by `traceId` and queried at `GET /lives/:id/runs/:runId`; `dispatch` still waits for its own run. Mailbox snapshot/overflow/loop limits remain pending.
 
 ## Current commands
 
@@ -61,6 +62,7 @@ POST /lives/migrate
 GET  /lives
 GET  /lives/:id/inspect
 GET  /lives/:id/output
+GET  /lives/:id/runs/:runId
 GET  /templates
 POST /templates
 POST /dispatch

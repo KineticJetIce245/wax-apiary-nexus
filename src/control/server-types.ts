@@ -136,6 +136,7 @@ export type RouteKind =
   | 'lives-migrate'
   | 'lives-inspect'
   | 'lives-output'
+  | 'lives-run'
   | 'templates'
   | 'dispatch';
 
@@ -143,6 +144,16 @@ export interface Route {
   readonly kind: RouteKind;
   readonly methods: readonly string[];
   readonly graphId?: string;
+  /** Run id for `lives-run`. */
+  readonly runId?: string;
+}
+
+/** A route result with an explicit HTTP status (for example wake 202). */
+export class RouteReply {
+  constructor(
+    readonly body: Record<string, unknown>,
+    readonly status: number,
+  ) {}
 }
 
 export type { Project };

@@ -18,6 +18,8 @@ import {
   setMailbox,
   snapshotField,
 } from './field.js';
+import { FieldRestoreError } from './errors.js';
+import { restoreJoins } from './join-restore.js';
 import { assertUserValue, assertValue } from './runtime-input.js';
 import { expireOverdueQueues } from './runtime-expiry.js';
 import { logActivated, logCompleted, logFailed } from './runtime-log.js';
@@ -60,6 +62,8 @@ import type {
   Pheromone,
   PheromoneFieldSnapshot,
   RecoveryReport,
+  RuntimeAdmission,
+  RuntimeRunObserver,
   UserNode,
   Value,
 } from './types.js';
@@ -80,6 +84,8 @@ export interface RuntimeOptions {
   onGuard?: (request: GuardRequest) => Promise<GuardDecision>;
   /** Called when the runtime's own guard deadline expires; idempotent. */
   onGuardExpired?: (requestId: string) => void;
+  /** Observes trace start/output/failure/settle for the host's run tracker. */
+  onRun?: RuntimeRunObserver;
 }
 
 const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
@@ -139,14 +145,6 @@ interface NodeResult {
   log?: Partial<RuntimeLogEntry>;
 }
 
-/** The persisted field cannot be applied to this composition. */
-export class FieldRestoreError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'FieldRestoreError';
-  }
-}
-
 /**
  * A new Pheromone was refused because its target node already holds
  * `queueMax` entries. The rejection never drops an existing input, so the
@@ -193,6 +191,7 @@ export class PheromoneRuntime {
   private readonly guardTimeoutMs: number;
   private readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
   private readonly onGuardExpired: ((requestId: string) => void) | undefined;
+  private readonly onRun: RuntimeRunObserver | undefined;
   private readonly guardWaiters = new Map<string, { readonly requestId: string; resolve: (decision: GuardDecision) => void }>();
   private readonly states: Map<NodeId, NodeState> = new Map();
   /** Answers that arrived before their user node hovered; preserved, not dropped. */
@@ -210,6 +209,8 @@ export class PheromoneRuntime {
   private readonly drains = new Map<NodeId, Promise<void>>();
   /** The first activation failure; the pump stops starting unrelated bees. */
   private failure: unknown;
+  /** Activations removed from a mailbox but not yet in `active`. */
+  private readonly inFlight = new Map<string, number>();
   private resting: boolean;
 
   constructor(definition: CompositionDefinition, options: RuntimeOptions) {
@@ -228,6 +229,7 @@ export class PheromoneRuntime {
     }
     this.onGuard = options.onGuard;
     this.onGuardExpired = options.onGuardExpired;
+    this.onRun = options.onRun;
 
     for (const id of definition.nodes.keys()) {
       this.states.set(id, createNodeState());
@@ -235,8 +237,24 @@ export class PheromoneRuntime {
     this.resting = isFieldResting(this.states.values());
   }
 
+  /**
+   * Admission helper for the host: enqueues with the caller's trace id and
+   * returns a handle. Kept as a property so the class method budget is not
+   * consumed by a second public method.
+   */
+  readonly admit = (nodeId: NodeId, value: Value, traceId: string): RuntimeAdmission => {
+    const node = this.requireTriggerNode(nodeId);
+    const pheromone = this.enqueue(node, value, traceId);
+    return { pheromoneId: pheromone.id, traceId };
+  };
+
   /** Creates a Pheromone at the target node and returns its id. */
   trigger(nodeId: NodeId, value: Value = { kind: 'text', text: '' }): string {
+    const node = this.requireTriggerNode(nodeId);
+    return this.enqueue(node, value, newTraceId()).id;
+  }
+
+  private requireTriggerNode(nodeId: NodeId): NodeDefinition {
     const node = this.definition.nodes.get(nodeId);
     if (node === undefined) {
       throw new Error(`unknown node '${nodeId}'`);
@@ -246,27 +264,24 @@ export class PheromoneRuntime {
         `trigger target '${nodeId}' must be a forager, worker or user node, got '${node.kind}'`,
       );
     }
-    assertValue(value);
+    return node;
+  }
 
+  private enqueue(node: NodeDefinition, value: Value, traceId: string): Pheromone {
+    assertValue(value);
     const pheromone: Pheromone = {
       id: newPheromoneId(),
-      traceId: newTraceId(),
+      traceId,
       value: structuredClone(value),
       // `at` is the enqueue instant: the TTL clock starts here.
       at: this.iso(),
     };
-
     this.stateLock.runSync(() => {
       const state = this.stateOf(node.id);
       const mailbox = this.ensureMailbox(state);
       const reserved = state.reserved ?? 0;
       if (mailbox.length + reserved >= this.definition.defaults.queueMax) {
-        this.rejectQueueFull(
-          node,
-          mailbox.length + reserved,
-          pheromone.id,
-          pheromone.traceId,
-        );
+        this.rejectQueueFull(node, mailbox.length + reserved, pheromone.id, traceId);
       }
       mailbox.push(pheromone);
       this.resting = false;
@@ -275,12 +290,11 @@ export class PheromoneRuntime {
         nodeId: node.id,
         nodeKind: node.kind,
         pheromoneId: pheromone.id,
-        traceId: pheromone.traceId,
+        traceId,
         queueDepth: mailbox.length,
       });
     });
-
-    return pheromone.id;
+    return pheromone;
   }
 
   /**
@@ -365,6 +379,9 @@ export class PheromoneRuntime {
     try {
       while (activation !== null) {
         await this.activate(activation.node, activation.pheromone, activation.reservation);
+        // Outputs may have woken other bees. Start them now instead of waiting
+        // for a global pump: a slow activation on this bee must not delay them.
+        this.startOtherDrains();
         activation = this.stateLock.runSync(() => {
           // A long activation can outlive `queueTtlMs`: re-check before the
           // drain takes its next input.
@@ -382,6 +399,23 @@ export class PheromoneRuntime {
         this.drains.delete(nodeId);
         restMailboxIfIdle(this.stateOf(nodeId));
       });
+    }
+  }
+
+  /** Starts a drain for every runnable bee that does not already own one. */
+  private startOtherDrains(): void {
+    for (;;) {
+      if (this.failure !== undefined) {
+        return;
+      }
+      const next = this.stateLock.runSync(() => this.takeRunnable());
+      if (next === null) {
+        return;
+      }
+      const nodeId = next.node.id;
+      const drain = this.drain(nodeId, next);
+      this.drains.set(nodeId, drain);
+      void drain.catch(() => undefined);
     }
   }
 
@@ -458,7 +492,7 @@ export class PheromoneRuntime {
    * that the answer is queued and applied when the node next hovers. Neither
    * case drops the input.
    */
-  answerHover(nodeId: NodeId, value: Value, token?: string): void {
+  answerHover(nodeId: NodeId, value: Value, token?: string): string | undefined {
     const node = this.definition.nodes.get(nodeId);
     if (node === undefined) {
       throw new Error(`unknown node '${nodeId}'`);
@@ -478,7 +512,7 @@ export class PheromoneRuntime {
         throw new Error(`hover for node '${nodeId}' has no Pheromone`);
       }
       this.completeHover(node, pheromone, value, 'answered');
-      return;
+      return pheromone.traceId;
     }
 
     const queue = this.preAnswers.get(nodeId) ?? [];
@@ -490,6 +524,7 @@ export class PheromoneRuntime {
       nodeKind: 'user',
       queueDepth: queue.length,
     });
+    return undefined;
   }
 
   /** JSON shape for `honey/field.json`; safe to persist at any pause point. */
@@ -639,7 +674,7 @@ export class PheromoneRuntime {
             `persisted field has merge joins on non-merge node '${id}'`,
           );
         }
-        const joins = this.restoreJoins(node, saved.joins);
+        const joins = restoreJoins(node, saved.joins);
         if (joins.size > 0) {
           state.joins = joins;
           // Age out stale closed markers that outlived their retention while
@@ -1017,6 +1052,7 @@ export class PheromoneRuntime {
       return null;
     }
     delete state.pending;
+    this.addInFlight(pheromone.traceId);
     return { node, pheromone, reservation: reserved.reservation };
   }
 
@@ -1086,6 +1122,11 @@ export class PheromoneRuntime {
         // was already decremented by pushPheromone().
         this.releaseReservation(reservation);
         delete state.active;
+        this.endInFlight(pheromone.traceId);
+        // The final classification runs after the in-flight marker is gone;
+        // an activation that removes the last Pheromone (or only parks a
+        // hover) is then reported as settled/parked, never as present.
+        this.notifyTrace(pheromone.traceId);
       });
     }
   }
@@ -1102,6 +1143,7 @@ export class PheromoneRuntime {
   ): number | null {
     state.lastActivatedAt = this.iso();
     this.resting = false;
+    this.onRun?.activated?.(pheromone.traceId);
     if (node.kind === 'user') {
       logActivated(this.log.bind(this), node, pheromone, state);
       this.openHover(node, pheromone, reservation);
@@ -1131,6 +1173,7 @@ export class PheromoneRuntime {
       throw new Error(`node '${node.id}' is not a synchronous activation`);
     }
     delete state.active;
+    this.notifyTrace(pheromone.traceId);
   }
 
   private finishAsyncActivation(
@@ -1149,8 +1192,11 @@ export class PheromoneRuntime {
       result.outcome,
       result.log,
     );
-    this.emit(node, pheromone, result, reservation);
+    if (!this.emit(node, pheromone, result, reservation)) {
+      this.reportOutput(pheromone.traceId, node.id, result.value);
+    }
     delete state.active;
+    this.notifyTrace(pheromone.traceId);
   }
 
   /** Returns true when the failure only affected an optional Merge branch. */
@@ -1163,15 +1209,18 @@ export class PheromoneRuntime {
   ): boolean {
     delete state.active;
     logFailed(this.log.bind(this), node, pheromone, startedAt, this.now(), error);
-    if (pheromone.forkId === undefined) {
-      return false;
-    }
     // A required branch that failed can never reach its Merge; cancel its
     // siblings so no join waits forever. An optional-only branch is logged and
     // dropped without failing the required set.
-    return (
-      this.handleBranchFailure(pheromone.forkId, pheromone.branchId, 'failed-branch') === 'optional'
-    );
+    const optionalOnly =
+      pheromone.forkId !== undefined &&
+      this.handleBranchFailure(pheromone.forkId, pheromone.branchId, 'failed-branch') ===
+        'optional';
+    if (!optionalOnly) {
+      this.onRun?.failed?.(pheromone.traceId, error);
+    }
+    this.notifyTrace(pheromone.traceId);
+    return optionalOnly;
   }
 
   private async runNode(
@@ -1277,6 +1326,7 @@ export class PheromoneRuntime {
       pheromoneId: pheromone.id,
       traceId: pheromone.traceId,
     });
+    this.notifyTrace(pheromone.traceId);
   }
 
   /**
@@ -1321,7 +1371,10 @@ export class PheromoneRuntime {
         traceId: pheromone.traceId,
         outcome,
       });
-      this.emit(node, pheromone, { value: structuredClone(value), outcome }, held);
+      if (!this.emit(node, pheromone, { value: structuredClone(value), outcome }, held)) {
+        this.reportOutput(pheromone.traceId, node.id, value);
+      }
+      this.notifyTrace(pheromone.traceId);
     } finally {
       if (owned) {
         this.releaseReservation(held);
@@ -1435,15 +1488,16 @@ export class PheromoneRuntime {
     waiter.resolve(decision);
   }
 
+  /** Emits the node's single output; false when the node is terminal. */
   private emit(
     node: NodeDefinition,
     pheromone: Pheromone,
     result: NodeResult,
     reservation: OutputReservation,
-  ): void {
+  ): boolean {
     const edge = this.outgoingEdge(node, result);
     if (edge === undefined) {
-      return;
+      return false;
     }
 
     // A branch keeps its full lineage through normal nodes so a downstream
@@ -1456,6 +1510,86 @@ export class PheromoneRuntime {
       lineage.length === 0 ? undefined : lineage,
       reservation,
     );
+    return true;
+  }
+
+  private reportOutput(traceId: string, nodeId: NodeId, value: Value): void {
+    try {
+      this.onRun?.output?.(traceId, nodeId, structuredClone(value));
+    } catch {
+      // Observability must never change the run's outcome.
+    }
+  }
+
+  /** Notifies the observer whether a trace still has live or parked work. */
+  private notifyTrace(traceId: string): void {
+    const state = this.traceStateOf(traceId);
+    if (state === 'settled') {
+      this.refreshRest();
+      this.onRun?.settled?.(traceId);
+    } else if (state === 'parked') {
+      this.onRun?.parked?.(traceId);
+    } else {
+      this.onRun?.present?.(traceId);
+    }
+  }
+
+  private traceStateOf(traceId: string): 'present' | 'parked' | 'settled' {
+    if ((this.inFlight.get(traceId) ?? 0) > 0 || this.traceInField(traceId)) {
+      return 'present';
+    }
+    return this.traceParked(traceId) ? 'parked' : 'settled';
+  }
+
+  private traceInField(traceId: string): boolean {
+    for (const state of this.states.values()) {
+      if (this.nodeHoldsTrace(state, traceId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private nodeHoldsTrace(state: NodeState, traceId: string): boolean {
+    if (state.active?.traceId === traceId || state.pending?.traceId === traceId) {
+      return true;
+    }
+    if ((state.queue ?? []).some((pheromone) => pheromone.traceId === traceId)) {
+      return true;
+    }
+    if (state.joins === undefined) {
+      return false;
+    }
+    for (const join of state.joins.values()) {
+      for (const arrived of join.arrived.values()) {
+        if (arrived.traceId === traceId) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private traceParked(traceId: string): boolean {
+    for (const state of this.states.values()) {
+      if (state.hoverPheromone?.traceId === traceId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private addInFlight(traceId: string): void {
+    this.inFlight.set(traceId, (this.inFlight.get(traceId) ?? 0) + 1);
+  }
+
+  private endInFlight(traceId: string): void {
+    const count = (this.inFlight.get(traceId) ?? 0) - 1;
+    if (count <= 0) {
+      this.inFlight.delete(traceId);
+    } else {
+      this.inFlight.set(traceId, count);
+    }
   }
 
   /**
@@ -1987,6 +2121,7 @@ export class PheromoneRuntime {
       (candidate) => candidate.from === node.id && candidate.when === undefined,
     );
     if (edge === undefined) {
+      this.reportOutput(traceId, node.id, value);
       return;
     }
     // Stage 5D: a top-level Merge emits no tags; a nested Merge restores the
@@ -2163,164 +2298,6 @@ export class PheromoneRuntime {
     if (joins.size === 0) {
       delete state.joins;
     }
-  }
-
-  private restoreJoinLineage(input: unknown, path: string): BranchTag[] | undefined {
-    if (input === undefined) {
-      return undefined;
-    }
-    if (!Array.isArray(input) || input.length === 0) {
-      throw new FieldRestoreError(`${path} lineage: expected a non-empty array`);
-    }
-    return input.map((entry, index) => {
-      if (typeof entry !== 'object' || entry === null) {
-        throw new FieldRestoreError(`${path} lineage[${String(index)}]: expected a branch tag`);
-      }
-      const forkId = (entry as { forkId?: unknown }).forkId;
-      const branchId = (entry as { branchId?: unknown }).branchId;
-      if (typeof forkId !== 'string' || forkId === '') {
-        throw new FieldRestoreError(
-          `${path} lineage[${String(index)}].forkId: expected a non-empty string`,
-        );
-      }
-      if (typeof branchId !== 'string' || branchId === '') {
-        throw new FieldRestoreError(
-          `${path} lineage[${String(index)}].branchId: expected a non-empty string`,
-        );
-      }
-      return { forkId, branchId };
-    });
-  }
-
-  private restoreJoins(
-    node: MergeNode,
-    saved: Record<string, PersistedJoinState>,
-  ): Map<string, JoinState> {
-    const joins = new Map<string, JoinState>();
-    for (const [forkId, entry] of Object.entries(saved)) {
-      const joinPath = `persisted join '${forkId}' on node '${node.id}'`;
-      if (forkId === '') {
-        throw new FieldRestoreError(`persisted join on node '${node.id}' has an empty forkId`);
-      }
-      if (!Array.isArray(entry.arrived)) {
-        throw new FieldRestoreError(
-          `${joinPath} has no branch Pheromones`,
-        );
-      }
-      const parentLineage = this.restoreJoinLineage(entry.lineage, joinPath);
-      if (entry.completedAt !== undefined && entry.timedOutAt !== undefined) {
-        throw new FieldRestoreError(
-          `${joinPath} is both completed and timed out`,
-        );
-      }
-      if (entry.completedAt !== undefined) {
-        // A completed tombstone holds no Pheromones; it only remembers that the
-        // join already emitted so a later branch can be dropped.
-        if (
-          typeof entry.completedAt !== 'string' ||
-          !Number.isFinite(Date.parse(entry.completedAt))
-        ) {
-          throw new FieldRestoreError(`${joinPath} has an invalid completedAt`);
-        }
-        if (entry.arrived.length > 0) {
-          throw new FieldRestoreError(
-            `persisted completed join '${forkId}' on node '${node.id}' still holds branch Pheromones`,
-          );
-        }
-        joins.set(forkId, {
-          forkId,
-          ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
-          arrived: new Map<string, Pheromone>(),
-          completedAt: entry.completedAt,
-        });
-        continue;
-      }
-      if (entry.timedOutAt !== undefined) {
-        // A timed-out tombstone holds no Pheromones: the fork is failed and
-        // late branches must be dropped instead of reopening the join.
-        if (
-          typeof entry.timedOutAt !== 'string' ||
-          !Number.isFinite(Date.parse(entry.timedOutAt))
-        ) {
-          throw new FieldRestoreError(`${joinPath} has an invalid timedOutAt`);
-        }
-        if (entry.arrived.length > 0) {
-          throw new FieldRestoreError(
-            `persisted timed-out join '${forkId}' on node '${node.id}' still holds branch Pheromones`,
-          );
-        }
-        joins.set(forkId, {
-          forkId,
-          ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
-          arrived: new Map<string, Pheromone>(),
-          timedOutAt: entry.timedOutAt,
-        });
-        continue;
-      }
-      if (entry.arrived.length === 0) {
-        throw new FieldRestoreError(
-          `${joinPath} has no branch Pheromones`,
-        );
-      }
-      if (entry.deadlineAt === undefined || !Number.isSafeInteger(entry.deadlineAt)) {
-        throw new FieldRestoreError(`${joinPath} has no valid deadlineAt`);
-      }
-
-      const arrived = new Map<string, Pheromone>();
-      let derivedParent: BranchTag[] | undefined;
-      for (const pheromone of entry.arrived) {
-        const normalized = normalizePheromone(pheromone);
-        if (normalized.forkId !== forkId) {
-          throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' holds a Pheromone for '${String(normalized.forkId)}'`,
-          );
-        }
-        const branchId = normalized.branchId;
-        if (branchId === undefined) {
-          throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' holds an untagged Pheromone`,
-          );
-        }
-        if (
-          !node.config.required.includes(branchId) &&
-          !node.config.optional.includes(branchId)
-        ) {
-          throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' holds unknown branch '${branchId}'`,
-          );
-        }
-        if (arrived.has(branchId)) {
-          throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' repeats branch '${branchId}'`,
-          );
-        }
-        const lineage = currentLineage(normalized);
-        const parent = copyLineage(lineage.slice(0, -1));
-        if (derivedParent === undefined) {
-          derivedParent = parent;
-        } else if (!sameLineage(derivedParent, parent)) {
-          throw new FieldRestoreError(
-            `persisted join '${forkId}' on node '${node.id}' mixes parent lineages`,
-          );
-        }
-        arrived.set(branchId, normalized);
-      }
-      const effectiveParent = derivedParent ?? [];
-      if (parentLineage !== undefined && !sameLineage(parentLineage, effectiveParent)) {
-        throw new FieldRestoreError(
-          `${joinPath} lineage does not match its branch Pheromones`,
-        );
-      }
-      joins.set(forkId, {
-        forkId,
-        ...(effectiveParent.length === 0
-          ? {}
-          : { lineage: copyLineage(effectiveParent) }),
-        arrived,
-        deadlineAt: entry.deadlineAt,
-      });
-    }
-    return joins;
   }
 
   private outgoingEdge(node: NodeDefinition, result: NodeResult): EdgeDefinition | undefined {

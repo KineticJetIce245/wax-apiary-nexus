@@ -12,6 +12,7 @@ import {
   makeEnv,
   record,
   refuse500,
+  settleWake,
   singleHarness,
   start,
   STRESS_ROUNDS,
@@ -48,7 +49,6 @@ test(
       const guardA = guards[0];
       const guardB = guards[1];
       assert.ok(guardA !== undefined && guardB !== undefined);
-
       const decideA = await decide(running, guardA['requestId'], 'allow_once');
       const decideB = await decide(running, guardB['requestId'], 'reject_once');
       refuse500(running, decideA, 'multi-decide-a', guardA['requestId'], 0);
@@ -58,9 +58,10 @@ test(
       assert.equal(decideA.status, 200);
       assert.equal(decideB.status, 200);
 
-      const [wakeAResult, wakeBResult] = await Promise.all([wakeA, wakeB]);
-      assert.equal(wakeAResult.status, 200, wakeAResult.text);
-      assert.equal(wakeBResult.status, 200, wakeBResult.text);
+      await Promise.all([
+        settleWake(running, liveA, wakeA),
+        settleWake(running, liveB, wakeB),
+      ]);
       assert.equal(codex.approvals.at(-1)?.kind, 'allow_once');
       assert.equal(dsh.approvals.at(-1)?.kind, 'reject_once');
       await waitForGuardCount(running, 0);
@@ -129,7 +130,7 @@ test('concurrent duplicate decisions settle exactly once and never answer 500', 
       Array.from({ length: 7 }, () => 'conflict'),
     );
 
-    assert.equal((await wakePromise).status, 200);
+    await settleWake(running, liveId, wakePromise);
     assert.equal(adapter.approvals.at(-1)?.kind, 'allow_once');
     await waitForGuardCount(running, 0);
     await unloadLive(running, liveId);
@@ -171,7 +172,7 @@ test(
       refuse500(running, decided, 'mixed-decide-live', guardA['requestId'], 0);
       assert.equal(decided.status, 200);
       record(observations, round, 'mixed-decide-live', decided);
-      assert.equal((await wakeA).status, 200);
+      await settleWake(running, liveA, wakeA);
 
       await waitForGuardCount(running, 0);
       const late = await decide(running, guardB['requestId'], 'allow_once');
@@ -179,7 +180,7 @@ test(
       assert.equal(late.status, 409);
       assert.equal(late.code, 'guard-expired');
       record(observations, round, 'mixed-late-decide-expired', late);
-      assert.equal((await wakeB).status, 200);
+      await settleWake(running, liveB, wakeB);
       assert.equal(codex.approvals.at(-1)?.kind, 'allow_once');
       assert.equal(dsh.approvals.at(-1)?.kind, 'cancelled');
       await unloadLive(running, liveA);

@@ -121,6 +121,98 @@ export async function bAnswer(
   });
 }
 
+export async function bRun(
+  url: string,
+  token: string,
+  liveId: string,
+  runId: string,
+): Promise<HttpResult> {
+  return getJson(
+    url,
+    token,
+    `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
+  );
+}
+
+/** Poll the run route until it leaves accepted/running (or the deadline). */
+export async function waitForRunTerminal(
+  url: string,
+  token: string,
+  liveId: string,
+  runId: string,
+  timeoutMs = 2_000,
+): Promise<HttpResult> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await bRun(url, token, liveId, runId);
+    const state = result.body?.['run']?.['state'];
+    if (state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'unknown') {
+      return result;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`run ${runId} did not finish before the deadline (state=${String(state)})`);
+    }
+    await delay(10);
+  }
+}
+
+/** Minimal request shape shared by integration tests' local HTTP helpers. */
+export interface RunApiCall {
+  (
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+  ): Promise<{ readonly status: number; readonly body: Record<string, any> }>;
+}
+
+export function admissionRunId(body: Record<string, any> | undefined): string {
+  const runId = body?.['runId'];
+  assert.equal(typeof runId, 'string', "wake response missing string 'runId'");
+  return runId;
+}
+
+/** Poll through a test-local request helper rather than global fetch. */
+export async function waitForRunTerminalWith(
+  call: RunApiCall,
+  liveId: string,
+  runId: string,
+  timeoutMs = 120_000,
+): Promise<Record<string, any>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await call(
+      'GET',
+      `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
+    );
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const run = result.body?.['run'];
+    if (typeof run !== 'object' || run === null) {
+      throw new Error('run response missing run object');
+    }
+    const state = (run as Record<string, any>)['state'];
+    if (state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'unknown') {
+      return run as Record<string, any>;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`run ${runId} did not finish before the deadline (state=${String(state)})`);
+    }
+    await delay(100);
+  }
+}
+
+/** Await a 202 admission, then its own run terminal state. */
+export async function settleWakeWith(
+  call: RunApiCall,
+  liveId: string,
+  wakePromise: Promise<{ readonly status: number; readonly body: Record<string, any> }>,
+  timeoutMs = 120_000,
+): Promise<Record<string, any>> {
+  const wake = await wakePromise;
+  assert.equal(wake.status, 202, JSON.stringify(wake.body));
+  assert.equal(wake.body?.['status'], 'accepted');
+  return waitForRunTerminalWith(call, liveId, admissionRunId(wake.body), timeoutMs);
+}
+
 export async function bUnload(
   url: string,
   token: string,

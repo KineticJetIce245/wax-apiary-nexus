@@ -190,14 +190,14 @@
       "nesting": 2,
       "parameters": 1
     },
-    "src/control/http-server.ts::arrow <anonymous@121>": {
+    "src/control/http-server.ts::arrow <anonymous@115>": {
       "lines": 61,
       "cyclomatic": 5,
       "nesting": 2,
       "parameters": 2
     },
     "src/control/http-server.ts::method ControlHttpServer.handle": {
-      "lines": 67,
+      "lines": 61,
       "cyclomatic": 9,
       "nesting": 2,
       "parameters": 2
@@ -209,8 +209,8 @@
       "parameters": 1
     },
     "src/control/live-routes.ts::function dispatchLiveRoute": {
-      "lines": 42,
-      "cyclomatic": 14,
+      "lines": 32,
+      "cyclomatic": 13,
       "nesting": 1,
       "parameters": 5
     },
@@ -221,8 +221,8 @@
       "parameters": 2
     },
     "src/control/routes.ts::function dispatchRoutes": {
-      "lines": 107,
-      "cyclomatic": 33,
+      "lines": 97,
+      "cyclomatic": 21,
       "nesting": 3,
       "parameters": 5
     },
@@ -416,7 +416,7 @@
       "parameters": 3
     },
     "src/runtime/runtime.ts::class PheromoneRuntime": {
-      "bodyLines": 2173,
+      "bodyLines": 2152,
       "publicMethods": 9,
       "constructorDependencies": 2
     },
@@ -479,12 +479,6 @@
       "cyclomatic": 7,
       "nesting": 2,
       "parameters": 4
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.restoreJoins": {
-      "lines": 130,
-      "cyclomatic": 31,
-      "nesting": 4,
-      "parameters": 2
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.runNode": {
       "lines": 56,
@@ -605,43 +599,43 @@
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-cli-graph.test.ts::arrow <anonymous@18>": {
-      "lines": 74,
+    "tests/control-cli-graph.test.ts::arrow <anonymous@28>": {
+      "lines": 71,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/control-cli-guard.test.ts::arrow <anonymous@249>": {
-      "lines": 80,
+    "tests/control-cli-guard.test.ts::arrow <anonymous@263>": {
+      "lines": 79,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/control-cli-live.test.ts::arrow <anonymous@21>": {
-      "lines": 216,
-      "cyclomatic": 15,
+    "tests/control-cli-live.test.ts::arrow <anonymous@28>": {
+      "lines": 202,
+      "cyclomatic": 11,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/control-cli-session.test.ts::arrow <anonymous@211>": {
+    "tests/control-cli-session.test.ts::arrow <anonymous@234>": {
       "lines": 66,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-cli-session.test.ts::arrow <anonymous@278>": {
+    "tests/control-cli-session.test.ts::arrow <anonymous@301>": {
       "lines": 65,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-cli-session.test.ts::arrow <anonymous@344>": {
-      "lines": 94,
+    "tests/control-cli-session.test.ts::arrow <anonymous@367>": {
+      "lines": 89,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/control-cli-session.test.ts::arrow <anonymous@67>": {
+    "tests/control-cli-session.test.ts::arrow <anonymous@90>": {
       "lines": 143,
       "cyclomatic": 2,
       "nesting": 1,
@@ -671,68 +665,62 @@
       "nesting": 0,
       "parameters": 0
     },
-    "tests/control-server-approval-isolation.test.ts::arrow <anonymous@105>": {
-      "lines": 58,
-      "cyclomatic": 2,
-      "nesting": 1,
-      "parameters": 1
-    },
     "tests/control-server-catalog.test.ts::arrow <anonymous@139>": {
       "lines": 54,
       "cyclomatic": 2,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/control-server-error-log.test.ts::arrow <anonymous@71>": {
+    "tests/control-server-error-log.test.ts::arrow <anonymous@77>": {
       "lines": 92,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-server-execution-outcome.test.ts::arrow <anonymous@67>": {
+    "tests/control-server-execution-outcome.test.ts::arrow <anonymous@77>": {
       "lines": 55,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/control-server-graph.test.ts::arrow <anonymous@161>": {
-      "lines": 103,
+    "tests/control-server-graph.test.ts::arrow <anonymous@122>": {
+      "lines": 85,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/control-server-graph.test.ts::arrow <anonymous@208>": {
+      "lines": 101,
       "cyclomatic": 3,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-server-graph.test.ts::arrow <anonymous@348>": {
+    "tests/control-server-graph.test.ts::arrow <anonymous@392>": {
       "lines": 102,
       "cyclomatic": 3,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-server-graph.test.ts::arrow <anonymous@74>": {
-      "lines": 86,
-      "cyclomatic": 2,
-      "nesting": 1,
-      "parameters": 1
-    },
-    "tests/control-server-guard-races.test.ts::arrow <anonymous@196>": {
+    "tests/control-server-guard-races.test.ts::arrow <anonymous@197>": {
       "lines": 59,
       "cyclomatic": 4,
       "nesting": 2,
       "parameters": 1
     },
-    "tests/control-server-guard-races.test.ts::arrow <anonymous@29>": {
+    "tests/control-server-guard-races.test.ts::arrow <anonymous@30>": {
       "lines": 65,
       "cyclomatic": 3,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-server-guard-stress.test.ts::arrow <anonymous@28>": {
-      "lines": 58,
+    "tests/control-server-guard-stress.test.ts::arrow <anonymous@29>": {
+      "lines": 57,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-server-guard.test.ts::arrow <anonymous@291>": {
-      "lines": 72,
+    "tests/control-server-guard.test.ts::arrow <anonymous@316>": {
+      "lines": 67,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
@@ -749,14 +737,14 @@
       "nesting": 0,
       "parameters": 1
     },
-    "tests/control-server-lives.test.ts::arrow <anonymous@42>": {
-      "lines": 129,
+    "tests/control-server-lives.test.ts::arrow <anonymous@73>": {
+      "lines": 119,
       "cyclomatic": 3,
       "nesting": 2,
       "parameters": 1
     },
-    "tests/control-server-session-busy.test.ts::arrow <anonymous@30>": {
-      "lines": 83,
+    "tests/control-server-session-busy.test.ts::arrow <anonymous@52>": {
+      "lines": 76,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
@@ -803,127 +791,121 @@
       "nesting": 1,
       "parameters": 0
     },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@188>": {
+    "tests/graph-host-execution.test.ts::arrow <anonymous@189>": {
       "lines": 57,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@371>": {
+    "tests/graph-host-execution.test.ts::arrow <anonymous@499>": {
       "lines": 63,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@480>": {
-      "lines": 64,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@90>": {
+    "tests/graph-host-execution.test.ts::arrow <anonymous@91>": {
       "lines": 97,
       "cyclomatic": 4,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@106>": {
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@107>": {
       "lines": 59,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@166>": {
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@167>": {
       "lines": 53,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@269>": {
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@270>": {
       "lines": 64,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@334>": {
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@345>": {
       "lines": 53,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@388>": {
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@399>": {
       "lines": 57,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@497>": {
+    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@508>": {
       "lines": 51,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@122>": {
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@123>": {
       "lines": 62,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@185>": {
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@186>": {
       "lines": 65,
       "cyclomatic": 3,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@251>": {
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@252>": {
       "lines": 54,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@306>": {
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@307>": {
       "lines": 58,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@365>": {
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@366>": {
       "lines": 56,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@51>": {
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@52>": {
       "lines": 70,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@210>": {
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@211>": {
       "lines": 57,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@268>": {
-      "lines": 61,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@330>": {
-      "lines": 95,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@426>": {
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@282>": {
       "lines": 59,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@90>": {
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@342>": {
+      "lines": 95,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@438>": {
+      "lines": 59,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@91>": {
       "lines": 74,
       "cyclomatic": 2,
       "nesting": 1,
@@ -935,20 +917,20 @@
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-residency.test.ts::arrow <anonymous@246>": {
-      "lines": 57,
+    "tests/graph-host-residency.test.ts::arrow <anonymous@264>": {
+      "lines": 53,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-residency.test.ts::arrow <anonymous@304>": {
+    "tests/graph-host-residency.test.ts::arrow <anonymous@318>": {
       "lines": 54,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-residency.test.ts::arrow <anonymous@68>": {
-      "lines": 88,
+    "tests/graph-host-residency.test.ts::arrow <anonymous@69>": {
+      "lines": 87,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
@@ -1001,55 +983,55 @@
       "nesting": 0,
       "parameters": 1
     },
-    "tests/integration/dsh-approval-isolation.test.ts::arrow <anonymous@82>": {
-      "lines": 129,
+    "tests/integration/dsh-approval-isolation.test.ts::arrow <anonymous@85>": {
+      "lines": 128,
       "cyclomatic": 6,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/integration/dsh-approval-timeout.test.ts::arrow <anonymous@85>": {
-      "lines": 134,
-      "cyclomatic": 4,
-      "nesting": 1,
-      "parameters": 1
-    },
-    "tests/integration/host-guard-cli.test.ts::arrow <anonymous@92>": {
-      "lines": 171,
+    "tests/integration/dsh-approval-timeout.test.ts::arrow <anonymous@115>": {
+      "lines": 123,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/integration/host-guard-concurrent.test.ts::arrow <anonymous@80>": {
+    "tests/integration/host-guard-cli.test.ts::arrow <anonymous@93>": {
+      "lines": 170,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-concurrent.test.ts::arrow <anonymous@117>": {
       "lines": 226,
       "cyclomatic": 5,
       "nesting": 2,
       "parameters": 1
     },
     "tests/integration/host-guard-decide.test.ts::arrow <anonymous@178>": {
-      "lines": 142,
+      "lines": 137,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@325>": {
+    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@320>": {
+      "lines": 122,
+      "cyclomatic": 2,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@447>": {
       "lines": 123,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@453>": {
-      "lines": 124,
+    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@59>": {
+      "lines": 114,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
     },
-    "tests/integration/host-guard-decide.test.ts::arrow <anonymous@58>": {
-      "lines": 115,
-      "cyclomatic": 2,
-      "nesting": 1,
-      "parameters": 1
-    },
-    "tests/integration/host-session-busy.test.ts::arrow <anonymous@59>": {
+    "tests/integration/host-session-busy.test.ts::arrow <anonymous@75>": {
       "lines": 146,
       "cyclomatic": 3,
       "nesting": 2,
@@ -1067,27 +1049,27 @@
       "nesting": 3,
       "parameters": 1
     },
-    "tests/integration/waxd-dsh-forced-restart.test.ts::arrow <anonymous@37>": {
-      "lines": 223,
+    "tests/integration/waxd-dsh-forced-restart.test.ts::arrow <anonymous@52>": {
+      "lines": 218,
       "cyclomatic": 13,
       "nesting": 3,
       "parameters": 1
     },
-    "tests/integration/waxd-dsh-shutdown-restart.test.ts::arrow <anonymous@35>": {
-      "lines": 230,
+    "tests/integration/waxd-dsh-shutdown-restart.test.ts::arrow <anonymous@50>": {
+      "lines": 228,
       "cyclomatic": 4,
       "nesting": 2,
       "parameters": 1
     },
-    "tests/integration/waxd-live-operations.test.ts::arrow <anonymous@152>": {
-      "lines": 298,
+    "tests/integration/waxd-live-operations.test.ts::arrow <anonymous@177>": {
+      "lines": 283,
       "cyclomatic": 22,
       "nesting": 2,
       "parameters": 1
     },
-    "tests/integration/waxd-mixed-harness.test.ts::arrow <anonymous@148>": {
-      "lines": 236,
-      "cyclomatic": 24,
+    "tests/integration/waxd-mixed-harness.test.ts::arrow <anonymous@190>": {
+      "lines": 216,
+      "cyclomatic": 18,
       "nesting": 2,
       "parameters": 1
     },
@@ -1307,7 +1289,7 @@
       "nesting": 0,
       "parameters": 3
     },
-    "tests/support/control-server-http.ts::arrow <anonymous@194>": {
+    "tests/support/control-server-http.ts::arrow <anonymous@286>": {
       "lines": 32,
       "cyclomatic": 10,
       "nesting": 5,

@@ -15,6 +15,7 @@ import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
 import {
   autoDecideGuards,
+  settleWakeWith,
   type GuardAutoDecider,
 } from '../support/control-server-http.js';
 
@@ -242,9 +243,8 @@ test(
       });
       assert.equal((decided.stdout[0] as string).includes(token), false);
 
-      const trigger = await triggerPromise;
-      assert.equal(trigger.status, 200, trigger.text);
-      assert.equal(trigger.body['result']?.['rest'], true);
+      const trigger = await settleWakeWith(request, 'native-guard-cli', triggerPromise);
+      assert.equal(trigger['state'], 'completed');
       assert.equal(
         readFileSync(join(project.directory, 'cli-guard.txt'), 'utf8'),
         marker,

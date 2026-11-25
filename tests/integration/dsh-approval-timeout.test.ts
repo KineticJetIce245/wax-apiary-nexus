@@ -12,7 +12,7 @@ import {
   Workspace,
   type WorkspaceEvent,
 } from '../../src/session/workspace.js';
-import { bLoad, bWake } from '../support/control-server-http.js';
+import { bLoad, bWake, admissionRunId, waitForRunTerminal } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
@@ -79,8 +79,38 @@ function liveDefinition(liveId: string): Record<string, unknown> {
   };
 }
 
+function assertApprovalTimeoutSequence(
+  observed: readonly ObservedEvent[],
+  sequence: string,
+): void {
+  const requestedIndex = observed.findIndex(
+    (event) => event.type === 'execution/approval-requested',
+  );
+  const decidedIndex = observed.findIndex(
+    (event, index) =>
+      index > requestedIndex &&
+      event.type === 'execution/approval-decided' &&
+      event.detail === 'kind=cancelled',
+  );
+  const cancelledIndex = observed.findIndex(
+    (event, index) =>
+      index > decidedIndex &&
+      event.type === 'execution/state' &&
+      event.detail.startsWith('state=cancelled'),
+  );
+  assert.ok(requestedIndex >= 0, `no approval request observed: ${sequence}`);
+  assert.ok(decidedIndex > requestedIndex, `no cancelled decision observed: ${sequence}`);
+  assert.ok(cancelledIndex > decidedIndex, `no cancelled execution observed: ${sequence}`);
+  const requestedAt = observed[requestedIndex]?.atMs ?? 0;
+  const decidedAt = observed[decidedIndex]?.atMs ?? 0;
+  assert.ok(
+    decidedAt - requestedAt >= APPROVAL_TIMEOUT_MS - 50,
+    `approval was not decided by the workspace timeout: ${sequence}`,
+  );
+}
+
 test(
-  'real DSH undecided approval answers 409 approval-timeout',
+  'real DSH undecided approval cancels its run',
   integrationOptions,
   async (t) => {
     assert.ok(dshRoot !== undefined, 'DSH_ROOT is missing');
@@ -155,12 +185,24 @@ test(
       .map((event) => `${String(event.atMs)}ms ${event.type} (${event.detail})`)
       .join(' -> ');
 
-    assert.equal(wake.status, 409, `${wake.text}\nruntime: ${sequence}`);
-    assert.equal(wake.body?.['ok'], false);
-    assert.equal(wake.body?.['code'], 'approval-timeout');
+    assert.equal(wake.status, 202, `${wake.text}\nruntime: ${sequence}`);
+    assert.equal(wake.body?.['ok'], true);
+    assert.equal(wake.body?.['status'], 'accepted');
     assert.equal(wake.text.includes(marker), false, 'wake response leaked the prompt marker');
     assert.equal(wake.text.includes(token), false, 'wake response leaked the token');
-    assert.ok(wakeElapsedMs < 120_000, `wake hung for ${String(wakeElapsedMs)}ms`);
+    assert.ok(wakeElapsedMs < 30_000, `wake admission hung for ${String(wakeElapsedMs)}ms`);
+    // The approval timeout is an asynchronous run outcome now.
+    const finished = await waitForRunTerminal(
+      info.url,
+      token,
+      liveId,
+      admissionRunId(wake.body),
+      180_000,
+    );
+    assert.equal(finished.status, 200, finished.text);
+    assert.equal(finished.body?.['run']?.['state'], 'cancelled');
+    assert.equal(finished.text.includes(marker), false, 'run response leaked the prompt marker');
+    assert.equal(finished.text.includes(token), false, 'run response leaked the token');
     assert.equal(existsSync(join(project.directory, fileName)), false);
 
     // The Workspace's own approval timer is the initiator, so the execution
@@ -172,36 +214,13 @@ test(
     assert.equal(execution.cancelReason, 'approval-timeout');
     assert.equal(execution.error, undefined);
 
-    const requestedIndex = observed.findIndex(
-      (event) => event.type === 'execution/approval-requested',
-    );
-    const decidedIndex = observed.findIndex(
-      (event, index) =>
-        index > requestedIndex &&
-        event.type === 'execution/approval-decided' &&
-        event.detail === 'kind=cancelled',
-    );
-    const cancelledIndex = observed.findIndex(
-      (event, index) =>
-        index > decidedIndex &&
-        event.type === 'execution/state' &&
-        event.detail.startsWith('state=cancelled'),
-    );
-    assert.ok(requestedIndex >= 0, `no approval request observed: ${sequence}`);
-    assert.ok(decidedIndex > requestedIndex, `no cancelled decision observed: ${sequence}`);
-    assert.ok(cancelledIndex > decidedIndex, `no cancelled execution observed: ${sequence}`);
-    const requestedAt = observed[requestedIndex]?.atMs ?? 0;
-    const decidedAt = observed[decidedIndex]?.atMs ?? 0;
-    assert.ok(
-      decidedAt - requestedAt >= APPROVAL_TIMEOUT_MS - 50,
-      `approval was not decided by the workspace timeout: ${sequence}`,
-    );
+    assertApprovalTimeoutSequence(observed, sequence);
 
     const wakeLine = controlLogs.find(
-      (line) => line.includes('path=/lives/wake') && line.includes('status=409'),
+      (line) => line.includes('path=/lives/wake') && line.includes('status=202'),
     );
-    assert.ok(wakeLine !== undefined, `no 409 wake log line: ${controlLogs.join(' | ')}`);
-    assert.match(wakeLine, / code=approval-timeout$/);
+    assert.ok(wakeLine !== undefined, `no 202 wake log line: ${controlLogs.join(' | ')}`);
+    assert.match(wakeLine, / code=ok$/);
     assert.equal(controlLogs.some((line) => line.includes('status=500')), false);
     for (const line of controlLogs) {
       assert.equal(line.includes(marker), false);
@@ -210,7 +229,7 @@ test(
 
     t.diagnostic(
       `observed: approvalTimeoutMs=${String(APPROVAL_TIMEOUT_MS)} ` +
-        `wakeStatus=${String(wake.status)} code=${String(wake.body?.['code'])} ` +
+        `wakeStatus=${String(wake.status)} runState=${String(finished.body?.['run']?.['state'])} ` +
         `wakeElapsedMs=${String(wakeElapsedMs)} executionState=${execution.state} ` +
         `cancelReason=${String(execution.cancelReason)} executionError=none; ` +
         `sequence=${sequence}`,

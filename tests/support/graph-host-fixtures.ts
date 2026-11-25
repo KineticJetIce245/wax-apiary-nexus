@@ -12,7 +12,7 @@ import {
   LiveHiveHostAnswerError,
   LiveHiveHost,
   type LiveHiveNodeStatus,
-  type LiveHiveRunResult,
+  type LiveHiveRunState,
   type LiveHiveStatus,
 } from '../../src/daemon/graph-host.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
@@ -223,22 +223,69 @@ export function text(value: string): Value {
   return { kind: 'text', text: value };
 }
 
+export interface TriggerRunResult {
+  readonly graphId: string;
+  readonly runId: string;
+  readonly traceId: string;
+  readonly state: LiveHiveRunState;
+  readonly rest: boolean;
+  readonly hovered: boolean;
+  readonly status: LiveHiveStatus;
+  /** The background driver flushes Honey when it stops. */
+  readonly persisted: boolean;
+  /** Legacy field for tests that asserted a failed flush; always undefined now. */
+  readonly persistError?: string;
+}
+
 /**
- * Await a trigger in a fixture whose sessions are unique per live, so it must
- * run immediately. Prompt admission is in the adapter; a busy session would
- * reject here, so a resolved run is the synchronous result a test expects.
+ * Admit a wake, then wait until its trace is terminal or parked at a hover.
+ * This is a test convenience over the public admission API; the product's
+ * wake returns immediately.
  */
 export async function triggerRun(
   host: LiveHiveHost,
   graphId: string,
   nodeId: NodeId,
   value: Value,
-): Promise<LiveHiveRunResult> {
-  return host.trigger(graphId, nodeId, value);
+): Promise<TriggerRunResult> {
+  const admission = await host.trigger(graphId, nodeId, value);
+  const run = await host.runs.wait(admission.runId, { stopAtParked: true });
+  // Let the background driver finish its synchronous Honey flush.
+  await new Promise((resolve) => setImmediate(resolve));
+  if (run.state === 'failed' || run.state === 'cancelled') {
+    const failure = host.runs.failureOf(admission.runId);
+    throw failure instanceof Error ? failure : new Error(`run ended ${run.state}`);
+  }
+  const status = host.statusOf(graphId);
+  assert.ok(status !== undefined, `graph '${graphId}' is not loaded`);
+  return {
+    graphId,
+    runId: admission.runId,
+    traceId: admission.traceId,
+    state: run.state,
+    rest: status.rest,
+    hovered: status.hovered,
+    status,
+    persisted: true,
+  };
 }
 
-export function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
-  let settle: (() => void) | undefined;
+/** Poll until an asynchronous background driver reaches the expected state. */
+export async function waitUntil(
+  predicate: () => boolean,
+  label: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for ${label}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+export function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {  let settle: (() => void) | undefined;
   const promise = new Promise<void>((resolve) => {
     settle = resolve;
   });

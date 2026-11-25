@@ -186,6 +186,21 @@ export function snapshotField(
   return deepFreeze(field);
 }
 
+/**
+ * Classifies a trace from a field snapshot. A parked hover is reported as
+ * `present`; the runtime observer reports parking explicitly. This backstop
+ * only settles a trace whose Pheromones disappeared without an activation
+ * notification (for example a TTL expiry).
+ */
+export function traceStateFromSnapshot(
+  snapshot: PheromoneFieldSnapshot,
+  traceId: string,
+): 'present' | 'settled' {
+  return snapshot.pheromones.some((pheromone) => pheromone.traceId === traceId)
+    ? 'present'
+    : 'settled';
+}
+
 function deepFreeze<T>(value: T): T {
   if (typeof value !== 'object' || value === null) {
     return value;

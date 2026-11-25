@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { fromCompositionDefinition } from '../src/b/live-hive-codec.js';
@@ -14,6 +15,15 @@ import {
   tempJson,
 } from './support/control-cli-fixtures.js';
 import { startWaxd } from './support/control-cli-daemons.js';
+import { waitForRunTerminal } from './support/control-server-http.js';
+
+async function waitForWakeRun(
+  daemon: Awaited<ReturnType<typeof startWaxd>>,
+  runId: string,
+): Promise<void> {
+  const token = readFileSync(daemon.started.tokenPath, 'utf8').trim();
+  await waitForRunTerminal(daemon.started.url, token, 'cli-live', runId);
+}
 
 test('wax live round-trips new, inspect, list, wake and unload over real HTTP', async (t) => {
   const daemon = await startWaxd(t, [], { output: 'cli-live-output' });
@@ -71,14 +81,11 @@ test('wax live round-trips new, inspect, list, wake and unload over real HTTP', 
     { daemonDir: daemon.daemonDir },
   );
   const result = singleJson(wake);
-  assert.equal(result['liveId'], 'cli-live');
-  assert.equal(result['rest'], true);
-  assert.equal(result['persisted'], true);
+  assert.equal(result['status'], 'accepted');
+  assert.equal(typeof result['runId'], 'string');
   assert.equal(Object.hasOwn(result, 'graphId'), false);
-  assert.equal(
-    Object.hasOwn(result['status'] as Record<string, unknown>, 'graphRevision'),
-    false,
-  );
+  assert.equal(Object.hasOwn(result, 'liveId'), false);
+  await waitForWakeRun(daemon, String(result['runId']));
   assert.match(daemon.adapter.prompts[0] as string, /hello live/);
 
   const unload = singleJson(

@@ -10,7 +10,12 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
-import { bOutput, bWake, liveFrom } from './support/control-server-http.js';
+import {
+  bOutput,
+  bWake,
+  liveFrom,
+  waitForRunTerminal,
+} from './support/control-server-http.js';
 
 interface Env {
   readonly adapter: FakeAdapter;
@@ -211,7 +216,7 @@ async function waitForGuard(
     if (wake.error !== undefined) {
       throw new Error(`wake request failed before a guard appeared: ${String(wake.error)}`);
     }
-    if (wake.result !== undefined && wake.result.status !== 200) {
+    if (wake.result !== undefined && wake.result.status !== 202) {
       throw new Error(
         `wake failed before a guard appeared: status=${String(wake.result.status)} ` +
           `body=${wake.result.text.slice(0, 200)}`,
@@ -288,6 +293,26 @@ test('guard decision rejects invalid, missing and unauthenticated requests', asy
   assert.equal(malformed.status, 400);
 });
 
+async function assertSingleGuard(
+  running: Running,
+  env: Env,
+  liveId: string,
+): Promise<Record<string, unknown>> {
+  const pending = await get(running, '/guards');
+  const guard = (pending['guards'] as Record<string, unknown>[])[0];
+  assert.ok(guard !== undefined);
+  assert.equal(typeof guard['requestId'], 'string');
+  assert.equal(typeof guard['executionId'], 'string');
+  assert.deepEqual(guard['options'], ['allow_once', 'reject_once']);
+  assert.equal(guard['liveId'], liveId);
+  assert.equal(guard['beeId'], 'only');
+  const sessions = env.registry.list();
+  assert.equal(sessions.length, 1);
+  assert.equal(guard['sessionId'], sessions[0]?.sessionId);
+  assert.equal(JSON.stringify(pending).includes('run {{input}}'), false);
+  return guard;
+}
+
 test('a pending native approval is listed and allowed through the broker', async (t) => {
   const adapter = new FakeAdapter({ askApproval: true, output: 'approved' });
   const env = makeEnv(adapter);
@@ -310,18 +335,7 @@ test('a pending native approval is listed and allowed through the broker', async
   const triggerPromise = bWake(running.url, running.token, 'guarded', 'only', 'go');
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
 
-  const pending = await get(running, '/guards');
-  const guard = (pending['guards'] as Record<string, unknown>[])[0];
-  assert.ok(guard !== undefined);
-  assert.equal(typeof guard['requestId'], 'string');
-  assert.equal(typeof guard['executionId'], 'string');
-  assert.deepEqual(guard['options'], ['allow_once', 'reject_once']);
-  assert.equal(guard['liveId'], 'guarded');
-  assert.equal(guard['beeId'], 'only');
-  const sessions = env.registry.list();
-  assert.equal(sessions.length, 1);
-  assert.equal(guard['sessionId'], sessions[0]?.sessionId);
-  assert.equal(JSON.stringify(pending).includes('run {{input}}'), false);
+  const guard = await assertSingleGuard(running, env, 'guarded');
 
   const decided = await post(running, '/guard/decide', {
     requestId: guard['requestId'],
@@ -331,8 +345,14 @@ test('a pending native approval is listed and allowed through the broker', async
   assert.equal(decided['decision'], 'allow_once');
 
   const trigger = await triggerPromise;
-  assert.equal(trigger.status, 200);
-  assert.equal(trigger.body?.['result']?.['rest'], true);
+  assert.equal(trigger.status, 202, trigger.text);
+  const finished = await waitForRunTerminal(
+    running.url,
+    running.token,
+    'guarded',
+    String(trigger.body?.['runId']),
+  );
+  assert.equal(finished.body?.['run']?.['state'], 'completed');
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['allow_once']);
   assert.equal((await get(running, '/guards'))['guards'].length, 0);
 
@@ -397,7 +417,14 @@ test('an expired guard decision is rejected without auto-allow', async (t) => {
   );
 
   const wake = await wakePromise;
-  assert.equal(wake.status, 200);
+  assert.equal(wake.status, 202);
+  const finished = await waitForRunTerminal(
+    running.url,
+    running.token,
+    'expired',
+    String(wake.body?.['runId']),
+  );
+  assert.equal(finished.body?.['run']?.['state'], 'completed');
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['cancelled']);
 });
 
@@ -426,13 +453,15 @@ test('reject and timeout never auto-allow', async (t) => {
     ).status,
     200,
   );
-  assert.equal((await rejectedPromise).status, 200);
+  const rejected = await rejectedPromise;
+  assert.equal(rejected.status, 202);
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['reject_once']);
 
   const timedOutPromise = bWake(running.url, running.token, 'guarded', 'only', 'timeout');
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 0);
-  assert.equal((await timedOutPromise).status, 200);
+  const timedOut = await timedOutPromise;
+  assert.equal(timedOut.status, 202);
   assert.deepEqual(
     adapter.approvals.map((item) => item.kind),
     ['reject_once', 'cancelled'],

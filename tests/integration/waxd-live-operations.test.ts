@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import type { Project } from '../../src/project/kernel.js';
 import { runWaxdCli, type WaxdStartedInfo } from '../../src/cli/waxd-cli.js';
+import { waitForRunTerminal } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtDshCli =
@@ -37,6 +38,30 @@ const integrationOptions = {
 interface HttpResult {
   readonly status: number;
   readonly body: Record<string, any>;
+}
+
+type LiveRequest = (
+  info: WaxdStartedInfo,
+  token: string,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+) => Promise<HttpResult>;
+
+/** Admit one bee, then wait for its own run terminal state. */
+async function wakeAndSettle(
+  request: LiveRequest,
+  info: WaxdStartedInfo,
+  token: string,
+  liveId: string,
+  beeId: string,
+  input: string,
+): Promise<string> {
+  const woke = await request(info, token, 'POST', '/lives/wake', { liveId, beeId, input });
+  assert.equal(woke.status, 202, JSON.stringify(woke.body));
+  const runId = String(woke.body['runId']);
+  await waitForRunTerminal(info.url, token, liveId, runId, 300_000);
+  return runId;
 }
 
 function deferred<T>(): {
@@ -244,12 +269,7 @@ test(
       assert.equal(sessionIds.length, 2);
 
       for (const beeId of ['codex', 'dsh']) {
-        const woke = await request(info, token, 'POST', '/lives/wake', {
-          liveId: 'm9j-live',
-          beeId,
-          input: 'go',
-        });
-        assert.equal(woke.status, 200);
+        await wakeAndSettle(request, info, token, 'm9j-live', beeId, 'go');
       }
 
       const inspected = await request(
@@ -328,12 +348,7 @@ test(
       assert.deepEqual(reloadIds, sessionIds);
 
       for (const beeId of ['codex', 'dsh']) {
-        const woke = await request(info, token, 'POST', '/lives/wake', {
-          liveId: 'm9j-live',
-          beeId,
-          input: 'again',
-        });
-        assert.equal(woke.status, 200);
+        await wakeAndSettle(request, info, token, 'm9j-live', beeId, 'again');
       }
       const reloadInspect = await request(
         info,
@@ -373,12 +388,7 @@ test(
       });
       assert.equal(migrated.status, 200);
       for (const beeId of ['codex', 'dsh']) {
-        const woke = await request(info, token, 'POST', '/lives/wake', {
-          liveId: 'm9j-live',
-          beeId,
-          input: 'migrated',
-        });
-        assert.equal(woke.status, 200);
+        await wakeAndSettle(request, info, token, 'm9j-live', beeId, 'migrated');
       }
       const migratedInspect = await request(
         info,

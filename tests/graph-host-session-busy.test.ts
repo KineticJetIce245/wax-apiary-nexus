@@ -223,22 +223,21 @@ test('a busy shared session rejects a second trigger when the adapter cannot que
   await load('first');
   await load('second');
 
-  const held = host.trigger('first', 'only', { kind: 'text', text: 'one' });
+  const held = await host.trigger('first', 'only', { kind: 'text', text: 'one' });
   await fixture.adapter.waitForSubmit(1);
 
   // The adapter does not advertise `queue`, so the Workspace refuses the
-  // overlap instead of admitting a second execution it would never send.
-  await assert.rejects(
-    host.trigger('second', 'only', { kind: 'text', text: 'two' }),
-    (error: unknown) => {
-      assert.ok(error instanceof SessionBusyError);
-      assert.equal(error.sessionId, session.sessionId);
-      return true;
-    },
-  );
+  // overlap. Admission still succeeds; the refused execution is reported on
+  // the second run instead of rejecting the enqueue.
+  const second = await host.trigger('second', 'only', { kind: 'text', text: 'two' });
+  const secondRun = await host.runs.wait(second.runId);
+  assert.equal(secondRun.state, 'failed');
+  const failure = host.runs.failureOf(second.runId);
+  assert.ok(failure instanceof SessionBusyError);
+  assert.equal(failure.sessionId, session.sessionId);
 
   fixture.adapter.holdSubmissions = false;
   fixture.adapter.releaseHeld();
-  const first = await held;
-  assert.equal(first.graphId, 'first');
+  const firstRun = await host.runs.wait(held.runId);
+  assert.equal(firstRun.state, 'completed');
 });

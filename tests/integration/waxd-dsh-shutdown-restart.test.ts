@@ -14,13 +14,16 @@ import {
   readToken,
   request,
   requestOutcome,
+  runIdOf,
   shellWritePrompt,
   startInProcessDaemon,
   status500,
   stopInProcessDaemon,
   textOf,
   waitFor,
+  waitForRun,
   withTimeout,
+  type HttpResult,
   type InProcessDaemon,
   type RequestOutcome,
 } from '../support/dsh-daemon-harness.js';
@@ -28,6 +31,18 @@ import {
 // A shell write must ask the native harness, so the daemon has a real pending
 // approval to stop on. Node runs every test file in its own process.
 process.env.DSH_PERMISSION_MODE = 'read-only';
+
+async function wakeAndWait(
+  url: string,
+  token: string,
+  liveId: string,
+  input: string,
+): Promise<HttpResult> {
+  const wake = await request(url, token, 'POST', '/lives/wake', { liveId, beeId: 'only', input });
+  assert.equal(wake.status, 202, JSON.stringify(wake.body));
+  await waitForRun(url, token, liveId, runIdOf(wake.body));
+  return wake;
+}
 
 test(
   'real DSH daemon stops with a pending guard and restarts on the same state',
@@ -67,13 +82,12 @@ test(
 
       // One completed real run, then a save: it proves the durable state exists
       // before the shutdown, so the restart has something meaningful to recover.
-      const firstWake = await request(first.info.url, firstToken, 'POST', '/lives/wake', {
+      const firstWake = await wakeAndWait(
+        first.info.url,
+        firstToken,
         liveId,
-        beeId: 'only',
-        input: numberPrompt(100, 999),
-      });
-      assert.equal(firstWake.status, 200, JSON.stringify(firstWake.body));
-      assert.equal(firstWake.body['result']?.['rest'], true);
+        numberPrompt(100, 999),
+      );
 
       const output = await request(
         first.info.url,
@@ -101,8 +115,8 @@ test(
       assert.equal(persistedBeforeStop['liveId'], liveId);
       assert.equal(typeof persistedBeforeStop['bindings']?.['only'], 'string');
 
-      // Park the daemon on a real native approval. The wake stays in flight
-      // until a decision, exactly the state the shutdown must not hang on.
+      // Park the daemon on a real native approval. The run stays active until a
+      // decision or timeout, exactly the state the shutdown must not hang on.
       inFlight = requestOutcome(
         first.info.url,
         firstToken,
@@ -214,13 +228,12 @@ test(
       assert.equal(inspected.status, 200);
       assert.equal(inspected.body['liveId'], liveId);
 
-      const secondWake = await request(second.info.url, secondToken, 'POST', '/lives/wake', {
+      const secondWake = await wakeAndWait(
+        second.info.url,
+        secondToken,
         liveId,
-        beeId: 'only',
-        input: numberPrompt(1000, 9999),
-      });
-      assert.equal(secondWake.status, 200, JSON.stringify(secondWake.body));
-      assert.equal(secondWake.body['result']?.['rest'], true);
+        numberPrompt(1000, 9999),
+      );
       const secondOutput = await request(
         second.info.url,
         secondToken,

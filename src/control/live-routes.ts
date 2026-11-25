@@ -15,7 +15,7 @@ import { LiveHiveHostLoadError } from '../daemon/graph-host.js';
 import { queryParam } from './route-output.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
-import { HttpError } from './server-types.js';
+import { HttpError, RouteReply } from './server-types.js';
 
 /** B operation routes; deliberately separate from the legacy graph routes. */
 export async function dispatchLiveRoute(
@@ -24,8 +24,11 @@ export async function dispatchLiveRoute(
   payload: Record<string, unknown> | undefined,
   method?: string,
   rawUrl?: string,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | RouteReply> {
   const service = context.requireLiveHiveService();
+  if (LIVE_STATE_KINDS.has(route.kind)) {
+    return dispatchLiveState(service, route, payload);
+  }
   switch (route.kind) {
     case 'lives-create':
     case 'lives-load':
@@ -33,32 +36,39 @@ export async function dispatchLiveRoute(
     case 'lives-migrate':
       return dispatchLifecycle(service, route.kind, payload);
     case 'lives-list':
-      return {
-        ok: true,
-        lives: service.read.list().map((entry) => ({
-          liveId: entry.liveId,
-          state: entry.state,
-          ...(entry.status === undefined
-            ? {}
-            : { status: toPublicStatus(entry.status) }),
-          ...(entry.catalog === undefined ? {} : { catalog: entry.catalog }),
-        })),
-      };
+      return listLives(service);
     case 'lives-wake':
     case 'lives-answer':
       return dispatchLiveRun(service, route.kind, payload);
-    case 'lives-save':
-    case 'lives-unload':
-    case 'lives-inspect':
-      return dispatchLiveState(service, route, payload);
     case 'lives-output':
       return dispatchLiveOutput(service, route, rawUrl);
+    case 'lives-run':
+      return dispatchLiveRunQuery(service, route);
     case 'templates':
     case 'dispatch':
       return dispatchLiveUtility(service, route.kind, payload, method);
-    default:
-      throw new HttpError(500, 'internal', 'internal error');
   }
+  throw new HttpError(500, 'internal', 'internal error');
+}
+
+const LIVE_STATE_KINDS = new Set<Route['kind']>([
+  'lives-save',
+  'lives-unload',
+  'lives-inspect',
+]);
+
+function listLives(service: LiveHiveService): Record<string, unknown> {
+  return {
+    ok: true,
+    lives: service.read.list().map((entry) => ({
+      liveId: entry.liveId,
+      state: entry.state,
+      ...(entry.status === undefined
+        ? {}
+        : { status: toPublicStatus(entry.status) }),
+      ...(entry.catalog === undefined ? {} : { catalog: entry.catalog }),
+    })),
+  };
 }
 
 function dispatchLiveOutput(
@@ -74,6 +84,18 @@ function dispatchLiveOutput(
     ok: true,
     ...service.read.output(liveId, queryParam(rawUrl, 'runId')),
   };
+}
+
+function dispatchLiveRunQuery(
+  service: LiveHiveService,
+  route: Route,
+): Record<string, unknown> {
+  const liveId = route.graphId;
+  const runId = route.runId;
+  if (liveId === undefined || runId === undefined) {
+    throw new HttpError(404, 'not-found', 'not found');
+  }
+  return { ok: true, run: service.read.run(liveId, runId) };
 }
 
 async function dispatchLifecycle(
@@ -111,11 +133,19 @@ async function dispatchLiveRun(
   service: LiveHiveService,
   kind: 'lives-wake' | 'lives-answer',
   payload: Record<string, unknown> | undefined,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | RouteReply> {
   if (kind === 'lives-wake') {
     const body = parseWakeLiveBody(payload);
     const result = await service.wake(body.liveId, body.beeId, body.input);
-    return { ok: true, result: toPublicRunResult(result) };
+    return new RouteReply(
+      {
+        ok: true,
+        runId: result.runId,
+        traceId: result.traceId,
+        status: 'accepted',
+      },
+      202,
+    );
   }
   const body = parseAnswerLiveBody(payload);
   return {
@@ -235,6 +265,7 @@ export const LIVE_ROUTE_KINDS = new Set<Route['kind']>([
   'lives-migrate',
   'lives-inspect',
   'lives-output',
+  'lives-run',
   'templates',
   'dispatch',
 ]);

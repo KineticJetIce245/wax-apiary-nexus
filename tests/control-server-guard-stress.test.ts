@@ -13,6 +13,7 @@ import {
   refuse500,
   singleHarness,
   sleep,
+  settleWake,
   start,
   STRESS_ROUNDS,
   unloadLive,
@@ -72,8 +73,7 @@ test(
       assert.equal(unknown.code, 'not-found');
       record(observations, round, 'unknown-decide', unknown);
 
-      const wake = await wakePromise;
-      assert.equal(wake.status, 200, `round ${String(round)} wake: ${wake.text}`);
+      await settleWake(running, liveId, wakePromise);
       assert.equal(adapter.approvals.at(-1)?.kind, 'cancelled');
       await unloadLive(running, liveId);
     }
@@ -121,8 +121,7 @@ test(
       }
       record(observations, round, 'deadline-decide', decision);
 
-      const wake = await wakePromise;
-      assert.equal(wake.status, 200, `round ${String(round)} wake: ${wake.text}`);
+      await settleWake(running, liveId, wakePromise);
       const expected = decision.status === 200 ? 'allow_once' : 'cancelled';
       assert.equal(adapter.approvals.at(-1)?.kind, expected);
       await unloadLive(running, liveId);

@@ -11,7 +11,7 @@ import { matchRoute } from './route-match.js';
 import type { ControlRoutes } from './routes.js';
 import type { ControlServerContext } from './server-context.js';
 import type { ControlErrorCode, HttpError, Route } from './server-types.js';
-import { HttpError as HttpErrorClass } from './server-types.js';
+import { HttpError as HttpErrorClass, RouteReply } from './server-types.js';
 import { parseJsonObject } from './validation.js';
 
 /** The Node HTTP transport for one control server context. */
@@ -39,13 +39,10 @@ export class ControlHttpServer {
     let status = 500;
     let code: ControlErrorCode | 'ok' = 'internal';
     let errorClass: string | undefined;
-
     request.on('error', () => undefined);
     response.on('error', () => undefined);
-
     try {
       this.authorize(request);
-
       const route = matchRoute(request.url, request.method);
       if (route === undefined) {
         throw new HttpErrorClass(404, 'not-found', 'not found');
@@ -55,7 +52,6 @@ export class ControlHttpServer {
           allow: route.methods,
         });
       }
-
       let payload: Record<string, unknown> | undefined;
       if (request.method === 'POST') {
         requireJsonContentType(request);
@@ -64,16 +60,14 @@ export class ControlHttpServer {
       } else {
         rejectBodyOnGet(request);
       }
-
-      const responseBody = await this.routes.dispatch(
+      const routed = await this.routes.dispatch(
         route,
         payload,
         request.url,
         request.method,
       );
-      status = 200;
+      status = sendRouteResult(response, routed);
       code = 'ok';
-      sendJson(response, status, responseBody);
     } catch (error) {
       const httpError = toHttpError(error);
       status = httpError.status;
@@ -314,6 +308,15 @@ function errorClassName(error: unknown): string {
   }
   const name = error.name === '' ? error.constructor.name : error.name;
   return sanitizeLogText(name === '' ? 'Error' : name, 80);
+}
+
+function sendRouteResult(
+  response: ServerResponse,
+  routed: Record<string, unknown> | RouteReply,
+): number {
+  const status = routed instanceof RouteReply ? routed.status : 200;
+  sendJson(response, status, routed instanceof RouteReply ? routed.body : routed);
+  return status;
 }
 
 function sendJson(

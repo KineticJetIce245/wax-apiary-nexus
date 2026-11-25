@@ -18,18 +18,33 @@ import {
   readToken,
   request,
   requestOutcome,
+  runIdOf,
   shellWritePrompt,
   startChildDaemon,
   textOf,
   waitFor,
+  waitForRun,
   withTimeout,
   WAXD_ENTRY,
   type ChildDaemon,
+  type HttpResult,
 } from '../support/dsh-daemon-harness.js';
 
 // A shell write must ask the native harness, so a pending approval exists when
 // the OS process is terminated. Node runs every test file in its own process.
 process.env.DSH_PERMISSION_MODE = 'read-only';
+
+async function wakeAndWait(
+  url: string,
+  token: string,
+  liveId: string,
+  input: string,
+): Promise<HttpResult> {
+  const wake = await request(url, token, 'POST', '/lives/wake', { liveId, beeId: 'only', input });
+  assert.equal(wake.status, 202, JSON.stringify(wake.body));
+  await waitForRun(url, token, liveId, runIdOf(wake.body));
+  return wake;
+}
 
 test(
   'real DSH daemon recovers after forced termination on the same state',
@@ -59,12 +74,7 @@ test(
         project,
       });
       assert.equal(loaded.status, 200, JSON.stringify(loaded.body));
-      const wake = await request(first.url, firstToken, 'POST', '/lives/wake', {
-        liveId,
-        beeId: 'only',
-        input: numberPrompt(100, 999),
-      });
-      assert.equal(wake.status, 200);
+      const wake = await wakeAndWait(first.url, firstToken, liveId, numberPrompt(100, 999));
       const saved = await request(first.url, firstToken, 'POST', '/lives/save', { liveId });
       assert.equal(saved.status, 200);
       const firstOutput = await request(
@@ -175,12 +185,12 @@ test(
         project,
       });
       assert.equal(reloaded.status, 200, JSON.stringify(reloaded.body));
-      const wakeAfterRestart = await request(second.url, secondToken, 'POST', '/lives/wake', {
+      const wakeAfterRestart = await wakeAndWait(
+        second.url,
+        secondToken,
         liveId,
-        beeId: 'only',
-        input: numberPrompt(1000, 9999),
-      });
-      assert.equal(wakeAfterRestart.status, 200, JSON.stringify(wakeAfterRestart.body));
+        numberPrompt(1000, 9999),
+      );
       const outputAfterRestart = await request(
         second.url,
         secondToken,

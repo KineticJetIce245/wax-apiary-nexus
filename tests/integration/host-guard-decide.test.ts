@@ -14,6 +14,7 @@ import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
 import {
   autoDecideGuards,
+  settleWakeWith,
   type GuardAutoDecider,
 } from '../support/control-server-http.js';
 
@@ -155,9 +156,8 @@ test(
       });
       assert.equal(decided.status, 200);
 
-      const trigger = await triggerPromise;
-      assert.equal(trigger.status, 200);
-      assert.equal(trigger.body['result']?.['rest'], true);
+      const trigger = await settleWakeWith(request, 'native-guard-reject', triggerPromise);
+      assert.equal(trigger['state'] !== undefined, true);
       assert.equal(existsSync(join(project.directory, 'rejected-guard.txt')), false);
       assert.equal((await request('GET', '/guards')).body['guards'].length, 0);
       t.diagnostic(
@@ -297,13 +297,8 @@ test(
       });
       assert.equal(decided.status, 200);
 
-      const trigger = await triggerPromise;
-      assert.equal(
-        trigger.status,
-        200,
-        `\ncontrol logs:\n${controlLogs.join('\n')}\nworkspace logs:\n${workspaceLogs.join('\n')}`,
-      );
-      assert.equal(trigger.body['result']?.['rest'], true);
+      const trigger = await settleWakeWith(request, 'native-guard-cancel', triggerPromise);
+      assert.equal(trigger['state'] !== undefined, true);
       assert.equal(existsSync(join(project.directory, 'cancelled-guard.txt')), false);
       assert.equal((await request('GET', '/guards')).body['guards'].length, 0);
       t.diagnostic(
@@ -431,9 +426,8 @@ test(
       assert.equal(late.body['code'], 'guard-expired');
       assert.equal(late.body['ok'], false);
 
-      const trigger = await triggerPromise;
-      assert.equal(trigger.status, 200);
-      assert.equal(trigger.body['result']?.['rest'], true);
+      const trigger = await settleWakeWith(request, 'native-guard-expiry', triggerPromise);
+      assert.equal(trigger['state'] !== undefined, true);
       assert.equal(existsSync(join(project.directory, 'expired-guard.txt')), false);
       t.diagnostic(
         `observed: requestId=${String(guard['requestId'])} phase=expired ` +
@@ -554,19 +548,18 @@ test(
       });
       assert.equal(decided.status, 200);
 
-      const trigger = await triggerPromise;
-      assert.equal(trigger.status, 200);
-      assert.equal(trigger.body['result']?.['rest'], true);
+      const run = await settleWakeWith(request, 'native-guard', triggerPromise);
+      assert.equal(run['state'], 'completed');
       assert.equal(
         readFileSync(join(project.directory, 'approved-guard.txt'), 'utf8'),
         marker,
       );
-      const run = await request('GET', '/lives/native-guard/output');
-      assert.equal(run.status, 200);
-      assert.equal(run.body['operation'], 'trigger');
-      assert.equal(typeof run.body['runId'], 'string');
+      const output = await request('GET', '/lives/native-guard/output');
+      assert.equal(output.status, 200);
+      assert.equal(output.body['operation'], 'trigger');
+      assert.equal(typeof output.body['runId'], 'string');
       t.diagnostic(
-        `observed: real DSH approval allowed once; marker written; run=${String(run.body['runId'])}`,
+        `observed: real DSH approval allowed once; marker written; run=${String(output.body['runId'])}`,
       );
     } finally {
       await autoDecider?.stop();

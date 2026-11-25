@@ -13,14 +13,17 @@ import {
   type PheromoneRuntime,
   type Value,
 } from '../../runtime/index.js';
-import type { RunOperation, RunOutput, RunRecord, RunStatus } from '../../storage/run-store.js';
+import type { RunOutput, RunRecord, RunStatus } from '../../storage/run-store.js';
 import { messageOf, snapshotHovered } from './context.js';
 import type { LiveHiveHostContext } from './context.js';
+import { startRunDriver } from './driver.js';
 import type { LiveHiveHostRead } from './read.js';
+import { earliestDue } from './schedule.js';
 import {
   LiveHiveHostAnswerError,
   LiveHiveHostDisposedError,
   LiveHiveHostNotFoundError,
+  type LiveHiveAdmission,
   type LiveHiveRunResult,
   type LiveGraph,
 } from './types.js';
@@ -34,7 +37,12 @@ interface QuiescenceOutcome {
   readonly persistError?: string;
 }
 
-/** Trigger and answer execution: lock, lease, pump, flush and run record. */
+interface AnswerOutcome {
+  readonly core: GraphRunCore;
+  readonly traceId?: string;
+}
+
+/** Trigger admission and synchronous answer execution. */
 export class LiveHiveHostExecution {
   constructor(
     private readonly context: LiveHiveHostContext,
@@ -42,24 +50,25 @@ export class LiveHiveHostExecution {
   ) {}
 
   /**
-   * Trigger one node under the per-live lock. Prompt admission is owned by the
-   * harness adapter: a session-bound forager may wait in its adapter's FIFO, but
-   * this host never keeps a second session queue.
+   * Admit one wake. The host lock covers only the enqueue and run record;
+   * native execution is driven afterwards by the per-live runtime pump.
    */
-  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveRunResult> {
+  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveAdmission> {
     if (this.context.disposed) {
       return Promise.reject(new LiveHiveHostDisposedError());
     }
-    return this.context.lock.run(graphId, () =>
-      runRecorded(this.context, this.read, graphId, 'trigger', () =>
-        triggerLocked(this.context, this.read, graphId, nodeId, value),
-      ),
-    );
+    return this.context.lock
+      .run(graphId, () => admitTrigger(this.context, graphId, nodeId, value))
+      .then((admission) => {
+        startRunDriver(this.context, graphId);
+        return admission;
+      });
   }
 
   /**
-   * Answers one open user hover. It is refused instead of queued when no user
-   * hover is open; the run holds the lease and flushes Honey like `trigger`.
+   * Answers one open user hover. It keeps its synchronous result contract and
+   * waits for the trace to quiesce; the downstream trace outputs are read from
+   * the run tracker rather than a global forager snapshot.
    */
   answer(
     graphId: LiveHiveId,
@@ -71,27 +80,27 @@ export class LiveHiveHostExecution {
       return Promise.reject(new LiveHiveHostDisposedError());
     }
     return this.context.lock.run(graphId, () =>
-      runRecorded(this.context, this.read, graphId, 'answer', () =>
-        answerLocked(this.context, this.read, graphId, nodeId, value, token),
-      ),
+      answerRecorded(this.context, this.read, graphId, nodeId, value, token),
     );
   }
 }
 
-async function triggerLocked(
+async function admitTrigger(
   context: LiveHiveHostContext,
-  read: LiveHiveHostRead,
   graphId: LiveHiveId,
   nodeId: NodeId,
   value: Value,
-): Promise<GraphRunCore> {
+): Promise<LiveHiveAdmission> {
   context.assertNotDisposed();
+  const runId = randomUUID();
+  const traceId = `tr_${randomUUID()}`;
+  const startedAt = isoNow(context);
   const lease = acquireLease(context, graphId);
-  let outcome: QuiescenceOutcome | undefined;
   try {
     const live = lease.value;
-    live.runtime.trigger(nodeId, value);
-    outcome = await pumpToQuiescence(context, live);
+    // The enqueue validates the node before any run becomes visible.
+    live.runtime.admit(nodeId, value, traceId);
+    context.runs.accept({ liveId: graphId, runId, traceId, operation: 'trigger', startedAt });
     touchSessions(context, live);
     if (!live.ephemeral) {
       context.updateCatalog(graphId, 'access', (catalog) => catalog.markAccessed(graphId));
@@ -99,12 +108,50 @@ async function triggerLocked(
   } finally {
     lease.release();
   }
+  return { graphId, runId, traceId, status: 'accepted' };
+}
 
-  if (outcome === undefined) {
-    // Unreachable: `pumpToQuiescence` either returns or throws.
-    throw new LiveHiveHostNotFoundError(graphId);
+/** One answer's ids and durable record, generated under the live lock. */
+async function answerRecorded(
+  context: LiveHiveHostContext,
+  read: LiveHiveHostRead,
+  graphId: LiveHiveId,
+  nodeId: NodeId,
+  value: Value,
+  token?: string,
+): Promise<LiveHiveRunResult> {
+  const runId = randomUUID();
+  const requestId = randomUUID();
+  const startedAt = isoNow(context);
+  try {
+    const outcome = await answerLocked(context, read, graphId, nodeId, value, token);
+    const result: LiveHiveRunResult = { ...outcome.core, runId, requestId };
+    saveRun(context, {
+      runId,
+      requestId,
+      liveId: graphId,
+      operation: 'answer',
+      status: runStatus(outcome.core),
+      outputs: outputsForTrace(context, outcome.traceId),
+      startedAt,
+      finishedAt: isoNow(context),
+      ...(outcome.traceId === undefined ? {} : { traceId: outcome.traceId }),
+    });
+    return result;
+  } catch (error) {
+    saveRun(context, {
+      runId,
+      requestId,
+      liveId: graphId,
+      operation: 'answer',
+      status: 'failed',
+      outputs: [],
+      startedAt,
+      finishedAt: isoNow(context),
+      error: 'run failed',
+    });
+    throw error;
   }
-  return resultOf(read, graphId, outcome);
 }
 
 async function answerLocked(
@@ -114,67 +161,32 @@ async function answerLocked(
   nodeId: NodeId,
   value: Value,
   token?: string,
-): Promise<GraphRunCore> {
+): Promise<AnswerOutcome> {
   context.assertNotDisposed();
   const lease = acquireLease(context, graphId);
+  let traceId: string | undefined;
   let outcome: QuiescenceOutcome | undefined;
   try {
     const live = lease.value;
     assertAnswerable(live, graphId, nodeId, token);
-    live.runtime.answerHover(nodeId, value, token);
+    traceId = live.runtime.answerHover(nodeId, value, token);
     outcome = await pumpToQuiescence(context, live);
     touchSessions(context, live);
     context.updateCatalog(graphId, 'access', (catalog) => catalog.markAccessed(graphId));
   } finally {
     lease.release();
   }
-
   if (outcome === undefined) {
-    // Unreachable: `pumpToQuiescence` either returns or throws.
     throw new LiveHiveHostNotFoundError(graphId);
   }
-  return resultOf(read, graphId, outcome);
+  return { core: resultOf(read, graphId, outcome), ...(traceId === undefined ? {} : { traceId }) };
 }
 
-/** One mutating run's ids and durable record, generated under the live lock. */
-async function runRecorded(
+function outputsForTrace(
   context: LiveHiveHostContext,
-  read: LiveHiveHostRead,
-  graphId: LiveHiveId,
-  operation: RunOperation,
-  execute: () => Promise<GraphRunCore>,
-): Promise<LiveHiveRunResult> {
-  const runId = randomUUID();
-  const requestId = randomUUID();
-  const startedAt = isoNow(context);
-  try {
-    const core = await execute();
-    const result: LiveHiveRunResult = { ...core, runId, requestId };
-    saveRun(context, {
-      runId,
-      requestId,
-      liveId: graphId,
-      operation,
-      status: runStatus(core),
-      outputs: snapshotOutputs(read, graphId),
-      startedAt,
-      finishedAt: isoNow(context),
-    });
-    return result;
-  } catch (error) {
-    saveRun(context, {
-      runId,
-      requestId,
-      liveId: graphId,
-      operation,
-      status: 'failed',
-      outputs: [],
-      startedAt,
-      finishedAt: isoNow(context),
-      error: 'run failed',
-    });
-    throw error;
-  }
+  traceId: string | undefined,
+): readonly RunOutput[] {
+  return traceId === undefined ? [] : [...context.runs.outputsForTrace(traceId)];
 }
 
 function saveRun(context: LiveHiveHostContext, record: Omit<RunRecord, 'schemaVersion'>): void {
@@ -191,16 +203,6 @@ function saveRun(context: LiveHiveHostContext, record: Omit<RunRecord, 'schemaVe
       runId: record.runId,
       error: messageOf(error),
     });
-  }
-}
-
-function snapshotOutputs(read: LiveHiveHostRead, graphId: LiveHiveId): readonly RunOutput[] {
-  try {
-    return [...read.outputsOf(graphId).entries()]
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([nodeId, value]) => ({ nodeId, value }));
-  } catch {
-    return [];
   }
 }
 
@@ -224,9 +226,7 @@ function resultOf(
     pumps: outcome.pumps,
     status,
     persisted: outcome.persisted,
-    ...(outcome.persistError === undefined
-      ? {}
-      : { persistError: outcome.persistError }),
+    ...(outcome.persistError === undefined ? {} : { persistError: outcome.persistError }),
   };
 }
 
@@ -343,46 +343,6 @@ function assertAnswerable(
   if (token !== undefined && token !== hover.token) {
     throw new LiveHiveHostAnswerError(graphId, nodeId, 'token-mismatch');
   }
-}
-
-/** Earliest runtime wake or pending-node due instant. */
-function earliestDue(
-  definition: CompositionDefinition,
-  runtime: PheromoneRuntime,
-  snapshot: PheromoneFieldSnapshot,
-): number | undefined {
-  const runtimeWake = runtime.nextWakeAt();
-  const pendingDue = nextPendingAt(definition, snapshot);
-  if (runtimeWake === undefined) {
-    return pendingDue;
-  }
-  if (pendingDue === undefined) {
-    return runtimeWake;
-  }
-  return Math.min(runtimeWake, pendingDue);
-}
-
-/** Earliest `lastActivatedAt + minIntervalMs` among pending nodes. */
-function nextPendingAt(
-  definition: CompositionDefinition,
-  snapshot: PheromoneFieldSnapshot,
-): number | undefined {
-  let next: number | undefined;
-  for (const [id, node] of definition.nodes) {
-    const state = snapshot.nodes[id];
-    if (state?.pending === undefined) {
-      continue;
-    }
-    const last = state.lastActivatedAt;
-    const due = last === undefined ? 0 : Date.parse(last) + node.minIntervalMs;
-    if (!Number.isFinite(due)) {
-      continue;
-    }
-    if (next === undefined || due < next) {
-      next = due;
-    }
-  }
-  return next;
 }
 
 function runStatus(result: GraphRunCore): RunStatus {

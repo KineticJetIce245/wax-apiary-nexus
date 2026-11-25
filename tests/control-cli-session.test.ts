@@ -40,9 +40,32 @@ import {
   withTimeout,
 } from './support/control-cli-fixtures.js';
 import { startWaxd, startMultiWaxd } from './support/control-cli-daemons.js';
+import { waitForRunTerminal } from './support/control-server-http.js';
 
-function liveFile(compositionPath: string, bindingsPath: string): string {
-  const definition = JSON.parse(readFileSync(compositionPath, 'utf8')) as Record<string, unknown>;
+async function wakeAndWait(
+  info: { readonly url: string; readonly tokenPath: string },
+  daemonDir: string,
+  liveId: string,
+  beeId: string,
+  input: string,
+): Promise<void> {
+  const trigger = await invokeControl(
+    runLiveCli,
+    ['live', 'wake', liveId, beeId, '--input', input, '--json'],
+    { daemonDir },
+  );
+  const admission = singleJson(trigger);
+  assert.equal(admission['status'], 'accepted');
+  const token = readFileSync(info.tokenPath, 'utf8').trim();
+  await waitForRunTerminal(
+    info.url,
+    token,
+    liveId,
+    String(admission['runId']),
+  );
+}
+
+function liveFile(compositionPath: string, bindingsPath: string): string {  const definition = JSON.parse(readFileSync(compositionPath, 'utf8')) as Record<string, unknown>;
   const bindings = JSON.parse(readFileSync(bindingsPath, 'utf8')) as Record<string, unknown>;
   return tempJson(fromCompositionDefinition(parseComposition(definition), bindings as any));
 }
@@ -393,12 +416,7 @@ test('a one-entry --harnesses list keeps the single-harness root layout', async 
   const project = tempDir('wax-control-cli-single-list-project-');
   const load = await loadLive(daemonDir, composition, bindings, project);
   assert.equal(singleJson(load)['liveId'], 'single-list-graph');
-  const trigger = await invokeControl(
-    runLiveCli,
-    ['live', 'wake', 'single-list-graph', 'only', '--input', 'single', '--json'],
-    { daemonDir },
-  );
-  assert.equal(singleJson(trigger)['persisted'], true);
+  await wakeAndWait(info, daemonDir, 'single-list-graph', 'only', 'single');
   assert.equal(
     existsSync(
       join(

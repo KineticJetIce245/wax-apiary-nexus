@@ -7,6 +7,7 @@ import type { RunStore } from '../../storage/run-store.js';
 import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import { LiveHiveLock } from '../live-hive-lock.js';
 import { SchedulerService } from '../scheduler-service.js';
+import { RunTracker } from './run-tracker.js';
 import {
   LiveHiveHostDisposedError,
   type LiveHiveHostEvent,
@@ -39,6 +40,7 @@ export class LiveHiveHostContext {
   readonly onGuardExpired: ((requestId: string) => void) | undefined;
   readonly onEvent: ((event: LiveHiveHostEvent) => void) | undefined;
   readonly graphs: GraphRegistry<LiveGraph>;
+  readonly runs: RunTracker;
   readonly lock = new LiveHiveLock();
   readonly loading = new Set<LiveHiveId>();
 
@@ -50,8 +52,8 @@ export class LiveHiveHostContext {
 
   constructor(options: LiveHiveHostOptions) {
     this.registry = options.registry;
-    this.catalog = options.catalog;
-    this.runStore = options.runStore;
+    this.catalog = options.catalog;    this.runStore = options.runStore;
+    this.runs = createRunTracker(options, (event) => this.reportCleanupFailure(event));
     if (options.guardTimeoutMs !== undefined) {
       if (!Number.isInteger(options.guardTimeoutMs) || options.guardTimeoutMs <= 0) {
         throw new TypeError('guardTimeoutMs must be a positive integer');
@@ -171,8 +173,24 @@ export class LiveHiveHostContext {
   }
 }
 
-export function snapshotHovered(snapshot: PheromoneFieldSnapshot): boolean {
-  for (const state of Object.values(snapshot.nodes)) {
+function createRunTracker(
+  options: LiveHiveHostOptions,
+  report: (event: LiveHiveHostEvent) => void,
+): RunTracker {
+  return new RunTracker({
+    now: options.now ?? Date.now,
+    ...(options.runStore === undefined ? {} : { runStore: options.runStore }),
+    onSaveError: (graphId, runId, error) =>
+      report({
+        type: 'graph.run-store-failed',
+        graphId,
+        runId,
+        error: messageOf(error),
+      }),
+  });
+}
+
+export function snapshotHovered(snapshot: PheromoneFieldSnapshot): boolean {  for (const state of Object.values(snapshot.nodes)) {
     if (state.hover !== undefined) {
       return true;
     }

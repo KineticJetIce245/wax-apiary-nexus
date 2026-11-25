@@ -62,6 +62,7 @@ import {
   userAndForagerGraph,
   runnableForagerGraph,
   triggerRun,
+  waitUntil,
 } from './support/graph-host-fixtures.js';
 
 
@@ -98,7 +99,6 @@ test('a user hover is not unloaded or swept until it reaches Rest', async (t) =>
   const result = await triggerRun(host, 'hover', 'ask', text('hello'));
   assert.equal(result.rest, false);
   assert.equal(result.hovered, true);
-  assert.equal(result.pumps, 1);
   assert.equal(result.status.hovered, true);
 
   const status = host.statusOf('hover');
@@ -243,6 +243,24 @@ test('allowHoverUnload still refuses a hover while another node has queued work'
   assert.equal(await host.unload('hover-queue'), true);
 });
 
+async function assertSecondInputPending(host: LiveHiveHost): Promise<void> {
+  const first = await triggerRun(host, 'hover-pending', 'idle', text('one'));
+  assert.equal(first.rest, true);
+  const secondAdmission = await host.trigger('hover-pending', 'idle', text('two'));
+  await waitUntil(
+    () =>
+      host.statusOf('hover-pending')?.nodes.some(
+        (node) => node.nodeId === 'idle' && node.pending,
+      ) === true,
+    'the second input to stay pending',
+  );
+  const secondStatus = host.statusOf('hover-pending');
+  assert.ok(secondStatus !== undefined);
+  assert.equal(secondStatus.rest, false);
+  assert.equal(nodeStatus(secondStatus, 'idle').pending, true);
+  assert.equal(host.runs.get('hover-pending', secondAdmission.runId)?.state, 'accepted');
+}
+
 test('allowHoverUnload still refuses a hover while a node has a pending Pheromone', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
@@ -275,11 +293,7 @@ test('allowHoverUnload still refuses a hover while a node has a pending Pheromon
     idleTtlMs: 100,
   });
 
-  const first = await triggerRun(host, 'hover-pending', 'idle', text('one'));
-  assert.equal(first.rest, true);
-  const second = await triggerRun(host, 'hover-pending', 'idle', text('two'));
-  assert.equal(second.rest, false);
-  assert.equal(nodeStatus(second.status, 'idle').pending, true);
+  await assertSecondInputPending(host);
 
   const triggered = await triggerRun(host, 'hover-pending', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);

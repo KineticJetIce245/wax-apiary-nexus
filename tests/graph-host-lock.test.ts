@@ -164,7 +164,7 @@ async function delay(ms: number): Promise<void> {
 }
 
 test(
-  'concurrent triggers for one live id do not enter the field together',
+  'two bees of one live id start concurrently; admission does not hold the field',
   { timeout: 10_000 },
   async (t) => {
   const adapter = new GatedAdapter();
@@ -182,11 +182,9 @@ test(
   await adapter.waitForSubmits(1);
   const second = triggerRun(env.host, 'live', 'b', text('two'));
 
-  await assert.rejects(
-    adapter.waitForSubmits(2, 250),
-    /timed out waiting for 2 submissions/,
-    'second trigger entered while the first was active',
-  );
+  // Different bees have independent mailboxes: the second submission must
+  // reach the adapter while the first activation is still held.
+  await adapter.waitForSubmits(2);
 
   adapter.releaseAll();
   const [firstResult, secondResult] = await Promise.all([first, second]);
@@ -273,4 +271,34 @@ test('unload is refused while a trigger owns the same live id', { timeout: 10_00
   adapter.releaseAll();
   await trigger;
   assert.equal(await env.host.unload('live'), true);
+});
+
+test('wake returns an admission while the native execution is still held', async (t) => {
+  const adapter = new GatedAdapter();
+  const env = makeEnv(adapter);
+  t.after(async () => {
+    adapter.releaseAll();
+    await env.host.dispose();
+    await env.workspace.stop();
+  });
+  await env.host.loadGraph({
+    definition: definition('admission'),
+    bindings: bindings(),
+    project: env.project,
+  });
+
+  const admission = await env.host.trigger('admission', 'a', text('start'));
+  assert.equal(admission.status, 'accepted');
+  assert.equal(admission.graphId, 'admission');
+  assert.ok(admission.runId.length > 0);
+  assert.ok(admission.traceId.startsWith('tr_'));
+  const running = env.host.runs.get('admission', admission.runId);
+  assert.ok(running !== undefined);
+  assert.notEqual(running.state, 'completed');
+  assert.notEqual(running.state, 'failed');
+
+  await adapter.waitForSubmits(1);
+  adapter.releaseAll();
+  const finished = await env.host.runs.wait(admission.runId);
+  assert.equal(finished.state, 'completed');
 });

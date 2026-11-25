@@ -131,6 +131,7 @@ POST /lives/migrate             explicit structure change
 GET  /lives                     list loaded and unloaded LiveHives
 GET  /lives/:id/inspect         status, durable outputs and catalog entry
 GET  /lives/:id/output          latest or runId-keyed output
+GET  /lives/:id/runs/:runId     admitted run state/output
 GET  /templates                 list templates
 POST /templates                 compose a HiveTemplate
 POST /dispatch                  ephemeral one-bee graph
@@ -144,8 +145,10 @@ GET  /health
 
 - One endpoint, one token.
 - `--harness` filters/validates; it does not select a per-harness daemon.
-- `POST /dispatch` creates an ephemeral one-bee graph, runs it, returns the output/sessionId, and disposes the graph; it is not persisted as a LiveHive. If the target session is busy, it waits in harness-side admission up to the dispatch timeout, then returns 409 `dispatch-timeout`; it never writes directly to the session, returns a queue handle, or starts a second execution. A non-queue adapter returns 409 `session-busy` instead of waiting. Unknown/conflict/cancelled errors retain the existing 404/409 mapping.
-- There is no queue-status route. Adapter admission is in memory only and has no public id; a restart forgets pending prompts and never replays them. `answer` is not queued.
+- `POST /lives/wake` is admission-only: it returns **202** `{ ok:true, runId, traceId, status:"accepted" }` after placing the Pheromone in the target bee's mailbox. It does not wait for native execution or final output; query `GET /lives/:id/runs/:runId` for state/output. There is no legacy wait/result envelope.
+- `POST /dispatch` creates an ephemeral one-bee graph, waits for its own run to finish, returns the output/sessionId, and disposes the graph; it is not persisted as a LiveHive. If the target session is busy, it waits in harness-side admission up to the dispatch timeout, then returns 409 `dispatch-timeout`; it never writes directly to the session, returns a queue handle, or starts a second execution. A non-queue adapter returns 409 `session-busy` instead of waiting. Unknown/conflict/cancelled errors retain the existing 404/409 mapping.
+- `answer` is not admission-only; it remains the synchronous user-hover answer path.
+- There is no queue-status route. Adapter admission is in memory only and has no public id; a restart forgets pending prompts and never replays them.
 - `GET /guards` and `POST /guard/decide` cover approvals owned by WAX/ACP sessions. ACP owns its session's entire approval channel; there is no unowned-approval or GUI pass-through. A future send-message ingress is separate and cannot decide approvals.
 - No fork route. The legacy graph, catalog and queue routes are not present and have no aliases.
 

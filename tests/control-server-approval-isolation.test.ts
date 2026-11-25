@@ -9,7 +9,12 @@ import {
   type RunningServer,
   type TestEnv,
 } from './support/control-server-fixtures.js';
-import { getJson, liveFrom, postJson } from './support/control-server-http.js';
+import {
+  getJson,
+  liveFrom,
+  postJson,
+  waitForRunTerminal,
+} from './support/control-server-http.js';
 
 const OUTPUT_PREFIX = 'isolated:';
 
@@ -102,13 +107,32 @@ async function decide(
  * Workspace, so an idle live used to handle (and auto-reject) the other
  * live's approval. Only the executor that submitted the execution may decide.
  */
-test('a co-loaded live on another session never decides the running live approval', async (t) => {
-  const context = await setup();
-  t.after(async () => {
-    await context.running.server.stop().catch(() => undefined);
-    await context.env.workspace.stop().catch(() => undefined);
-  });
+async function assertOnlyRunningGuard(
+  url: string,
+  token: string,
+  liveId: string,
+  requestId: string,
+  idleLiveId: string,
+): Promise<void> {
+  const stillListed = await getJson(url, token, '/guards');
+  assert.equal(stillListed.status, 200, stillListed.text);
+  const guards = (stillListed.body?.['guards'] as Record<string, any>[]) ?? [];
+  assert.ok(
+    guards.some(
+      (guard) => guard['liveId'] === liveId && guard['requestId'] === requestId,
+    ),
+    'the running live approval is no longer parked',
+  );
+  assert.equal(
+    guards.some((guard) => guard['liveId'] === idleLiveId),
+    false,
+    'the idle co-loaded live parked a guard of its own',
+  );
+}
 
+async function admitAlphaAgainstIdleLive(
+  context: Awaited<ReturnType<typeof setup>>,
+): Promise<Record<string, any>> {
   const alphaWake = postJson(context.running.info.url, context.running.token, '/lives/wake', {
     liveId: 'alpha',
     beeId: 'only',
@@ -129,9 +153,26 @@ test('a co-loaded live on another session never decides the running live approva
 
   await decide(context, String(alphaGuard['requestId']), 'allow_once');
   const alphaDone = await alphaWake;
-  assert.equal(alphaDone.status, 200, alphaDone.text);
-  assert.equal(alphaDone.body?.['result']?.['liveId'], 'alpha');
+  assert.equal(alphaDone.status, 202, alphaDone.text);
+  assert.equal(alphaDone.body?.['status'], 'accepted');
+  await waitForRunTerminal(
+    context.running.info.url,
+    context.running.token,
+    'alpha',
+    String(alphaDone.body?.['runId']),
+  );
   await until(async () => (await guardList(context)).length === 0, 'the alpha guard to drain');
+  return alphaGuard;
+}
+
+test('a co-loaded live on another session never decides the running live approval', async (t) => {
+  const context = await setup();
+  t.after(async () => {
+    await context.running.server.stop().catch(() => undefined);
+    await context.env.workspace.stop().catch(() => undefined);
+  });
+
+  const alphaGuard = await admitAlphaAgainstIdleLive(context);
 
   const betaWake = postJson(context.running.info.url, context.running.token, '/lives/wake', {
     liveId: 'beta',
@@ -143,8 +184,14 @@ test('a co-loaded live on another session never decides the running live approva
   assert.notEqual(betaGuard['requestId'], alphaGuard['requestId']);
   await decide(context, String(betaGuard['requestId']), 'allow_once');
   const betaDone = await betaWake;
-  assert.equal(betaDone.status, 200, betaDone.text);
-  assert.equal(betaDone.body?.['result']?.['liveId'], 'beta');
+  assert.equal(betaDone.status, 202, betaDone.text);
+  assert.equal(betaDone.body?.['status'], 'accepted');
+  await waitForRunTerminal(
+    context.running.info.url,
+    context.running.token,
+    'beta',
+    String(betaDone.body?.['runId']),
+  );
 
   assert.deepEqual(
     context.adapter.approvals.map((decision) => decision.kind),

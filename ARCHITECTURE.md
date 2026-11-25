@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through was superseded and reverted); M17j3 moved prompt admission into the WAX `DshAcpAdapter` (DSH source untouched) and removed the legacy WAX session queue.
+Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph is implemented; ACP is the sole approval owner (M17j3a approval pass-through was superseded and reverted); M17j3 moved prompt admission into the WAX `DshAcpAdapter` (DSH source untouched) and removed the legacy WAX session queue. M18 phase 2 implements admission-only wake + run tracking; mailbox snapshot/overflow/loop limits remain pending.
 
 ## 1. One sentence
 
@@ -37,7 +37,7 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 ## 4. Execution
 
 1. `load` reads `live.json` (bees/beelines/bindings) and Honey (`field.json`); after load, memory is authoritative.
-2. `wake(liveId, beeId, input)` places a Pheromone at the bee and pumps. A session-bound forager's prompt is admitted by the harness-side adapter; WAX does not keep a second session queue.
+2. `wake(liveId, beeId, input)` is admission-only: it creates a runId/traceId, places a Pheromone at the bee, and returns 202; the per-bee drain runs outside the HTTP request. `dispatch` waits for its own run. A session-bound forager's prompt is admitted by the WAX `DshAcpAdapter`; WAX does not keep a second session queue.
 3. A forager bee uses its bound session (or creates one per sessionMode); a worker bee runs argv; condition/fork/merge are control bees; user waits on hover; guard waits on approval.
 4. Outputs follow outgoing beelines; a bee with no outgoing beeline is terminal. The field is at Rest when no active/pending/queued/hover/join remains.
 5. `save` and `unload` write `live.json` and flush field/scheduler/log to Honey; `unload` then releases field/runtime but keeps sessions.
@@ -109,7 +109,7 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 - WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
 - `SessionOwnership` is refcounted ownership bookkeeping, not a mutex: it records which loaded LiveHives hold an explicit session. It never blocks or rejects sharing; prompt serialization is the adapter FIFO (`DshAcpAdapter.SessionPromptQueue`).
-- M18 target (accepted 2026-11-24, **not implemented**): per-bee temporary mailbox + on-demand drain, with a short state lock; `wake` is admission-only and returns a run handle; `dispatch` waits on its own trace. Awake mailboxes are part of the Honey snapshot. A per-bee `maxPendingPerBee` uses `reject` or `block` overflow policy; both must surface structured errors/events. The current B-core still holds `LiveHiveLock` for the whole trigger and pumps sequentially. See `../docs/temp/M18-concurrency-decision.md`.
+- M18 phase 2 (implemented): per-bee mailbox + on-demand drain, short admission lock, admission-only `wake` returning 202, run tracker and `GET /lives/:id/runs/:runId`; `dispatch` waits on its own trace. Still pending: mailbox Honey snapshot, `maxPendingPerBee` reject/block overflow, loop `maxHops`/`maxDuration`, and the synchronous `answer` lock boundary. See `../docs/temp/M18-concurrency-decision.md`.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ## 7. Public names and internal engine names

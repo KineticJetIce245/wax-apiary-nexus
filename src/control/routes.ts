@@ -4,9 +4,9 @@ import {
   GuardExpiredError,
   GuardNotFoundError,
 } from './guard-broker.js';
-import { dispatchLiveRoute } from './live-routes.js';
+import { dispatchLiveRoute, LIVE_ROUTE_KINDS } from './live-routes.js';
 import type { ControlServerContext } from './server-context.js';
-import type { Route } from './server-types.js';
+import type { Route, RouteReply } from './server-types.js';
 import { HttpError } from './server-types.js';
 import {
   assertExactFields,
@@ -24,7 +24,7 @@ export class ControlRoutes {
     payload: Record<string, unknown> | undefined,
     rawUrl?: string,
     method?: string,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<Record<string, unknown> | RouteReply> {
     return dispatchRoutes(this.context, route, payload, rawUrl, method);
   }
 }
@@ -35,8 +35,11 @@ async function dispatchRoutes(
   payload: Record<string, unknown> | undefined,
   rawUrl?: string,
   method?: string,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | RouteReply> {
   const host = context.requireLiveHiveHost();
+  if (LIVE_ROUTE_KINDS.has(route.kind)) {
+    return dispatchLiveRoute(context, route, payload, method, rawUrl);
+  }
 
   switch (route.kind) {
     case 'health': {
@@ -120,19 +123,6 @@ async function dispatchRoutes(
       const report = await context.sweepIdleSessions();
       return { ok: true, report };
     }
-    case 'lives-create':
-    case 'lives-list':
-    case 'lives-load':
-    case 'lives-instantiate':
-    case 'lives-wake':
-    case 'lives-answer':
-    case 'lives-save':
-    case 'lives-unload':
-    case 'lives-migrate':
-    case 'lives-inspect':
-    case 'lives-output':
-    case 'templates':
-    case 'dispatch':
-      return dispatchLiveRoute(context, route, payload, method, rawUrl);
   }
+  throw new HttpError(500, 'internal', 'internal error');
 }

@@ -13,6 +13,7 @@ import {
   bLoad,
   bWake,
   postJson,
+  waitForRunTerminal,
   withTimeout,
 } from './support/control-server-http.js';
 import { FakeAdapter } from './support/fake-adapter.js';
@@ -192,6 +193,18 @@ function foragerDefinition(id: string): Record<string, unknown> {
   };
 }
 
+async function assertWakeFailsWhileBusy(url: string, token: string): Promise<void> {
+  const wake = await bWake(url, token, 'wake-vs-dispatch', 'only', 'go');
+  assert.equal(wake.status, 202, wake.text);
+  const wakeRun = await waitForRunTerminal(
+    url,
+    token,
+    'wake-vs-dispatch',
+    String(wake.body?.['runId']),
+  );
+  assert.equal(wakeRun.body?.['run']?.['state'], 'failed');
+}
+
 test(
   'a wake that collides with a running dispatch gets 409 session-busy (non-queue adapter)',
   { timeout: 10_000 },
@@ -227,9 +240,7 @@ test(
     // Codex does not advertise an adapter queue, so the loaded wake is refused
     // with the explicit busy outcome instead of waiting or starting a second
     // execution on the same conversation.
-    const wake = await bWake(running.info.url, running.token, 'wake-vs-dispatch', 'only', 'go');
-    assert.equal(wake.status, 409, wake.text);
-    assert.equal(wake.body?.['code'], 'session-busy');
+    await assertWakeFailsWhileBusy(running.info.url, running.token);
 
     // Release the dispatch instead of waiting for its timeout: an explicit
     // cancel is a client-visible outcome and must stay 409, not 500.
@@ -251,11 +262,13 @@ async function retryWakeAfterRelease(
   token: string,
   adapter: HoldingAdapter,
 ): Promise<void> {
-  const retried = bWake(url, token, 'wake-vs-dispatch', 'only', 'go2');
+  const retried = await bWake(url, token, 'wake-vs-dispatch', 'only', 'go2');
+  assert.equal(retried.status, 202, retried.text);
+  const runId = String(retried.body?.['runId']);
   await waitForPrompt(adapter, 'wake go2');
   const executionId = adapter.executionIds.at(-1);
   assert.ok(executionId !== undefined);
   adapter.release(executionId);
-  const result = await retried;
-  assert.equal(result.status, 200, result.text);
+  const finished = await waitForRunTerminal(url, token, 'wake-vs-dispatch', runId);
+  assert.equal(finished.body?.['run']?.['state'], 'completed');
 }

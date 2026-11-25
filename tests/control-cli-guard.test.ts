@@ -12,7 +12,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions } from './support/fake-adapter.js';
-import { bLoad, bWake, getJson } from './support/control-server-http.js';
+import { bLoad, bWake, getJson, waitForRunTerminal } from './support/control-server-http.js';
 import {
   assertNoSecret,
   invokeControl,
@@ -149,6 +149,20 @@ async function waitForGuard(
       `(last CLI list length=${String(lastLength)}, ` +
       `exit=${lastCode === undefined ? 'none' : String(lastCode)})`,
   );
+}
+
+async function settleWake(
+  env: GuardEnv,
+  liveId: string,
+  trigger: {
+    readonly status: number;
+    readonly text: string;
+    readonly body: Record<string, any> | undefined;
+  },
+): Promise<void> {
+  assert.equal(trigger.status, 202, trigger.text);
+  assert.equal(trigger.body?.['status'], 'accepted');
+  await waitForRunTerminal(env.url, env.token, liveId, String(trigger.body?.['runId']));
 }
 
 async function waitForEmptyGuardList(
@@ -318,8 +332,7 @@ test('wax guard list shows pending metadata only and allows it once', async (t) 
   assertNoSecret(decided.stdout, env.token);
 
   const trigger = await triggerPromise;
-  assert.equal(trigger.status, 200, trigger.text);
-  assert.equal(trigger.body?.['result']?.['rest'], true);
+  await settleWake(env, 'guarded-list', trigger);
   assert.deepEqual(
     env.adapter.approvals.map((approval) => approval.kind),
     ['allow_once'],
@@ -344,7 +357,7 @@ test('wax guard decide maps reject_once to the native decision', async (t) => {
   assert.deepEqual(decided.stdout, [`decided ${requestId} reject_once`]);
 
   const trigger = await triggerPromise;
-  assert.equal(trigger.status, 200, trigger.text);
+  await settleWake(env, 'guarded-reject', trigger);
   assert.deepEqual(
     env.adapter.approvals.map((approval) => approval.kind),
     ['reject_once'],
@@ -377,7 +390,7 @@ test('wax guard decide maps unknown and already-settled requests without retryin
     { daemonDir: env.daemonDir },
   );
   assert.equal(first.code, 0, first.stderr.join(' | '));
-  await triggerPromise;
+  await settleWake(env, 'guarded-settled', await triggerPromise);
 
   const settledCount = countingFetch();
   const settled = await invokeControl(
@@ -412,7 +425,7 @@ test('wax guard decide explains an expired guard and never overrides it', async 
   assert.equal(counting.calls(), 1, 'an expired decision must not be retried');
 
   const trigger = await triggerPromise;
-  assert.equal(trigger.status, 200, trigger.text);
+  await settleWake(env, 'guarded-expired', trigger);
   assert.deepEqual(
     env.adapter.approvals.map((approval) => approval.kind),
     ['cancelled'],

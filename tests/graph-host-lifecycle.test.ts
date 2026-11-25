@@ -63,6 +63,7 @@ import {
   runnableForagerGraph,
   pacedForkMergeDefinition,
   triggerRun,
+  waitUntil,
 } from './support/graph-host-fixtures.js';
 
 class FailingCloseAdapter extends RecordingAdapter {
@@ -331,6 +332,16 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   assert.equal(env.registry.list().length, 2);
 });
 
+async function waitForMergePending(host: LiveHiveHost, graphId: string): Promise<void> {
+  await waitUntil(
+    () =>
+      host
+        .statusOf(graphId)
+        ?.nodes.some((node) => node.nodeId === 'merge' && node.pending) === true,
+    `the maximum pump to leave ${graphId} merge pending`,
+  );
+}
+
 test('a busy graph is neither unloaded nor swept while its trigger is in flight', async (t) => {
   const env = makeEnv();
   env.adapter.holdSubmissions = true;
@@ -344,7 +355,6 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
     await host.dispose();
     await env.workspace.stop();
   });
-
   const definition = runnableForagerGraph('busy', 'hold {{input}}');
   await host.loadGraph({
     definition,
@@ -356,18 +366,19 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
   const run = triggerRun(host, 'busy', 'only', text('hold'));
   await env.adapter.waitForSubmit(1);
 
-  // The lease must span the whole trigger, not just the initial enqueue.
+  // Admission releases the host lock immediately; the active Pheromone keeps
+  // the field unsafe for unload/sweep without holding a lease.
   clock.advance(1_000);
   assert.equal(await host.unload('busy'), false);
   const report = await host.sweep();
   assert.deepEqual(report.unloaded, []);
   assert.deepEqual(report.failed, []);
-  assert.deepEqual(report.skipped, [{ id: 'busy', reason: 'busy' }]);
+  assert.deepEqual(report.skipped, [{ id: 'busy', reason: 'unsafe' }]);
 
   const busy = host.statusOf('busy');
   assert.ok(busy !== undefined);
   assert.equal(busy.rest, false);
-  assert.equal(busy.residency.refCount, 1);
+  assert.equal(busy.residency.refCount, 0);
   assert.equal(nodeStatus(busy, 'only').active, true);
   assert.deepEqual(env.adapter.closedNativeIds, []);
 
@@ -408,9 +419,9 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
   assert.equal(env.adapter.createdNativeIds.length, 3);
   assert.equal(workspaceListenerCount(env.workspace), 3);
 
-  const result = await triggerRun(host, 'queued', 'start', text('seed'));
-  assert.equal(result.rest, false);
-  assert.equal(result.pumps, 1);
+  const admission = await host.trigger('queued', 'start', text('seed'));
+  await waitForMergePending(host, 'queued');
+  assert.equal(host.runs.get('queued', admission.runId)?.state, 'running');
   const loaded = host.statusOf('queued');
   assert.ok(loaded !== undefined);
   assert.equal(loaded.rest, false);

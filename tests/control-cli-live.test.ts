@@ -18,6 +18,13 @@ function writer(): { lines: string[]; write: (line: string) => void } {
   return { lines, write: (line) => lines.push(line) };
 }
 
+function assertAdmissionLine(lines: readonly string[]): void {
+  const admission = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>;
+  assert.equal(admission['status'], 'accepted');
+  assert.equal(typeof admission['runId'], 'string');
+  assert.equal(Object.hasOwn(admission, 'graphId'), false);
+}
+
 test('wax live/template/dispatch use one daemon endpoint', async (t) => {
   const env = makeEnv({ output: 'cli-output' });
   const running = await startServer(env, {
@@ -143,14 +150,7 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     ),
     0,
   );
-  assert.equal(
-    (JSON.parse(wakeOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'],
-    'demo',
-  );
-  assert.equal(
-    Object.hasOwn(JSON.parse(wakeOut.lines[0] ?? '{}') as Record<string, unknown>, 'graphId'),
-    false,
-  );
+  assertAdmissionLine(wakeOut.lines);
 
   const topWakeOut = writer();
   assert.equal(
@@ -160,14 +160,7 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     ),
     0,
   );
-  assert.equal(
-    (JSON.parse(topWakeOut.lines[0] ?? '{}') as Record<string, unknown>)['liveId'],
-    'demo',
-  );
-  assert.equal(
-    Object.hasOwn(JSON.parse(topWakeOut.lines[0] ?? '{}') as Record<string, unknown>, 'graphId'),
-    false,
-  );
+  assertAdmissionLine(topWakeOut.lines);
 
   const templateFile = join(directory, 'template.json');
   const template = simpleTemplate();
@@ -272,7 +265,7 @@ test('top-level wax wake/answer resolves a user hover', async (t) => {
     ),
     0,
   );
-  assert.match(wakeOut.lines.join('\n'), /^ask rest=/);
+  assert.match(wakeOut.lines.join('\n'), /^runId=/);
   assert.equal(wakeOut.lines.join('\n').includes('graphId'), false);
   assert.equal(
     await runAnswerCli(
@@ -317,7 +310,7 @@ test('wax live rejects bad usage and unknown live ids without retrying', async (
   );
   assert.match(dispatchErr.lines.join('\n'), /usage: wax dispatch/);
 });
-test('wax wake rejects a response without a run result', async () => {
+test('wax wake rejects a response without an admission handle', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'wax-cli-wake-'));
   writeFileSync(join(dir, 'token'), 'wake-token-0123456789', 'utf8');
   writeFileSync(
@@ -349,10 +342,9 @@ test('wax wake rejects a response without a run result', async () => {
       }) as typeof fetch,
     },
   );
-  // There is no admission handle any more: a wake either returns its run
-  // result or fails; a malformed body must not be printed as success.
+  // A wake must return an admission handle; a malformed body is a protocol error.
   assert.equal(code, 1);
   assert.deepEqual(out.lines, []);
-  assert.match(err.lines.join('\n'), /missing 'result'/);
+  assert.match(err.lines.join('\n'), /missing 'runId'\/'traceId'/);
   assert.equal(requests.length, 1);
 });

@@ -9,7 +9,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
-import { liveFrom } from './support/control-server-http.js';
+import { liveFrom, waitForRunTerminal } from './support/control-server-http.js';
 
 const PROMPT_SECRET = 'M9E-HTTP-PROMPT-SECRET';
 
@@ -25,6 +25,28 @@ function definition(id: string): Record<string, unknown> {
     },
     edges: [],
   };
+}
+
+async function wakeSecondLive(
+  url: string,
+  token: string,
+  post: (path: string, body: unknown) => Promise<{ status: number; body: Record<string, any> }>,
+): Promise<void> {
+  const wake = await post('/lives/wake', {
+    liveId: 'second',
+    beeId: 'only',
+    input: 'still here',
+  });
+  assert.equal(wake.status, 202, JSON.stringify(wake.body));
+  assert.equal(wake.body['status'], 'accepted');
+  assert.equal(typeof wake.body['runId'], 'string');
+  const finished = await waitForRunTerminal(
+    url,
+    token,
+    'second',
+    String(wake.body['runId']),
+  );
+  assert.equal(finished.body?.['run']?.['state'], 'completed');
 }
 
 test('a second loaded graph may share the same session; unload is refcounted', async (t) => {
@@ -90,14 +112,7 @@ test('a second loaded graph may share the same session; unload is refcounted', a
     // Unloading one sharer leaves the other loaded and executable.
     const unload = await post('/lives/unload', { liveId: 'first' });
     assert.equal(unload.status, 200);
-    const wake = await post('/lives/wake', {
-      liveId: 'second',
-      beeId: 'only',
-      input: 'still here',
-    });
-    assert.equal(wake.status, 200, JSON.stringify(wake.body));
-    assert.equal(wake.body['result']?.['liveId'], 'second');
-    assert.equal(typeof wake.body['result']?.['runId'], 'string');
+    await wakeSecondLive(info.url, token, post);
 
     const reload = await load('first');
     assert.equal(reload.status, 200);

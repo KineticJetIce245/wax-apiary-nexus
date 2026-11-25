@@ -5,7 +5,7 @@ import test from 'node:test';
 
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { LiveHive } from '../src/b/types.js';
-import { getJson, postJson } from './support/control-server-http.js';
+import { getJson, postJson, waitForRunTerminal } from './support/control-server-http.js';
 import {
   makeEnv,
   startServer,
@@ -39,6 +39,37 @@ function publicStatusOf(value: unknown): Record<string, unknown> {
   return status;
 }
 
+async function wakeAndAssertRun(
+  url: string,
+  token: string,
+  liveId: string,
+): Promise<string> {
+  const woke = await postJson(url, token, '/lives/wake', {
+    liveId,
+    beeId: 'draft',
+    input: 'hello',
+  });
+  assert.equal(woke.status, 202);
+  assert.equal(woke.body?.['ok'], true);
+  assert.equal(woke.body?.['status'], 'accepted');
+  const runId = String(woke.body?.['runId']);
+  assert.ok(runId.length > 0);
+  assert.ok(String(woke.body?.['traceId']).startsWith('tr_'));
+  assert.equal(Object.hasOwn(woke.body ?? {}, 'result'), false);
+  const finished = await waitForRunTerminal(url, token, liveId, runId);
+  assert.equal(finished.body?.['run']?.['state'], 'completed');
+  assert.ok(Array.isArray(finished.body?.['run']?.['outputs']));
+  const unknownRun = await getJson(url, token, `/lives/${liveId}/runs/missing-run`);
+  assert.equal(unknownRun.status, 404);
+  const otherLiveRun = await getJson(
+    url,
+    token,
+    `/lives/ghost/runs/${encodeURIComponent(runId)}`,
+  );
+  assert.equal(otherLiveRun.status, 404);
+  return runId;
+}
+
 test('B routes create, wake, save, inspect, unload and load a live hive', async (t) => {
   const env = makeEnv({ output: 'b-route-output' });
   const running = await startServer(env, { liveProject: env.project });
@@ -70,16 +101,7 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     }
   }
 
-  const woke = await postJson(running.info.url, running.token, '/lives/wake', {
-    liveId: 'demo',
-    beeId: 'draft',
-    input: 'hello',
-  });
-  assert.equal(woke.status, 200);
-  assert.equal(woke.body?.['result']?.['liveId'], 'demo');
-  publicStatusOf(woke.body?.['result']?.['status']);
-  const runId = String(woke.body?.['result']?.['runId']);
-  assert.ok(runId.length > 0);
+  const runId = await wakeAndAssertRun(running.info.url, running.token, 'demo');
 
   const saved = await postJson(running.info.url, running.token, '/lives/save', {
     liveId: 'demo',
@@ -159,7 +181,6 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   const publicPayloads = [
     created.text,
     duplicate.text,
-    woke.text,
     saved.text,
     inspect.text,
     loaded.text,
@@ -168,6 +189,28 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   assert.equal(publicPayloads.includes('graphId'), false);
   assert.equal(publicPayloads.includes('graphRevision'), false);
 });
+
+async function waitForHover(
+  url: string,
+  token: string,
+  liveId: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const inspected = await getJson(
+      url,
+      token,
+      `/lives/${encodeURIComponent(liveId)}/inspect`,
+    );
+    if (inspected.body?.['status']?.['hovered'] === true) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`live '${liveId}' did not open a hover`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 test('B answer resolves a user hover', async (t) => {
   const env = makeEnv();
@@ -197,8 +240,9 @@ test('B answer resolves a user hover', async (t) => {
         input: 'open',
       })
     ).status,
-    200,
+    202,
   );
+  await waitForHover(running.info.url, running.token, 'ask');
   const answered = await postJson(running.info.url, running.token, '/lives/answer', {
     liveId: 'ask',
     beeId: 'ask',

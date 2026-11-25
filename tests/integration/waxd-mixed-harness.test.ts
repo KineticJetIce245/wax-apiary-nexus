@@ -11,6 +11,7 @@ import type { Project } from '../../src/project/kernel.js';
 import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
+import { waitForRunTerminal } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtDshCli =
@@ -42,6 +43,47 @@ const integrationOptions = {
 interface HttpResult {
   readonly status: number;
   readonly body: Record<string, any>;
+}
+
+type MixedRequest = (
+  info: WaxdStartedInfo,
+  token: string,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+) => Promise<HttpResult>;
+
+/** Admit one bee, then wait for its own run terminal state. */
+async function wakeAndSettle(
+  request: MixedRequest,
+  info: WaxdStartedInfo,
+  token: string,
+  liveId: string,
+  beeId: string,
+  input: string,
+): Promise<Record<string, any>> {
+  const woke = await request(info, token, 'POST', '/lives/wake', {
+    liveId,
+    beeId,
+    input,
+  });
+  assert.equal(woke.status, 202, JSON.stringify(woke.body));
+  const run = await waitForRunTerminal(
+    info.url,
+    token,
+    liveId,
+    String(woke.body['runId']),
+    300_000,
+  );
+  assert.ok(run.body !== undefined, 'run response body is missing');
+  return run.body['run'] as Record<string, any>;
+}
+
+/** One run's output for one bee; outputs are isolated per run now. */
+function outputOf(run: Record<string, any>, nodeId: string): string {
+  const entries = run['outputs'] as Record<string, unknown>[] | undefined;
+  const entry = entries?.find((item) => item['nodeId'] === nodeId);
+  return entry === undefined ? '' : textOf(entry['value']).trim();
 }
 
 function deferred<T>(): {
@@ -235,27 +277,10 @@ test(
       assert.equal(loaded.status, 200);
       assert.equal(loaded.body['liveId'], 'mixed-harness');
 
-      const codexTrigger = await request(info, token, 'POST', '/lives/wake', {
-        liveId: 'mixed-harness',
-        beeId: 'codex',
-        input: 'codex',
-      });
-      assert.equal(codexTrigger.status, 200);
-      const dshTrigger = await request(info, token, 'POST', '/lives/wake', {
-        liveId: 'mixed-harness',
-        beeId: 'dsh',
-        input: 'dsh',
-      });
-      assert.equal(dshTrigger.status, 200);
-
-      const outputs = await request(info, token, 'GET', '/lives/mixed-harness/output');
-      assert.equal(outputs.status, 200);
-      const byNode = new Map<string, string>();
-      for (const entry of outputs.body['outputs'] as Record<string, unknown>[]) {
-        byNode.set(String(entry['nodeId']), textOf(entry['value']).trim());
-      }
-      const codexOutput = byNode.get('codex') ?? '';
-      const dshOutput = byNode.get('dsh') ?? '';
+      const codexRun = await wakeAndSettle(request, info, token, 'mixed-harness', 'codex', 'codex');
+      const dshRun = await wakeAndSettle(request, info, token, 'mixed-harness', 'dsh', 'dsh');
+      const codexOutput = outputOf(codexRun, 'codex');
+      const dshOutput = outputOf(dshRun, 'dsh');
       assert.match(codexOutput, /^\d{4}$/);
       assert.match(dshOutput, /^\d{3}$/);
       const codexValue = Number(codexOutput);
@@ -310,27 +335,24 @@ test(
 
       // A reload must be usable, not merely visible in the catalog: trigger
       // both harnesses again and read the fresh outputs.
-      const codexReloadTrigger = await request(info, token, 'POST', '/lives/wake', {
-        liveId: 'mixed-harness',
-        beeId: 'codex',
-        input: 'codex-reload',
-      });
-      assert.equal(codexReloadTrigger.status, 200);
-      const dshReloadTrigger = await request(info, token, 'POST', '/lives/wake', {
-        liveId: 'mixed-harness',
-        beeId: 'dsh',
-        input: 'dsh-reload',
-      });
-      assert.equal(dshReloadTrigger.status, 200);
-
-      const reloadOutputs = await request(info, token, 'GET', '/lives/mixed-harness/output');
-      assert.equal(reloadOutputs.status, 200);
-      const reloadByNode = new Map<string, string>();
-      for (const entry of reloadOutputs.body['outputs'] as Record<string, unknown>[]) {
-        reloadByNode.set(String(entry['nodeId']), textOf(entry['value']).trim());
-      }
-      const reloadCodex = reloadByNode.get('codex') ?? '';
-      const reloadDsh = reloadByNode.get('dsh') ?? '';
+      const codexReloadRun = await wakeAndSettle(
+        request,
+        info,
+        token,
+        'mixed-harness',
+        'codex',
+        'codex-reload',
+      );
+      const dshReloadRun = await wakeAndSettle(
+        request,
+        info,
+        token,
+        'mixed-harness',
+        'dsh',
+        'dsh-reload',
+      );
+      const reloadCodex = outputOf(codexReloadRun, 'codex');
+      const reloadDsh = outputOf(dshReloadRun, 'dsh');
       assert.match(reloadCodex, /^\d{4}$/);
       assert.match(reloadDsh, /^\d{3}$/);
       assert.ok(Number(reloadCodex) >= 1000 && Number(reloadCodex) <= 9999);

@@ -9,7 +9,7 @@ import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
 import { FakeAdapter } from './fake-adapter.js';
-import { bLoad } from './control-server-http.js';
+import { bLoad, waitForRunTerminal } from './control-server-http.js';
 
 /** Rounds are configurable for a longer soak; 50 is the M12a acceptance floor. */
 export const STRESS_ROUNDS = readPositiveInteger(
@@ -185,6 +185,23 @@ export function wakeLive(running: Running, liveId: string): Promise<RawResult> {
     beeId: 'only',
     input: 'go',
   });
+}
+
+/** Await one admission and then its run terminal state, so approvals settled. */
+export async function settleWake(
+  running: Running,
+  liveId: string,
+  wakePromise: Promise<RawResult>,
+): Promise<RawResult> {
+  const wake = await wakePromise;
+  assert.equal(wake.status, 202, wake.text);
+  await waitForRunTerminal(
+    running.url,
+    running.token,
+    liveId,
+    String(wake.body?.['runId']),
+  );
+  return wake;
 }
 
 export async function load(

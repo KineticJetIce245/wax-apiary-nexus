@@ -13,7 +13,7 @@ import type {
 import type { InstantiatedForagers } from '../../session/instantiate-foragers.js';
 import type { SessionRegistry } from '../../session/session-registry.js';
 import type { HoneyStore } from '../../storage/honey.js';
-import type { RunStore } from '../../storage/run-store.js';
+import type { RunOutput, RunStore } from '../../storage/run-store.js';
 import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import type { SchedulerTimers } from '../scheduler.js';
 
@@ -152,6 +152,33 @@ export interface LiveHiveStatus {
     readonly refCount: number;
     readonly nextEvictionAt?: number;
   };
+}
+
+export type LiveHiveRunState =
+  | 'accepted'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'unknown';
+
+/** Public run view; never carries a prompt or a native transcript. */
+export interface LiveHiveRunView {
+  readonly runId: string;
+  readonly traceId: string;
+  readonly state: LiveHiveRunState;
+  readonly outputs: readonly RunOutput[];
+  readonly error?: string;
+  readonly startedAt: string;
+  readonly finishedAt?: string;
+}
+
+/** Immediate admission result of a wake; execution continues in the background. */
+export interface LiveHiveAdmission {
+  readonly graphId: string;
+  readonly runId: string;
+  readonly traceId: string;
+  readonly status: 'accepted';
 }
 
 export interface LiveHiveRunResult {

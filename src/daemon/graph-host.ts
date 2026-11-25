@@ -5,8 +5,10 @@ import { LiveHiveHostContext } from './graph-host/context.js';
 import { LiveHiveHostExecution } from './graph-host/execution.js';
 import { LiveHiveHostLifecycle } from './graph-host/lifecycle.js';
 import { LiveHiveHostRead } from './graph-host/read.js';
+import { RunTracker } from './graph-host/run-tracker.js';
 import { SessionOwnership } from './graph-host/session-ownership.js';
 import type {
+  LiveHiveAdmission,
   LiveHiveHostOptions,
   LiveHiveRunResult,
   LiveHiveStatus,
@@ -14,14 +16,18 @@ import type {
 } from './graph-host/types.js';
 
 export type {
+  LiveHiveAdmission,
   LiveHiveHostAnswerErrorReason,
   LiveHiveHostEvent,
   LiveHiveHostOptions,
   LiveHiveNodeStatus,
   LiveHiveRunResult,
+  LiveHiveRunState,
+  LiveHiveRunView,
   LiveHiveStatus,
   LoadGraphOptions,
 } from './graph-host/types.js';
+export type { RunTracker } from './graph-host/run-tracker.js';
 export {
   LiveHiveHostAnswerError,
   LiveHiveHostDisposedError,
@@ -43,7 +49,7 @@ export class LiveHiveHost {
   private readonly execution: LiveHiveHostExecution;
   private readonly ownership: SessionOwnership;
   private readonly lifecycle: LiveHiveHostLifecycle;
-
+  readonly runs: RunTracker;
   constructor(options: LiveHiveHostOptions) {
     this.context = new LiveHiveHostContext(options);
     this.read = new LiveHiveHostRead(this.context);
@@ -55,13 +61,13 @@ export class LiveHiveHost {
       this.ownership,
       this.execution,
     );
+    this.runs = this.context.runs;
   }
-
   loadGraph(options: LoadGraphOptions): Promise<LiveHiveStatus> {
     return this.lifecycle.loadGraph(options);
   }
 
-  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveRunResult> {
+  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveAdmission> {
     return this.execution.trigger(graphId, nodeId, value);
   }
 

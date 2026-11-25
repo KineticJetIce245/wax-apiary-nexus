@@ -7,6 +7,22 @@ export interface LiveOperationResult {
   readonly status: Record<string, unknown>;
 }
 
+export interface LiveAdmissionResult {
+  readonly runId: string;
+  readonly traceId: string;
+  readonly status: 'accepted';
+}
+
+export interface LiveRunView {
+  readonly runId: string;
+  readonly traceId: string;
+  readonly state: string;
+  readonly outputs: readonly { readonly nodeId: string; readonly value: unknown }[];
+  readonly error?: string;
+  readonly startedAt: string;
+  readonly finishedAt?: string;
+}
+
 export interface LiveDispatchResult {
   readonly output: string;
   readonly sessionId: string;
@@ -68,13 +84,24 @@ export class LiveHiveClient extends ControlClient {
   }
 
   /**
-   * Wake one bee. A session shared with another run is serialized by the
-   * harness adapter (queue-capable) or rejected with 409 `session-busy`; there
-   * is no admission handle to poll.
+   * Admit one bee and return its run handle. Execution continues on the
+   * daemon; poll this client's `run` view for the terminal state and outputs.
    */
-  async wake(liveId: string, beeId: string, input: string): Promise<unknown> {
+  readonly run = async (liveId: string, runId: string): Promise<LiveRunView> => {
+    const body = await this.request(
+      'GET',
+      `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
+    );
+    const run = body['run'];
+    if (typeof run !== 'object' || run === null) {
+      throw protocolError("control response missing 'run'");
+    }
+    return run as unknown as LiveRunView;
+  };
+
+  async wake(liveId: string, beeId: string, input: string): Promise<LiveAdmissionResult> {
     const body = await this.request('POST', '/lives/wake', { liveId, beeId, input });
-    return requireField(body, 'result');
+    return parseAdmission(body);
   }
 
   async answerLive(
@@ -169,6 +196,18 @@ export class TemplateClient extends LiveHiveClient {
     }
     return templates;
   }
+}
+
+function parseAdmission(body: Record<string, unknown>): LiveAdmissionResult {
+  const runId = body['runId'];
+  const traceId = body['traceId'];
+  if (typeof runId !== 'string' || typeof traceId !== 'string') {
+    throw protocolError("control response missing 'runId'/'traceId'");
+  }
+  if (body['status'] !== 'accepted') {
+    throw protocolError("control response missing wake status 'accepted'");
+  }
+  return { runId, traceId, status: 'accepted' };
 }
 
 function parseLiveResult(body: Record<string, unknown>): LiveOperationResult {

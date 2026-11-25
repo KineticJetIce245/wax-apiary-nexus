@@ -63,6 +63,7 @@ import {
   runnableForagerGraph,
   pacedForkMergeDefinition,
   triggerRun,
+  waitUntil,
 } from './support/graph-host-fixtures.js';
 
 class ThrowingTouchRegistry extends SessionRegistry {
@@ -139,7 +140,7 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
   assert.equal(result.graphId, 'main');
   assert.equal(result.rest, true);
   assert.equal(result.hovered, false);
-  assert.ok(result.pumps >= 1, 'trigger must actually pump');
+  assert.equal(result.state, 'completed');
   assert.equal(result.status.rest, true);
   assert.deepEqual(result.status, host.statusOf('main'));
 
@@ -307,7 +308,7 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
   assert.equal(result.rest, true);
   assert.equal(result.hovered, false);
   assert.deepEqual(waits, [1_000]);
-  assert.equal(result.pumps, 2);
+  assert.equal(result.state, 'completed');
   assert.equal(clock.time, 2_000);
 
   const status = host.statusOf('paced-rest');
@@ -320,7 +321,7 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
   assert.deepEqual(env.adapter.closedNativeIds, []);
 });
 
-test('the trigger lease covers pacing waits, not only pump calls', async (t) => {
+test('wake admission does not hold the live lease during pacing waits', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const sleepStarted = deferred();
@@ -354,10 +355,11 @@ test('the trigger lease covers pacing waits, not only pump calls', async (t) => 
   const during = host.statusOf('paced-lease');
   assert.ok(during !== undefined);
   assert.equal(during.rest, false);
-  assert.equal(during.residency.refCount, 1);
+  // The admission lock is short: no lease is held while the native work paces.
+  assert.equal(during.residency.refCount, 0);
   assert.equal(await host.unload('paced-lease'), false);
   const report = await host.sweep();
-  assert.deepEqual(report.skipped, [{ id: 'paced-lease', reason: 'busy' }]);
+  assert.deepEqual(report.skipped, [{ id: 'paced-lease', reason: 'disabled' }]);
   assert.deepEqual(env.adapter.closedNativeIds, []);
 
   releaseSleep.resolve();
@@ -367,6 +369,54 @@ test('the trigger lease covers pacing waits, not only pump calls', async (t) => 
   assert.equal(await host.unload('paced-lease'), true);
   assert.equal(workspaceListenerCount(env.workspace), 0);
 });
+
+async function assertPacingBounds(
+  env: ReturnType<typeof makeEnv>,
+  zeroHost: LiveHiveHost,
+  shortHost: LiveHiveHost,
+  zeroWaits: readonly number[],
+  shortWaits: readonly number[],
+): Promise<void> {
+  const noWaitDefinition = pacedForkMergeDefinition('no-wait');
+  await zeroHost.loadGraph({
+    definition: noWaitDefinition,
+    bindings: allFresh(noWaitDefinition),
+    project: env.project,
+  });
+  const noWaitAdmission = await zeroHost.trigger('no-wait', 'start', text('seed'));
+  await waitUntil(
+    () => zeroHost.statusOf('no-wait') !== undefined && !zeroHost.statusOf('no-wait')!.rest,
+    'the no-wait driver to stop',
+  );
+  assert.deepEqual(zeroWaits, []);
+  assert.equal(zeroHost.runs.get('no-wait', noWaitAdmission.runId)?.state, 'running');
+  assert.ok(zeroHost.statusOf('no-wait') !== undefined);
+  const shortDefinition = pacedForkMergeDefinition('short-wait');
+  await shortHost.loadGraph({
+    definition: shortDefinition,
+    bindings: allFresh(shortDefinition),
+    project: env.project,
+  });
+  const shortAdmission = await shortHost.trigger('short-wait', 'start', text('seed'));
+  await waitUntil(() => shortWaits.length === 1, 'the bounded pacing wait');
+  await waitUntil(
+    () =>
+      shortHost.statusOf('short-wait')?.nodes.some(
+        (node) => node.nodeId === 'merge' && node.pending,
+      ) === true,
+    'the merge to stay pending',
+  );
+  assert.deepEqual(shortWaits, [250]);
+  assert.equal(shortWaits.reduce((sum, wait) => sum + wait, 0), 250);
+  assert.equal(shortHost.runs.get('short-wait', shortAdmission.runId)?.state, 'running');
+  const shortStatus = shortHost.statusOf('short-wait');
+  assert.ok(shortStatus !== undefined);
+  assert.equal(shortStatus.rest, false);
+  const merge = nodeStatus(shortStatus, 'merge');
+  assert.equal(merge.pending, true);
+  assert.equal(merge.joins, 1);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+}
 
 test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t) => {
   const env = makeEnv();
@@ -397,39 +447,7 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
     await env.workspace.stop();
   });
 
-  const noWaitDefinition = pacedForkMergeDefinition('no-wait');
-  await zeroHost.loadGraph({
-    definition: noWaitDefinition,
-    bindings: allFresh(noWaitDefinition),
-    project: env.project,
-  });
-  const noWait = await triggerRun(zeroHost, 'no-wait', 'start', text('seed'));
-  assert.equal(noWait.rest, false);
-  assert.equal(noWait.pumps, 1);
-  assert.deepEqual(zeroWaits, []);
-  assert.ok(zeroHost.statusOf('no-wait') !== undefined);
-
-  const shortDefinition = pacedForkMergeDefinition('short-wait');
-  await shortHost.loadGraph({
-    definition: shortDefinition,
-    bindings: allFresh(shortDefinition),
-    project: env.project,
-  });
-  const short = await triggerRun(shortHost, 'short-wait', 'start', text('seed'));
-  assert.equal(short.rest, false);
-  assert.equal(short.pumps, 2);
-  assert.deepEqual(shortWaits, [250]);
-  assert.equal(
-    shortWaits.reduce((sum, wait) => sum + wait, 0),
-    250,
-  );
-  const shortStatus = shortHost.statusOf('short-wait');
-  assert.ok(shortStatus !== undefined);
-  assert.equal(shortStatus.rest, false);
-  const merge = nodeStatus(shortStatus, 'merge');
-  assert.equal(merge.pending, true);
-  assert.equal(merge.joins, 1);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
+  await assertPacingBounds(env, zeroHost, shortHost, zeroWaits, shortWaits);
 });
 
 test('maxPumps exhaustion reports rest=false without pretending success or losing the graph', async (t) => {
@@ -454,12 +472,13 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
     project: env.project,
   });
 
-  const result = await triggerRun(host, 'paced', 'start', text('seed'));
-  assert.equal(result.rest, false);
-  assert.equal(result.hovered, false);
-  assert.equal(result.pumps, 1);
-  assert.equal(result.status.rest, false);
-  assert.equal(result.status.residency.refCount, 0);
+  const admission = await host.trigger('paced', 'start', text('seed'));
+  await waitUntil(
+    () => host.statusOf('paced')?.nodes.some((node) => node.nodeId === 'merge' && node.pending) === true,
+    'one maximum pump to leave the merge pending',
+  );
+  assert.equal(host.runs.get('paced', admission.runId)?.state, 'running');
+  assert.equal(host.statusOf('paced')?.residency.refCount, 0);
 
   const status = host.statusOf('paced');
   assert.ok(status !== undefined);
@@ -471,9 +490,9 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
 
   assert.equal(host.status().length, 1);
   assert.deepEqual(env.adapter.closedNativeIds, []);
-  // The graph is still loaded and can accept another trigger.
-  const again = await triggerRun(host, 'paced', 'start', text('again'));
-  assert.equal(again.graphId, 'paced');
+  // The graph is still loaded and can accept another admission.
+  const again = await host.trigger('paced', 'start', text('again'));
+  assert.ok(again.runId.length > 0);
   assert.equal(host.statusOf('paced') !== undefined, true);
 });
 
@@ -526,7 +545,6 @@ test('answer resolves an open user hover and rejects invalid targets and tokens'
   assert.equal(answered.rest, true);
   assert.equal(answered.hovered, false);
   assert.equal(answered.persisted, true);
-  assert.ok(answered.pumps >= 1);
   assert.equal(answered.status.rest, true);
   assert.equal(nodeStatus(answered.status, 'ask').hovered, false);
 

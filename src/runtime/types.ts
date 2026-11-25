@@ -333,6 +333,22 @@ export interface NodeState {
   joins?: Map<string, JoinState>;
 }
 
+/** Handle returned by a trace-scoped runtime trigger. */
+export interface RuntimeAdmission {
+  readonly pheromoneId: string;
+  readonly traceId: string;
+}
+
+/** Host-side observation of one trace's lifecycle (used by the run tracker). */
+export interface RuntimeRunObserver {
+  activated?(traceId: string): void;
+  output?(traceId: string, nodeId: NodeId, value: Value): void;
+  failed?(traceId: string, error: unknown): void;
+  settled?(traceId: string): void;
+  parked?(traceId: string): void;
+  present?(traceId: string): void;
+}
+
 /** Immutable view returned by PheromoneRuntime.snapshot(). */
 export interface NodeStateSnapshot {
   queue: readonly Pheromone[];

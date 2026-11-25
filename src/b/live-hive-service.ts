@@ -1,5 +1,10 @@
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
-import type { LiveHiveHost, LiveHiveRunResult, LiveHiveStatus } from '../daemon/graph-host.js';
+import type {
+  LiveHiveAdmission,
+  LiveHiveHost,
+  LiveHiveRunResult,
+  LiveHiveStatus,
+} from '../daemon/graph-host.js';
 import type { Project } from '../project/kernel.js';
 import type { Value } from '../runtime/index.js';
 import type { SessionRegistry } from '../session/session-registry.js';
@@ -150,15 +155,15 @@ export class LiveHiveService {
   }
 
   /**
-   * Run one bee. A session shared with other LiveHives is serialized by the
-   * harness adapter: a queue-capable adapter waits there, a non-queue adapter
-   * rejects with `session-busy`. Answers are never queued.
+   * Admit one bee. The call only enqueues the Pheromone and returns a run
+   * handle; execution continues in the background. A session shared with other
+   * LiveHives is serialized by the harness adapter, not by this method.
    */
   async wake(
     liveId: string,
     beeId: string,
     input: string,
-  ): Promise<LiveHiveRunResult> {
+  ): Promise<LiveHiveAdmission> {
     this.repository.requireLiveId(liveId);
     return this.options.liveHiveHost.trigger(liveId, beeId, textValue(input));
   }

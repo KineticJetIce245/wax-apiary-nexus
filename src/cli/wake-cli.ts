@@ -60,12 +60,30 @@ async function runWakeLike(
     if (parsed.json) {
       writeJson(out, result);
     } else {
-      printResult(out, result);
+      writeHumanResult(out, kind, result);
     }
     return 0;
   } catch (error) {
     return reportCliError(error, err);
   }
+}
+
+function writeHumanResult(out: Writer, kind: 'wake' | 'answer', result: unknown): void {
+  if (kind === 'wake') {
+    printAdmission(out, result);
+  } else {
+    printResult(out, result);
+  }
+}
+
+function printAdmission(out: Writer, result: unknown): void {
+  const record = typeof result === 'object' && result !== null
+    ? (result as Record<string, unknown>)
+    : {};
+  out(
+    `runId=${String(record['runId'])} traceId=${String(record['traceId'])} ` +
+      `status=${String(record['status'])}`,
+  );
 }
 
 function printResult(out: Writer, result: unknown): void {

@@ -6,7 +6,7 @@ import test, { type TestContext } from 'node:test';
 
 import {
   LiveHiveHost,
-  type LiveHiveRunResult,
+  type LiveHiveAdmission,
 } from '../src/daemon/graph-host.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import { HiveTemplateStore } from '../src/b/hive-template.js';
@@ -22,16 +22,19 @@ import { FakeAdapter } from './support/fake-adapter.js';
 import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
 
 /**
- * Wake a fixture live whose sessions are unique per live. Admission is in the
- * harness adapter, so a resolved call is the synchronous run the test asserts on.
+ * Wake a fixture live and wait for its trace to settle. The public wake now
+ * returns an admission only; this helper preserves the old test intent.
  */
 async function wakeNow(
+  host: LiveHiveHost,
   service: LiveHiveService,
   liveId: string,
   beeId: string,
   input: string,
-): Promise<LiveHiveRunResult> {
-  return service.wake(liveId, beeId, input);
+): Promise<LiveHiveAdmission> {
+  const admission = await service.wake(liveId, beeId, input);
+  await host.runs.wait(admission.runId);
+  return admission;
 }
 
 interface Harness {
@@ -121,7 +124,7 @@ test('LiveHiveService new/wake/save/unload/load round-trips one live', async (t)
   assert.equal(harness.host.statusOf('demo')?.rest, true);
   assert.equal(harness.service.read.list().find((entry) => entry.liveId === 'demo')?.state, 'loaded');
 
-  const woke = await wakeNow(harness.service, 'demo', 'draft', 'hello');
+  const woke = await wakeNow(harness.host, harness.service, 'demo', 'draft', 'hello');
   assert.equal(woke.graphId, 'demo');
   assert.equal(harness.host.statusOf('demo')?.rest, true);
   assert.equal(harness.service.read.output('demo').runId, woke.runId);
@@ -183,7 +186,7 @@ test('LiveHiveService compose/instantiate uses template defaults and creates ses
   assert.ok(draft !== undefined);
   assert.equal(harness.host.statusOf('instantiated')?.rest, true);
   assert.equal(
-    (await wakeNow(harness.service, 'instantiated', 'draft', 'x')).graphId,
+    (await wakeNow(harness.host, harness.service, 'instantiated', 'draft', 'x')).graphId,
     'instantiated',
   );
 });

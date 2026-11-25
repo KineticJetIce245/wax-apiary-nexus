@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import type { ExecutionState } from '../adapters/harness.js';
-import type { LiveHiveHost, LiveHiveRunResult } from '../daemon/graph-host.js';
+import type { LiveHiveHost } from '../daemon/graph-host.js';
+import type { LiveHiveRunView } from '../daemon/graph-host.js';
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
 import type { Project } from '../project/kernel.js';
 import {
@@ -161,7 +162,7 @@ export class DispatchService {
     const graphId = `dispatch-${randomUUID()}`;
     const definition = buildDispatchDefinition(graphId);
     let loaded = false;
-    let settled: Promise<void> | undefined;
+    let runId: string | undefined;
     try {
       await this.liveHiveHost.loadGraph({
         definition,
@@ -175,18 +176,16 @@ export class DispatchService {
       if (sessionId === undefined) {
         throw new DispatchError('dispatch graph has no session binding');
       }
-      const trigger = this.liveHiveHost.trigger(graphId, BEE_ID, textValue(input));
-      settled = trigger.then(
-        () => undefined,
-        () => undefined,
-      );
-      const result = await this.waitForTrigger(trigger, settled, timeoutMs, sessionId);
-      return { output: this.requireOutput(graphId), sessionId };
+      const admission = await this.liveHiveHost.trigger(graphId, BEE_ID, textValue(input));
+      runId = admission.runId;
+      const run = await this.waitForRun(admission.runId, timeoutMs, sessionId);
+      this.requireSuccess(run, admission.runId);
+      return { output: this.requireOutput(run), sessionId };
     } catch (error) {
       throw normalizeDispatchError(error);
     } finally {
       if (loaded) {
-        await this.releaseGraph(graphId, settled);
+        await this.releaseGraph(graphId, runId);
       }
     }
   }
@@ -246,38 +245,50 @@ export class DispatchService {
   }
 
   /**
-   * Wait for the graph run, or for the dispatch timeout. On timeout it cancels
-   * the execution this dispatch started (never a user turn), gives the runtime
-   * a short grace to unwind, and rejects. A trigger that outlives the grace is
-   * released by `releaseGraph` once it settles.
+   * Wait for this dispatch's own run. On timeout it cancels that run (never a
+   * user turn), gives the runtime a short grace to unwind, and rejects. A run
+   * that outlives the grace is released by `releaseGraph` once its trace ends.
    */
-  private async waitForTrigger(
-    trigger: Promise<LiveHiveRunResult>,
-    settled: Promise<void>,
+  private async waitForRun(
+    runId: string,
     timeoutMs: number,
     sessionId: string,
-  ): Promise<LiveHiveRunResult> {
+  ): Promise<LiveHiveRunView> {
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<typeof TIMEOUT>((resolve) => {
       timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
       timer.unref();
     });
     try {
-      const first = await Promise.race([trigger, deadline]);
+      const first = await Promise.race([this.liveHiveHost.runs.wait(runId), deadline]);
       if (first !== TIMEOUT) {
         return first;
       }
+      this.liveHiveHost.runs.cancel(runId);
       this.cancelActive(sessionId);
-      // The old direct path rejected without waiting for a stalled native
-      // cancel. Keep the rejection prompt, but let a cooperative adapter settle
-      // so the graph can usually still be unloaded in this call.
-      await Promise.race([settled, delay(CANCEL_SETTLE_GRACE_MS)]);
+      await Promise.race([
+        this.liveHiveHost.runs.waitSettled(runId),
+        delay(CANCEL_SETTLE_GRACE_MS),
+      ]);
       throw new DispatchTimeoutError(timeoutMs);
     } finally {
       if (timer !== undefined) {
         clearTimeout(timer);
       }
     }
+  }
+
+  private requireSuccess(run: LiveHiveRunView, runId: string): void {
+    if (run.state === 'completed') {
+      return;
+    }
+    const failure = this.liveHiveHost.runs.failureOf(runId);
+    if (failure !== undefined) {
+      throw normalizeDispatchError(failure);
+    }
+    const state: ExecutionState =
+      run.state === 'cancelled' ? 'cancelled' : run.state === 'failed' ? 'failed' : 'unknown';
+    throw new DispatchExecutionError(state);
   }
 
   /** Fire-and-forget: a stalled native cancel must not delay the timeout. */
@@ -296,36 +307,39 @@ export class DispatchService {
     }
   }
 
-  private requireOutput(graphId: string): string {
-    const value = this.liveHiveHost.outputsOf(graphId).get(BEE_ID);
-    if (value === undefined || value.kind !== 'text') {
+  private requireOutput(run: LiveHiveRunView): string {
+    const value = run.outputs.find((entry) => entry.nodeId === BEE_ID)?.value;
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      (value as { kind?: unknown }).kind !== 'text'
+    ) {
       throw new DispatchError('dispatch graph produced no output');
     }
-    if (value.text.trim() === '') {
+    const text = (value as { text?: unknown }).text;
+    if (typeof text !== 'string' || text.trim() === '') {
       throw new DispatchError('dispatch graph produced empty output');
     }
-    return value.text;
+    return text;
   }
 
   /**
-   * Unload the ephemeral graph. A busy (still-running) trigger makes the host
-   * refuse; the unload is then retried once the runtime settles. It never
+   * Unload the ephemeral graph. A busy (still-running) trace makes the host
+   * refuse; the unload is then retried once that trace settles. It never
    * retains a loaded graph after a clean run or a settled failure.
    */
-  private async releaseGraph(
-    graphId: string,
-    settled: Promise<void> | undefined,
-  ): Promise<void> {
+  private async releaseGraph(graphId: string, runId: string | undefined): Promise<void> {
     let unloaded = false;
     try {
       unloaded = await this.liveHiveHost.unload(graphId);
     } catch {
       unloaded = false;
     }
-    if (unloaded || settled === undefined) {
+    if (unloaded || runId === undefined) {
       return;
     }
-    void settled
+    void this.liveHiveHost.runs
+      .waitSettled(runId)
       .then(() => this.liveHiveHost.unload(graphId))
       .catch(() => undefined);
   }

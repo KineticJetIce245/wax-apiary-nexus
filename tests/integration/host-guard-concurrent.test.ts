@@ -11,6 +11,7 @@ import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
 import {
+  admissionRunId,
   autoDecideGuards,
   bLoadLive,
   bWake,
@@ -18,6 +19,7 @@ import {
   type GuardAutoDecider,
   liveFrom,
   postJson,
+  waitForRunTerminal,
 } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
@@ -72,6 +74,41 @@ async function waitForGuards(
     await delay(100);
   }
   throw new Error(`timed out waiting for ${String(count)} guards; last=${JSON.stringify(last)}`);
+}
+
+function selectGuards(
+  guards: readonly Record<string, unknown>[],
+  requestDirectory: ReadonlyMap<string, string>,
+  projectA: Project,
+  projectB: Project,
+): { readonly guardA: Record<string, unknown>; readonly guardB: Record<string, unknown> } {
+  const guardA = guards.find(
+    (guard) => requestDirectory.get(String(guard['requestId'])) === projectA.directory,
+  );
+  const guardB = guards.find(
+    (guard) => requestDirectory.get(String(guard['requestId'])) === projectB.directory,
+  );
+  assert.ok(guardA !== undefined, 'guard for session A must be pending');
+  assert.ok(guardB !== undefined, 'guard for session B must be pending');
+  return { guardA, guardB };
+}
+
+async function decideBothGuards(
+  url: string,
+  token: string,
+  guardA: Record<string, unknown>,
+  guardB: Record<string, unknown>,
+): Promise<void> {
+  const allowed = await postJson(url, token, '/guard/decide', {
+    requestId: guardA['requestId'],
+    decision: 'allow_once',
+  });
+  assert.equal(allowed.status, 200);
+  const rejected = await postJson(url, token, '/guard/decide', {
+    requestId: guardB['requestId'],
+    decision: 'reject_once',
+  });
+  assert.equal(rejected.status, 200);
 }
 
 test(
@@ -168,7 +205,6 @@ test(
       }),
     );
     let autoDecider: GuardAutoDecider | undefined;
-
     try {
       const info = await server.start();
       const token = readFileSync(info.tokenPath, 'utf8').trim();
@@ -201,7 +237,6 @@ test(
           `${loaded.text}\ncontrol logs:\n${controlLogs.join('\n')}`,
         );
       }
-
       const markerA = `CONCURRENT-A-${String(Date.now())}`;
       const markerB = `CONCURRENT-B-${String(Date.now())}`;
       const wakeA = bWake(
@@ -222,20 +257,17 @@ test(
       // flight; keep that transport rejection from masking the real assertion.
       void wakeA.catch(() => undefined);
       void wakeB.catch(() => undefined);
-
       const guards = await waitForGuards(info.url, token, 2, 60_000);
       assert.equal(guards.length, 2);
       const requestIds = guards.map((guard) => String(guard['requestId']));
       assert.equal(new Set(requestIds).size, 2, 'concurrent guards must have distinct requestIds');
 
-      const guardA = guards.find(
-        (guard) => requestDirectory.get(String(guard['requestId'])) === projectA.directory,
+      const { guardA, guardB } = selectGuards(
+        guards,
+        requestDirectory,
+        projectA,
+        projectB,
       );
-      const guardB = guards.find(
-        (guard) => requestDirectory.get(String(guard['requestId'])) === projectB.directory,
-      );
-      assert.ok(guardA !== undefined, 'guard for session A must be pending');
-      assert.ok(guardB !== undefined, 'guard for session B must be pending');
       assert.notEqual(guardA['requestId'], guardB['requestId']);
       autoDecider = autoDecideGuards(
         info.url,
@@ -256,16 +288,7 @@ test(
       assert.equal(JSON.stringify(listed.body).includes(markerA), false);
       assert.equal(JSON.stringify(listed.body).includes(markerB), false);
 
-      const allowed = await postJson(info.url, token, '/guard/decide', {
-        requestId: guardA['requestId'],
-        decision: 'allow_once',
-      });
-      assert.equal(allowed.status, 200);
-      const rejected = await postJson(info.url, token, '/guard/decide', {
-        requestId: guardB['requestId'],
-        decision: 'reject_once',
-      });
-      assert.equal(rejected.status, 200);
+      await decideBothGuards(info.url, token, guardA, guardB);
 
       const [wakeAResult, wakeBResult] = await Promise.all([wakeA, wakeB]);
       t.diagnostic(
@@ -273,10 +296,24 @@ test(
       );
       const failureDetail =
         `\ncontrol logs:\n${controlLogs.join('\n')}\nworkspace logs:\n${workspaceLogs.join('\n')}`;
-      assert.equal(wakeAResult.status, 200, `${wakeAResult.text}${failureDetail}`);
-      assert.equal(wakeAResult.body?.['result']?.['rest'], true);
-      assert.equal(wakeBResult.status, 200, `${wakeBResult.text}${failureDetail}`);
-      assert.equal(wakeBResult.body?.['result']?.['rest'], true);
+      assert.equal(wakeAResult.status, 202, `${wakeAResult.text}${failureDetail}`);
+      assert.equal(wakeBResult.status, 202, `${wakeBResult.text}${failureDetail}`);
+      await Promise.all([
+        waitForRunTerminal(
+          info.url,
+          token,
+          'concurrent-a',
+          admissionRunId(wakeAResult.body),
+          180_000,
+        ),
+        waitForRunTerminal(
+          info.url,
+          token,
+          'concurrent-b',
+          admissionRunId(wakeBResult.body),
+          180_000,
+        ),
+      ]);
 
       assert.equal(
         readFileSync(join(projectA.directory, 'marker-a.txt'), 'utf8'),

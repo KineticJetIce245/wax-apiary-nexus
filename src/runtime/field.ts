@@ -9,11 +9,50 @@ import type {
 } from './types.js';
 
 export function createNodeState(): NodeState {
-  return { queue: [] };
+  // A resting bee has no mailbox; the first enqueue creates one.
+  return {};
 }
 
 export function clonePheromone(pheromone: Pheromone): Pheromone {
   return structuredClone(pheromone);
+}
+
+/** The mailbox of a bee; a resting bee has none, which reads as empty here. */
+export function mailboxOf(state: NodeState): readonly Pheromone[] {
+  return state.queue ?? [];
+}
+
+/** Restores a mailbox only when it holds input; an empty one is omitted. */
+export function setMailbox(state: NodeState, mailbox: readonly Pheromone[]): void {
+  if (mailbox.length === 0) {
+    return;
+  }
+  state.queue = [...mailbox];
+}
+
+/** Removes the mailbox of a bee with no active or pending activation left. */
+export function restMailboxIfIdle(state: NodeState): void {
+  if (state.active !== undefined || state.pending !== undefined) {
+    return;
+  }
+  if ((state.queue?.length ?? 0) > 0) {
+    return;
+  }
+  delete state.queue;
+}
+
+/** Drops one fork's queued siblings, keeping the mailbox only for survivors. */
+export function dropForkFromMailbox(state: NodeState, forkId: string): void {
+  const mailbox = state.queue;
+  if (mailbox === undefined || !mailbox.some((pheromone) => pheromone.forkId === forkId)) {
+    return;
+  }
+  const kept = mailbox.filter((pheromone) => pheromone.forkId !== forkId);
+  if (kept.length === 0) {
+    delete state.queue;
+  } else {
+    state.queue = kept;
+  }
 }
 
 function cloneValue<T>(value: T): T {
@@ -26,7 +65,7 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
       node.active !== undefined ||
       node.pending !== undefined ||
       node.hover !== undefined ||
-      node.queue.length > 0 ||
+      mailboxOf(node).length > 0 ||
       hasIncompleteJoin(node)
     ) {
       return false;
@@ -75,7 +114,7 @@ export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
     if (node.pending !== undefined) {
       pheromones.push(clonePheromone(node.pending));
     }
-    for (const queued of node.queue) {
+    for (const queued of mailboxOf(node)) {
       pheromones.push(clonePheromone(queued));
     }
     if (node.joins !== undefined) {
@@ -98,7 +137,7 @@ export function snapshotField(
 
   for (const [id, state] of nodes) {
     const snapshot: NodeStateSnapshot = {
-      queue: state.queue.map(clonePheromone),
+      queue: mailboxOf(state).map(clonePheromone),
       state: state.state === undefined ? {} : cloneValue(state.state),
     };
     if (state.pending !== undefined) {

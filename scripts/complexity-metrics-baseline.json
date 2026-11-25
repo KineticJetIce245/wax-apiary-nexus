@@ -416,21 +416,9 @@
       "parameters": 3
     },
     "src/runtime/runtime.ts::class PheromoneRuntime": {
-      "bodyLines": 2215,
+      "bodyLines": 2173,
       "publicMethods": 9,
       "constructorDependencies": 2
-    },
-    "src/runtime/runtime.ts::function evaluateCondition": {
-      "lines": 27,
-      "cyclomatic": 11,
-      "nesting": 2,
-      "parameters": 2
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.activate": {
-      "lines": 55,
-      "cyclomatic": 7,
-      "nesting": 4,
-      "parameters": 3
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.applyField": {
       "lines": 123,
@@ -444,33 +432,15 @@
       "nesting": 2,
       "parameters": 3
     },
-    "src/runtime/runtime.ts::method PheromoneRuntime.assertAttachmentAnswer": {
-      "lines": 31,
-      "cyclomatic": 12,
-      "nesting": 1,
-      "parameters": 3
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.assertUserValue": {
-      "lines": 33,
-      "cyclomatic": 11,
-      "nesting": 2,
-      "parameters": 2
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.expireOverdueQueues": {
-      "lines": 53,
-      "cyclomatic": 10,
-      "nesting": 4,
-      "parameters": 0
-    },
     "src/runtime/runtime.ts::method PheromoneRuntime.exportField": {
-      "lines": 53,
+      "lines": 52,
       "cyclomatic": 17,
       "nesting": 3,
       "parameters": 0
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.failFork": {
-      "lines": 54,
-      "cyclomatic": 15,
+      "lines": 52,
+      "cyclomatic": 14,
       "nesting": 4,
       "parameters": 3
     },
@@ -497,12 +467,6 @@
       "cyclomatic": 11,
       "nesting": 2,
       "parameters": 1
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.pump": {
-      "lines": 51,
-      "cyclomatic": 7,
-      "nesting": 4,
-      "parameters": 0
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.pushPheromone": {
       "lines": 59,
@@ -533,12 +497,6 @@
       "cyclomatic": 16,
       "nesting": 4,
       "parameters": 0
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.takeRunnable": {
-      "lines": 55,
-      "cyclomatic": 13,
-      "nesting": 3,
-      "parameters": 1
     },
     "src/runtime/worker.ts::arrow <anonymous@212>": {
       "lines": 184,

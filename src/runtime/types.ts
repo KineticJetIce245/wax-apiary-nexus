@@ -309,7 +309,12 @@ export interface JoinStateSnapshot {
 
 /** Mutable per-node runtime state. Never handed out directly. */
 export interface NodeState {
-  queue: Pheromone[];
+  /**
+   * The bee's mailbox: input waiting to be activated, in FIFO order. It exists
+   * only while the bee is awake; the drain removes it when the mailbox is empty
+   * and no pending activation is held, so a resting bee keeps no mailbox.
+   */
+  queue?: Pheromone[];
   pending?: Pheromone;
   active?: Pheromone;
   /**

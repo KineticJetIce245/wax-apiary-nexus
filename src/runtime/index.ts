@@ -14,8 +14,14 @@ export {
   MAX_COMPLETED_JOINS_PER_MERGE,
   PheromoneRuntime,
   QUEUE_RETRY_MS,
-  QueueFullError,
 } from './runtime.js';
+export {
+  DEFAULT_MAILBOX_BLOCK_TIMEOUT_MS,
+  MailboxBlockTimeoutError,
+  QueueFullError,
+  readMailboxOverflowOptions,
+} from './mailbox-overflow.js';
+export type { MailboxOverflowPolicy } from './mailbox-overflow.js';
 export {
   DEFAULT_WORKER_TIMEOUT_MS,
   MAX_WORKER_OUTPUT_BYTES,

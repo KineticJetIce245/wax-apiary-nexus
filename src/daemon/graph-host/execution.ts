@@ -50,19 +50,19 @@ export class LiveHiveHostExecution {
   ) {}
 
   /**
-   * Admit one wake. The host lock covers only the enqueue and run record;
-   * native execution is driven afterwards by the per-live runtime pump.
+   * Admit one wake. The live lock is deliberately not held across admission:
+   * a `block` policy may wait for mailbox capacity outside every field lock.
+   * The graph lease keeps the live hive loaded for the whole wait; the run
+   * record is accepted only once the Pheromone is actually enqueued.
    */
   trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveAdmission> {
     if (this.context.disposed) {
       return Promise.reject(new LiveHiveHostDisposedError());
     }
-    return this.context.lock
-      .run(graphId, () => admitTrigger(this.context, graphId, nodeId, value))
-      .then((admission) => {
-        startRunDriver(this.context, graphId);
-        return admission;
-      });
+    return admitTrigger(this.context, graphId, nodeId, value).then((admission) => {
+      startRunDriver(this.context, graphId);
+      return admission;
+    });
   }
 
   /**
@@ -98,8 +98,10 @@ async function admitTrigger(
   const lease = acquireLease(context, graphId);
   try {
     const live = lease.value;
-    // The enqueue validates the node before any run becomes visible.
-    live.runtime.admit(nodeId, value, traceId);
+    // The enqueue validates the node before any run becomes visible. In block
+    // mode this awaits mailbox capacity while the lease pins the graph.
+    await live.runtime.admit(nodeId, value, traceId);
+    context.assertNotDisposed();
     context.runs.accept({ liveId: graphId, runId, traceId, operation: 'trigger', startedAt });
     touchSessions(context, live);
     if (!live.ephemeral) {

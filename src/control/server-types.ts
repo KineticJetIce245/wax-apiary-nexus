@@ -92,6 +92,8 @@ export type ControlErrorCode =
   | 'conflict'
   | 'session-busy'
   | 'queue-full'
+  | 'bee-mailbox-full'
+  | 'bee-mailbox-block-timeout'
   | 'guard-expired'
   | 'approval-timeout'
   | 'execution-cancelled'

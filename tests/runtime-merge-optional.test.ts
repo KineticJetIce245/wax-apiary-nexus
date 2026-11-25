@@ -479,7 +479,7 @@ test('a late required branch is a protocol error and never emits a second time',
   const field = runtime.exportField();
   const mergeState = field.nodes['merge'];
   assert.ok(mergeState !== undefined);
-  mergeState.queue.push(branchPheromone(firstForkId, 'a', text('again')));
+  (mergeState.queue ??= []).push(branchPheromone(firstForkId, 'a', text('again')));
 
   const calls: string[] = [];
   const restored = PheromoneRuntime.restore(definition, field, {

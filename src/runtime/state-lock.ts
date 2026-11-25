@@ -10,6 +10,11 @@
 export class StateLock {
   private held = false;
 
+  /** True while a synchronous state transaction is running. */
+  get locked(): boolean {
+    return this.held;
+  }
+
   runSync<T>(action: () => T): T {
     if (this.held) {
       throw new Error('state lock is not re-entrant');

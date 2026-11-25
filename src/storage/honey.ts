@@ -3,7 +3,6 @@ import {
   readFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-
 import { atomicWriteJson } from './atomic-write.js';
 import { expandHomePath } from './conversation-store.js';
 import { assertJsonValue } from '../runtime/json-value.js';
@@ -17,9 +16,7 @@ import type {
   Value,
 } from '../runtime/index.js';
 import { parseSchedulerState, type SchedulerState } from '../daemon/scheduler.js';
-
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
 export interface HoneyPaths {
   /** `~/.wax/apiaries/<apiary>/compositions/<composition>` */
   readonly directory: string;
@@ -30,7 +27,6 @@ export interface HoneyPaths {
   /** Answer inbox: `<directory>/honey/answers/` */
   readonly answers: string;
 }
-
 /**
  * Contract paths for one composition. Ids become directory names, so anything
  * that could escape the state root is rejected instead of sanitized.
@@ -52,18 +48,15 @@ export function honeyPaths(stateRoot: string, apiaryId: string, compositionId: s
     answers: join(directory, 'honey', 'answers'),
   };
 }
-
 function safeSegment(value: string, label: string): string {
   if (!SAFE_SEGMENT.test(value)) {
     throw new Error(`invalid ${label}: '${value}'`);
   }
   return value;
 }
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 function parseBranchTag(input: unknown, path: string): BranchTag {
   if (!isRecord(input)) {
     throw new Error(`${path}: expected a branch tag object`);
@@ -78,7 +71,6 @@ function parseBranchTag(input: unknown, path: string): BranchTag {
   }
   return { forkId, branchId };
 }
-
 /**
  * A lineage is outer-to-inner. An empty array is rejected: an untagged
  * Pheromone omits `lineage` entirely, so there is only one representation for
@@ -93,7 +85,6 @@ function parseLineage(input: unknown, path: string): BranchTag[] | undefined {
   }
   return input.map((entry, index) => parseBranchTag(entry as unknown, `${path}[${String(index)}]`));
 }
-
 function sameLineage(left: readonly BranchTag[], right: readonly BranchTag[]): boolean {
   if (left.length !== right.length) {
     return false;
@@ -107,7 +98,6 @@ function sameLineage(left: readonly BranchTag[], right: readonly BranchTag[]): b
   }
   return true;
 }
-
 /**
  * Validates the shape of a persisted Value. Shared with the answer inbox: an
  * answer record is untrusted local input, so it must not smuggle a Value shape
@@ -149,7 +139,6 @@ export function assertValueShape(value: unknown, path: string): asserts value is
       throw new Error(`${path}.kind: unknown value kind '${String(value['kind'])}'`);
   }
 }
-
 function parsePheromone(input: unknown, path: string): Pheromone {
   if (!isRecord(input)) {
     throw new Error(`${path}: expected a Pheromone object`);
@@ -371,14 +360,25 @@ function parseJoins(
   return Object.fromEntries(entries);
 }
 
+function parseMailbox(input: unknown, path: string): Pheromone[] | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(input)) {
+    throw new Error(`${path}: expected an array`);
+  }
+  return input.map((entry, index) =>
+    parsePheromone(entry, `${path}[${String(index)}]`),
+  );
+}
+
 function parseNodeState(input: unknown, path: string): PersistedNodeState {
-  if (!isRecord(input) || !Array.isArray(input['queue'])) {
-    throw new Error(`${path}: expected a node state with a queue array`);
+  if (!isRecord(input)) {
+    throw new Error(`${path}: expected a node state object`);
   }
 
-  const state: PersistedNodeState = {
-    queue: input['queue'].map((entry, index) => parsePheromone(entry, `${path}.queue[${String(index)}]`)),
-  };
+  const queue = parseMailbox(input['queue'], `${path}.queue`);
+  const state: PersistedNodeState = queue === undefined ? {} : { queue };
   if (input['pending'] !== undefined) {
     state.pending = parsePheromone(input['pending'], `${path}.pending`);
   }

@@ -146,6 +146,9 @@ GET  /health
 - One endpoint, one token.
 - `--harness` filters/validates; it does not select a per-harness daemon.
 - `POST /lives/wake` is admission-only: it returns **202** `{ ok:true, runId, traceId, status:"accepted" }` after placing the Pheromone in the target bee's mailbox. It does not wait for native execution or final output; query `GET /lives/:id/runs/:runId` for state/output. There is no legacy wait/result envelope.
+- When a bee mailbox is full (`queueMax` waiting entries), the configured overflow policy applies:
+  - `reject`: 429 `bee-mailbox-full` with `liveId/beeId/pending/limit/policy`;
+  - `block`: wait outside the state lock, emit `bee-mailbox-blocked`, then 429 `bee-mailbox-block-timeout` with `waitedMs` if capacity does not arrive.
 - `POST /dispatch` creates an ephemeral one-bee graph, waits for its own run to finish, returns the output/sessionId, and disposes the graph; it is not persisted as a LiveHive. If the target session is busy, it waits in harness-side admission up to the dispatch timeout, then returns 409 `dispatch-timeout`; it never writes directly to the session, returns a queue handle, or starts a second execution. A non-queue adapter returns 409 `session-busy` instead of waiting. Unknown/conflict/cancelled errors retain the existing 404/409 mapping.
 - `answer` is not admission-only; it remains the synchronous user-hover answer path.
 - There is no queue-status route. Adapter admission is in memory only and has no public id; a restart forgets pending prompts and never replays them.

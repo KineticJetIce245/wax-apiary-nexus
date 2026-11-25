@@ -169,7 +169,7 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
   assert.ok(loaded !== undefined);
   assert.deepEqual(loaded, field);
   assert.equal(loaded.nodes['ask-outer']?.hover?.token, token);
-  assert.equal(loaded.nodes['queue-node']?.queue[0]?.id, queued.id);
+  assert.equal(loaded.nodes['queue-node']?.queue?.[0]?.id, queued.id);
   assert.equal(loaded.nodes['queue-node']?.pending?.id, pending.id);
 
   const restoredLog = createMemoryLog();
@@ -430,7 +430,7 @@ test('a restored timed-out nested tombstone blocks a late inner branch', async (
   };
   const innerNode = loaded.nodes['inner-merge'];
   assert.ok(innerNode !== undefined);
-  innerNode.queue.push(late);
+  appendQueued(innerNode, late);
 
   const restoredRecorder = recorder();
   const { runtime: restored } = PheromoneRuntime.restore(definition, loaded, {
@@ -501,3 +501,16 @@ test('honey validates Pheromone lineage and join lineage', () => {
   store.save(mismatchedJoin);
   assert.throws(() => store.load(), /lineage: does not match its branch Pheromones/);
 });
+
+/** Persisted node states may omit an empty mailbox; append without a `??`. */
+function appendQueued(
+  state: { queue?: Pheromone[] },
+  pheromone: Pheromone,
+): void {
+  const queue = state.queue;
+  if (queue === undefined) {
+    state.queue = [pheromone];
+  } else {
+    queue.push(pheromone);
+  }
+}

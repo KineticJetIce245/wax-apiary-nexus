@@ -185,8 +185,8 @@
       "parameters": 3
     },
     "src/control/http-errors.ts::function toHttpError": {
-      "lines": 66,
-      "cyclomatic": 25,
+      "lines": 59,
+      "cyclomatic": 20,
       "nesting": 2,
       "parameters": 1
     },
@@ -256,9 +256,9 @@
       "constructorDependencies": 1
     },
     "src/daemon/graph-host/context.ts::constructor LiveHiveHostContext": {
-      "lines": 77,
-      "cyclomatic": 20,
-      "nesting": 2,
+      "lines": 73,
+      "cyclomatic": 13,
+      "nesting": 1,
       "parameters": 1
     },
     "src/daemon/graph-host/execution.ts::function pumpToQuiescence": {
@@ -416,12 +416,12 @@
       "parameters": 3
     },
     "src/runtime/runtime.ts::class PheromoneRuntime": {
-      "bodyLines": 2152,
+      "bodyLines": 2113,
       "publicMethods": 9,
       "constructorDependencies": 2
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.applyField": {
-      "lines": 123,
+      "lines": 122,
       "cyclomatic": 24,
       "nesting": 4,
       "parameters": 1
@@ -433,9 +433,9 @@
       "parameters": 3
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.exportField": {
-      "lines": 52,
-      "cyclomatic": 17,
-      "nesting": 3,
+      "lines": 33,
+      "cyclomatic": 13,
+      "nesting": 1,
       "parameters": 0
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.failFork": {
@@ -467,12 +467,6 @@
       "cyclomatic": 11,
       "nesting": 2,
       "parameters": 1
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.pushPheromone": {
-      "lines": 59,
-      "cyclomatic": 11,
-      "nesting": 1,
-      "parameters": 5
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.requestGuard": {
       "lines": 83,
@@ -576,7 +570,7 @@
       "parameters": 2
     },
     "src/storage/honey.ts::function parseNodeState": {
-      "lines": 40,
+      "lines": 39,
       "cyclomatic": 12,
       "nesting": 2,
       "parameters": 2

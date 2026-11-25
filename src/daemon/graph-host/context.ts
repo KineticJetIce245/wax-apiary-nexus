@@ -1,6 +1,7 @@
 import { GraphRegistry, type LiveHiveId } from '../../graph/registry.js';
 import { DEFAULT_IDLE_TTL_MS } from '../../graph/residency.js';
 import type { GuardDecision, GuardRequest, PheromoneFieldSnapshot } from '../../runtime/index.js';
+import { readMailboxOverflowOptions } from '../../runtime/index.js';
 import type { SessionRegistry } from '../../session/session-registry.js';
 import type { HoneyStore } from '../../storage/honey.js';
 import type { RunStore } from '../../storage/run-store.js';
@@ -38,6 +39,8 @@ export class LiveHiveHostContext {
   readonly maxWaitMs: number;
   readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
   readonly onGuardExpired: ((requestId: string) => void) | undefined;
+  readonly mailboxOverflowPolicy: 'reject' | 'block';
+  readonly mailboxBlockTimeoutMs: number;
   readonly onEvent: ((event: LiveHiveHostEvent) => void) | undefined;
   readonly graphs: GraphRegistry<LiveGraph>;
   readonly runs: RunTracker;
@@ -54,22 +57,15 @@ export class LiveHiveHostContext {
     this.registry = options.registry;
     this.catalog = options.catalog;    this.runStore = options.runStore;
     this.runs = createRunTracker(options, (event) => this.reportCleanupFailure(event));
-    if (options.guardTimeoutMs !== undefined) {
-      if (!Number.isInteger(options.guardTimeoutMs) || options.guardTimeoutMs <= 0) {
-        throw new TypeError('guardTimeoutMs must be a positive integer');
-      }
-    }
-    this.guardTimeoutMs = options.guardTimeoutMs;
-    this.allowHoverUnload = options.allowHoverUnload ?? false;
-    if (typeof this.allowHoverUnload !== 'boolean') {
-      throw new TypeError('allowHoverUnload must be a boolean');
-    }
+    this.guardTimeoutMs = positiveIntegerOption(options.guardTimeoutMs, 'guardTimeoutMs');
+    this.allowHoverUnload = readBooleanOption(
+      options.allowHoverUnload,
+      'allowHoverUnload',
+      false,
+    );
     this.now = options.now ?? (() => Date.now());
     this.honeyForGraph = options.honeyForGraph;
-    this.restoreHoney = options.restoreHoney ?? true;
-    if (typeof this.restoreHoney !== 'boolean') {
-      throw new TypeError('restoreHoney must be a boolean');
-    }
+    this.restoreHoney = readBooleanOption(options.restoreHoney, 'restoreHoney', true);
     this.bindingStore = options.bindingStore;
     this.defaultIdleTtlMs =
       options.defaultIdleTtlMs ??
@@ -91,6 +87,9 @@ export class LiveHiveHostContext {
     if (this.onGuardExpired !== undefined && typeof this.onGuardExpired !== 'function') {
       throw new TypeError('onGuardExpired must be a function');
     }
+    const mailbox = readMailboxOverflowOptions(options);
+    this.mailboxOverflowPolicy = mailbox.policy;
+    this.mailboxBlockTimeoutMs = mailbox.blockTimeoutMs;
     this.onEvent = options.onEvent;
     this.schedulers = new SchedulerService({
       now: this.now,
@@ -234,6 +233,28 @@ export function assertNonNegativeInteger(value: number, name: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new TypeError(`${name} must be a non-negative integer: ${String(value)}`);
   }
+}
+
+function readBooleanOption(
+  value: boolean | undefined,
+  name: string,
+  fallback: boolean,
+): boolean {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== 'boolean') {
+    throw new TypeError(`${name} must be a boolean`);
+  }
+  return resolved;
+}
+
+function positiveIntegerOption(
+  value: number | undefined,
+  name: string,
+): number | undefined {
+  if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+    throw new TypeError(`${name} must be a positive integer`);
+  }
+  return value;
 }
 
 export function messageOf(error: unknown): string {

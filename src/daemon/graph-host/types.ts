@@ -85,6 +85,14 @@ export interface LiveHiveHostOptions {
   /** Called when a runtime guard deadline expires; idempotent. */
   readonly onGuardExpired?: (requestId: string) => void;
   /**
+   * Per-bee mailbox overflow policy, passed to every runtime this host loads.
+   * `reject` (default) fails a full wake; `block` waits for mailbox capacity.
+   * `defaults.queueMax` remains the only per-bee waiting limit.
+   */
+  readonly mailboxOverflowPolicy?: 'reject' | 'block';
+  /** Positive integer block timeout; only used by `block`; defaults to 30s. */
+  readonly mailboxBlockTimeoutMs?: number;
+  /**
    * Optional observability for cleanup failures. Cleanup itself never rejects:
    * a failed close must not turn an unload into a residency failure.
    */

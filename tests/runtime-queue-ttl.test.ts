@@ -76,7 +76,7 @@ test('pump drops an expired queue entry, logs pheromone.expired and leaves the f
 
   // Persistence is never rewritten by the TTL: only pump/restore clean.
   clock += TTL;
-  assert.equal(runtime.exportField().nodes['start']?.queue.length, 1);
+  assert.equal(runtime.exportField().nodes['start']?.queue?.length, 1);
 
   await runtime.pump();
 

@@ -7,6 +7,8 @@ export type RuntimeEvent =
   | 'pheromone.rejected'
   | 'pheromone.blocked'
   | 'pheromone.expired'
+  | 'bee-mailbox-blocked'
+  | 'bee-mailbox-block-timeout'
   | 'node.activated'
   | 'node.completed'
   | 'node.failed'
@@ -46,6 +48,12 @@ export interface RuntimeLogEntry {
   forkId?: string;
   branchId?: string;
   queueDepth?: number;
+  /** Per-bee waiting limit (`queueMax`) for a mailbox overflow entry. */
+  limit?: number;
+  /** Which overflow policy produced this entry. */
+  policy?: 'reject' | 'block';
+  /** How long a blocked admission waited before it was admitted or timed out. */
+  waitedMs?: number;
   durationMs?: number;
   /** Answer-inbox id; the record's Value is never written to the log. */
   answerId?: string;

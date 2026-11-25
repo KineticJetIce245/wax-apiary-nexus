@@ -290,7 +290,7 @@ function describeField(field: PersistedField): FieldShape[] {
         .sort((left, right) => left.forkId.localeCompare(right.forkId));
       return {
         node: nodeId,
-        queue: node.queue.map((pheromone) => pheromone.id),
+        queue: (node.queue ?? []).map((pheromone) => pheromone.id),
         pending: node.pending?.id ?? null,
         hover: node.hover?.token ?? null,
         joins: joins.map((entry) => entry.forkId),

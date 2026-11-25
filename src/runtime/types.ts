@@ -383,7 +383,12 @@ export interface PersistedJoinState {
 }
 
 export interface PersistedNodeState {
-  queue: Pheromone[];
+  /**
+   * The awake bee's waiting mailbox, FIFO. A resting bee has no mailbox, so the
+   * key is omitted instead of writing an empty array (the same rule the live
+   * NodeState uses). Restore treats a missing key as an empty mailbox.
+   */
+  queue?: Pheromone[];
   pending?: Pheromone;
   active?: Pheromone;
   hover?: HoverSpec;

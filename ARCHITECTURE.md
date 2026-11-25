@@ -109,7 +109,7 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 - WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
 - `SessionOwnership` is refcounted ownership bookkeeping, not a mutex: it records which loaded LiveHives hold an explicit session. It never blocks or rejects sharing; prompt serialization is the adapter FIFO (`DshAcpAdapter.SessionPromptQueue`).
-- M18 phase 2 (implemented): per-bee mailbox + on-demand drain, short admission lock, admission-only `wake` returning 202, run tracker and `GET /lives/:id/runs/:runId`; `dispatch` waits on its own trace. Still pending: mailbox Honey snapshot, `maxPendingPerBee` reject/block overflow, loop `maxHops`/`maxDuration`, and the synchronous `answer` lock boundary. See `../docs/temp/M18-concurrency-decision.md`.
+- M18 phase 2/3 (implemented): per-bee mailbox + on-demand drain, short admission lock, admission-only `wake` returning 202, run tracker and `GET /lives/:id/runs/:runId`; `dispatch` waits on its own trace. Awake mailboxes are included in the Honey snapshot. `queueMax` overflow is `reject` (429 `bee-mailbox-full`) or `block` (429 `bee-mailbox-block-timeout` after the configured wait). Still pending: loop `maxHops`/`maxDuration` and the synchronous `answer` lock boundary. See `../docs/temp/M18-concurrency-decision.md`.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ## 7. Public names and internal engine names

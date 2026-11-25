@@ -12,7 +12,7 @@ import {
   LiveHiveHostNotFoundError,
 } from '../daemon/graph-host.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
-import { CompositionValidationError, QueueFullError } from '../runtime/index.js';
+import { CompositionValidationError, MailboxBlockTimeoutError, QueueFullError } from '../runtime/index.js';
 import { ForagerExecutionError } from '../session/forager.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
 import { ConversationBusyError, SessionBusyError } from '../session/session-errors.js';
@@ -27,17 +27,13 @@ export function toHttpError(error: unknown): HttpError {
   if (mapped !== undefined) {
     return mapped;
   }
-  if (error instanceof LiveHiveServiceError) {
-    switch (error.kind) {
-      case 'not-found':
-        return new HttpError(404, 'not-found', error.message);
-      case 'conflict':
-        return new HttpError(409, 'conflict', error.message);
-      case 'invalid':
-      case 'project':
-      case 'unsupported':
-        return new HttpError(400, 'bad-request', error.message);
-    }
+  const service = mapLiveHiveServiceError(error);
+  if (service !== undefined) {
+    return service;
+  }
+  const mailbox = mapMailboxError(error);
+  if (mailbox !== undefined) {
+    return mailbox;
   }
   if (error instanceof CompositionValidationError) {
     return new HttpError(400, 'bad-request', 'invalid composition definition');
@@ -61,9 +57,6 @@ export function toHttpError(error: unknown): HttpError {
         return new HttpError(409, 'conflict', 'hover is not open');
     }
   }
-  if (error instanceof QueueFullError) {
-    return new HttpError(409, 'conflict', 'graph queue is full');
-  }
   if (error instanceof ForagerExecutionError) {
     // A cancelled execution is a client-visible outcome, not an internal
     // fault. Only the Workspace's native approval timer is reported as
@@ -84,6 +77,51 @@ export function toHttpError(error: unknown): HttpError {
     return new HttpError(500, 'internal', 'internal error');
   }
   return new HttpError(500, 'internal', 'internal error');
+}
+
+function mapLiveHiveServiceError(error: unknown): HttpError | undefined {
+  if (!(error instanceof LiveHiveServiceError)) {
+    return undefined;
+  }
+  switch (error.kind) {
+    case 'not-found':
+      return new HttpError(404, 'not-found', error.message);
+    case 'conflict':
+      return new HttpError(409, 'conflict', error.message);
+    case 'invalid':
+    case 'project':
+    case 'unsupported':
+      return new HttpError(400, 'bad-request', error.message);
+  }
+  return undefined;
+}
+
+/** Structured mailbox overflow errors; callers can read bee, depth and limit. */
+function mapMailboxError(error: unknown): HttpError | undefined {
+  if (error instanceof QueueFullError) {
+    return new HttpError(429, 'bee-mailbox-full', 'bee mailbox is full', {
+      body: {
+        liveId: error.liveId,
+        beeId: error.nodeId,
+        pending: error.pending,
+        limit: error.limit,
+        policy: error.policy,
+      },
+    });
+  }
+  if (error instanceof MailboxBlockTimeoutError) {
+    return new HttpError(429, 'bee-mailbox-block-timeout', 'bee mailbox block wait timed out', {
+      body: {
+        liveId: error.liveId,
+        beeId: error.beeId,
+        pending: error.pending,
+        limit: error.limit,
+        policy: error.policy,
+        waitedMs: error.waitedMs,
+      },
+    });
+  }
+  return undefined;
 }
 
 /**

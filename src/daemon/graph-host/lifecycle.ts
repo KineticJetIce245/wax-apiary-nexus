@@ -163,6 +163,16 @@ function isEphemeral(options: LoadGraphOptions): boolean {
   return options.ephemeral === true;
 }
 
+function mailboxRuntimeOptions(context: LiveHiveHostContext): {
+  readonly mailboxOverflowPolicy: 'reject' | 'block';
+  readonly mailboxBlockTimeoutMs: number;
+} {
+  return {
+    mailboxOverflowPolicy: context.mailboxOverflowPolicy,
+    mailboxBlockTimeoutMs: context.mailboxBlockTimeoutMs,
+  };
+}
+
 function honeyForLoad(
   context: LiveHiveHostContext,
   graphId: LiveHiveId,
@@ -195,7 +205,6 @@ async function loadGraphLocked(
   if (options.idleTtlMs !== undefined) {
     assertNonNegativeInteger(options.idleTtlMs, 'idleTtlMs');
   }
-
   const honey = honeyForLoad(context, graphId, options.ephemeral);
   let persisted: PersistedField | undefined;
   let schedulerState: SchedulerState | undefined;
@@ -259,6 +268,7 @@ async function loadGraphLocked(
       ...(context.guardTimeoutMs === undefined
         ? {}
         : { guardTimeoutMs: context.guardTimeoutMs }),
+      ...mailboxRuntimeOptions(context),
       onRun: createRunObserver(context.runs),
     };
     let runtime: PheromoneRuntime;    let recovery: RecoveryReport | undefined;

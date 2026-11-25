@@ -192,10 +192,10 @@ test('a loaded field with a bad node shape is rejected', () => {
   });
   writeFileSync(
     store.paths.field,
-    JSON.stringify({ schemaVersion: 1, compositionId: 'ask', graphRevision: 'rev', rest: true, nodes: { start: {} } }),
+    JSON.stringify({ schemaVersion: 1, compositionId: 'ask', graphRevision: 'rev', rest: true, nodes: { start: { queue: 'not-an-array' } } }),
   );
 
-  assert.throws(() => store.load(), /expected a node state/);
+  assert.throws(() => store.load(), /queue: expected an array/);
 });
 
 test('restore keeps queue, pending and a user hover', async () => {
@@ -498,4 +498,29 @@ test('honey persists a completed join and drops a late optional after restart', 
   const afterJoin = Object.values(restored.runtime.snapshot().nodes['merge']?.joins ?? {})[0];
   assert.ok(afterJoin !== undefined);
   assert.ok(afterJoin.completedAt !== undefined);
+});
+
+test('a resting node may omit the mailbox key', () => {
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'rest');
+  store.save({
+    schemaVersion: 1,
+    compositionId: 'rest',
+    graphRevision: 'rev',
+    rest: true,
+    nodes: {},
+  });
+  writeFileSync(
+    store.paths.field,
+    JSON.stringify({
+      schemaVersion: 1,
+      compositionId: 'rest',
+      graphRevision: 'rev',
+      rest: true,
+      nodes: { start: {} },
+    }),
+  );
+
+  const loaded = store.load();
+  assert.ok(loaded !== undefined);
+  assert.deepEqual(loaded.nodes['start'], {});
 });

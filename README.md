@@ -30,7 +30,7 @@ waxd
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
 - `LiveHiveHost`, `LiveHiveStatus` and `LiveHiveId` remain internal engine names. They are not public WAX objects and are not exposed by the HTTP or CLI surface.
 - M17j is closed (2026-11-23): prompt admission lives in the WAX `DshAcpAdapter` (DSH source untouched); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns an admission handle (`runId`), never a final result. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
-- M18 phase 2 (2026-11-25): `wake` is admission-only; runs are tracked by `traceId` and queried at `GET /lives/:id/runs/:runId`; `dispatch` still waits for its own run. Mailbox snapshot/overflow/loop limits remain pending.
+- M18 phase 2 (2026-11-25): `wake` is admission-only; runs are tracked by `traceId` and queried at `GET /lives/:id/runs/:runId`; `dispatch` still waits for its own run. Phase 3 adds Honey mailbox snapshots and `reject|block` overflow at `queueMax`; loop limits remain pending.
 
 ## Current commands
 

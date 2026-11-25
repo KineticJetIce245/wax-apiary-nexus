@@ -1,9 +1,11 @@
 import type {
   CompositionDefinition,
+  JoinState,
   JoinStateSnapshot,
   NodeId,
   NodeState,
   NodeStateSnapshot,
+  PersistedJoinState,
   Pheromone,
   PheromoneFieldSnapshot,
 } from './types.js';
@@ -126,6 +128,26 @@ export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
     }
   }
   return pheromones;
+}
+
+/** JSON shape of the open/closed joins a Merge keeps across a pause. */
+export function joinsToPersisted(
+  joins: ReadonlyMap<string, JoinState>,
+): Record<string, PersistedJoinState> {
+  return Object.fromEntries(
+    [...joins].map(([forkId, join]) => [
+      forkId,
+      {
+        arrived: [...join.arrived.values()].map(clonePheromone),
+        ...(join.lineage === undefined
+          ? {}
+          : { lineage: join.lineage.map((tag) => ({ ...tag })) }),
+        ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
+        ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
+        ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),
+      },
+    ]),
+  );
 }
 
 export function snapshotField(

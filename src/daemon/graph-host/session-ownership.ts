@@ -2,16 +2,21 @@ import type { GraphBindings } from '../../graph/binding.js';
 import type { GraphId } from '../../graph/registry.js';
 
 /**
- * Explicit-session reservations, refcounted per session.
+ * Explicit-session ownership bookkeeping, refcounted per session.
  *
- * Several loaded LiveHives may share one explicit session: the session
- * execution queue in front of `trigger` serializes the actual executions, so
- * sharing is safe and no longer a typed rejection. A reservation is held from
- * the start of a load until that graph unloads; a failed load releases only the
- * sessions this call added.
+ * Several loaded LiveHives may share one explicit session. This class records
+ * which loaded graph holds which explicit session; it does not prevent sharing
+ * and does not serialize prompts. Per-session prompt serialization lives in the
+ * adapter FIFO (`DshAcpAdapter`'s `SessionPromptQueue`).
  *
- * Loading the same graph id twice is still refused by `GraphHostLifecycle`
- * before this layer is consulted.
+ * A reservation is held from the start of a load until that graph unloads; a
+ * failed load releases only the sessions this call added. Loading the same graph
+ * id twice is still refused by `GraphHostLifecycle` before this layer is
+ * consulted.
+ *
+ * This is not a mutex: `reserve()` never throws and never waits. The returned
+ * function is a rollback helper; `release(graphId)` removes that graph from
+ * every session it owns.
  */
 export class SessionOwnership {
   private readonly owners = new Map<string, Set<GraphId>>();

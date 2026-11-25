@@ -12,8 +12,11 @@ export type FreshMode = 'once' | 'always';
 
 /**
  * How one forager node obtains its native conversation. `session` reuses an
- * existing WAX session; `fresh` asks the session layer to create one. B-core's
- * first version never shares a session between two foragers.
+ * existing WAX session; `fresh` asks the session layer to create one.
+ *
+ * Within one composition, a session may not be bound to more than one forager
+ * (`duplicate-session`). Separate loaded LiveHives may share one explicit
+ * session; their prompts are serialized by the adapter FIFO.
  *
  * An absent `mode` means `always`, preserving the original fresh behavior.
  */

@@ -49,8 +49,11 @@ export class GraphHostLifecycle {
         new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`),
       );
     }
-    // Reserve explicit sessions before the async load. This makes a concurrent
-    // second load fail fast instead of both graphs attaching the same session.
+    // Reserve explicit sessions before the async load as ownership bookkeeping,
+    // not as mutual exclusion. Shared explicit sessions are allowed and are
+    // serialized later by the adapter FIFO. A failed load releases only the
+    // sessions this call added; a duplicate graph id is refused by the earlier
+    // loading/graphs check.
     let release: () => void;
     try {
       release = this.ownership.reserve(graphId, options.bindings);

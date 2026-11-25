@@ -108,7 +108,7 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 - One session has at most one active execution. Sharing a session across LiveHives is serialized by the WAX `DshAcpAdapter` FIFO; an explicit busy path may return `session-busy`, never a silent second execution.
 - WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
-- M18 target (accepted 2026-11-24, **not implemented**): per-node workers and a short state lock; `wake` is admission-only and returns a run handle; `dispatch` waits on its own trace. The current B-core still holds `LiveHiveLock` for the whole trigger and pumps sequentially. See `../docs/temp/M18-concurrency-decision.md`.
+- M18 target (accepted 2026-11-24, **not implemented**): per-bee temporary mailbox + on-demand drain, with a short state lock; `wake` is admission-only and returns a run handle; `dispatch` waits on its own trace. The current B-core still holds `LiveHiveLock` for the whole trigger and pumps sequentially. See `../docs/temp/M18-concurrency-decision.md`.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ## 7. Public names and internal engine names

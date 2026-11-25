@@ -108,6 +108,7 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 - One session has at most one active execution. Sharing a session across LiveHives is serialized by the WAX `DshAcpAdapter` FIFO; an explicit busy path may return `session-busy`, never a silent second execution.
 - WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
+- `SessionOwnership` is refcounted ownership bookkeeping, not a mutex: it records which loaded LiveHives hold an explicit session. It never blocks or rejects sharing; prompt serialization is the adapter FIFO (`DshAcpAdapter.SessionPromptQueue`).
 - M18 target (accepted 2026-11-24, **not implemented**): per-bee temporary mailbox + on-demand drain, with a short state lock; `wake` is admission-only and returns a run handle; `dispatch` waits on its own trace. Awake mailboxes are part of the Honey snapshot. A per-bee `maxPendingPerBee` uses `reject` or `block` overflow policy; both must surface structured errors/events. The current B-core still holds `LiveHiveLock` for the whole trigger and pumps sequentially. See `../docs/temp/M18-concurrency-decision.md`.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 

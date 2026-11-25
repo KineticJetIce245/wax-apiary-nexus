@@ -1,17 +1,17 @@
-import type { GraphId, ResidencySnapshot } from '../../graph/registry.js';
+import type { LiveHiveId, ResidencySnapshot } from '../../graph/registry.js';
 import type { NodeId, PheromoneFieldSnapshot, Value } from '../../runtime/index.js';
 import type { LiveHiveCatalogEntry } from '../live-hive-catalog.js';
 import { snapshotHovered } from './context.js';
-import type { GraphHostContext } from './context.js';
-import type { GraphNodeStatus, GraphStatus, LiveGraph } from './types.js';
-import { GraphNotFoundError } from './types.js';
+import type { LiveHiveHostContext } from './context.js';
+import type { LiveHiveNodeStatus, LiveHiveStatus, LiveGraph } from './types.js';
+import { LiveHiveHostNotFoundError } from './types.js';
 
 /** Read-only status, catalog, session and output views over the live registry. */
-export class GraphHostRead {
-  constructor(private readonly context: GraphHostContext) {}
+export class LiveHiveHostRead {
+  constructor(private readonly context: LiveHiveHostContext) {}
 
   /** Read-only view; it never acquires, touches or loads a graph. */
-  status(): readonly GraphStatus[] {
+  status(): readonly LiveHiveStatus[] {
     // A dispatch graph is a transient execution detail, not a LiveHive: it is
     // deliberately absent from the list view even during its short lifetime.
     // `statusOf` still reads it for the host's own result path.
@@ -24,7 +24,7 @@ export class GraphHostRead {
   }
 
   /** Read-only view of one graph; `undefined` when it is not loaded. */
-  statusOf(graphId: GraphId): GraphStatus | undefined {
+  statusOf(graphId: LiveHiveId): LiveHiveStatus | undefined {
     const entry = this.context.graphs.peek(graphId);
     if (entry === undefined) {
       return undefined;
@@ -64,11 +64,11 @@ export class GraphHostRead {
   }
 
   /** Read-only bee/node -> session mapping for one loaded graph. */
-  bindingsOf(graphId: GraphId): ReadonlyMap<NodeId, string> {
+  bindingsOf(graphId: LiveHiveId): ReadonlyMap<NodeId, string> {
     this.context.assertNotDisposed();
     const entry = this.context.graphs.peek(graphId);
     if (entry === undefined) {
-      throw new GraphNotFoundError(graphId);
+      throw new LiveHiveHostNotFoundError(graphId);
     }
     const bindings = new Map<NodeId, string>();
     for (const [nodeId, record] of entry.value.instantiated.sessions) {
@@ -81,14 +81,14 @@ export class GraphHostRead {
    * Last completed Value of every forager in one loaded graph, keyed by node
    * id. It is a read-only snapshot: `peek` never refreshes the idle TTL, takes
    * a lease or changes residency, so reading output cannot extend a graph's
-   * life. An unknown graph throws `GraphNotFoundError`; an unloaded graph's
+   * life. An unknown graph throws `LiveHiveHostNotFoundError`; an unloaded graph's
    * output is deliberately not persisted and therefore unreadable.
    */
-  outputsOf(graphId: GraphId): ReadonlyMap<NodeId, Value> {
+  outputsOf(graphId: LiveHiveId): ReadonlyMap<NodeId, Value> {
     this.context.assertNotDisposed();
     const entry = this.context.graphs.peek(graphId);
     if (entry === undefined) {
-      throw new GraphNotFoundError(graphId);
+      throw new LiveHiveHostNotFoundError(graphId);
     }
     const outputs = new Map<NodeId, Value>();
     for (const [nodeId, executor] of entry.value.instantiated.executors) {
@@ -101,12 +101,12 @@ export class GraphHostRead {
   }
 
   private statusFrom(
-    graphId: GraphId,
+    graphId: LiveHiveId,
     live: LiveGraph,
     snapshot: PheromoneFieldSnapshot,
     residency: ResidencySnapshot,
-  ): GraphStatus {
-    const nodes: GraphNodeStatus[] = [];
+  ): LiveHiveStatus {
+    const nodes: LiveHiveNodeStatus[] = [];
     for (const node of live.definition.nodes.values()) {
       const state = snapshot.nodes[node.id];
       nodes.push({

@@ -1,32 +1,32 @@
-import type { GraphId, SweepReport } from '../graph/registry.js';
+import type { LiveHiveId, SweepReport } from '../graph/registry.js';
 import type { NodeId, Value } from '../runtime/index.js';
 import type { LiveHiveCatalogEntry } from './live-hive-catalog.js';
-import { GraphHostContext } from './graph-host/context.js';
-import { GraphHostExecution } from './graph-host/execution.js';
-import { GraphHostLifecycle } from './graph-host/lifecycle.js';
-import { GraphHostRead } from './graph-host/read.js';
+import { LiveHiveHostContext } from './graph-host/context.js';
+import { LiveHiveHostExecution } from './graph-host/execution.js';
+import { LiveHiveHostLifecycle } from './graph-host/lifecycle.js';
+import { LiveHiveHostRead } from './graph-host/read.js';
 import { SessionOwnership } from './graph-host/session-ownership.js';
 import type {
-  GraphHostOptions,
-  GraphRunResult,
-  GraphStatus,
+  LiveHiveHostOptions,
+  LiveHiveRunResult,
+  LiveHiveStatus,
   LoadGraphOptions,
 } from './graph-host/types.js';
 
 export type {
-  GraphAnswerErrorReason,
-  GraphHostEvent,
-  GraphHostOptions,
-  GraphNodeStatus,
-  GraphRunResult,
-  GraphStatus,
+  LiveHiveHostAnswerErrorReason,
+  LiveHiveHostEvent,
+  LiveHiveHostOptions,
+  LiveHiveNodeStatus,
+  LiveHiveRunResult,
+  LiveHiveStatus,
   LoadGraphOptions,
 } from './graph-host/types.js';
 export {
-  GraphAnswerError,
-  GraphHostDisposedError,
-  GraphLoadError,
-  GraphNotFoundError,
+  LiveHiveHostAnswerError,
+  LiveHiveHostDisposedError,
+  LiveHiveHostLoadError,
+  LiveHiveHostNotFoundError,
 } from './graph-host/types.js';
 
 /**
@@ -37,19 +37,19 @@ export {
  * the shared lock; status, catalog and output paths remain lock-free reads. `sweep`
  * and `dispose` remain best-effort multi-live registry passes.
  */
-export class GraphHost {
-  private readonly context: GraphHostContext;
-  private readonly read: GraphHostRead;
-  private readonly execution: GraphHostExecution;
+export class LiveHiveHost {
+  private readonly context: LiveHiveHostContext;
+  private readonly read: LiveHiveHostRead;
+  private readonly execution: LiveHiveHostExecution;
   private readonly ownership: SessionOwnership;
-  private readonly lifecycle: GraphHostLifecycle;
+  private readonly lifecycle: LiveHiveHostLifecycle;
 
-  constructor(options: GraphHostOptions) {
-    this.context = new GraphHostContext(options);
-    this.read = new GraphHostRead(this.context);
-    this.execution = new GraphHostExecution(this.context, this.read);
+  constructor(options: LiveHiveHostOptions) {
+    this.context = new LiveHiveHostContext(options);
+    this.read = new LiveHiveHostRead(this.context);
+    this.execution = new LiveHiveHostExecution(this.context, this.read);
     this.ownership = new SessionOwnership();
-    this.lifecycle = new GraphHostLifecycle(
+    this.lifecycle = new LiveHiveHostLifecycle(
       this.context,
       this.read,
       this.ownership,
@@ -57,30 +57,30 @@ export class GraphHost {
     );
   }
 
-  loadGraph(options: LoadGraphOptions): Promise<GraphStatus> {
+  loadGraph(options: LoadGraphOptions): Promise<LiveHiveStatus> {
     return this.lifecycle.loadGraph(options);
   }
 
-  trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult> {
+  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveRunResult> {
     return this.execution.trigger(graphId, nodeId, value);
   }
 
   answer(
-    graphId: GraphId,
+    graphId: LiveHiveId,
     nodeId: NodeId,
     value: Value,
     token?: string,
-  ): Promise<GraphRunResult> {
+  ): Promise<LiveHiveRunResult> {
     return this.execution.answer(graphId, nodeId, value, token);
   }
 
   /** Read-only view; it never acquires, touches or loads a graph. */
-  status(): readonly GraphStatus[] {
+  status(): readonly LiveHiveStatus[] {
     return this.read.status();
   }
 
   /** Read-only view of one graph; `undefined` when it is not loaded. */
-  statusOf(graphId: GraphId): GraphStatus | undefined {
+  statusOf(graphId: LiveHiveId): LiveHiveStatus | undefined {
     return this.read.statusOf(graphId);
   }
 
@@ -95,21 +95,21 @@ export class GraphHost {
   }
 
   /** Read-only bee/node -> session mapping for one loaded graph. */
-  bindingsOf(graphId: GraphId): ReadonlyMap<NodeId, string> {
+  bindingsOf(graphId: LiveHiveId): ReadonlyMap<NodeId, string> {
     return this.read.bindingsOf(graphId);
   }
 
   /** Last completed Value of every forager in one loaded graph. */
-  outputsOf(graphId: GraphId): ReadonlyMap<NodeId, Value> {
+  outputsOf(graphId: LiveHiveId): ReadonlyMap<NodeId, Value> {
     return this.read.outputsOf(graphId);
   }
 
   /** Flush Honey/scheduler without unloading or disposing the graph. */
-  save(graphId: GraphId): Promise<GraphStatus> {
+  save(graphId: LiveHiveId): Promise<LiveHiveStatus> {
     return this.lifecycle.save(graphId);
   }
 
-  unload(graphId: GraphId): Promise<boolean> {
+  unload(graphId: LiveHiveId): Promise<boolean> {
     return this.lifecycle.unload(graphId);
   }
 

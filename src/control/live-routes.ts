@@ -11,7 +11,7 @@ import {
 } from './b-validation.js';
 import type { LiveHiveService } from '../b/live-hive-service.js';
 import { toPublicRunResult, toPublicStatus } from '../b/public-status.js';
-import { GraphLoadError } from '../daemon/graph-host.js';
+import { LiveHiveHostLoadError } from '../daemon/graph-host.js';
 import { queryParam } from './route-output.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
@@ -187,7 +187,7 @@ async function loadWithConflict<T>(
   try {
     return await load();
   } catch (error) {
-    if (error instanceof GraphLoadError) {
+    if (error instanceof LiveHiveHostLoadError) {
       const status = currentStatus(service, liveId);
       throw new HttpError(409, 'conflict', 'live hive is already loaded', {
         ...(status === undefined

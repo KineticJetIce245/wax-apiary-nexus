@@ -14,7 +14,7 @@ waxd
   ├─ SessionRegistry        global; session.harness decides the Workspace
   ├─ Harness prompt adapter  per-session admission, active execution, approval ownership
   ├─ LiveHiveService       new / load / wake / answer / guard / save / unload / migrate / dispatch
-  │    └─ GraphHost         internal execution engine for bees/beelines/PheromoneField
+  │    └─ LiveHiveHost     internal execution engine for bees/beelines/PheromoneField
   └─ ControlServer          one local endpoint, one token
 ```
 
@@ -28,8 +28,8 @@ waxd
 - **Save and unload both write `live.json`.** Load makes memory authoritative; disk changes are ignored until the next save/unload.
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
 - **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
-- `GraphHost`, `GraphStatus` and `GraphId` remain internal engine names. They are not public WAX objects and may be renamed later.
-- M17j is closed (2026-11-23): prompt admission lives in the WAX `DshAcpAdapter` (DSH source untouched); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns the run result (or 409 `session-busy` for an adapter without a queue), never an admission handle. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted. M17i rename remains deferred post-M17.
+- `LiveHiveHost`, `LiveHiveStatus` and `LiveHiveId` remain internal engine names. They are not public WAX objects and are not exposed by the HTTP or CLI surface.
+- M17j is closed (2026-11-23): prompt admission lives in the WAX `DshAcpAdapter` (DSH source untouched); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. `wax wake` returns the run result (or 409 `session-busy` for an adapter without a queue), never an admission handle. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
 
 ## Current commands
 
@@ -76,7 +76,7 @@ The legacy graph routes, catalog route and legacy CLI commands are not present a
 
 ## Names
 
-Public names are B names. Internal execution code still uses `GraphHost`, `GraphStatus`, `GraphId` and `CompositionDefinition`; these are implementation details, not a second object model.
+Public names are B names. Internal execution code still uses `LiveHiveHost`, `LiveHiveStatus`, `LiveHiveId` and `CompositionDefinition`; these are implementation details, not a second object model.
 
 There is no Agent object, no Revision/Definition object, and no Actor object.
 

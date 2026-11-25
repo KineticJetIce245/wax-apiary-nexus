@@ -9,11 +9,11 @@ import type {
   HarnessEvent,
 } from '../../src/adapters/harness.js';
 import {
-  GraphAnswerError,
-  GraphHost,
-  type GraphNodeStatus,
-  type GraphRunResult,
-  type GraphStatus,
+  LiveHiveHostAnswerError,
+  LiveHiveHost,
+  type LiveHiveNodeStatus,
+  type LiveHiveRunResult,
+  type LiveHiveStatus,
 } from '../../src/daemon/graph-host.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
 import type { Project } from '../../src/project/kernel.js';
@@ -229,11 +229,11 @@ export function text(value: string): Value {
  * reject here, so a resolved run is the synchronous result a test expects.
  */
 export async function triggerRun(
-  host: GraphHost,
+  host: LiveHiveHost,
   graphId: string,
   nodeId: NodeId,
   value: Value,
-): Promise<GraphRunResult> {
+): Promise<LiveHiveRunResult> {
   return host.trigger(graphId, nodeId, value);
 }
 
@@ -256,7 +256,7 @@ export function forager(prompt: string): Record<string, unknown> {
 
 /**
  * Validates the graph with parseComposition, then rewrites node pacing to 0 so
- * one trigger can reach Rest without sleeping. GraphHost must not sleep between
+ * one trigger can reach Rest without sleeping. LiveHiveHost must not sleep between
  * pumps; a production graph that is deliberately paced just stops at maxPumps.
  */
 export function fastDefinition(
@@ -288,7 +288,7 @@ export function promptsFor(adapter: RecordingAdapter, nativeId: string): readonl
   return prompts;
 }
 
-export function nodeStatus(status: GraphStatus, nodeId: NodeId): GraphNodeStatus {
+export function nodeStatus(status: LiveHiveStatus, nodeId: NodeId): LiveHiveNodeStatus {
   const node = status.nodes.find((candidate) => candidate.nodeId === nodeId);
   assert.ok(node !== undefined, `status has no node '${nodeId}'`);
   return node;
@@ -315,7 +315,7 @@ interface RuntimeTestAccess {
   snapshot(): PheromoneFieldSnapshot;
 }
 
-export function runtimeOf(host: GraphHost, graphId: string): RuntimeTestAccess {
+export function runtimeOf(host: LiveHiveHost, graphId: string): RuntimeTestAccess {
   const graphs = (host as unknown as {
     context: {
       graphs: {
@@ -328,7 +328,7 @@ export function runtimeOf(host: GraphHost, graphId: string): RuntimeTestAccess {
   return entry.value.runtime;
 }
 
-export function hoverTokenOf(host: GraphHost, graphId: string, nodeId: string): string {
+export function hoverTokenOf(host: LiveHiveHost, graphId: string, nodeId: string): string {
   const hover = runtimeOf(host, graphId).snapshot().nodes[nodeId]?.hover;
   assert.ok(hover !== undefined, `node '${nodeId}' has no open hover`);
   return hover.token;
@@ -336,7 +336,7 @@ export function hoverTokenOf(host: GraphHost, graphId: string, nodeId: string): 
 
 export function isAnswerError(reason: string) {
   return (error: unknown): boolean => {
-    assert.ok(error instanceof GraphAnswerError);
+    assert.ok(error instanceof LiveHiveHostAnswerError);
     assert.equal(error.reason, reason);
     return true;
   };

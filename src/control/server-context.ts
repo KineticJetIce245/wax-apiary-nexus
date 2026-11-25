@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import type { Server } from 'node:http';
 
 import { DaemonLock } from '../daemon/daemon-lock.js';
-import { GraphHost } from '../daemon/graph-host.js';
+import { LiveHiveHost } from '../daemon/graph-host.js';
 import type { SessionRegistry, SweepSessionsReport } from '../session/session-registry.js';
 import { expandHomePath } from '../storage/conversation-store.js';
 import { HoneyStore } from '../storage/honey.js';
@@ -51,7 +51,7 @@ export class ControlServerContext {
   state: 'idle' | 'starting' | 'running' | 'stopping' = 'idle';
   server: Server | undefined;
   lock: DaemonLock | undefined;
-  graphHost: GraphHost | undefined;
+  liveHiveHost: LiveHiveHost | undefined;
   liveHiveService: LiveHiveService | undefined;
   runStore: RunStore | undefined;
   guardBroker: GuardBroker | undefined;
@@ -175,8 +175,8 @@ export class ControlServerContext {
     return this.options.registry;
   }
 
-  requireGraphHost(): GraphHost {
-    const host = this.graphHost;
+  requireLiveHiveHost(): LiveHiveHost {
+    const host = this.liveHiveHost;
     if (host === undefined) {
       throw new HttpError(500, 'internal', 'internal error');
     }
@@ -193,7 +193,7 @@ export class ControlServerContext {
 
   /** One idle-session pass, shared by `POST /sessions/sweep` and the timer. */
   sweepIdleSessions(): Promise<SweepSessionsReport> {
-    const host = this.requireGraphHost();
+    const host = this.requireLiveHiveHost();
     return this.registry.sweepIdle({
       idleTtlMs: this.sessionIdleTtlMs,
       exclude: host.loadedSessionIds(),
@@ -202,6 +202,6 @@ export class ControlServerContext {
 
   /** One internal LiveHive TTL pass; not a public route. */
   sweepGraphs(): Promise<SweepReport> {
-    return this.requireGraphHost().sweep();
+    return this.requireLiveHiveHost().sweep();
   }
 }

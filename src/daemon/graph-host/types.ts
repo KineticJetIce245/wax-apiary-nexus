@@ -1,6 +1,6 @@
 import type { GraphBindings } from '../../graph/binding.js';
 import type { GraphBindingStore } from '../../graph/binding-store.js';
-import type { GraphId } from '../../graph/registry.js';
+import type { LiveHiveId } from '../../graph/registry.js';
 import type { Project } from '../../project/kernel.js';
 import type {
   CompositionDefinition,
@@ -17,7 +17,7 @@ import type { RunStore } from '../../storage/run-store.js';
 import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import type { SchedulerTimers } from '../scheduler.js';
 
-export interface GraphHostOptions {
+export interface LiveHiveHostOptions {
   readonly registry: SessionRegistry;
   /**
    * Optional identity index. Successful load/unload/sweep/dispose and graph
@@ -88,7 +88,7 @@ export interface GraphHostOptions {
    * Optional observability for cleanup failures. Cleanup itself never rejects:
    * a failed close must not turn an unload into a residency failure.
    */
-  readonly onEvent?: (event: GraphHostEvent) => void;
+  readonly onEvent?: (event: LiveHiveHostEvent) => void;
 }
 
 export interface LoadGraphOptions {
@@ -117,7 +117,7 @@ export interface LoadGraphOptions {
   readonly ephemeral?: boolean;
 }
 
-export interface GraphNodeStatus {
+export interface LiveHiveNodeStatus {
   readonly nodeId: string;
   readonly kind: string;
   readonly queue: number;
@@ -128,12 +128,12 @@ export interface GraphNodeStatus {
   readonly joins: number;
 }
 
-export interface GraphStatus {
+export interface LiveHiveStatus {
   readonly graphId: string;
   readonly graphRevision: string;
   readonly rest: boolean;
   readonly hovered: boolean;
-  readonly nodes: readonly GraphNodeStatus[];
+  readonly nodes: readonly LiveHiveNodeStatus[];
   /**
    * What a Honey restore could not keep running, keyed by node id only. It
    * never carries a prompt, output or Pheromone body.
@@ -154,14 +154,14 @@ export interface GraphStatus {
   };
 }
 
-export interface GraphRunResult {
+export interface LiveHiveRunResult {
   readonly graphId: string;
   readonly runId: string;
   readonly requestId: string;
   readonly rest: boolean;
   readonly hovered: boolean;
   readonly pumps: number;
-  readonly status: GraphStatus;
+  readonly status: LiveHiveStatus;
   /**
    * Whether the field is durably saved after this run. `true` without Honey:
    * there is nothing to persist. A Honey save failure is reported here instead
@@ -172,68 +172,68 @@ export interface GraphRunResult {
   readonly persistError?: string;
 }
 
-export type GraphHostEvent =
+export type LiveHiveHostEvent =
   | {
       readonly type: 'graph.cleanup-failed';
-      readonly graphId: GraphId;
+      readonly graphId: LiveHiveId;
       readonly phase: 'routing';
       readonly error: string;
     }
   | {
       readonly type: 'graph.cleanup-failed';
-      readonly graphId: GraphId;
+      readonly graphId: LiveHiveId;
       readonly phase: 'session';
       readonly sessionId: string;
       readonly error: string;
     }
   | {
       readonly type: 'graph.catalog-failed';
-      readonly graphId: GraphId;
+      readonly graphId: LiveHiveId;
       readonly phase: 'load' | 'access' | 'unload' | 'sweep' | 'dispose';
       readonly error: string;
     }
   | {
       readonly type: 'graph.run-store-failed';
-      readonly graphId: GraphId;
+      readonly graphId: LiveHiveId;
       readonly runId: string;
       readonly error: string;
     }
   | {
       readonly type: 'scheduler.trigger-failed';
-      readonly graphId: GraphId;
+      readonly graphId: LiveHiveId;
       readonly triggerId: string;
       readonly error: string;
     }
   | {
       readonly type: 'scheduler.unconfirmed';
-      readonly graphId: GraphId;
+      readonly graphId: LiveHiveId;
       readonly triggerId: string;
       readonly scheduledFor: string;
     };
 
-export class GraphNotFoundError extends Error {
+export class LiveHiveHostNotFoundError extends Error {
   constructor(
-    readonly graphId: GraphId,
+    readonly graphId: LiveHiveId,
     options?: ErrorOptions,
   ) {
     super(`Graph is not loaded: ${graphId}`, options);
-    this.name = 'GraphNotFoundError';
+    this.name = 'LiveHiveHostNotFoundError';
   }
 }
 
-export class GraphLoadError extends Error {
+export class LiveHiveHostLoadError extends Error {
   constructor(
-    readonly graphId: GraphId,
+    readonly graphId: LiveHiveId,
     message: string,
     options?: ErrorOptions,
   ) {
     super(message, options);
-    this.name = 'GraphLoadError';
+    this.name = 'LiveHiveHostLoadError';
   }
 }
 
-/** Why `GraphHost.answer` refused an answer. */
-export type GraphAnswerErrorReason =
+/** Why `LiveHiveHost.answer` refused an answer. */
+export type LiveHiveHostAnswerErrorReason =
   | 'unknown-node'
   | 'not-user-node'
   | 'no-hover'
@@ -243,23 +243,23 @@ export type GraphAnswerErrorReason =
  * A typed answer rejection. The message carries only ids the caller already
  * sent and the reason; it never carries a hover token, value or prompt.
  */
-export class GraphAnswerError extends Error {
+export class LiveHiveHostAnswerError extends Error {
   constructor(
-    readonly graphId: GraphId,
+    readonly graphId: LiveHiveId,
     readonly nodeId: NodeId,
-    readonly reason: GraphAnswerErrorReason,
+    readonly reason: LiveHiveHostAnswerErrorReason,
     options?: ErrorOptions,
   ) {
     super(`Answer rejected for node '${nodeId}' in graph '${graphId}': ${reason}`, options);
-    this.name = 'GraphAnswerError';
+    this.name = 'LiveHiveHostAnswerError';
   }
 }
 
 /** The host was disposed; it no longer accepts loads or triggers. */
-export class GraphHostDisposedError extends Error {
+export class LiveHiveHostDisposedError extends Error {
   constructor() {
     super('Graph host is disposed');
-    this.name = 'GraphHostDisposedError';
+    this.name = 'LiveHiveHostDisposedError';
   }
 }
 

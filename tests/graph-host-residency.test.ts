@@ -13,14 +13,14 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import {
-  GraphAnswerError,
-  GraphHost,
-  GraphHostDisposedError,
-  GraphLoadError,
-  GraphNotFoundError,
-  type GraphHostEvent,
-  type GraphNodeStatus,
-  type GraphStatus,
+  LiveHiveHostAnswerError,
+  LiveHiveHost,
+  LiveHiveHostDisposedError,
+  LiveHiveHostLoadError,
+  LiveHiveHostNotFoundError,
+  type LiveHiveHostEvent,
+  type LiveHiveNodeStatus,
+  type LiveHiveStatus,
 } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
@@ -68,8 +68,8 @@ import {
 test('a user hover is not unloaded or swept until it reaches Rest', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const cleanupEvents: GraphHostEvent[] = [];
-  const host = new GraphHost({
+  const cleanupEvents: LiveHiveHostEvent[] = [];
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     onEvent: (event) => cleanupEvents.push(event),
@@ -157,7 +157,7 @@ test('a user hover is not unloaded or swept until it reaches Rest', async (t) =>
 test('allowHoverUnload unloads a quiescent hover and retains its fresh session', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -202,7 +202,7 @@ test('allowHoverUnload unloads a quiescent hover and retains its fresh session',
 test('allowHoverUnload still refuses a hover while another node has queued work', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -246,7 +246,7 @@ test('allowHoverUnload still refuses a hover while another node has queued work'
 test('allowHoverUnload still refuses a hover while a node has a pending Pheromone', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -304,7 +304,7 @@ test('allowHoverUnload still refuses a hover while a node has a pending Pheromon
 test('allowHoverUnload still refuses a hover while another node is active', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     allowHoverUnload: true,
@@ -323,7 +323,7 @@ test('allowHoverUnload still refuses a hover while another node is active', asyn
     idleTtlMs: 100,
   });
 
-  // Drive the runtime directly so the active execution has no GraphHost lease:
+  // Drive the runtime directly so the active execution has no LiveHiveHost lease:
   // the only thing that may keep this graph loaded is the `active` guard itself.
   const runtime = runtimeOf(host, 'hover-active');
   runtime.trigger('ask', text('waiting'));

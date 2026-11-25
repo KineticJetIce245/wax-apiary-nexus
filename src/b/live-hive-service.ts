@@ -1,5 +1,5 @@
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
-import type { GraphHost, GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
+import type { LiveHiveHost, LiveHiveRunResult, LiveHiveStatus } from '../daemon/graph-host.js';
 import type { Project } from '../project/kernel.js';
 import type { Value } from '../runtime/index.js';
 import type { SessionRegistry } from '../session/session-registry.js';
@@ -17,7 +17,7 @@ export {
 } from './live-hive-service-errors.js';
 
 export interface LiveHiveServiceOptions {
-  readonly graphHost: GraphHost;
+  readonly liveHiveHost: LiveHiveHost;
   readonly registry: SessionRegistry;
   readonly livesRoot: string;
   readonly templateStore?: import('./hive-template.js').HiveTemplateStore;
@@ -29,7 +29,7 @@ export interface LiveHiveServiceOptions {
 
 export interface LiveHiveOperationResult {
   readonly liveId: string;
-  readonly status: GraphStatus;
+  readonly status: LiveHiveStatus;
 }
 
 export type {
@@ -42,8 +42,8 @@ export type {
 export type LiveHiveOverrides = Readonly<Record<string, SessionParams>>;
 
 /**
- * The B operation layer over GraphHost. Topology and explicit session bindings
- * live in live.json; GraphHost owns the runtime and Honey lifecycle.
+ * The B operation layer over LiveHiveHost. Topology and explicit session bindings
+ * live in live.json; LiveHiveHost owns the runtime and Honey lifecycle.
  */
 export class LiveHiveService {
   private readonly repository: LiveHiveRepository;
@@ -60,7 +60,7 @@ export class LiveHiveService {
     this.defaultProject = options.defaultProject;
     this.defaultHarness = options.defaultHarness;
     this.read = new LiveHiveReadService(
-      options.graphHost,
+      options.liveHiveHost,
       this.repository,
       options.runStore,
     );
@@ -68,7 +68,7 @@ export class LiveHiveService {
       options.dispatchService ??
       new DispatchService({
         registry: options.registry,
-        graphHost: options.graphHost,
+        liveHiveHost: options.liveHiveHost,
         ...(options.defaultProject === undefined
           ? {}
           : { defaultProject: options.defaultProject }),
@@ -158,9 +158,9 @@ export class LiveHiveService {
     liveId: string,
     beeId: string,
     input: string,
-  ): Promise<GraphRunResult> {
+  ): Promise<LiveHiveRunResult> {
     this.repository.requireLiveId(liveId);
-    return this.options.graphHost.trigger(liveId, beeId, textValue(input));
+    return this.options.liveHiveHost.trigger(liveId, beeId, textValue(input));
   }
 
   async answer(
@@ -168,29 +168,29 @@ export class LiveHiveService {
     beeId: string,
     input: string,
     token?: string,
-  ): Promise<GraphRunResult> {
+  ): Promise<LiveHiveRunResult> {
     this.repository.requireLiveId(liveId);
-    return this.options.graphHost.answer(liveId, beeId, textValue(input), token);
+    return this.options.liveHiveHost.answer(liveId, beeId, textValue(input), token);
   }
 
   /** Flush Honey/scheduler and write live.json without releasing the graph. */
-  async save(liveId: string): Promise<GraphStatus> {
+  async save(liveId: string): Promise<LiveHiveStatus> {
     const id = this.repository.requireLiveId(liveId);
     const live = this.repository.cacheGet(id) ?? this.repository.readLive(
       this.repository.pathFor(id),
       id,
     );
-    const status = await this.options.graphHost.save(id);
+    const status = await this.options.liveHiveHost.save(id);
     this.syncBindings(live);
     return status;
   }
 
-  /** GraphHost unload (which flushes Honey), then write live.json. */
+  /** LiveHiveHost unload (which flushes Honey), then write live.json. */
   async unload(liveId: string): Promise<boolean> {
     const id = this.repository.requireLiveId(liveId);
     const live = this.repository.cacheGet(id) ?? this.repository.tryReadLive(id);
     const synced = live === undefined ? undefined : this.syncBindings(live);
-    const unloaded = await this.options.graphHost.unload(id);
+    const unloaded = await this.options.liveHiveHost.unload(id);
     if (unloaded && synced !== undefined) {
       this.repository.saveLive(synced);
     }
@@ -224,7 +224,7 @@ export class LiveHiveService {
     const previousRevision = previous === undefined
       ? undefined
       : toCompositionDefinition(previous).graphRevision;
-    const unloaded = await this.options.graphHost.unload(id);
+    const unloaded = await this.options.liveHiveHost.unload(id);
     if (!unloaded) {
       throw new LiveHiveServiceError('conflict', 'live hive is not unloadable');
     }
@@ -247,7 +247,7 @@ export class LiveHiveService {
     project?: Project,
     defaults?: LiveHiveOverrides,
     restoreHoney?: boolean,
-  ): Promise<GraphStatus> {
+  ): Promise<LiveHiveStatus> {
     const resolvedProject = resolveProject(
       live,
       project,
@@ -255,14 +255,14 @@ export class LiveHiveService {
       this.options.registry,
     );
     const definition = toCompositionDefinition(live);
-    const status = await this.options.graphHost.loadGraph({
+    const status = await this.options.liveHiveHost.loadGraph({
       definition,
       bindings: bindingsFor(live, defaults),
       project: resolvedProject,
       ...(this.defaultHarness === undefined ? {} : { defaultHarness: this.defaultHarness }),
       ...(restoreHoney === undefined ? {} : { restoreHoney }),
     });
-    // live.json is the binding truth: persist the sessions GraphHost actually
+    // live.json is the binding truth: persist the sessions LiveHiveHost actually
     // created/attached for this topology.
     this.syncBindings(live);
     return status;
@@ -270,7 +270,7 @@ export class LiveHiveService {
 
   /** Merge the loaded bee -> session mapping into live.json. */
   private syncBindings(live: LiveHive): LiveHive {
-    const loaded = this.options.graphHost.bindingsOf(live.liveId);
+    const loaded = this.options.liveHiveHost.bindingsOf(live.liveId);
     const bindings: Record<string, string> = {};
     for (const [beeId, bee] of Object.entries(live.bees)) {
       if (bee.kind !== 'forager') {

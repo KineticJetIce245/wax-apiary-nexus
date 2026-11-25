@@ -1,4 +1,4 @@
-export type GraphId = string;
+export type LiveHiveId = string;
 
 export type GraphLoadState = 'loaded' | 'unloading';
 
@@ -22,7 +22,7 @@ export interface ResidencySnapshot {
 export const DEFAULT_IDLE_TTL_MS = 30 * 60_000;
 
 export class GraphUnloadingError extends Error {
-  constructor(readonly graphId?: GraphId) {
+  constructor(readonly graphId?: LiveHiveId) {
     super(graphId === undefined ? 'Graph is unloading' : `Graph is unloading: ${graphId}`);
     this.name = 'GraphUnloadingError';
   }

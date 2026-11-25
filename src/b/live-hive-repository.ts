@@ -10,7 +10,7 @@ import { LiveHiveServiceError } from './live-hive-service-errors.js';
 
 const MAX_LIVE_ID_LENGTH = 128;
 
-/** Filesystem/cache adapter for LiveHiveService; no GraphHost dependency. */
+/** Filesystem/cache adapter for LiveHiveService; no LiveHiveHost dependency. */
 export class LiveHiveRepository {
   private readonly livesRoot: string;
   private readonly templateStore: HiveTemplateStore | undefined;

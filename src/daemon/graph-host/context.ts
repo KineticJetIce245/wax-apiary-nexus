@@ -1,4 +1,4 @@
-import { GraphRegistry, type GraphId } from '../../graph/registry.js';
+import { GraphRegistry, type LiveHiveId } from '../../graph/registry.js';
 import { DEFAULT_IDLE_TTL_MS } from '../../graph/residency.js';
 import type { GuardDecision, GuardRequest, PheromoneFieldSnapshot } from '../../runtime/index.js';
 import type { SessionRegistry } from '../../session/session-registry.js';
@@ -8,19 +8,19 @@ import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import { LiveHiveLock } from '../live-hive-lock.js';
 import { SchedulerService } from '../scheduler-service.js';
 import {
-  GraphHostDisposedError,
-  type GraphHostEvent,
-  type GraphHostOptions,
+  LiveHiveHostDisposedError,
+  type LiveHiveHostEvent,
+  type LiveHiveHostOptions,
   type LiveGraph,
 } from './types.js';
 
-export type UnloadHandler = (graphId: GraphId, live: LiveGraph) => Promise<void>;
+export type UnloadHandler = (graphId: LiveHiveId, live: LiveGraph) => Promise<void>;
 
 /**
- * Shared dependencies and mutable host state for the GraphHost services. It is
+ * Shared dependencies and mutable host state for the LiveHiveHost services. It is
  * assembled once; services receive it instead of reaching back into the facade.
  */
-export class GraphHostContext {
+export class LiveHiveHostContext {
   readonly registry: SessionRegistry;
   readonly catalog: LiveHiveCatalog | undefined;
   readonly runStore: RunStore | undefined;
@@ -31,16 +31,16 @@ export class GraphHostContext {
   readonly defaultIdleTtlMs: number;
   readonly honeyForGraph: ((graphId: string) => HoneyStore) | undefined;
   readonly restoreHoney: boolean;
-  readonly bindingStore: GraphHostOptions['bindingStore'];
+  readonly bindingStore: LiveHiveHostOptions['bindingStore'];
   readonly maxPumps: number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly maxWaitMs: number;
   readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
   readonly onGuardExpired: ((requestId: string) => void) | undefined;
-  readonly onEvent: ((event: GraphHostEvent) => void) | undefined;
+  readonly onEvent: ((event: LiveHiveHostEvent) => void) | undefined;
   readonly graphs: GraphRegistry<LiveGraph>;
   readonly lock = new LiveHiveLock();
-  readonly loading = new Set<GraphId>();
+  readonly loading = new Set<LiveHiveId>();
 
   disposed = false;
   disposePromise: Promise<void> | undefined;
@@ -48,7 +48,7 @@ export class GraphHostContext {
     throw new Error('graph unload handler is not configured');
   };
 
-  constructor(options: GraphHostOptions) {
+  constructor(options: LiveHiveHostOptions) {
     this.registry = options.registry;
     this.catalog = options.catalog;
     this.runStore = options.runStore;
@@ -131,7 +131,7 @@ export class GraphHostContext {
   }
 
   updateCatalog(
-    graphId: GraphId,
+    graphId: LiveHiveId,
     phase: 'load' | 'access' | 'unload' | 'sweep' | 'dispose',
     update: (catalog: LiveHiveCatalog) => void,
   ): void {
@@ -152,7 +152,7 @@ export class GraphHostContext {
     }
   }
 
-  reportCleanupFailure(event: GraphHostEvent): void {
+  reportCleanupFailure(event: LiveHiveHostEvent): void {
     const handler = this.onEvent;
     if (handler === undefined) {
       return;
@@ -166,7 +166,7 @@ export class GraphHostContext {
 
   assertNotDisposed(): void {
     if (this.disposed) {
-      throw new GraphHostDisposedError();
+      throw new LiveHiveHostDisposedError();
     }
   }
 }

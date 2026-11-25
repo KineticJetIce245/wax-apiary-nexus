@@ -10,7 +10,7 @@ import test from 'node:test';
 import type { Project } from '../../src/project/kernel.js';
 import { DispatchService } from '../../src/b/dispatch-service.js';
 import { createDefaultAdapter } from '../../src/cli/cli-shared.js';
-import { GraphHost } from '../../src/daemon/graph-host.js';
+import { LiveHiveHost } from '../../src/daemon/graph-host.js';
 import { AdapterPool } from '../../src/session/adapter-pool.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import type { Workspace } from '../../src/session/workspace.js';
@@ -170,11 +170,11 @@ async function dispatchReal(
   sessionId: string,
   t: { diagnostic: (message: string) => void },
 ): Promise<void> {
-  const graphHost = new GraphHost({ registry });
+  const liveHiveHost = new LiveHiveHost({ registry });
   try {
     const dispatched = await new DispatchService({
       registry,
-      graphHost,
+      liveHiveHost,
       defaultProject: project,
     }).dispatch(
       'Pick a random integer from 100000 through 999999. ' +
@@ -188,6 +188,6 @@ async function dispatchReal(
     assert.equal(dispatched.sessionId, sessionId);
     t.diagnostic(`observed dispatch: dsh=${dispatchedDigits} (100000..999999)`);
   } finally {
-    await graphHost.dispose();
+    await liveHiveHost.dispose();
   }
 }

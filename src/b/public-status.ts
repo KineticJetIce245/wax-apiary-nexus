@@ -1,4 +1,4 @@
-import type { GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
+import type { LiveHiveRunResult, LiveHiveStatus } from '../daemon/graph-host.js';
 
 /**
  * Public projection of the internal execution-engine status.
@@ -10,9 +10,9 @@ import type { GraphRunResult, GraphStatus } from '../daemon/graph-host.js';
 export type PublicGraphStatus = {
   readonly rest: boolean;
   readonly hovered: boolean;
-  readonly nodes: GraphStatus['nodes'];
-  readonly recovery?: GraphStatus['recovery'];
-  readonly residency: GraphStatus['residency'];
+  readonly nodes: LiveHiveStatus['nodes'];
+  readonly recovery?: LiveHiveStatus['recovery'];
+  readonly residency: LiveHiveStatus['residency'];
 };
 
 /** Public projection of one run; the live is named `liveId`, never `graphId`. */
@@ -29,7 +29,7 @@ export type PublicGraphRunResult = {
 };
 
 /** Hide engine-only identity fields from a status returned by the API. */
-export function toPublicStatus(status: GraphStatus): PublicGraphStatus {
+export function toPublicStatus(status: LiveHiveStatus): PublicGraphStatus {
   return {
     rest: status.rest,
     hovered: status.hovered,
@@ -40,7 +40,7 @@ export function toPublicStatus(status: GraphStatus): PublicGraphStatus {
 }
 
 /** Hide engine-only identity fields from a run result returned by the API. */
-export function toPublicRunResult(result: GraphRunResult): PublicGraphRunResult {
+export function toPublicRunResult(result: LiveHiveRunResult): PublicGraphRunResult {
   return {
     liveId: result.graphId,
     runId: result.runId,

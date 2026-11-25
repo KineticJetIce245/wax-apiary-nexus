@@ -6,10 +6,10 @@ import {
 } from '../b/dispatch-service.js';
 import { LiveHiveServiceError } from '../b/live-hive-service-errors.js';
 import {
-  GraphAnswerError,
-  GraphHostDisposedError,
-  GraphLoadError,
-  GraphNotFoundError,
+  LiveHiveHostAnswerError,
+  LiveHiveHostDisposedError,
+  LiveHiveHostLoadError,
+  LiveHiveHostNotFoundError,
 } from '../daemon/graph-host.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
 import { CompositionValidationError, QueueFullError } from '../runtime/index.js';
@@ -48,10 +48,10 @@ export function toHttpError(error: unknown): HttpError {
   if (error instanceof ProjectDirectoryError) {
     return new HttpError(400, 'bad-request', 'invalid project directory');
   }
-  if (error instanceof GraphNotFoundError) {
+  if (error instanceof LiveHiveHostNotFoundError) {
     return new HttpError(404, 'not-found', 'graph is not loaded');
   }
-  if (error instanceof GraphAnswerError) {
+  if (error instanceof LiveHiveHostAnswerError) {
     switch (error.reason) {
       case 'unknown-node':
       case 'not-user-node':
@@ -80,7 +80,7 @@ export function toHttpError(error: unknown): HttpError {
   if (error instanceof TypeError) {
     return new HttpError(400, 'bad-request', 'invalid request value');
   }
-  if (error instanceof GraphHostDisposedError || error instanceof GraphLoadError) {
+  if (error instanceof LiveHiveHostDisposedError || error instanceof LiveHiveHostLoadError) {
     return new HttpError(500, 'internal', 'internal error');
   }
   return new HttpError(500, 'internal', 'internal error');

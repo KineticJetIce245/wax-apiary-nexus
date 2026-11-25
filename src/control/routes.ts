@@ -36,7 +36,7 @@ async function dispatchRoutes(
   rawUrl?: string,
   method?: string,
 ): Promise<Record<string, unknown>> {
-  const host = context.requireGraphHost();
+  const host = context.requireLiveHiveHost();
 
   switch (route.kind) {
     case 'health': {

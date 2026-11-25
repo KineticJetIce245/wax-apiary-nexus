@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
-import { GraphHost } from '../src/daemon/graph-host.js';
+import { LiveHiveHost } from '../src/daemon/graph-host.js';
 import type { SchedulerTimers } from '../src/daemon/scheduler.js';
 import { LiveHiveService } from '../src/b/live-hive-service.js';
 import type { LiveHive } from '../src/b/types.js';
@@ -96,7 +96,7 @@ async function setupScheduler(
   adapterOptions: ConstructorParameters<typeof FakeAdapter>[0] = { output: 'scheduled output' },
 ): Promise<{
   readonly adapter: FakeAdapter;
-  readonly host: GraphHost;
+  readonly host: LiveHiveHost;
   readonly service: LiveHiveService;
   readonly timers: ManualTimers;
 }> {
@@ -110,7 +110,7 @@ async function setupScheduler(
     workspaces: new Map([['fake', workspace]]),
   });
   const timers = new ManualTimers(START);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry,
     now: timers.now,
     schedulerTimers: timers,
@@ -120,7 +120,7 @@ async function setupScheduler(
     await workspace.stop();
   });
   const service = new LiveHiveService({
-    graphHost: host,
+    liveHiveHost: host,
     registry,
     livesRoot: join(mkdtempSync(join(tmpdir(), 'wax-m10b1-state-')), 'lives'),
     defaultProject: project,

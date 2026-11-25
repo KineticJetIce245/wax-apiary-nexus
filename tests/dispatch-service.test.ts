@@ -11,8 +11,8 @@ import {
   DispatchSessionNotFoundError,
   DispatchTimeoutError,
 } from '../src/b/dispatch-service.js';
-import { GraphHost } from '../src/daemon/graph-host.js';
-import type { GraphStatus, LoadGraphOptions } from '../src/daemon/graph-host.js';
+import { LiveHiveHost } from '../src/daemon/graph-host.js';
+import type { LiveHiveStatus, LoadGraphOptions } from '../src/daemon/graph-host.js';
 import { LiveHiveCatalog } from '../src/daemon/live-hive-catalog.js';
 import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
@@ -25,15 +25,15 @@ interface Harness {
   readonly workspace: Workspace;
   readonly registry: SessionRegistry;
   readonly project: Project;
-  readonly graphHost: RecordingGraphHost;
+  readonly liveHiveHost: RecordingGraphHost;
   readonly service: DispatchService;
 }
 
 /** Records graph ids so a test can prove the dispatch graph was unloaded. */
-class RecordingGraphHost extends GraphHost {
+class RecordingGraphHost extends LiveHiveHost {
   readonly loadedIds: string[] = [];
 
-  override loadGraph(options: LoadGraphOptions): Promise<GraphStatus> {
+  override loadGraph(options: LoadGraphOptions): Promise<LiveHiveStatus> {
     this.loadedIds.push(options.definition.id);
     return super.loadGraph(options);
   }
@@ -63,9 +63,9 @@ function setupWithAdapter(
   const registry = new SessionRegistry({
     workspaces: new Map([['fake', workspace]]),
   });
-  const graphHost = new RecordingGraphHost({ registry });
+  const liveHiveHost = new RecordingGraphHost({ registry });
   t.after(async () => {
-    await graphHost.dispose();
+    await liveHiveHost.dispose();
     await workspace.stop();
   });
   const project: Project = {
@@ -74,10 +74,10 @@ function setupWithAdapter(
   };
   const service = new DispatchService({
     registry,
-    graphHost,
+    liveHiveHost,
     ...(withDefaultProject ? { defaultProject: project } : {}),
   });
-  return { adapter, workspace, registry, project, graphHost, service };
+  return { adapter, workspace, registry, project, liveHiveHost, service };
 }
 
 /**
@@ -124,7 +124,7 @@ test('dispatch fresh creates one temporary session and returns its output', asyn
   assert.equal(harness.registry.list().length, 1);
   assert.deepEqual(readdirSync(harness.project.directory), []);
   // The ephemeral graph is not left loaded or listed.
-  assertReleased(harness.graphHost);
+  assertReleased(harness.liveHiveHost);
 });
 
 test('dispatch graph is ephemeral: no catalog, Honey, live.json or list entry', async (t) => {
@@ -137,7 +137,7 @@ test('dispatch graph is ephemeral: no catalog, Honey, live.json or list entry', 
   const catalogPath = join(stateRoot, 'live-catalog.json');
   const catalog = new LiveHiveCatalog(catalogPath);
   let honeyRequests = 0;
-  const graphHost = new RecordingGraphHost({
+  const liveHiveHost = new RecordingGraphHost({
     registry,
     catalog,
     honeyForGraph: (graphId) => {
@@ -146,14 +146,14 @@ test('dispatch graph is ephemeral: no catalog, Honey, live.json or list entry', 
     },
   });
   t.after(async () => {
-    await graphHost.dispose();
+    await liveHiveHost.dispose();
     await workspace.stop();
   });
   const project: Project = {
     id: 'ephemeral-project',
     directory: mkdtempSync(join(tmpdir(), 'wax-dispatch-project-')),
   };
-  const service = new DispatchService({ registry, graphHost, defaultProject: project });
+  const service = new DispatchService({ registry, liveHiveHost, defaultProject: project });
 
   const result = await service.dispatch('hello', { sessionParams: { harness: 'fake' } });
 
@@ -163,7 +163,7 @@ test('dispatch graph is ephemeral: no catalog, Honey, live.json or list entry', 
   assert.equal(existsSync(catalogPath), false);
   assert.equal(existsSync(join(stateRoot, 'apiaries')), false);
   assert.equal(existsSync(join(stateRoot, 'lives')), false);
-  assertReleased(graphHost);
+  assertReleased(liveHiveHost);
 });
 
 test('dispatch explicit session reuses it and uses its own harness metadata', async (t) => {
@@ -186,7 +186,7 @@ test('dispatch explicit session reuses it and uses its own harness metadata', as
   assert.deepEqual(result, { output: 'reused', sessionId: session.sessionId });
   assert.equal(harness.registry.list().length, 1);
   assert.equal(harness.adapter.prompts[0], 'continue');
-  assertReleased(harness.graphHost);
+  assertReleased(harness.liveHiveHost);
 });
 
 test('dispatch explicit session rejects conflicting creation parameters', async (t) => {
@@ -271,7 +271,7 @@ test('dispatch timeout cancels once, releases the graph and never replays', asyn
   assert.equal(harness.adapter.prompts[0], 'side-effect');
   // The cancelled execution settled, so the ephemeral graph was unloaded now
   // rather than left for the deferred release path.
-  assertReleased(harness.graphHost);
+  assertReleased(harness.liveHiveHost);
 });
 
 test('dispatch rejects a completed run whose output is empty', async (t) => {
@@ -280,7 +280,7 @@ test('dispatch rejects a completed run whose output is empty', async (t) => {
     harness.service.dispatch('x', { sessionParams: { harness: 'fake' } }),
     /empty output/,
   );
-  assertReleased(harness.graphHost);
+  assertReleased(harness.liveHiveHost);
 });
 
 test('dispatch reports failed and unknown terminal states without replay', async (t) => {
@@ -290,7 +290,7 @@ test('dispatch reports failed and unknown terminal states without replay', async
     DispatchExecutionError,
   );
   assert.equal(failed.adapter.prompts.length, 1);
-  assertReleased(failed.graphHost);
+  assertReleased(failed.liveHiveHost);
 
   const unknown = setup(t, { terminal: 'unknown', error: 'no outcome' });
   await assert.rejects(
@@ -298,5 +298,5 @@ test('dispatch reports failed and unknown terminal states without replay', async
     DispatchExecutionError,
   );
   assert.equal(unknown.adapter.prompts.length, 1);
-  assertReleased(unknown.graphHost);
+  assertReleased(unknown.liveHiveHost);
 });

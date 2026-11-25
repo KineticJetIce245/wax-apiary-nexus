@@ -13,14 +13,14 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import {
-  GraphAnswerError,
-  GraphHost,
-  GraphHostDisposedError,
-  GraphLoadError,
-  GraphNotFoundError,
-  type GraphHostEvent,
-  type GraphNodeStatus,
-  type GraphStatus,
+  LiveHiveHostAnswerError,
+  LiveHiveHost,
+  LiveHiveHostDisposedError,
+  LiveHiveHostLoadError,
+  LiveHiveHostNotFoundError,
+  type LiveHiveHostEvent,
+  type LiveHiveNodeStatus,
+  type LiveHiveStatus,
 } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
@@ -68,7 +68,7 @@ import {
 test('loadedSessionIds reports only sessions bound to currently loaded graphs', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -115,7 +115,7 @@ test('loadedSessionIds reports only sessions bound to currently loaded graphs', 
 test('status and statusOf are pure reads and M4a defaults idle TTL to 0', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -157,7 +157,7 @@ test('status and statusOf are pure reads and M4a defaults idle TTL to 0', async 
 test('outputsOf snapshots one graph without touching residency or taking a lease', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -234,8 +234,8 @@ test('outputsOf snapshots one graph without touching residency or taking a lease
   const sweep = await host.sweep();
   assert.deepEqual(sweep.unloaded, ['output-graph']);
   assert.deepEqual(sweep.skipped, []);
-  assert.throws(() => host.outputsOf('output-graph'), GraphNotFoundError);
+  assert.throws(() => host.outputsOf('output-graph'), LiveHiveHostNotFoundError);
 
   await host.dispose();
-  assert.throws(() => host.outputsOf('output-graph'), GraphHostDisposedError);
+  assert.throws(() => host.outputsOf('output-graph'), LiveHiveHostDisposedError);
 });

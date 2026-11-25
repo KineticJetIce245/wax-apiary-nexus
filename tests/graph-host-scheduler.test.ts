@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { GraphHost } from '../src/daemon/graph-host.js';
+import { LiveHiveHost } from '../src/daemon/graph-host.js';
 import type { SchedulerTimers } from '../src/daemon/scheduler.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import type { Project } from '../src/project/kernel.js';
@@ -93,7 +93,7 @@ test('a loaded graph starts its Honey-backed scheduler and unload stops it', asy
   const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m9d-scheduler-state-'));
   const honey = HoneyStore.forComposition(stateRoot, 'apiary', 'scheduled');
   const timers = new ManualTimers(START);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry,
     honeyForGraph: () => honey,
     now: timers.now,
@@ -154,7 +154,7 @@ test('a graph without triggers starts no scheduler file', async (t) => {
   const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m9d-no-scheduler-state-'));
   const honey = HoneyStore.forComposition(stateRoot, 'apiary', 'no-scheduler');
   const timers = new ManualTimers(START);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry,
     honeyForGraph: () => honey,
     now: timers.now,

@@ -248,7 +248,7 @@ function adapterRequest(
 /**
  * Foreground daemon for one or more harnesses.
  *
- * There is exactly one AdapterPool, SessionRegistry, GraphHost, ControlServer,
+ * There is exactly one AdapterPool, SessionRegistry, LiveHiveHost, ControlServer,
  * daemon directory, state root, token and endpoint. A harness whose adapter
  * fails is marked unavailable by the pool; the daemon starts if at least one
  * harness is available. Stop releases the server/host and then the pool once.

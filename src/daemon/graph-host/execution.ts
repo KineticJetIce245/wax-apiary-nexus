@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   GraphNotLoadedError,
   GraphUnloadingError,
-  type GraphId,
+  type LiveHiveId,
   type GraphLease,
 } from '../../graph/registry.js';
 import {
@@ -15,17 +15,17 @@ import {
 } from '../../runtime/index.js';
 import type { RunOperation, RunOutput, RunRecord, RunStatus } from '../../storage/run-store.js';
 import { messageOf, snapshotHovered } from './context.js';
-import type { GraphHostContext } from './context.js';
-import type { GraphHostRead } from './read.js';
+import type { LiveHiveHostContext } from './context.js';
+import type { LiveHiveHostRead } from './read.js';
 import {
-  GraphAnswerError,
-  GraphHostDisposedError,
-  GraphNotFoundError,
-  type GraphRunResult,
+  LiveHiveHostAnswerError,
+  LiveHiveHostDisposedError,
+  LiveHiveHostNotFoundError,
+  type LiveHiveRunResult,
   type LiveGraph,
 } from './types.js';
 
-type GraphRunCore = Omit<GraphRunResult, 'runId' | 'requestId'>;
+type GraphRunCore = Omit<LiveHiveRunResult, 'runId' | 'requestId'>;
 
 interface QuiescenceOutcome {
   readonly pumps: number;
@@ -35,10 +35,10 @@ interface QuiescenceOutcome {
 }
 
 /** Trigger and answer execution: lock, lease, pump, flush and run record. */
-export class GraphHostExecution {
+export class LiveHiveHostExecution {
   constructor(
-    private readonly context: GraphHostContext,
-    private readonly read: GraphHostRead,
+    private readonly context: LiveHiveHostContext,
+    private readonly read: LiveHiveHostRead,
   ) {}
 
   /**
@@ -46,9 +46,9 @@ export class GraphHostExecution {
    * harness adapter: a session-bound forager may wait in its adapter's FIFO, but
    * this host never keeps a second session queue.
    */
-  trigger(graphId: GraphId, nodeId: NodeId, value: Value): Promise<GraphRunResult> {
+  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveRunResult> {
     if (this.context.disposed) {
-      return Promise.reject(new GraphHostDisposedError());
+      return Promise.reject(new LiveHiveHostDisposedError());
     }
     return this.context.lock.run(graphId, () =>
       runRecorded(this.context, this.read, graphId, 'trigger', () =>
@@ -62,13 +62,13 @@ export class GraphHostExecution {
    * hover is open; the run holds the lease and flushes Honey like `trigger`.
    */
   answer(
-    graphId: GraphId,
+    graphId: LiveHiveId,
     nodeId: NodeId,
     value: Value,
     token?: string,
-  ): Promise<GraphRunResult> {
+  ): Promise<LiveHiveRunResult> {
     if (this.context.disposed) {
-      return Promise.reject(new GraphHostDisposedError());
+      return Promise.reject(new LiveHiveHostDisposedError());
     }
     return this.context.lock.run(graphId, () =>
       runRecorded(this.context, this.read, graphId, 'answer', () =>
@@ -79,9 +79,9 @@ export class GraphHostExecution {
 }
 
 async function triggerLocked(
-  context: GraphHostContext,
-  read: GraphHostRead,
-  graphId: GraphId,
+  context: LiveHiveHostContext,
+  read: LiveHiveHostRead,
+  graphId: LiveHiveId,
   nodeId: NodeId,
   value: Value,
 ): Promise<GraphRunCore> {
@@ -102,15 +102,15 @@ async function triggerLocked(
 
   if (outcome === undefined) {
     // Unreachable: `pumpToQuiescence` either returns or throws.
-    throw new GraphNotFoundError(graphId);
+    throw new LiveHiveHostNotFoundError(graphId);
   }
   return resultOf(read, graphId, outcome);
 }
 
 async function answerLocked(
-  context: GraphHostContext,
-  read: GraphHostRead,
-  graphId: GraphId,
+  context: LiveHiveHostContext,
+  read: LiveHiveHostRead,
+  graphId: LiveHiveId,
   nodeId: NodeId,
   value: Value,
   token?: string,
@@ -131,25 +131,25 @@ async function answerLocked(
 
   if (outcome === undefined) {
     // Unreachable: `pumpToQuiescence` either returns or throws.
-    throw new GraphNotFoundError(graphId);
+    throw new LiveHiveHostNotFoundError(graphId);
   }
   return resultOf(read, graphId, outcome);
 }
 
 /** One mutating run's ids and durable record, generated under the live lock. */
 async function runRecorded(
-  context: GraphHostContext,
-  read: GraphHostRead,
-  graphId: GraphId,
+  context: LiveHiveHostContext,
+  read: LiveHiveHostRead,
+  graphId: LiveHiveId,
   operation: RunOperation,
   execute: () => Promise<GraphRunCore>,
-): Promise<GraphRunResult> {
+): Promise<LiveHiveRunResult> {
   const runId = randomUUID();
   const requestId = randomUUID();
   const startedAt = isoNow(context);
   try {
     const core = await execute();
-    const result: GraphRunResult = { ...core, runId, requestId };
+    const result: LiveHiveRunResult = { ...core, runId, requestId };
     saveRun(context, {
       runId,
       requestId,
@@ -177,7 +177,7 @@ async function runRecorded(
   }
 }
 
-function saveRun(context: GraphHostContext, record: Omit<RunRecord, 'schemaVersion'>): void {
+function saveRun(context: LiveHiveHostContext, record: Omit<RunRecord, 'schemaVersion'>): void {
   const runStore = context.runStore;
   if (runStore === undefined) {
     return;
@@ -194,7 +194,7 @@ function saveRun(context: GraphHostContext, record: Omit<RunRecord, 'schemaVersi
   }
 }
 
-function snapshotOutputs(read: GraphHostRead, graphId: GraphId): readonly RunOutput[] {
+function snapshotOutputs(read: LiveHiveHostRead, graphId: LiveHiveId): readonly RunOutput[] {
   try {
     return [...read.outputsOf(graphId).entries()]
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
@@ -204,18 +204,18 @@ function snapshotOutputs(read: GraphHostRead, graphId: GraphId): readonly RunOut
   }
 }
 
-function isoNow(context: GraphHostContext): string {
+function isoNow(context: LiveHiveHostContext): string {
   return new Date(context.now()).toISOString();
 }
 
 function resultOf(
-  read: GraphHostRead,
-  graphId: GraphId,
+  read: LiveHiveHostRead,
+  graphId: LiveHiveId,
   outcome: QuiescenceOutcome,
 ): GraphRunCore {
   const status = read.statusOf(graphId);
   if (status === undefined) {
-    throw new GraphNotFoundError(graphId);
+    throw new LiveHiveHostNotFoundError(graphId);
   }
   return {
     graphId,
@@ -230,12 +230,12 @@ function resultOf(
   };
 }
 
-function acquireLease(context: GraphHostContext, graphId: GraphId): GraphLease<LiveGraph> {
+function acquireLease(context: LiveHiveHostContext, graphId: LiveHiveId): GraphLease<LiveGraph> {
   try {
     return context.graphs.acquire(graphId);
   } catch (error) {
     if (error instanceof GraphNotLoadedError || error instanceof GraphUnloadingError) {
-      throw new GraphNotFoundError(graphId, { cause: error });
+      throw new LiveHiveHostNotFoundError(graphId, { cause: error });
     }
     throw error;
   }
@@ -246,7 +246,7 @@ function acquireLease(context: GraphHostContext, graphId: GraphId): GraphLease<L
  * Best effort: touching is observability for idle cleanup and must never turn
  * a completed trigger/answer into a failure.
  */
-function touchSessions(context: GraphHostContext, live: LiveGraph): void {
+function touchSessions(context: LiveHiveHostContext, live: LiveGraph): void {
   for (const record of live.instantiated.sessions.values()) {
     try {
       context.registry.touch(record.sessionId);
@@ -262,7 +262,7 @@ function touchSessions(context: GraphHostContext, live: LiveGraph): void {
  * TTL sweep cannot unload between the last pump and the flush.
  */
 async function pumpToQuiescence(
-  context: GraphHostContext,
+  context: LiveHiveHostContext,
   live: LiveGraph,
 ): Promise<QuiescenceOutcome> {
   let pumps = 0;
@@ -325,23 +325,23 @@ async function pumpToQuiescence(
  */
 function assertAnswerable(
   live: LiveGraph,
-  graphId: GraphId,
+  graphId: LiveHiveId,
   nodeId: NodeId,
   token: string | undefined,
 ): void {
   const node = live.definition.nodes.get(nodeId);
   if (node === undefined) {
-    throw new GraphAnswerError(graphId, nodeId, 'unknown-node');
+    throw new LiveHiveHostAnswerError(graphId, nodeId, 'unknown-node');
   }
   if (node.kind !== 'user') {
-    throw new GraphAnswerError(graphId, nodeId, 'not-user-node');
+    throw new LiveHiveHostAnswerError(graphId, nodeId, 'not-user-node');
   }
   const hover = live.runtime.snapshot().nodes[nodeId]?.hover;
   if (hover === undefined || hover.kind !== 'user') {
-    throw new GraphAnswerError(graphId, nodeId, 'no-hover');
+    throw new LiveHiveHostAnswerError(graphId, nodeId, 'no-hover');
   }
   if (token !== undefined && token !== hover.token) {
-    throw new GraphAnswerError(graphId, nodeId, 'token-mismatch');
+    throw new LiveHiveHostAnswerError(graphId, nodeId, 'token-mismatch');
   }
 }
 

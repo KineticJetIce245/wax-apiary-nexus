@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { ExecutionState } from '../adapters/harness.js';
-import type { GraphHost, GraphRunResult } from '../daemon/graph-host.js';
+import type { LiveHiveHost, LiveHiveRunResult } from '../daemon/graph-host.js';
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
 import type { Project } from '../project/kernel.js';
 import {
@@ -49,7 +49,7 @@ export interface DispatchServiceOptions {
    * and approval path; the graph itself is marked ephemeral and is not
    * persisted. A busy session waits in the harness adapter's own FIFO.
    */
-  readonly graphHost: GraphHost;
+  readonly liveHiveHost: LiveHiveHost;
   /** Project used by fresh dispatches when the call does not supply one. */
   readonly defaultProject?: Project;
   /** Default timeout; five minutes when omitted. */
@@ -98,7 +98,7 @@ interface DispatchTarget {
 
 /**
  * Execute one temporary bee as an ephemeral one-bee graph. The graph is loaded
- * through `GraphHost`, woken once, read for its forager output and unloaded; it
+ * through `LiveHiveHost`, woken once, read for its forager output and unloaded; it
  * never becomes a LiveHive, a `live.json` or a catalog entry. A fresh session
  * is created by the graph binding; an explicit session is bound as-is, with the
  * same conflict checks as before. Nothing is replayed after an unknown outcome.
@@ -108,7 +108,7 @@ interface DispatchTarget {
  */
 export class DispatchService {
   private readonly registry: SessionRegistry;
-  private readonly graphHost: GraphHost;
+  private readonly liveHiveHost: LiveHiveHost;
   private readonly defaultProject: Project | undefined;
   private readonly defaultTimeoutMs: number;
 
@@ -119,11 +119,11 @@ export class DispatchService {
     if (typeof options.registry !== 'object' || options.registry === null) {
       throw new TypeError('DispatchService requires a SessionRegistry');
     }
-    if (typeof options.graphHost !== 'object' || options.graphHost === null) {
-      throw new TypeError('DispatchService requires a GraphHost');
+    if (typeof options.liveHiveHost !== 'object' || options.liveHiveHost === null) {
+      throw new TypeError('DispatchService requires a LiveHiveHost');
     }
     this.registry = options.registry;
-    this.graphHost = options.graphHost;
+    this.liveHiveHost = options.liveHiveHost;
     this.defaultProject = options.defaultProject;
     this.defaultTimeoutMs = validateTimeout(
       options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -163,7 +163,7 @@ export class DispatchService {
     let loaded = false;
     let settled: Promise<void> | undefined;
     try {
-      await this.graphHost.loadGraph({
+      await this.liveHiveHost.loadGraph({
         definition,
         bindings: target.bindings,
         project: target.project,
@@ -171,11 +171,11 @@ export class DispatchService {
         ephemeral: true,
       });
       loaded = true;
-      const sessionId = this.graphHost.bindingsOf(graphId).get(BEE_ID);
+      const sessionId = this.liveHiveHost.bindingsOf(graphId).get(BEE_ID);
       if (sessionId === undefined) {
         throw new DispatchError('dispatch graph has no session binding');
       }
-      const trigger = this.graphHost.trigger(graphId, BEE_ID, textValue(input));
+      const trigger = this.liveHiveHost.trigger(graphId, BEE_ID, textValue(input));
       settled = trigger.then(
         () => undefined,
         () => undefined,
@@ -252,11 +252,11 @@ export class DispatchService {
    * released by `releaseGraph` once it settles.
    */
   private async waitForTrigger(
-    trigger: Promise<GraphRunResult>,
+    trigger: Promise<LiveHiveRunResult>,
     settled: Promise<void>,
     timeoutMs: number,
     sessionId: string,
-  ): Promise<GraphRunResult> {
+  ): Promise<LiveHiveRunResult> {
     let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<typeof TIMEOUT>((resolve) => {
       timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
@@ -297,7 +297,7 @@ export class DispatchService {
   }
 
   private requireOutput(graphId: string): string {
-    const value = this.graphHost.outputsOf(graphId).get(BEE_ID);
+    const value = this.liveHiveHost.outputsOf(graphId).get(BEE_ID);
     if (value === undefined || value.kind !== 'text') {
       throw new DispatchError('dispatch graph produced no output');
     }
@@ -318,7 +318,7 @@ export class DispatchService {
   ): Promise<void> {
     let unloaded = false;
     try {
-      unloaded = await this.graphHost.unload(graphId);
+      unloaded = await this.liveHiveHost.unload(graphId);
     } catch {
       unloaded = false;
     }
@@ -326,7 +326,7 @@ export class DispatchService {
       return;
     }
     void settled
-      .then(() => this.graphHost.unload(graphId))
+      .then(() => this.liveHiveHost.unload(graphId))
       .catch(() => undefined);
   }
 }

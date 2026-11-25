@@ -13,14 +13,14 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import {
-  GraphAnswerError,
-  GraphHost,
-  GraphHostDisposedError,
-  GraphLoadError,
-  GraphNotFoundError,
-  type GraphHostEvent,
-  type GraphNodeStatus,
-  type GraphStatus,
+  LiveHiveHostAnswerError,
+  LiveHiveHost,
+  LiveHiveHostDisposedError,
+  LiveHiveHostLoadError,
+  LiveHiveHostNotFoundError,
+  type LiveHiveHostEvent,
+  type LiveHiveNodeStatus,
+  type LiveHiveStatus,
 } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
@@ -90,7 +90,7 @@ function collectKeys(value: unknown, keys: string[] = []): string[] {
 test('a fork/merge graph runs to Rest and status never contains bodies or tokens', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -188,7 +188,7 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
 test('two loaded graphs stay independent through trigger and unload', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -246,7 +246,7 @@ test('two loaded graphs stay independent through trigger and unload', async (t) 
 test('an unknown trigger node rethrows the runtime error and releases the lease', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -283,7 +283,7 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const waits: number[] = [];
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     sleep: async (ms) => {
@@ -326,7 +326,7 @@ test('the trigger lease covers pacing waits, not only pump calls', async (t) => 
   const sleepStarted = deferred();
   const releaseSleep = deferred();
   const waits: number[] = [];
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     sleep: async (ms) => {
@@ -372,7 +372,7 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const zeroWaits: number[] = [];
-  const zeroHost = new GraphHost({
+  const zeroHost = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     maxWaitMs: 0,
@@ -382,7 +382,7 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
     },
   });
   const shortWaits: number[] = [];
-  const shortHost = new GraphHost({
+  const shortHost = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     maxWaitMs: 250,
@@ -435,7 +435,7 @@ test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t
 test('maxPumps exhaustion reports rest=false without pretending success or losing the graph', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     maxPumps: 1,
@@ -480,7 +480,7 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
 test('answer resolves an open user hover and rejects invalid targets and tokens', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -537,7 +537,7 @@ test('answer resolves an open user hover and rejects invalid targets and tokens'
   );
   await assert.rejects(
     host.answer('missing', 'ask', text('x')),
-    GraphNotFoundError,
+    LiveHiveHostNotFoundError,
   );
   assert.equal(env.adapter.promptsByNative.size, 0);
 });
@@ -545,7 +545,7 @@ test('answer resolves an open user hover and rejects invalid targets and tokens'
 test('answer reports rest=false without retrying when maxPumps cannot drain it', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     maxPumps: 0,
@@ -586,7 +586,7 @@ test('answer reports rest=false without retrying when maxPumps cannot drain it',
 test('trigger refreshes the lastAccessAt of every bound session', async (t) => {
   const clock = new FakeClock(1_000);
   const env = makeEnv(new RecordingAdapter(), () => new Date(clock.time).toISOString());
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -622,7 +622,7 @@ test('trigger refreshes the lastAccessAt of every bound session', async (t) => {
 test('answer refreshes the lastAccessAt of every bound session', async (t) => {
   const clock = new FakeClock(1_000);
   const env = makeEnv(new RecordingAdapter(), () => new Date(clock.time).toISOString());
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -662,7 +662,7 @@ test('a failing touch does not change a trigger or answer result', async (t) => 
     id: 'project-touch-failure',
     directory: process.cwd(),
   };
-  const host = new GraphHost({ registry, now: () => 1_000 });
+  const host = new LiveHiveHost({ registry, now: () => 1_000 });
   t.after(async () => {
     await host.dispose();
     await workspace.stop();
@@ -694,7 +694,7 @@ test('onGuard is passed to the runtime and decides native approvals', async (t) 
   const env = makeEnv(adapter);
   const seen: GuardRequest[] = [];
   const decisions: readonly GuardDecision[] = ['allow_once', 'reject_once'];
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     onGuard: async (request) => {
       seen.push(request);
@@ -726,7 +726,7 @@ test('onGuard is passed to the runtime and decides native approvals', async (t) 
 test('a native approval is rejected when no onGuard handler is configured', async (t) => {
   const adapter = new RecordingAdapter({ askApproval: true });
   const env = makeEnv(adapter);
-  const host = new GraphHost({ registry: env.registry });
+  const host = new LiveHiveHost({ registry: env.registry });
   t.after(async () => {
     await host.dispose();
     await env.workspace.stop();

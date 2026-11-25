@@ -74,7 +74,7 @@ export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
 }
 
 /**
- * Only forager bindings become GraphHost bindings. A binding on a control bee
+ * Only forager bindings become LiveHiveHost bindings. A binding on a control bee
  * is not a runtime binding and is deliberately ignored here.
  */
 /**

@@ -20,7 +20,7 @@ export interface InstantiateForagersOptions {
   readonly definition: CompositionDefinition;
   /**
    * Graph id used as the resolved-binding key. Defaults to
-   * `definition.id`; GraphHost passes it explicitly.
+   * `definition.id`; LiveHiveHost passes it explicitly.
    */
   readonly graphId?: string;
   readonly bindings: GraphBindings;

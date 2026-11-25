@@ -250,12 +250,12 @@
       "nesting": 3,
       "parameters": 2
     },
-    "src/daemon/graph-host.ts::class GraphHost": {
+    "src/daemon/graph-host.ts::class LiveHiveHost": {
       "bodyLines": 84,
       "publicMethods": 13,
       "constructorDependencies": 1
     },
-    "src/daemon/graph-host/context.ts::constructor GraphHostContext": {
+    "src/daemon/graph-host/context.ts::constructor LiveHiveHostContext": {
       "lines": 77,
       "cyclomatic": 20,
       "nesting": 2,

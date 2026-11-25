@@ -153,7 +153,7 @@ export function assertNoSecrets(haystack: string, token: string): void {
 }
 
 interface ServerHoverAccess {
-  readonly graphHost?: {
+  readonly liveHiveHost?: {
     readonly context: {
       readonly graphs: {
         peek(id: string):
@@ -179,7 +179,7 @@ interface ServerHoverAccess {
 
 /** Test-only read of the parked hover token; status deliberately never has it. */
 export function hoverTokenOf(server: ControlServer, graphId: string, nodeId: string): string {
-  const host = (server as unknown as ServerHoverAccess).graphHost;
+  const host = (server as unknown as ServerHoverAccess).liveHiveHost;
   assert.ok(host !== undefined, 'control server has no graph host');
   const entry = host.context.graphs.peek(graphId);
   assert.ok(entry !== undefined, `graph '${graphId}' is not loaded`);

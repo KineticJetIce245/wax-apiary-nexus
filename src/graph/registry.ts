@@ -1,31 +1,31 @@
 import {
   GraphResidency,
   GraphUnloadingError,
-  type GraphId,
+  type LiveHiveId,
   type GraphLoadState,
   type ResidencyOptions,
   type ResidencySnapshot,
 } from './residency.js';
 
 export { GraphUnloadingError };
-export type { GraphId, GraphLoadState, ResidencyOptions, ResidencySnapshot };
+export type { LiveHiveId, GraphLoadState, ResidencyOptions, ResidencySnapshot };
 
 export class GraphAlreadyLoadedError extends Error {
-  constructor(readonly graphId: GraphId) {
+  constructor(readonly graphId: LiveHiveId) {
     super(`Graph is already loaded: ${graphId}`);
     this.name = 'GraphAlreadyLoadedError';
   }
 }
 
 export class GraphNotLoadedError extends Error {
-  constructor(readonly graphId: GraphId) {
+  constructor(readonly graphId: LiveHiveId) {
     super(`Graph is not loaded: ${graphId}`);
     this.name = 'GraphNotLoadedError';
   }
 }
 
 export interface GraphLease<T> {
-  readonly id: GraphId;
+  readonly id: LiveHiveId;
   readonly value: T;
   release(): void;
 }
@@ -34,30 +34,30 @@ export interface GraphRegistryOptions<T> {
   readonly now: () => number;
   readonly defaultIdleTtlMs?: number;
   /** Defaults to always safe. */
-  readonly isSafeToUnload?: (id: GraphId, value: T) => boolean;
+  readonly isSafeToUnload?: (id: LiveHiveId, value: T) => boolean;
   /** Flush hook; it must settle before the graph is forgotten. */
-  readonly onUnload?: (id: GraphId, value: T) => void | Promise<void>;
+  readonly onUnload?: (id: LiveHiveId, value: T) => void | Promise<void>;
   readonly onEvent?: (event: GraphRegistryEvent<T>) => void;
 }
 
 export type GraphRegistryEvent<T> =
-  | { readonly type: 'graph.loaded'; readonly id: GraphId; readonly at: number }
+  | { readonly type: 'graph.loaded'; readonly id: LiveHiveId; readonly at: number }
   | {
       readonly type: 'graph.unloaded';
-      readonly id: GraphId;
+      readonly id: LiveHiveId;
       readonly at: number;
       readonly reason: 'ttl' | 'explicit';
     }
   | {
       readonly type: 'graph.unload-failed';
-      readonly id: GraphId;
+      readonly id: LiveHiveId;
       readonly at: number;
       readonly reason: 'ttl' | 'explicit';
       readonly error: string;
     };
 
 export interface GraphRegistryEntry<T> {
-  readonly id: GraphId;
+  readonly id: LiveHiveId;
   readonly value: T;
   readonly residency: ResidencySnapshot;
 }
@@ -71,13 +71,13 @@ export type SweepSkipReason =
   | 'unsafe';
 
 export interface SweepReport {
-  readonly unloaded: readonly GraphId[];
-  readonly skipped: readonly { readonly id: GraphId; readonly reason: SweepSkipReason }[];
-  readonly failed: readonly { readonly id: GraphId; readonly error: string }[];
+  readonly unloaded: readonly LiveHiveId[];
+  readonly skipped: readonly { readonly id: LiveHiveId; readonly reason: SweepSkipReason }[];
+  readonly failed: readonly { readonly id: LiveHiveId; readonly error: string }[];
 }
 
 interface RegisteredGraph<T> {
-  readonly id: GraphId;
+  readonly id: LiveHiveId;
   readonly value: T;
   readonly residency: GraphResidency;
 }
@@ -89,11 +89,11 @@ interface RegisteredGraph<T> {
  * settles successfully.
  */
 export class GraphRegistry<T> {
-  private readonly entries = new Map<GraphId, RegisteredGraph<T>>();
+  private readonly entries = new Map<LiveHiveId, RegisteredGraph<T>>();
   private readonly now: () => number;
   private readonly defaultIdleTtlMs: number | undefined;
-  private readonly isSafeToUnload: (id: GraphId, value: T) => boolean;
-  private readonly onUnload: ((id: GraphId, value: T) => void | Promise<void>) | undefined;
+  private readonly isSafeToUnload: (id: LiveHiveId, value: T) => boolean;
+  private readonly onUnload: ((id: LiveHiveId, value: T) => void | Promise<void>) | undefined;
   private readonly onEvent: ((event: GraphRegistryEvent<T>) => void) | undefined;
 
   constructor(options: GraphRegistryOptions<T>) {
@@ -104,7 +104,7 @@ export class GraphRegistry<T> {
     this.onEvent = options.onEvent;
   }
 
-  load(id: GraphId, value: T, options: ResidencyOptions = {}): void {
+  load(id: LiveHiveId, value: T, options: ResidencyOptions = {}): void {
     if (this.entries.has(id)) {
       throw new GraphAlreadyLoadedError(id);
     }
@@ -118,7 +118,7 @@ export class GraphRegistry<T> {
     this.emit({ type: 'graph.loaded', id, at: now });
   }
 
-  acquire(id: GraphId): GraphLease<T> {
+  acquire(id: LiveHiveId): GraphLease<T> {
     const entry = this.requireLoaded(id);
     const now = this.now();
     entry.residency.acquire();
@@ -139,7 +139,7 @@ export class GraphRegistry<T> {
     };
   }
 
-  peek(id: GraphId): GraphRegistryEntry<T> | undefined {
+  peek(id: LiveHiveId): GraphRegistryEntry<T> | undefined {
     const entry = this.entries.get(id);
     return entry === undefined ? undefined : this.entrySnapshot(entry, this.now());
   }
@@ -149,15 +149,15 @@ export class GraphRegistry<T> {
     return [...this.entries.values()].map((entry) => this.entrySnapshot(entry, now));
   }
 
-  touch(id: GraphId): void {
+  touch(id: LiveHiveId): void {
     this.requireLoaded(id).residency.touch(this.now());
   }
 
-  pin(id: GraphId): void {
+  pin(id: LiveHiveId): void {
     this.requireLoaded(id).residency.pin(this.now());
   }
 
-  unpin(id: GraphId): void {
+  unpin(id: LiveHiveId): void {
     this.requireLoaded(id).residency.unpin(this.now());
   }
 
@@ -168,9 +168,9 @@ export class GraphRegistry<T> {
    */
   async sweep(): Promise<SweepReport> {
     const now = this.now();
-    const unloaded: GraphId[] = [];
-    const skipped: { id: GraphId; reason: SweepSkipReason }[] = [];
-    const failed: { id: GraphId; error: string }[] = [];
+    const unloaded: LiveHiveId[] = [];
+    const skipped: { id: LiveHiveId; reason: SweepSkipReason }[] = [];
+    const failed: { id: LiveHiveId; error: string }[] = [];
 
     for (const entry of [...this.entries.values()]) {
       const residency = entry.residency.snapshot(now);
@@ -227,7 +227,7 @@ export class GraphRegistry<T> {
    * Explicit unload. Skips the TTL check but still refuses pinned, busy,
    * unloading and unsafe graphs. Returns whether the graph was forgotten.
    */
-  async unload(id: GraphId, reason: 'explicit' = 'explicit'): Promise<boolean> {
+  async unload(id: LiveHiveId, reason: 'explicit' = 'explicit'): Promise<boolean> {
     const entry = this.entries.get(id);
     if (entry === undefined) {
       return false;
@@ -276,7 +276,7 @@ export class GraphRegistry<T> {
     return this.entries.size;
   }
 
-  private requireLoaded(id: GraphId): RegisteredGraph<T> {
+  private requireLoaded(id: LiveHiveId): RegisteredGraph<T> {
     const entry = this.entries.get(id);
     if (entry === undefined) {
       throw new GraphNotLoadedError(id);

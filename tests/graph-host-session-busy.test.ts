@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  GraphHost,
-  GraphLoadError,
+  LiveHiveHost,
+  LiveHiveHostLoadError,
 } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import type { Project } from '../src/project/kernel.js';
@@ -26,7 +26,7 @@ import {
 const PROMPT_SECRET = 'M9E-PROMPT-SECRET';
 
 function makeEnv(): {
-  readonly host: GraphHost;
+  readonly host: LiveHiveHost;
   readonly registry: SessionRegistry;
   readonly workspace: Workspace;
   readonly project: Project;
@@ -41,7 +41,7 @@ function makeEnv(): {
     id: 'project-session-busy',
     directory: mkdtempSync(join(tmpdir(), 'wax-m9e-session-busy-')),
   };
-  const host = new GraphHost({ registry });
+  const host = new LiveHiveHost({ registry });
   return { host, registry, workspace, project, adapter };
 }
 
@@ -147,7 +147,7 @@ test('loading the same graph id twice is still refused', async (t) => {
   await assert.rejects(
     env.host.loadGraph(options),
     (error: unknown) => {
-      assert.ok(error instanceof GraphLoadError);
+      assert.ok(error instanceof LiveHiveHostLoadError);
       assert.equal(error.graphId, 'once');
       return true;
     },
@@ -159,7 +159,7 @@ test('loading the same graph id twice is still refused', async (t) => {
   assert.equal(settled.filter((result) => result.status === 'fulfilled').length, 1);
   const rejected = settled.find((result) => result.status === 'rejected');
   assert.ok(rejected !== undefined && rejected.status === 'rejected');
-  assert.ok(rejected.reason instanceof GraphLoadError);
+  assert.ok(rejected.reason instanceof LiveHiveHostLoadError);
   assert.ok(env.host.statusOf('once') !== undefined);
 });
 
@@ -208,7 +208,7 @@ test('a rejected load releases only the reservation it added', async (t) => {
 test('a busy shared session rejects a second trigger when the adapter cannot queue', async (t) => {
   const fixture = makeFixtureEnv(new RecordingAdapter());
   fixture.adapter.holdSubmissions = true;
-  const host = new GraphHost({ registry: fixture.registry });
+  const host = new LiveHiveHost({ registry: fixture.registry });
   t.after(async () => {
     await host.dispose();
     await fixture.workspace.stop();

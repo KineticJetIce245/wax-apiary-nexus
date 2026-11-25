@@ -1,5 +1,5 @@
 import type { GraphBindings } from '../../graph/binding.js';
-import type { GraphId } from '../../graph/registry.js';
+import type { LiveHiveId } from '../../graph/registry.js';
 
 /**
  * Explicit-session ownership bookkeeping, refcounted per session.
@@ -11,7 +11,7 @@ import type { GraphId } from '../../graph/registry.js';
  *
  * A reservation is held from the start of a load until that graph unloads; a
  * failed load releases only the sessions this call added. Loading the same graph
- * id twice is still refused by `GraphHostLifecycle` before this layer is
+ * id twice is still refused by `LiveHiveHostLifecycle` before this layer is
  * consulted.
  *
  * This is not a mutex: `reserve()` never throws and never waits. The returned
@@ -19,10 +19,10 @@ import type { GraphId } from '../../graph/registry.js';
  * every session it owns.
  */
 export class SessionOwnership {
-  private readonly owners = new Map<string, Set<GraphId>>();
+  private readonly owners = new Map<string, Set<LiveHiveId>>();
 
   /** Register this graph's explicit session bindings; never throws. */
-  reserve(graphId: GraphId, bindings: GraphBindings): () => void {
+  reserve(graphId: LiveHiveId, bindings: GraphBindings): () => void {
     const touched: string[] = [];
     for (const binding of Object.values(bindings)) {
       if (binding.kind !== 'session') {
@@ -47,7 +47,7 @@ export class SessionOwnership {
     };
   }
 
-  release(graphId: GraphId): void {
+  release(graphId: LiveHiveId): void {
     this.releaseSessions(graphId, [...this.owners.keys()]);
   }
 
@@ -55,7 +55,7 @@ export class SessionOwnership {
     this.owners.clear();
   }
 
-  private releaseSessions(graphId: GraphId, sessionIds: readonly string[]): void {
+  private releaseSessions(graphId: LiveHiveId, sessionIds: readonly string[]): void {
     for (const sessionId of sessionIds) {
       const owners = this.owners.get(sessionId);
       if (owners === undefined) {

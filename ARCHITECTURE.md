@@ -10,7 +10,7 @@ A **LiveHive** is a loaded graph of **bees** connected by **beelines**; each bee
 
 ```text
 L4  Control / CLI        ControlServer / ControlClient / wax (B surface only)
-L3  LiveHive host        LiveHiveService / GraphHost / LiveHiveCatalog / LiveHiveLock
+L3  LiveHive host        LiveHiveService / LiveHiveHost / LiveHiveCatalog / LiveHiveLock
 L2  Session              SessionRegistry / AdapterPool / Workspace
 L1  Adapter              CodexAdapter / DshAcpAdapter + adapter-owned prompt admission
 L0  Native harness       Codex app-server / DSH ACP server
@@ -116,6 +116,6 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 
 The public object layer is B: `LiveHive`, `Bee`, `Beeline`, `BeeBinding`, `HiveTemplate`, `Schedule` and `Dispatch`. The control API and CLI expose `/lives`, `/templates`, `/dispatch`, `/guards`, `/sessions`, `wax live`, `wax wake`, `wax answer`, `wax template`, `wax dispatch`, `wax guard` and `wax session`.
 
-`GraphHost`, `GraphStatus`, `GraphId` and `CompositionDefinition` remain internal execution-engine names. They are not a second object model and are not exposed by the HTTP or CLI surface. Renaming them is a separate internal cleanup.
+`LiveHiveHost`, `LiveHiveStatus`, `LiveHiveId` and `CompositionDefinition` remain internal execution-engine names. They are not a second object model and are not exposed by the HTTP or CLI surface. The internal rename changed only these names; `CompositionDefinition` is unchanged.
 
 The legacy graph control surface and its client commands were removed in M10c; there are no aliases.

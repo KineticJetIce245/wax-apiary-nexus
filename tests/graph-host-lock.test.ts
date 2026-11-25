@@ -10,7 +10,7 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from '../src/adapters/harness.js';
-import { GraphHost } from '../src/daemon/graph-host.js';
+import { LiveHiveHost } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import type { Project } from '../src/project/kernel.js';
 import {
@@ -118,7 +118,7 @@ class GatedAdapter implements HarnessAdapter {
 }
 
 interface Env {
-  readonly host: GraphHost;
+  readonly host: LiveHiveHost;
   readonly workspace: Workspace;
   readonly project: Project;
 }
@@ -133,7 +133,7 @@ function makeEnv(adapter: GatedAdapter): Env {
     workspaces: new Map([['fake', workspace]]),
   });
   return {
-    host: new GraphHost({ registry }),
+    host: new LiveHiveHost({ registry }),
     workspace,
     project,
   };

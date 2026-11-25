@@ -4,7 +4,7 @@ import type { Server } from 'node:http';
 import { dirname, join } from 'node:path';
 
 import { DaemonLock } from '../daemon/daemon-lock.js';
-import { GraphHost } from '../daemon/graph-host.js';
+import { LiveHiveHost } from '../daemon/graph-host.js';
 import { HiveTemplateStore } from '../b/hive-template.js';
 import { LiveHiveService } from '../b/live-hive-service.js';
 import { RunStore } from '../storage/run-store.js';
@@ -64,7 +64,7 @@ export class ControlServerLifecycle {
     const startedAt = new Date(context.now()).toISOString();
     let lock: DaemonLock | undefined;
     let server: Server | undefined;
-    let graphHost: GraphHost | undefined;
+    let liveHiveHost: LiveHiveHost | undefined;
     let runStore: RunStore | undefined;
     let guardBroker: GuardBroker | undefined;
     let tokenAttempted = false;
@@ -92,7 +92,7 @@ export class ControlServerLifecycle {
       runStore = new RunStore(join(context.daemonDir, 'runs'));
       guardBroker = new GuardBroker({ timeoutMs: context.guardTimeoutMs });
       const broker = guardBroker;
-      graphHost = new GraphHost({
+      liveHiveHost = new LiveHiveHost({
         registry: context.registry,
         runStore,
         guardTimeoutMs: context.guardTimeoutMs,
@@ -110,7 +110,7 @@ export class ControlServerLifecycle {
       });
 
       const liveHiveService = new LiveHiveService({
-        graphHost,
+        liveHiveHost,
         registry: context.registry,
         livesRoot: context.options.livesRoot ?? join(context.options.stateRoot, 'lives'),
         templateStore: new HiveTemplateStore(
@@ -164,7 +164,7 @@ export class ControlServerLifecycle {
 
       context.server = server;
       context.lock = lock;
-      context.graphHost = graphHost;
+      context.liveHiveHost = liveHiveHost;
       context.liveHiveService = liveHiveService;
       context.runStore = runStore;
       context.guardBroker = guardBroker;
@@ -180,8 +180,8 @@ export class ControlServerLifecycle {
       guardBroker?.cancelAll();
       guardBroker = undefined;
       await closeServer(server).catch(() => undefined);
-      if (graphHost !== undefined) {
-        await graphHost.dispose().catch(() => undefined);
+      if (liveHiveHost !== undefined) {
+        await liveHiveHost.dispose().catch(() => undefined);
       }
       if (tokenAttempted) {
         safeRemoveFile(context.tokenPath);
@@ -196,7 +196,7 @@ export class ControlServerLifecycle {
       }
       context.server = undefined;
       context.lock = undefined;
-      context.graphHost = undefined;
+      context.liveHiveHost = undefined;
       context.liveHiveService = undefined;
       context.guardBroker = undefined;
       context.runStore = undefined;
@@ -218,17 +218,17 @@ export class ControlServerLifecycle {
     }
 
     const server = context.server;
-    const graphHost = context.graphHost;
+    const liveHiveHost = context.liveHiveHost;
     const lock = context.lock;
     const guardBroker = context.guardBroker;
-    const hadResources = server !== undefined || graphHost !== undefined || lock !== undefined;
+    const hadResources = server !== undefined || liveHiveHost !== undefined || lock !== undefined;
 
     stopSessionSweep(context);
     stopGraphSweep(context);
     guardBroker?.cancelAll();
     context.state = 'stopping';
     context.server = undefined;
-    context.graphHost = undefined;
+    context.liveHiveHost = undefined;
     context.liveHiveService = undefined;
     context.guardBroker = undefined;
     context.runStore = undefined;
@@ -242,8 +242,8 @@ export class ControlServerLifecycle {
     }
 
     await closeServer(server).catch(() => undefined);
-    if (graphHost !== undefined) {
-      await graphHost.dispose().catch(() => undefined);
+    if (liveHiveHost !== undefined) {
+      await liveHiveHost.dispose().catch(() => undefined);
     }
 
     // Remove discovery material while the lock still excludes a new server.

@@ -1,6 +1,6 @@
 import type { Server } from 'node:http';
 
-import type { GraphHost } from '../daemon/graph-host.js';
+import type { LiveHiveHost } from '../daemon/graph-host.js';
 import { ControlHttpServer } from './http-server.js';
 import { ControlRoutes } from './routes.js';
 import { ControlServerContext } from './server-context.js';
@@ -41,8 +41,8 @@ export class ControlServer {
   }
 
   /** Test/inspection seams; state lives in the shared context. */
-  private get graphHost(): GraphHost | undefined {
-    return this.context.graphHost;
+  private get liveHiveHost(): LiveHiveHost | undefined {
+    return this.context.liveHiveHost;
   }
 
   private get server(): Server | undefined {

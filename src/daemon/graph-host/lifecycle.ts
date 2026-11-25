@@ -1,5 +1,5 @@
 import type { GraphBindings } from '../../graph/binding.js';
-import { GraphAlreadyLoadedError, type GraphId, type SweepReport } from '../../graph/registry.js';
+import { GraphAlreadyLoadedError, type LiveHiveId, type SweepReport } from '../../graph/registry.js';
 import {
   instantiateForagers,
   type InstantiatedForagers,
@@ -12,41 +12,41 @@ import {
 } from '../../runtime/index.js';
 import type { SchedulerState } from '../scheduler.js';
 import { assertNonNegativeInteger, messageOf } from './context.js';
-import type { GraphHostContext } from './context.js';
-import type { GraphHostExecution } from './execution.js';
-import type { GraphHostRead } from './read.js';
+import type { LiveHiveHostContext } from './context.js';
+import type { LiveHiveHostExecution } from './execution.js';
+import type { LiveHiveHostRead } from './read.js';
 import type { SessionOwnership } from './session-ownership.js';
 import {
-  GraphHostDisposedError,
-  GraphLoadError,
-  GraphNotFoundError,
-  type GraphStatus,
+  LiveHiveHostDisposedError,
+  LiveHiveHostLoadError,
+  LiveHiveHostNotFoundError,
+  type LiveHiveStatus,
   type LiveGraph,
   type LoadGraphOptions,
 } from './types.js';
 
 /** Load/unload/sweep/dispose, Honey flush and scheduler lifecycle. */
-export class GraphHostLifecycle {
+export class LiveHiveHostLifecycle {
   constructor(
-    private readonly context: GraphHostContext,
-    private readonly read: GraphHostRead,
+    private readonly context: LiveHiveHostContext,
+    private readonly read: LiveHiveHostRead,
     private readonly ownership: SessionOwnership,
-    private readonly execution: GraphHostExecution,
+    private readonly execution: LiveHiveHostExecution,
   ) {
     this.context.setUnloadHandler((graphId, live) =>
       flushAndRelease(this.context, this.ownership, graphId, live),
     );
   }
 
-  loadGraph(options: LoadGraphOptions): Promise<GraphStatus> {
+  loadGraph(options: LoadGraphOptions): Promise<LiveHiveStatus> {
     if (this.context.disposed) {
-      return Promise.reject(new GraphHostDisposedError());
+      return Promise.reject(new LiveHiveHostDisposedError());
     }
     const graphId = options.definition.id;
     // A second lazy load must fail fast, not queue behind the first.
     if (this.context.loading.has(graphId) || this.context.graphs.peek(graphId) !== undefined) {
       return Promise.reject(
-        new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`),
+        new LiveHiveHostLoadError(graphId, `Graph is already loaded: ${graphId}`),
       );
     }
     // Reserve explicit sessions before the async load as ownership bookkeeping,
@@ -75,12 +75,12 @@ export class GraphHostLifecycle {
    * Flush Honey without releasing the graph. The live lock makes the snapshot
    * consistent with an in-flight trigger; a failed flush leaves memory intact.
    */
-  save(graphId: GraphId): Promise<GraphStatus> {
+  save(graphId: LiveHiveId): Promise<LiveHiveStatus> {
     return this.context.lock.run(graphId, async () => {
       this.context.assertNotDisposed();
       const live = this.context.graphs.peek(graphId)?.value;
       if (live === undefined) {
-        throw new GraphNotFoundError(graphId);
+        throw new LiveHiveHostNotFoundError(graphId);
       }
       if (live.honey !== undefined) {
         await live.honey.save(live.runtime.exportField());
@@ -91,14 +91,14 @@ export class GraphHostLifecycle {
       }
       const status = this.read.statusOf(graphId);
       if (status === undefined) {
-        throw new GraphNotFoundError(graphId);
+        throw new LiveHiveHostNotFoundError(graphId);
       }
       return status;
     });
   }
 
   /** Explicit unload; refused while busy/pinned/unsafe or when the flush fails. */
-  async unload(graphId: GraphId): Promise<boolean> {
+  async unload(graphId: LiveHiveId): Promise<boolean> {
     // Explicit unload keeps its documented "refused while busy" behavior: it
     // must not queue behind a running trigger. tryRun still guarantees it can
     // never run concurrently with another mutating operation for this id.
@@ -158,16 +158,16 @@ function isEphemeral(options: LoadGraphOptions): boolean {
 }
 
 function honeyForLoad(
-  context: GraphHostContext,
-  graphId: GraphId,
+  context: LiveHiveHostContext,
+  graphId: LiveHiveId,
   ephemeral: boolean | undefined,
-): ReturnType<NonNullable<GraphHostContext['honeyForGraph']>> | undefined {
+): ReturnType<NonNullable<LiveHiveHostContext['honeyForGraph']>> | undefined {
   return ephemeral === true ? undefined : context.honeyForGraph?.(graphId);
 }
 
 function markLoaded(
-  context: GraphHostContext,
-  graphId: GraphId,
+  context: LiveHiveHostContext,
+  graphId: LiveHiveId,
   ephemeral: boolean | undefined,
 ): void {
   if (ephemeral !== true) {
@@ -176,15 +176,15 @@ function markLoaded(
 }
 
 async function loadGraphLocked(
-  context: GraphHostContext,
-  read: GraphHostRead,
-  execution: GraphHostExecution,
+  context: LiveHiveHostContext,
+  read: LiveHiveHostRead,
+  execution: LiveHiveHostExecution,
   options: LoadGraphOptions,
-): Promise<GraphStatus> {
+): Promise<LiveHiveStatus> {
   context.assertNotDisposed();
   const graphId = options.definition.id;
   if (context.loading.has(graphId) || context.graphs.peek(graphId) !== undefined) {
-    throw new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`);
+    throw new LiveHiveHostLoadError(graphId, `Graph is already loaded: ${graphId}`);
   }
   if (options.idleTtlMs !== undefined) {
     assertNonNegativeInteger(options.idleTtlMs, 'idleTtlMs');
@@ -203,7 +203,7 @@ async function loadGraphLocked(
         schedulerState = honey.loadScheduler();
       }
     } catch (error) {
-      throw new GraphLoadError(
+      throw new LiveHiveHostLoadError(
         graphId,
         `Failed to load Honey for graph '${graphId}': ${messageOf(error)}`,
         { cause: error },
@@ -233,7 +233,7 @@ async function loadGraphLocked(
     if (context.disposed) {
       await releaseGraphResources(context, graphId, instantiated, options.bindings, 'rollback');
       instantiated = undefined;
-      throw new GraphHostDisposedError();
+      throw new LiveHiveHostDisposedError();
     }
 
     // The LiveHive id is known only here, so the host stamps it onto every
@@ -269,7 +269,7 @@ async function loadGraphLocked(
         recovery = restored.report;
       } catch (error) {
         // The outer catch releases the sessions and routing created above.
-        throw new GraphLoadError(
+        throw new LiveHiveHostLoadError(
           graphId,
           `Failed to restore Honey for graph '${graphId}': ${messageOf(error)}`,
           { cause: error },
@@ -315,7 +315,7 @@ async function loadGraphLocked(
       await releaseGraphResources(context, graphId, instantiated, options.bindings, 'rollback');
       instantiated = undefined;
       if (error instanceof GraphAlreadyLoadedError) {
-        throw new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`, {
+        throw new LiveHiveHostLoadError(graphId, `Graph is already loaded: ${graphId}`, {
           cause: error,
         });
       }
@@ -327,7 +327,7 @@ async function loadGraphLocked(
     instantiated = undefined;
     const status = read.statusOf(graphId);
     if (status === undefined) {
-      throw new GraphLoadError(graphId, `Graph failed to register: ${graphId}`);
+      throw new LiveHiveHostLoadError(graphId, `Graph failed to register: ${graphId}`);
     }
     markLoaded(context, graphId, options.ephemeral);
     return status;
@@ -340,7 +340,7 @@ async function loadGraphLocked(
       instantiated = undefined;
     }
     if (error instanceof GraphAlreadyLoadedError) {
-      throw new GraphLoadError(graphId, `Graph is already loaded: ${graphId}`, {
+      throw new LiveHiveHostLoadError(graphId, `Graph is already loaded: ${graphId}`, {
         cause: error,
       });
     }
@@ -350,7 +350,7 @@ async function loadGraphLocked(
   }
 }
 
-async function disposeAll(context: GraphHostContext): Promise<void> {
+async function disposeAll(context: LiveHiveHostContext): Promise<void> {
   for (const entry of context.graphs.list()) {
     try {
       // Non-blocking: a busy graph stays loaded; an idle one unloads safely.
@@ -375,9 +375,9 @@ async function disposeAll(context: GraphHostContext): Promise<void> {
  * a successful one stops scheduling and releases routing only.
  */
 async function flushAndRelease(
-  context: GraphHostContext,
+  context: LiveHiveHostContext,
   ownership: SessionOwnership,
-  graphId: GraphId,
+  graphId: LiveHiveId,
   live: LiveGraph,
 ): Promise<void> {
   if (live.honey !== undefined) {
@@ -404,8 +404,8 @@ async function flushAndRelease(
  * session is never closed or removed here.
  */
 async function releaseGraphResources(
-  context: GraphHostContext,
-  graphId: GraphId,
+  context: LiveHiveHostContext,
+  graphId: LiveHiveId,
   instantiated: InstantiatedForagers,
   bindings: GraphBindings,
   mode: 'retain' | 'rollback',

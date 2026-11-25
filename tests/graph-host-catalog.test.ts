@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  GraphHost,
-  type GraphHostEvent,
+  LiveHiveHost,
+  type LiveHiveHostEvent,
 } from '../src/daemon/graph-host.js';
 import { LiveHiveCatalog } from '../src/daemon/live-hive-catalog.js';
 import type { GraphBindings } from '../src/graph/binding.js';
@@ -75,7 +75,7 @@ test('load and unload retain catalog identity and persist it', async (t) => {
   const env = makeEnv();
   const path = catalogPath();
   const catalog = new LiveHiveCatalog(path);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     catalog,
   });
@@ -109,7 +109,7 @@ test('sweep records the sweep unload reason', async (t) => {
   const env = makeEnv();
   const catalog = new LiveHiveCatalog(catalogPath());
   let current = 1_000;
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     catalog,
     now: () => current,
@@ -136,7 +136,7 @@ test('sweep records the sweep unload reason', async (t) => {
 test('dispose records the dispose unload reason', async (t) => {
   const env = makeEnv();
   const catalog = new LiveHiveCatalog(catalogPath());
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     catalog,
   });
@@ -161,7 +161,7 @@ test('trigger refreshes lastAccessAt', async (t) => {
   const catalog = new LiveHiveCatalog(catalogPath(), {
     now: () => new Date(current).toISOString(),
   });
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     catalog,
     now: () => current,
@@ -193,8 +193,8 @@ test('catalog save failure is metadata-only and never changes load/unload', asyn
 
   const env = makeEnv();
   const catalog = new FailingCatalog(catalogPath());
-  const events: GraphHostEvent[] = [];
-  const host = new GraphHost({
+  const events: LiveHiveHostEvent[] = [];
+  const host = new LiveHiveHost({
     registry: env.registry,
     catalog,
     onEvent: (event) => events.push(event),
@@ -230,7 +230,7 @@ test('catalog save failure is metadata-only and never changes load/unload', asyn
 
 test('catalogEntries is empty when no catalog is configured', async () => {
   const env = makeEnv();
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
   });
   try {

@@ -8,7 +8,7 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from '../../src/adapters/harness.js';
-import { GraphHost } from '../../src/daemon/graph-host.js';
+import { LiveHiveHost } from '../../src/daemon/graph-host.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
 import type { Project } from '../../src/project/kernel.js';
 import {
@@ -248,7 +248,7 @@ interface RuntimeTestAccess {
   exportField(): PersistedField;
 }
 
-export function runtimeOf(host: GraphHost, graphId: string): RuntimeTestAccess {
+export function runtimeOf(host: LiveHiveHost, graphId: string): RuntimeTestAccess {
   const graphs = (host as unknown as {
     context: {
       graphs: {

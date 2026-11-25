@@ -9,7 +9,7 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from '../src/adapters/harness.js';
-import { GraphHost, GraphLoadError } from '../src/daemon/graph-host.js';
+import { LiveHiveHost, LiveHiveHostLoadError } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { Project } from '../src/project/kernel.js';
@@ -54,7 +54,7 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-corrupt-'));
   const storeFor = (graphId: string): HoneyStore =>
     HoneyStore.forComposition(root, 'apiary', graphId);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: storeFor,
@@ -76,7 +76,7 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
       project: env.project,
     }),
     (error: unknown) => {
-      assert.ok(error instanceof GraphLoadError);
+      assert.ok(error instanceof LiveHiveHostLoadError);
       assert.equal(error.graphId, 'corrupt');
       assert.match(error.message, /not valid JSON/);
       return true;
@@ -108,7 +108,7 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
       project: env.project,
     }),
     (error: unknown) => {
-      assert.ok(error instanceof GraphLoadError);
+      assert.ok(error instanceof LiveHiveHostLoadError);
       assert.equal(error.graphId, 'old-schema');
       assert.match(error.message, /schemaVersion/);
       return true;
@@ -124,7 +124,7 @@ test('a revision mismatch fails restore, releases only the session it created an
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-revision-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'revision');
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -159,7 +159,7 @@ test('a revision mismatch fails restore, releases only the session it created an
       project: env.project,
     }),
     (error: unknown) => {
-      assert.ok(error instanceof GraphLoadError);
+      assert.ok(error instanceof LiveHiveHostLoadError);
       assert.equal(error.graphId, 'revision');
       assert.match(error.message, /graph revision/);
       return true;
@@ -187,7 +187,7 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-recovery-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'recovery');
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -256,7 +256,7 @@ test('a failed restore closes created fresh_once sessions and removes their mapp
   const bindingStore = new GraphBindingStore(join(root, 'graph-bindings.json'), {
     now: () => FIXED_NOW,
   });
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -285,7 +285,7 @@ test('a failed restore closes created fresh_once sessions and removes their mapp
       project: env.project,
     }),
     (error: unknown) => {
-      assert.ok(error instanceof GraphLoadError);
+      assert.ok(error instanceof LiveHiveHostLoadError);
       assert.equal(error.graphId, 'rollback-once');
       assert.match(error.message, /graph revision/);
       return true;
@@ -311,7 +311,7 @@ test('a failed reload never closes a reused fresh_once session or removes its ma
   const bindingStore = new GraphBindingStore(join(root, 'graph-bindings.json'), {
     now: () => FIXED_NOW,
   });
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -346,7 +346,7 @@ test('a failed reload never closes a reused fresh_once session or removes its ma
   await assert.rejects(
     host.loadGraph({ definition, bindings, project: env.project }),
     (error: unknown) => {
-      assert.ok(error instanceof GraphLoadError);
+      assert.ok(error instanceof LiveHiveHostLoadError);
       assert.match(error.message, /graph revision/);
       return true;
     },
@@ -367,7 +367,7 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-reload-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'hover-reload');
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -424,7 +424,7 @@ test('a failed Honey flush blocks a hover-only unload and keeps it loaded', asyn
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-flush-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'hover-flush'));
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,

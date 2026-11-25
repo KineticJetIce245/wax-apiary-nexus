@@ -148,7 +148,7 @@ export function userForagerDefinition(id: string): Record<string, unknown> {
 }
 
 interface ClientHoverAccess {
-  readonly graphHost?: {
+  readonly liveHiveHost?: {
     readonly context: {
       readonly graphs: {
         peek(id: string):
@@ -174,7 +174,7 @@ interface ClientHoverAccess {
 
 /** Test-only read of the parked hover token; status deliberately never has it. */
 export function hoverTokenOf(daemon: TestDaemon, graphId: string, nodeId: string): string {
-  const host = (daemon.server as unknown as ClientHoverAccess).graphHost;
+  const host = (daemon.server as unknown as ClientHoverAccess).liveHiveHost;
   assert.ok(host !== undefined, 'daemon has no graph host');
   const entry = host.context.graphs.peek(graphId);
   assert.ok(entry !== undefined, `graph '${graphId}' is not loaded`);

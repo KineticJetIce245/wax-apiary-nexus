@@ -13,14 +13,14 @@ import type {
   HarnessEvent,
 } from '../src/adapters/harness.js';
 import {
-  GraphAnswerError,
-  GraphHost,
-  GraphHostDisposedError,
-  GraphLoadError,
-  GraphNotFoundError,
-  type GraphHostEvent,
-  type GraphNodeStatus,
-  type GraphStatus,
+  LiveHiveHostAnswerError,
+  LiveHiveHost,
+  LiveHiveHostDisposedError,
+  LiveHiveHostLoadError,
+  LiveHiveHostNotFoundError,
+  type LiveHiveHostEvent,
+  type LiveHiveNodeStatus,
+  type LiveHiveStatus,
 } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
@@ -106,7 +106,7 @@ function makeBindingStore(): GraphBindingStore {
 test('duplicate load, invalid bindings and an unknown graph are rejected explicitly', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -124,7 +124,7 @@ test('duplicate load, invalid bindings and an unknown graph are rejected explici
   await assert.rejects(
     host.loadGraph({ definition, bindings, project: env.project }),
     (error: unknown) => {
-      assert.ok(error instanceof GraphLoadError);
+      assert.ok(error instanceof LiveHiveHostLoadError);
       assert.equal(error.graphId, 'reject');
       assert.match(error.message, /already loaded/);
       return true;
@@ -156,7 +156,7 @@ test('duplicate load, invalid bindings and an unknown graph are rejected explici
   await assert.rejects(
     triggerRun(host, 'missing', 'only', text('x')),
     (error: unknown) => {
-      assert.ok(error instanceof GraphNotFoundError);
+      assert.ok(error instanceof LiveHiveHostNotFoundError);
       assert.equal(error.graphId, 'missing');
       return true;
     },
@@ -166,7 +166,7 @@ test('duplicate load, invalid bindings and an unknown graph are rejected explici
 test('unload retains fresh and borrowed sessions and disposes routing', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -212,7 +212,7 @@ test('unload retains fresh and borrowed sessions and disposes routing', async (t
   const promptsBefore = env.adapter.allPrompts.length;
   await assert.rejects(
     triggerRun(host, 'mixed', 'reuse', text('after')),
-    GraphNotFoundError,
+    LiveHiveHostNotFoundError,
   );
   assert.equal(env.adapter.allPrompts.length, promptsBefore);
 });
@@ -221,9 +221,9 @@ test('a failed close during load rollback is reported and the load is not regist
   const adapter = new GatedCloseFailureAdapter();
   adapter.failClose = true;
   const env = makeEnv(adapter);
-  const events: GraphHostEvent[] = [];
+  const events: LiveHiveHostEvent[] = [];
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     onEvent: (event) => events.push(event),
@@ -245,7 +245,7 @@ test('a failed close during load rollback is reported and the load is not regist
   // and the session it created must be rolled back.
   const disposal = host.dispose();
   adapter.release();
-  await assert.rejects(load, GraphHostDisposedError);
+  await assert.rejects(load, LiveHiveHostDisposedError);
   await disposal;
 
   assert.equal(host.statusOf('rollback-close'), undefined);
@@ -269,7 +269,7 @@ test('a failed close during load rollback is reported and the load is not regist
 test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -335,7 +335,7 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
   const env = makeEnv();
   env.adapter.holdSubmissions = true;
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -388,7 +388,7 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
 test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     maxPumps: 1,
@@ -446,7 +446,7 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
 test('dispose unloads every Rest graph, is idempotent and refuses later work', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
@@ -480,11 +480,11 @@ test('dispose unloads every Rest graph, is idempotent and refuses later work', a
 
   await assert.rejects(
     triggerRun(host, 'graph-a', 'only', text('after')),
-    GraphHostDisposedError,
+    LiveHiveHostDisposedError,
   );
   await assert.rejects(
     host.loadGraph({ definition: graphA, bindings: allFresh(graphA), project: env.project }),
-    GraphHostDisposedError,
+    LiveHiveHostDisposedError,
   );
 
   // dispose must not stop the Workspace; the caller still owns it.
@@ -498,7 +498,7 @@ test('fresh_once keeps its session and mapping across unload and reuses it on re
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const bindingStore = makeBindingStore();
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     bindingStore,
@@ -550,7 +550,7 @@ test('fresh_always is retained on unload and a reload creates a new session', as
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const bindingStore = makeBindingStore();
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     bindingStore,
@@ -595,7 +595,7 @@ test('an idle sweep retains a fresh_once session and the reload still reuses it'
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const bindingStore = makeBindingStore();
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     bindingStore,

@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 import {
-  GraphHost,
-  type GraphRunResult,
+  LiveHiveHost,
+  type LiveHiveRunResult,
 } from '../src/daemon/graph-host.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import { HiveTemplateStore } from '../src/b/hive-template.js';
@@ -30,7 +30,7 @@ async function wakeNow(
   liveId: string,
   beeId: string,
   input: string,
-): Promise<GraphRunResult> {
+): Promise<LiveHiveRunResult> {
   return service.wake(liveId, beeId, input);
 }
 
@@ -40,7 +40,7 @@ interface Harness {
   readonly registry: SessionRegistry;
   readonly project: Project;
   readonly root: string;
-  readonly host: GraphHost;
+  readonly host: LiveHiveHost;
   readonly templates: HiveTemplateStore;
   readonly runStore: RunStore;
   readonly service: LiveHiveService;
@@ -56,7 +56,7 @@ function setup(t: TestContext): Harness {
   };
   const root = mkdtempSync(join(tmpdir(), 'wax-service-state-'));
   const runStore = new RunStore(join(root, 'runs'));
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry,
     runStore,
     honeyForGraph: (graphId) => HoneyStore.forComposition(root, 'apiary', graphId),
@@ -64,7 +64,7 @@ function setup(t: TestContext): Harness {
   });
   const templates = new HiveTemplateStore(join(root, 'templates'));
   const service = new LiveHiveService({
-    graphHost: host,
+    liveHiveHost: host,
     registry,
     livesRoot: join(root, 'lives'),
     templateStore: templates,

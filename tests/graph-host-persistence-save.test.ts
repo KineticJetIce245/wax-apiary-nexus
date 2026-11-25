@@ -9,7 +9,7 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from '../src/adapters/harness.js';
-import { GraphHost, GraphLoadError } from '../src/daemon/graph-host.js';
+import { LiveHiveHost, LiveHiveHostLoadError } from '../src/daemon/graph-host.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { Project } from '../src/project/kernel.js';
@@ -53,7 +53,7 @@ test('trigger flushes the field to Honey and reports persisted', async (t) => {
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-flush-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'flush');
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -92,7 +92,7 @@ test('unload and reload restore the field and continue the counter', async (t) =
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-reload-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'counter');
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -167,7 +167,7 @@ test('unload retains fresh sessions and reload creates replacements', async (t) 
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-fresh-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'fresh');
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -212,7 +212,7 @@ test('a failed flush blocks unload and keeps sessions and routing open', async (
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-block-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'blocked'));
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -270,7 +270,7 @@ test('a failed trigger flush is reported without replaying the trigger', async (
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-trigger-fail-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'trigger-fail'));
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -333,17 +333,17 @@ test('idle TTL defaults to 0 without Honey and 30 minutes with it', async (t) =>
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-ttl-'));
   const storeFor = (graphId: string): HoneyStore =>
     HoneyStore.forComposition(root, 'apiary', graphId);
-  const honeyHost = new GraphHost({
+  const honeyHost = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: storeFor,
   });
-  const plainHost = new GraphHost({
+  const plainHost = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
   });
   const overrideHoney = HoneyStore.forComposition(root, 'apiary', 'override-ttl');
-  const overrideHost = new GraphHost({
+  const overrideHost = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     defaultIdleTtlMs: 500,
@@ -428,7 +428,7 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m4b-sweep-'));
   const honey = HoneyStore.forComposition(root, 'apiary', 'sweep-counter');
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
@@ -483,11 +483,11 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
   assert.equal(counterCount(honey.load()), 2);
 });
 
-test('GraphHost.save flushes Honey without unloading and keeps memory on failure', async (t) => {
+test('LiveHiveHost.save flushes Honey without unloading and keeps memory on failure', async (t) => {
   const env = makeEnv();
   const root = mkdtempSync(join(tmpdir(), 'wax-m9i-save-'));
   const honey = new FailingHoneyStore(honeyPaths(root, 'apiary', 'save-only'));
-  const host = new GraphHost({
+  const host = new LiveHiveHost({
     registry: env.registry,
     honeyForGraph: () => honey,
   });

@@ -1,14 +1,14 @@
-import type { GraphStatus } from '../daemon/graph-host.js';
+import type { LiveHiveStatus } from '../daemon/graph-host.js';
 import type { LiveHiveCatalogEntry } from '../daemon/live-hive-catalog.js';
 import type { RunRecord, RunStatus, RunStore } from '../storage/run-store.js';
-import type { GraphHost } from '../daemon/graph-host.js';
+import type { LiveHiveHost } from '../daemon/graph-host.js';
 import type { LiveHiveRepository } from './live-hive-repository.js';
 import { LiveHiveServiceError } from './live-hive-service-errors.js';
 
 export interface LiveHiveSummary {
   readonly liveId: string;
   readonly state: 'loaded' | 'unloaded';
-  readonly status?: GraphStatus;
+  readonly status?: LiveHiveStatus;
   readonly catalog?: LiveHiveCatalogEntry;
 }
 
@@ -25,7 +25,7 @@ export interface LiveHiveOutputResult {
 
 export interface LiveHiveInspectResult {
   readonly liveId: string;
-  readonly status?: GraphStatus;
+  readonly status?: LiveHiveStatus;
   readonly outputs: readonly { readonly nodeId: string; readonly value: unknown }[];
   readonly catalog?: LiveHiveCatalogEntry;
 }
@@ -33,17 +33,17 @@ export interface LiveHiveInspectResult {
 /** Read-only list/output view shared by the B service and HTTP routes. */
 export class LiveHiveReadService {
   constructor(
-    private readonly graphHost: GraphHost,
+    private readonly liveHiveHost: LiveHiveHost,
     private readonly repository: LiveHiveRepository,
     private readonly runStore: RunStore | undefined,
   ) {}
 
   list(): readonly LiveHiveSummary[] {
     const statuses = new Map(
-      this.graphHost.status().map((status) => [status.graphId, status]),
+      this.liveHiveHost.status().map((status) => [status.graphId, status]),
     );
     const catalog = new Map(
-      this.graphHost.catalogEntries().map((entry) => [entry.liveId, entry]),
+      this.liveHiveHost.catalogEntries().map((entry) => [entry.liveId, entry]),
     );
     const ids = new Set<string>([
       ...statuses.keys(),
@@ -67,8 +67,8 @@ export class LiveHiveReadService {
 
   inspect(liveId: string): LiveHiveInspectResult {
     const id = this.repository.requireLiveId(liveId);
-    const status = this.graphHost.statusOf(id);
-    const catalog = this.graphHost.catalogEntries().find((entry) => entry.liveId === id);
+    const status = this.liveHiveHost.statusOf(id);
+    const catalog = this.liveHiveHost.catalogEntries().find((entry) => entry.liveId === id);
     if (status === undefined && catalog === undefined && !this.repository.cached(id)) {
       throw new LiveHiveServiceError('not-found', `live hive is not loaded: ${id}`);
     }
@@ -76,7 +76,7 @@ export class LiveHiveReadService {
     // return its catalog identity and an empty output list, never a 500.
     const outputs = status === undefined
       ? []
-      : [...this.graphHost.outputsOf(id).entries()]
+      : [...this.liveHiveHost.outputsOf(id).entries()]
           .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
           .map(([nodeId, value]) => ({ nodeId, value }));
     return {

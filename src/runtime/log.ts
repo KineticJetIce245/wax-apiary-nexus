@@ -34,6 +34,7 @@ export type RuntimeEvent =
   | 'runtime.restored'
   | 'runtime.attention'
   | 'runtime.rest'
+  | 'trace.cancelled'
   | 'scheduler.unconfirmed';
 
 export interface RuntimeLogEntry {
@@ -48,7 +49,7 @@ export interface RuntimeLogEntry {
   forkId?: string;
   branchId?: string;
   queueDepth?: number;
-  /** Per-bee waiting limit (`queueMax`) for a mailbox overflow entry. */
+  /** Per-bee waiting limit or per-trace budget for a limit entry. */
   limit?: number;
   /** Which overflow policy produced this entry. */
   policy?: 'reject' | 'block';

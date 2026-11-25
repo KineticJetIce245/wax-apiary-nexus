@@ -163,13 +163,17 @@ function isEphemeral(options: LoadGraphOptions): boolean {
   return options.ephemeral === true;
 }
 
-function mailboxRuntimeOptions(context: LiveHiveHostContext): {
+function runtimeLimitOptions(context: LiveHiveHostContext): {
   readonly mailboxOverflowPolicy: 'reject' | 'block';
   readonly mailboxBlockTimeoutMs: number;
+  readonly maxHopsPerTrace: number;
+  readonly maxDurationPerTraceMs: number;
 } {
   return {
     mailboxOverflowPolicy: context.mailboxOverflowPolicy,
     mailboxBlockTimeoutMs: context.mailboxBlockTimeoutMs,
+    maxHopsPerTrace: context.traceLimits.maxHopsPerTrace,
+    maxDurationPerTraceMs: context.traceLimits.maxDurationPerTraceMs,
   };
 }
 
@@ -268,7 +272,7 @@ async function loadGraphLocked(
       ...(context.guardTimeoutMs === undefined
         ? {}
         : { guardTimeoutMs: context.guardTimeoutMs }),
-      ...mailboxRuntimeOptions(context),
+      ...runtimeLimitOptions(context),
       onRun: createRunObserver(context.runs),
     };
     let runtime: PheromoneRuntime;    let recovery: RecoveryReport | undefined;

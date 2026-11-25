@@ -49,6 +49,8 @@ import {
   workerLogFields,
 } from './runtime-values.js';
 import { StateLock } from './state-lock.js';
+import { TraceLimitManager, type TraceDeadlineTimer } from './trace-limits.js';
+import { TracePresence } from './trace-presence.js';
 import {
   runWorker,
   workerExitError,
@@ -106,6 +108,9 @@ export interface RuntimeOptions {
   mailboxOverflowPolicy?: MailboxOverflowPolicy;
   /** Positive integer; only used by `block`; defaults to 30s. */
   mailboxBlockTimeoutMs?: number;
+  maxHopsPerTrace?: number;
+  maxDurationPerTraceMs?: number;
+  traceDeadlineTimer?: TraceDeadlineTimer;
 }
 
 const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
@@ -208,6 +213,12 @@ function normalizeMailbox(queue: readonly Pheromone[] | undefined): Pheromone[] 
   return queue === undefined ? [] : queue.map(normalizePheromone);
 }
 
+type GuardDecisionHandler = (request: GuardRequest) => Promise<GuardDecision>;
+function guardDecisionPromise(handler: GuardDecisionHandler | undefined, request: GuardRequest, nodeId: string): Promise<GuardDecision> {
+  if (handler === undefined) return Promise.resolve<GuardDecision>('reject_once');
+  return Promise.resolve().then(() => handler({ ...request, beeId: nodeId })).catch(() => 'reject_once' as GuardDecision);
+}
+
 /**
  * PheromoneField runtime.
  *
@@ -228,6 +239,8 @@ export class PheromoneRuntime {
   private readonly onRun: RuntimeRunObserver | undefined;
   private readonly guardWaiters = new Map<string, { readonly requestId: string; resolve: (decision: GuardDecision) => void }>();
   private readonly states: Map<NodeId, NodeState> = new Map();
+  private presence!: TracePresence;
+  private traceLimits!: TraceLimitManager;
   /** Answers that arrived before their user node hovered; preserved, not dropped. */
   private readonly preAnswers = new Map<NodeId, Value[]>();
   /**
@@ -245,8 +258,6 @@ export class PheromoneRuntime {
   private readonly mailboxOverflow: MailboxOverflow | undefined;
   /** The first activation failure; the pump stops starting unrelated bees. */
   private failure: unknown;
-  /** Activations removed from a mailbox but not yet in `active`. */
-  private readonly inFlight = new Map<string, number>();
   private resting: boolean;
 
   constructor(definition: CompositionDefinition, options: RuntimeOptions) {
@@ -285,11 +296,43 @@ export class PheromoneRuntime {
             mailbox.blockTimeoutMs,
           )
         : undefined;
+    this.initTraceServices(options);
 
     for (const id of definition.nodes.keys()) {
       this.states.set(id, createNodeState());
     }
     this.resting = isFieldResting(this.states.values());
+  }
+
+  private initTraceServices(options: RuntimeOptions): void {
+    this.presence = new TracePresence({
+      states: this.states,
+      ...(this.onRun === undefined ? {} : { onRun: this.onRun }),
+      refreshRest: () => this.refreshRest(),
+    });
+    this.traceLimits = new TraceLimitManager(
+      {
+        definition: this.definition,
+        states: this.states,
+        guardWaiters: this.guardWaiters,
+        now: this.now,
+        transaction: (action) => this.stateLock.runSync(action),
+        log: (entry) => this.log(entry),
+        notifyTrace: (traceId) => this.notifyTrace(traceId),
+        isSettled: (traceId) => this.presence.stateOf(traceId) === 'settled',
+        ...(this.onRun === undefined ? {} : { onRun: this.onRun }),
+        ...(this.onGuardExpired === undefined
+          ? {}
+          : { onGuardExpired: this.onGuardExpired }),
+        ...(this.mailboxOverflow === undefined
+          ? {}
+          : { mailboxOverflowNotifyAll: () => this.mailboxOverflow?.notifyAll() }),
+        ...(options.traceDeadlineTimer === undefined
+          ? {}
+          : { timer: options.traceDeadlineTimer }),
+      },
+      options,
+    );
   }
 
   /**
@@ -304,11 +347,15 @@ export class PheromoneRuntime {
   ): Promise<RuntimeAdmission> => {
     const node = this.requireTriggerNode(nodeId);
     assertValue(value);
+    const admittedAt = this.now();
     const pheromone = createPheromone(value, traceId, this.iso());
     if (this.mailboxOverflow !== undefined) {
-      return this.mailboxOverflow.admit(node.id, pheromone, traceId);
+      const admission = await this.mailboxOverflow.admit(node.id, pheromone, traceId);
+      this.traceLimits.start(traceId, admittedAt);
+      return admission;
     }
     this.enqueueOrReject(node, pheromone);
+    this.traceLimits.start(traceId, admittedAt);
     return { pheromoneId: pheromone.id, traceId };
   };
   /** Creates a Pheromone at the target node and returns its id. */
@@ -332,6 +379,7 @@ export class PheromoneRuntime {
     assertValue(value);
     const pheromone = createPheromone(value, traceId, this.iso());
     this.enqueueOrReject(node, pheromone);
+    this.traceLimits.start(traceId, this.now());
     return pheromone;
   }
   /**
@@ -403,6 +451,8 @@ export class PheromoneRuntime {
     this.failure = undefined;
     this.blockedByQueue = false;
     this.stateLock.runSync(() => {
+      this.traceLimits.adoptRestored();
+      this.traceLimits.sweep();
       expireOverdueQueues(this.definition, this.states, this.now(), this.log.bind(this));
       this.mailboxOverflow?.notifyAll();
     });
@@ -1074,7 +1124,7 @@ export class PheromoneRuntime {
       return null;
     }
     delete state.pending;
-    this.addInFlight(pheromone.traceId);
+    this.presence.addInFlight(pheromone.traceId);
     return { node, pheromone, reservation: reserved.reservation };
   }
 
@@ -1131,10 +1181,10 @@ export class PheromoneRuntime {
           this.finishAsyncActivation(node, pheromone, result, reservation, state, startedAt),
         );
       } catch (error) {
-        const optionalOnly = this.stateLock.runSync(() =>
+        const outcome = this.stateLock.runSync(() =>
           this.failActivation(node, pheromone, error, state, startedAt),
         );
-        if (!optionalOnly) {
+        if (outcome === 'required') {
           throw error;
         }
       }
@@ -1144,7 +1194,7 @@ export class PheromoneRuntime {
         // was already decremented by pushPheromone().
         this.releaseReservation(reservation);
         delete state.active;
-        this.endInFlight(pheromone.traceId);
+        this.presence.endInFlight(pheromone.traceId);
         // The final classification runs after the in-flight marker is gone;
         // an activation that removes the last Pheromone (or only parks a
         // hover) is then reported as settled/parked, never as present.
@@ -1163,6 +1213,7 @@ export class PheromoneRuntime {
     reservation: OutputReservation,
     state: NodeState,
   ): number | null {
+    if (!this.traceLimits.enterActivation(pheromone.traceId)) return null;
     state.lastActivatedAt = this.iso();
     this.resting = false;
     this.onRun?.activated?.(pheromone.traceId);
@@ -1221,16 +1272,22 @@ export class PheromoneRuntime {
     this.notifyTrace(pheromone.traceId);
   }
 
-  /** Returns true when the failure only affected an optional Merge branch. */
+  /** Returns what the caller must do with the activation failure. */
   private failActivation(
     node: NodeDefinition,
     pheromone: Pheromone,
     error: unknown,
     state: NodeState,
     startedAt: number,
-  ): boolean {
+  ): 'optional' | 'aborted' | 'required' {
     delete state.active;
     logFailed(this.log.bind(this), node, pheromone, startedAt, this.now(), error);
+    if (this.traceLimits.isAborted(pheromone.traceId)) {
+      // The trace was already cancelled by its own limit. Its late execution is
+      // allowed to end, but it must not fail the pump or another trace.
+      this.notifyTrace(pheromone.traceId);
+      return 'aborted';
+    }
     // A required branch that failed can never reach its Merge; cancel its
     // siblings so no join waits forever. An optional-only branch is logged and
     // dropped without failing the required set.
@@ -1242,7 +1299,7 @@ export class PheromoneRuntime {
       this.onRun?.failed?.(pheromone.traceId, error);
     }
     this.notifyTrace(pheromone.traceId);
-    return optionalOnly;
+    return optionalOnly ? 'optional' : 'required';
   }
 
   private async runNode(
@@ -1411,6 +1468,9 @@ export class PheromoneRuntime {
     request: GuardRequest,
     decide?: (request: GuardRequest) => Promise<GuardDecision>,
   ): Promise<GuardDecision> {
+    if (this.traceLimits.isAborted(pheromone.traceId)) {
+      return 'cancelled';
+    }
     const state = this.stateOf(node.id);
     if (state.hover !== undefined) {
       throw new GuardDecisionError(`node '${node.id}' already has an open hover`);
@@ -1458,13 +1518,7 @@ export class PheromoneRuntime {
     }, this.guardTimeoutMs);
     timer.unref();
 
-    const handler = decide ?? this.onGuard;
-    const decisionPromise =
-      handler === undefined
-        ? Promise.resolve<GuardDecision>('reject_once')
-        : Promise.resolve()
-            .then(() => handler({ ...request, beeId: node.id }))
-            .catch(() => 'reject_once' as GuardDecision);
+    const decisionPromise = guardDecisionPromise(decide ?? this.onGuard, request, node.id);
 
     let decision: GuardDecision;
     try {
@@ -1515,7 +1569,7 @@ export class PheromoneRuntime {
     reservation: OutputReservation,
   ): boolean {
     const edge = this.outgoingEdge(node, result);
-    if (edge === undefined) {
+    if (edge === undefined || this.traceLimits.isAborted(pheromone.traceId)) {
       return false;
     }
 
@@ -1533,6 +1587,7 @@ export class PheromoneRuntime {
   }
 
   private reportOutput(traceId: string, nodeId: NodeId, value: Value): void {
+    if (this.traceLimits.isAborted(traceId)) return;
     try {
       this.onRun?.output?.(traceId, nodeId, structuredClone(value));
     } catch {
@@ -1540,75 +1595,9 @@ export class PheromoneRuntime {
     }
   }
 
-  /** Notifies the observer whether a trace still has live or parked work. */
+  /** Notifies the observer and releases the trace budget once it is settled. */
   private notifyTrace(traceId: string): void {
-    const state = this.traceStateOf(traceId);
-    if (state === 'settled') {
-      this.refreshRest();
-      this.onRun?.settled?.(traceId);
-    } else if (state === 'parked') {
-      this.onRun?.parked?.(traceId);
-    } else {
-      this.onRun?.present?.(traceId);
-    }
-  }
-
-  private traceStateOf(traceId: string): 'present' | 'parked' | 'settled' {
-    if ((this.inFlight.get(traceId) ?? 0) > 0 || this.traceInField(traceId)) {
-      return 'present';
-    }
-    return this.traceParked(traceId) ? 'parked' : 'settled';
-  }
-
-  private traceInField(traceId: string): boolean {
-    for (const state of this.states.values()) {
-      if (this.nodeHoldsTrace(state, traceId)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private nodeHoldsTrace(state: NodeState, traceId: string): boolean {
-    if (state.active?.traceId === traceId || state.pending?.traceId === traceId) {
-      return true;
-    }
-    if ((state.queue ?? []).some((pheromone) => pheromone.traceId === traceId)) {
-      return true;
-    }
-    if (state.joins === undefined) {
-      return false;
-    }
-    for (const join of state.joins.values()) {
-      for (const arrived of join.arrived.values()) {
-        if (arrived.traceId === traceId) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  private traceParked(traceId: string): boolean {
-    for (const state of this.states.values()) {
-      if (state.hoverPheromone?.traceId === traceId) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private addInFlight(traceId: string): void {
-    this.inFlight.set(traceId, (this.inFlight.get(traceId) ?? 0) + 1);
-  }
-
-  private endInFlight(traceId: string): void {
-    const count = (this.inFlight.get(traceId) ?? 0) - 1;
-    if (count <= 0) {
-      this.inFlight.delete(traceId);
-    } else {
-      this.inFlight.set(traceId, count);
-    }
+    if (this.presence.notify(traceId) === 'settled') this.traceLimits.forget(traceId);
   }
 
   /**
@@ -1624,6 +1613,7 @@ export class PheromoneRuntime {
     pheromone: Pheromone,
     reservation: OutputReservation,
   ): void {
+    if (this.traceLimits.isAborted(pheromone.traceId)) return;
     const forkId = `fk_${randomUUID()}`;
     // Stage 5D: a nested Fork appends its tag to the incoming lineage instead
     // of overwriting the enclosing fork/branch tags.
@@ -2101,6 +2091,7 @@ export class PheromoneRuntime {
     parentLineage: readonly BranchTag[],
     reservation: OutputReservation,
   ): void {
+    if (this.traceLimits.isAborted(traceId)) return;
     const value = combineMergeValues(node.config.combine, arrived);
     const first = arrived[0];
     this.log({

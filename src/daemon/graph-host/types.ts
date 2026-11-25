@@ -93,6 +93,17 @@ export interface LiveHiveHostOptions {
   /** Positive integer block timeout; only used by `block`; defaults to 30s. */
   readonly mailboxBlockTimeoutMs?: number;
   /**
+   * Per-trace activation ceiling passed to every runtime this host loads;
+   * default 256. One node activation start (fork and merge included) is one hop;
+   * fork/merge branches share the trace's budget.
+   */
+  readonly maxHopsPerTrace?: number;
+  /**
+   * Per-trace age ceiling from admission, passed to every runtime this host
+   * loads; default 30 minutes. Cancels only that trace, never the whole hive.
+   */
+  readonly maxDurationPerTraceMs?: number;
+  /**
    * Optional observability for cleanup failures. Cleanup itself never rejects:
    * a failed close must not turn an unload into a residency failure.
    */

@@ -416,7 +416,7 @@
       "parameters": 3
     },
     "src/runtime/runtime.ts::class PheromoneRuntime": {
-      "bodyLines": 2113,
+      "bodyLines": 2093,
       "publicMethods": 9,
       "constructorDependencies": 2
     },
@@ -469,7 +469,7 @@
       "parameters": 1
     },
     "src/runtime/runtime.ts::method PheromoneRuntime.requestGuard": {
-      "lines": 83,
+      "lines": 80,
       "cyclomatic": 7,
       "nesting": 2,
       "parameters": 4

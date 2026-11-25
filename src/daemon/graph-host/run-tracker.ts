@@ -110,7 +110,11 @@ export class RunTracker {
       case 'failed': {
         run.failure = event.error;
         const state = failureState(event.error);
-        this.finish(run, state, state === 'cancelled' ? 'run cancelled' : 'run failed');
+        this.finish(
+          run,
+          state,
+          state === 'cancelled' ? cancellationReason(event.error) : 'run failed',
+        );
         break;
       }
       case 'settled':
@@ -333,4 +337,19 @@ function failureState(error: unknown): LiveHiveRunState {
     (error as { state?: unknown }).state === 'unknown'
     ? 'unknown'
     : 'failed';
+}
+
+/**
+ * The cancellation reason is reported through the existing `error` string
+ * field: the run view has no separate optional reason field. A structured
+ * reason remains available to callers through `failureOf()`.
+ */
+function cancellationReason(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    const reason = (error as { reason?: unknown }).reason;
+    if (typeof reason === 'string' && reason !== '') {
+      return reason;
+    }
+  }
+  return 'run cancelled';
 }

@@ -23,6 +23,17 @@ export {
 } from './mailbox-overflow.js';
 export type { MailboxOverflowPolicy } from './mailbox-overflow.js';
 export {
+  DEFAULT_MAX_DURATION_PER_TRACE_MS,
+  DEFAULT_MAX_HOPS_PER_TRACE,
+  TraceLimitError,
+  readTraceLimitOptions,
+} from './trace-limits.js';
+export type {
+  TraceDeadlineTimer,
+  TraceLimitKind,
+  TraceLimitOptions,
+} from './trace-limits.js';
+export {
   DEFAULT_WORKER_TIMEOUT_MS,
   MAX_WORKER_OUTPUT_BYTES,
   resolveWorkerCwd,

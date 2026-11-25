@@ -57,6 +57,20 @@ export function dropForkFromMailbox(state: NodeState, forkId: string): void {
   }
 }
 
+/** Drops one cancelled trace's waiting entries, keeping other traces in FIFO. */
+export function dropTraceFromMailbox(state: NodeState, traceId: string): void {
+  const mailbox = state.queue;
+  if (mailbox === undefined || !mailbox.some((pheromone) => pheromone.traceId === traceId)) {
+    return;
+  }
+  const kept = mailbox.filter((pheromone) => pheromone.traceId !== traceId);
+  if (kept.length === 0) {
+    delete state.queue;
+  } else {
+    state.queue = kept;
+  }
+}
+
 function cloneValue<T>(value: T): T {
   return structuredClone(value);
 }

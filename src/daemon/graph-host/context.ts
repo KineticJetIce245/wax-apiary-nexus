@@ -1,7 +1,7 @@
 import { GraphRegistry, type LiveHiveId } from '../../graph/registry.js';
 import { DEFAULT_IDLE_TTL_MS } from '../../graph/residency.js';
 import type { GuardDecision, GuardRequest, PheromoneFieldSnapshot } from '../../runtime/index.js';
-import { readMailboxOverflowOptions } from '../../runtime/index.js';
+import { readMailboxOverflowOptions, readTraceLimitOptions } from '../../runtime/index.js';
 import type { SessionRegistry } from '../../session/session-registry.js';
 import type { HoneyStore } from '../../storage/honey.js';
 import type { RunStore } from '../../storage/run-store.js';
@@ -41,6 +41,7 @@ export class LiveHiveHostContext {
   readonly onGuardExpired: ((requestId: string) => void) | undefined;
   readonly mailboxOverflowPolicy: 'reject' | 'block';
   readonly mailboxBlockTimeoutMs: number;
+  readonly traceLimits: ReturnType<typeof readTraceLimitOptions>;
   readonly onEvent: ((event: LiveHiveHostEvent) => void) | undefined;
   readonly graphs: GraphRegistry<LiveGraph>;
   readonly runs: RunTracker;
@@ -88,8 +89,8 @@ export class LiveHiveHostContext {
       throw new TypeError('onGuardExpired must be a function');
     }
     const mailbox = readMailboxOverflowOptions(options);
-    this.mailboxOverflowPolicy = mailbox.policy;
-    this.mailboxBlockTimeoutMs = mailbox.blockTimeoutMs;
+    this.mailboxOverflowPolicy = mailbox.policy;    this.mailboxBlockTimeoutMs = mailbox.blockTimeoutMs;
+    this.traceLimits = readTraceLimitOptions(options);
     this.onEvent = options.onEvent;
     this.schedulers = new SchedulerService({
       now: this.now,

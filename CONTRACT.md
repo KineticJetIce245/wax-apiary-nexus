@@ -146,6 +146,7 @@ GET  /health
 - One endpoint, one token.
 - `--harness` filters/validates; it does not select a per-harness daemon.
 - `POST /lives/wake` is admission-only: it returns **202** `{ ok:true, runId, traceId, status:"accepted" }` after placing the Pheromone in the target bee's mailbox. It does not wait for native execution or final output; query `GET /lives/:id/runs/:runId` for state/output. There is no legacy wait/result envelope.
+- Each trace has `maxHopsPerTrace` (default 256) and `maxDurationPerTraceMs` (default 30 min), measured from admission. On exceed, only that trace is cancelled (`error: "trace-limit"`); an already-running native turn is not force-killed, but its later outputs are suppressed. Other traces continue.
 - When a bee mailbox is full (`queueMax` waiting entries), the configured overflow policy applies:
   - `reject`: 429 `bee-mailbox-full` with `liveId/beeId/pending/limit/policy`;
   - `block`: wait outside the state lock, emit `bee-mailbox-blocked`, then 429 `bee-mailbox-block-timeout` with `waitedMs` if capacity does not arrive.

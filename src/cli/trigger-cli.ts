@@ -9,33 +9,33 @@ import {
 
 type Writer = (line: string) => void;
 
-const WAKE_USAGE =
-  'usage: wax wake <liveId> <beeId> [--input <text>] [--daemon-dir <dir>] [--json]';
+const TRIGGER_USAGE =
+  'usage: wax trigger <liveId> <beeId> [--input <text>] [--daemon-dir <dir>] [--json]';
 const ANSWER_USAGE =
   'usage: wax answer <liveId> <beeId> [--input <text>] [--token <token>] ' +
   '[--daemon-dir <dir>] [--json]';
 
-const WAKE_FLAGS = new Set(['--input', '--daemon-dir']);
+const TRIGGER_FLAGS = new Set(['--input', '--daemon-dir']);
 const ANSWER_FLAGS = new Set(['--input', '--token', '--daemon-dir']);
 
-export async function runWakeCli(
+export async function runTriggerCli(
   argv: readonly string[],
   deps: ControlCliDependencies = {},
 ): Promise<number> {
-  return runWakeLike(argv, deps, 'wake', WAKE_USAGE, WAKE_FLAGS);
+  return runDelivery(argv, deps, 'trigger', TRIGGER_USAGE, TRIGGER_FLAGS);
 }
 
 export async function runAnswerCli(
   argv: readonly string[],
   deps: ControlCliDependencies = {},
 ): Promise<number> {
-  return runWakeLike(argv, deps, 'answer', ANSWER_USAGE, ANSWER_FLAGS);
+  return runDelivery(argv, deps, 'answer', ANSWER_USAGE, ANSWER_FLAGS);
 }
 
-async function runWakeLike(
+async function runDelivery(
   argv: readonly string[],
   deps: ControlCliDependencies,
-  kind: 'wake' | 'answer',
+  kind: 'trigger' | 'answer',
   usage: string,
   flags: ReadonlySet<string>,
 ): Promise<number> {
@@ -54,13 +54,15 @@ async function runWakeLike(
     }
     const input = parsed.flags.get('--input') ?? '';
     const client = createClient(parsed, deps);
-    const result = kind === 'wake'
-      ? await client.wake(liveId, beeId, input)
-      : await client.answerLive(liveId, beeId, input, parsed.flags.get('--token'));
-    if (parsed.json) {
-      writeJson(out, result);
+    if (kind === 'trigger') {
+      await client.trigger(liveId, beeId, input);
     } else {
-      writeHumanResult(out, kind, result);
+      await client.answerLive(liveId, beeId, input, parsed.flags.get('--token'));
+    }
+    if (parsed.json) {
+      writeJson(out, { ok: true });
+    } else {
+      printAccepted(out);
     }
     return 0;
   } catch (error) {
@@ -68,31 +70,6 @@ async function runWakeLike(
   }
 }
 
-function writeHumanResult(out: Writer, kind: 'wake' | 'answer', result: unknown): void {
-  if (kind === 'wake') {
-    printAdmission(out, result);
-  } else {
-    printResult(out, result);
-  }
-}
-
-function printAdmission(out: Writer, result: unknown): void {
-  const record = typeof result === 'object' && result !== null
-    ? (result as Record<string, unknown>)
-    : {};
-  out(
-    `runId=${String(record['runId'])} traceId=${String(record['traceId'])} ` +
-      `status=${String(record['status'])}`,
-  );
-}
-
-function printResult(out: Writer, result: unknown): void {
-  const record = typeof result === 'object' && result !== null
-    ? (result as Record<string, unknown>)
-    : {};
-  out(
-    `${String(record['liveId'])} rest=${String(record['rest'])} ` +
-      `hovered=${String(record['hovered'])} pumps=${String(record['pumps'])} ` +
-      `persisted=${String(record['persisted'])}`,
-  );
+function printAccepted(out: Writer): void {
+  out('accepted');
 }

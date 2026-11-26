@@ -13,7 +13,7 @@ import {
   getJson,
   liveFrom,
   postJson,
-  waitForRunTerminal,
+  waitForRest,
 } from './support/control-server-http.js';
 
 const OUTPUT_PREFIX = 'isolated:';
@@ -133,7 +133,7 @@ async function assertOnlyRunningGuard(
 async function admitAlphaAgainstIdleLive(
   context: Awaited<ReturnType<typeof setup>>,
 ): Promise<Record<string, any>> {
-  const alphaWake = postJson(context.running.info.url, context.running.token, '/lives/wake', {
+  const alphaWake = postJson(context.running.info.url, context.running.token, '/lives/trigger', {
     liveId: 'alpha',
     beeId: 'only',
     input: 'one',
@@ -154,12 +154,11 @@ async function admitAlphaAgainstIdleLive(
   await decide(context, String(alphaGuard['requestId']), 'allow_once');
   const alphaDone = await alphaWake;
   assert.equal(alphaDone.status, 202, alphaDone.text);
-  assert.equal(alphaDone.body?.['status'], 'accepted');
-  await waitForRunTerminal(
+  assert.equal(alphaDone.body?.['ok'], true);
+  await waitForRest(
     context.running.info.url,
     context.running.token,
     'alpha',
-    String(alphaDone.body?.['runId']),
   );
   await until(async () => (await guardList(context)).length === 0, 'the alpha guard to drain');
   return alphaGuard;
@@ -174,7 +173,7 @@ test('a co-loaded live on another session never decides the running live approva
 
   const alphaGuard = await admitAlphaAgainstIdleLive(context);
 
-  const betaWake = postJson(context.running.info.url, context.running.token, '/lives/wake', {
+  const betaWake = postJson(context.running.info.url, context.running.token, '/lives/trigger', {
     liveId: 'beta',
     beeId: 'only',
     input: 'two',
@@ -185,12 +184,11 @@ test('a co-loaded live on another session never decides the running live approva
   await decide(context, String(betaGuard['requestId']), 'allow_once');
   const betaDone = await betaWake;
   assert.equal(betaDone.status, 202, betaDone.text);
-  assert.equal(betaDone.body?.['status'], 'accepted');
-  await waitForRunTerminal(
+  assert.equal(betaDone.body?.['ok'], true);
+  await waitForRest(
     context.running.info.url,
     context.running.token,
     'beta',
-    String(betaDone.body?.['runId']),
   );
 
   assert.deepEqual(

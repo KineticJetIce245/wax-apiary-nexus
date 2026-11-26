@@ -77,7 +77,7 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 }
 
 interface Internals {
-  readonly states: ReadonlyMap<string, { readonly queue?: readonly Pheromone[] }>;
+  readonly states: ReadonlyMap<string, { readonly receptor?: readonly Pheromone[] }>;
   readonly drains: ReadonlyMap<string, unknown>;
 }
 
@@ -86,7 +86,7 @@ function internalsOf(runtime: PheromoneRuntime): Internals {
 }
 
 function mailboxOf(runtime: PheromoneRuntime, nodeId: string): readonly Pheromone[] | undefined {
-  return internalsOf(runtime).states.get(nodeId)?.queue;
+  return internalsOf(runtime).states.get(nodeId)?.receptor;
 }
 
 test('two different bees start and overlap before either activation finishes', async () => {
@@ -96,8 +96,8 @@ test('two different bees start and overlap before either activation finishes', a
     now: () => START,
   });
 
-  runtime.trigger('a', text('a1'));
-  runtime.trigger('b', text('b1'));
+  runtime.admit('a', text('a1'));
+  runtime.admit('b', text('b1'));
 
   const pumping = runtime.pump();
   await waitFor(() => gated.started.length === 2, 'both activations to start');
@@ -135,7 +135,7 @@ test('one bee stays FIFO with one active activation and no second drain', async 
     now: () => clock,
   });
 
-  runtime.trigger('a', text('one'));
+  runtime.admit('a', text('one'));
   const pumping = runtime.pump();
   await waitFor(() => gated.started.length === 1, 'the first activation');
 
@@ -145,7 +145,7 @@ test('one bee stays FIFO with one active activation and no second drain', async 
 
   // New input arrives while the first activation is active: it is appended to
   // the mailbox and does not start a second drain for the same bee.
-  runtime.trigger('a', text('two'));
+  runtime.admit('a', text('two'));
   assert.deepEqual(
     mailboxOf(runtime, 'a')?.map((pheromone) => serializeValue(pheromone.value)),
     ['two'],
@@ -175,14 +175,14 @@ test('a wake either lands in the live mailbox or starts a fresh drain, never los
     now: () => clock,
   });
 
-  runtime.trigger('a', text('first'));
+  runtime.admit('a', text('first'));
   const pumping = runtime.pump();
   await waitFor(() => gated.started.length === 1, 'the first activation');
 
   // Release and enqueue before the drain's continuation runs: the drain sees
   // the new input in its mailbox and takes it without a lost wake.
   gated.release('first');
-  runtime.trigger('a', text('second'));
+  runtime.admit('a', text('second'));
   clock += 1000;
 
   await waitFor(() => gated.started.length === 2, 'the appended wake to run');
@@ -201,7 +201,7 @@ test('a wake that arrives after an empty mailbox rests starts a new drain', asyn
     now: () => clock,
   });
 
-  runtime.trigger('a', text('first'));
+  runtime.admit('a', text('first'));
   const pumping = runtime.pump();
   await waitFor(() => gated.started.length === 1, 'the first activation');
 
@@ -211,7 +211,7 @@ test('a wake that arrives after an empty mailbox rests starts a new drain', asyn
   // removed it: the trigger has to rebuild the mailbox rather than be dropped.
   await new Promise<void>((resolve) => {
     queueMicrotask(() => {
-      runtime.trigger('a', text('second'));
+      runtime.admit('a', text('second'));
       resolve();
     });
   });

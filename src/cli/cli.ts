@@ -6,7 +6,7 @@ import { runDispatchCli } from './dispatch-cli.js';
 import { runGuardCli } from './guard-cli.js';
 import { runLiveCli } from './live-cli.js';
 import { runTemplateCli } from './template-cli.js';
-import { runAnswerCli, runWakeCli } from './wake-cli.js';
+import { runAnswerCli, runTriggerCli } from './trigger-cli.js';
 import type { WaxdDependencies } from './waxd-cli.js';
 import { runWaxdCli } from './waxd-cli.js';
 import { CliUsageError } from './cli-shared.js';
@@ -21,7 +21,7 @@ export { CliUsageError };
 export type CliDependencies = WaxdDependencies & ControlCliDependencies;
 
 const USAGE =
-  'usage: wax <waxd|session|live|wake|answer|template|dispatch|guard> ... ' +
+  'usage: wax <waxd|session|live|trigger|answer|template|dispatch|guard> ... ' +
   '(wax run, wax daemon, wax status/log/honey, wax composition, wax mcp and ' +
   'wax queue were removed)';
 
@@ -44,8 +44,8 @@ export async function runCli(
   if (argv[0] === 'live') {
     return runLiveCli(argv, deps);
   }
-  if (argv[0] === 'wake') {
-    return runWakeCli(argv, deps);
+  if (argv[0] === 'trigger') {
+    return runTriggerCli(argv, deps);
   }
   if (argv[0] === 'answer') {
     return runAnswerCli(argv, deps);

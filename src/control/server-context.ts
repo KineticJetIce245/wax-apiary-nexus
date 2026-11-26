@@ -7,7 +7,6 @@ import { LiveHiveHost } from '../daemon/graph-host.js';
 import type { SessionRegistry, SweepSessionsReport } from '../session/session-registry.js';
 import { expandHomePath } from '../storage/conversation-store.js';
 import { HoneyStore } from '../storage/honey.js';
-import { RunStore } from '../storage/run-store.js';
 import type { SweepReport } from '../graph/registry.js';
 import type { LiveHiveService } from '../b/live-hive-service.js';
 import { DEFAULT_GUARD_TIMEOUT_MS, GuardBroker } from './guard-broker.js';
@@ -53,7 +52,6 @@ export class ControlServerContext {
   lock: DaemonLock | undefined;
   liveHiveHost: LiveHiveHost | undefined;
   liveHiveService: LiveHiveService | undefined;
-  runStore: RunStore | undefined;
   guardBroker: GuardBroker | undefined;
   tokenValue: string | undefined;
   currentInfo: ControlServerInfo | undefined;

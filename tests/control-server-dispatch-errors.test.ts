@@ -11,18 +11,16 @@ import {
 } from './support/control-server-fixtures.js';
 import {
   bLoad,
-  bWake,
+  bTrigger,
   postJson,
-  waitForRunTerminal,
-  withTimeout,
+  waitForRest,
 } from './support/control-server-http.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 
 /**
- * Holds every submitted execution in `running` until the caller cancels it.
- * The scripted FakeAdapter always emits a terminal event on the next tick, so
- * a dispatch that must time out (or stay busy while a wake collides) needs an
- * adapter that never settles on its own.
+ * Holds every submitted execution in `running` until the caller releases or
+ * cancels it. A dispatch/trigger that must collide with a busy conversation
+ * needs an adapter that never settles on its own.
  */
 class HoldingAdapter extends FakeAdapter {
   readonly executionIds: string[] = [];
@@ -33,8 +31,6 @@ class HoldingAdapter extends FakeAdapter {
   }
 
   override async cancel(_nativeId: string): Promise<void> {
-    // An explicit cancel settles the held execution; without this the
-    // execution would stay `running` until it timed out.
     const executionId = this.executionIds.at(-1);
     if (executionId !== undefined) {
       this.emit({ type: 'execution/cancelled', executionId });
@@ -122,62 +118,20 @@ test('conflicting dispatch session parameters map to 409 conflict', async (t) =>
   );
 });
 
-test('dispatch that exceeds its timeout maps to 409 dispatch-timeout', async (t) => {
+test('an accepted dispatch never returns execution state or output', async (t) => {
   const env = makeEnvWithAdapter(new HoldingAdapter());
   const running = await startEnv(t, env);
 
   const response = await postJson(running.info.url, running.token, '/dispatch', {
     input: 'slow',
     sessionParams: { harness: 'codex' },
-    timeoutMs: 40,
   });
 
-  assert.equal(response.status, 409, response.text);
-  assert.equal(response.body?.['code'], 'dispatch-timeout');
-  assert.equal(response.body?.['error'], 'dispatch timed out');
+  assert.equal(response.status, 202, response.text);
+  assert.deepEqual(response.body, { ok: true });
+  assert.equal(response.text.includes('output'), false);
+  assert.equal(response.text.includes('timeout'), false);
 });
-
-const TERMINAL_CASES = [
-  {
-    label: 'cancelled',
-    options: { terminal: 'cancelled' },
-    status: 409,
-    code: 'execution-cancelled',
-  },
-  {
-    label: 'failed',
-    options: { terminal: 'failed', error: 'native failure' },
-    status: 500,
-    code: 'internal',
-  },
-  {
-    label: 'unknown',
-    options: { terminal: 'unknown', error: 'no outcome' },
-    status: 500,
-    code: 'internal',
-  },
-] as const;
-
-for (const { label, options, status, code } of TERMINAL_CASES) {
-  test(`dispatch execution state '${label}' maps to ${String(status)} ${code}`, async (t) => {
-    const env = makeEnv(options);
-    const running = await startEnv(t, env);
-
-    const response = await postJson(running.info.url, running.token, '/dispatch', {
-      input: 'x',
-      sessionParams: { harness: 'codex' },
-    });
-
-    assert.equal(response.status, status, response.text);
-    assert.equal(response.body?.['code'], code);
-    if (status >= 500) {
-      // The terminal detail is native text and never reaches the caller.
-      assert.equal(response.body?.['error'], 'internal error');
-      assert.equal(response.text.includes('native failure'), false);
-      assert.equal(response.text.includes('no outcome'), false);
-    }
-  });
-}
 
 function foragerDefinition(id: string): Record<string, unknown> {
   return {
@@ -193,20 +147,8 @@ function foragerDefinition(id: string): Record<string, unknown> {
   };
 }
 
-async function assertWakeFailsWhileBusy(url: string, token: string): Promise<void> {
-  const wake = await bWake(url, token, 'wake-vs-dispatch', 'only', 'go');
-  assert.equal(wake.status, 202, wake.text);
-  const wakeRun = await waitForRunTerminal(
-    url,
-    token,
-    'wake-vs-dispatch',
-    String(wake.body?.['runId']),
-  );
-  assert.equal(wakeRun.body?.['run']?.['state'], 'failed');
-}
-
 test(
-  'a wake that collides with a running dispatch gets 409 session-busy (non-queue adapter)',
+  'a trigger that collides with a running dispatch is accepted but never runs twice',
   { timeout: 10_000 },
   async (t) => {
     const adapter = new HoldingAdapter();
@@ -221,15 +163,11 @@ test(
     });
     assert.equal(loaded.status, 200, loaded.text);
 
-    // Start the dispatch and never await it until the wake has been asserted;
-    // the immediate catch keeps a cleanup abort from becoming an unhandled
-    // rejection while the original promise stays awaitable below.
-    const dispatch = postJson(running.info.url, running.token, '/dispatch', {
+    const dispatch = await postJson(running.info.url, running.token, '/dispatch', {
       input: 'holds the conversation',
       sessionId: session.sessionId,
-      timeoutMs: 2_000,
     });
-    void dispatch.catch(() => undefined);
+    assert.equal(dispatch.status, 202, dispatch.text);
 
     const deadline = Date.now() + 2_000;
     while (!env.workspace.isConversationBusy(session.sessionId)) {
@@ -237,38 +175,24 @@ test(
       await delay(5);
     }
 
-    // Codex does not advertise an adapter queue, so the loaded wake is refused
-    // with the explicit busy outcome instead of waiting or starting a second
-    // execution on the same conversation.
-    await assertWakeFailsWhileBusy(running.info.url, running.token);
+    // Delivery is accepted (202) even though the busy execution will be
+    // refused in the background; the control plane owns no execution state.
+    const wake = await bTrigger(running.info.url, running.token, 'wake-vs-dispatch', 'only', 'go');
+    assert.equal(wake.status, 202, wake.text);
+    await waitForRest(running.info.url, running.token, 'wake-vs-dispatch');
+    assert.equal(adapter.prompts.includes('wake go'), false);
 
-    // Release the dispatch instead of waiting for its timeout: an explicit
-    // cancel is a client-visible outcome and must stay 409, not 500.
+    // Release the dispatch; the session is free again and a retrigger runs.
     const executionId = adapter.executionIds[0];
     assert.ok(executionId !== undefined, 'dispatch never reached the adapter');
-    await env.workspace.cancel(executionId);
-    const settled = await withTimeout(dispatch, 2_000, 'dispatch');
-    assert.equal(settled.status, 409, settled.text);
-    assert.equal(settled.body?.['code'], 'execution-cancelled');
+    adapter.release(executionId);
 
-    // The session is free again after the dispatch settles; a retried wake runs
-    // normally instead of inheriting an admission handle.
-    await retryWakeAfterRelease(running.info.url, running.token, adapter);
+    const retried = await bTrigger(running.info.url, running.token, 'wake-vs-dispatch', 'only', 'go2');
+    assert.equal(retried.status, 202, retried.text);
+    await waitForPrompt(adapter, 'wake go2');
+    const retryExecutionId = adapter.executionIds.at(-1);
+    assert.ok(retryExecutionId !== undefined);
+    adapter.release(retryExecutionId);
+    await waitForRest(running.info.url, running.token, 'wake-vs-dispatch');
   },
 );
-
-async function retryWakeAfterRelease(
-  url: string,
-  token: string,
-  adapter: HoldingAdapter,
-): Promise<void> {
-  const retried = await bWake(url, token, 'wake-vs-dispatch', 'only', 'go2');
-  assert.equal(retried.status, 202, retried.text);
-  const runId = String(retried.body?.['runId']);
-  await waitForPrompt(adapter, 'wake go2');
-  const executionId = adapter.executionIds.at(-1);
-  assert.ok(executionId !== undefined);
-  adapter.release(executionId);
-  const finished = await waitForRunTerminal(url, token, 'wake-vs-dispatch', runId);
-  assert.equal(finished.body?.['run']?.['state'], 'completed');
-}

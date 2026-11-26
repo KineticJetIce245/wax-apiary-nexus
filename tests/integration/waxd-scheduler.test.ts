@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -56,7 +56,7 @@ async function waitFor(
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('timed out waiting for scheduled run');
+  throw new Error('timed out waiting for scheduled delivery');
 }
 
 async function fetchJson(
@@ -81,8 +81,14 @@ async function fetchJson(
   };
 }
 
+function outputText(body: Record<string, any>): string {
+  const entries = body['outputs'] as Record<string, unknown>[] | undefined;
+  const value = entries?.[0]?.['value'] as Record<string, unknown> | undefined;
+  return typeof value?.['text'] === 'string' ? value['text'].trim() : '';
+}
+
 test(
-  'real waxd scheduler wakes a LiveHive and persists output past unload',
+  'real waxd scheduler delivers a LiveHive and releases field output on unload',
   integrationOptions,
   async (t) => {
     if (codexExe === undefined) {
@@ -91,6 +97,7 @@ test(
 
     const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m9d-host-state-'));
     const daemonDir = join(stateRoot, 'waxd');
+    const runsDirectory = join(daemonDir, 'runs');
     const project: Project = {
       id: 'project-scheduler-host',
       directory: mkdtempSync(join(tmpdir(), 'wax-m9d-host-project-')),
@@ -132,6 +139,9 @@ test(
     try {
       const info = await withTimeout(started.promise, 30_000, 'waxd startup');
       const token = readFileSync(info.tokenPath, 'utf8').trim();
+      // M18: no run records. Startup must not create a runs/ directory.
+      assert.equal(existsSync(runsDirectory), false, 'startup created a runs/ directory');
+
       const scheduledFor = new Date(Date.now() - 1_000).toISOString();
       const live = fromCompositionDefinition(
         parseComposition({
@@ -161,7 +171,8 @@ test(
       });
       assert.equal(load.status, 200);
 
-      let runId = '';
+      // The scheduler delivers into the field; the only observable result is the
+      // field-owned output, with no run id and no runs/ record.
       let output = '';
       await waitFor(async () => {
         const response = await fetchJson(
@@ -173,50 +184,56 @@ test(
         if (response.status !== 200) {
           return false;
         }
-        const entries = response.body['outputs'] as Record<string, unknown>[];
-        const value = entries[0]?.['value'] as Record<string, unknown> | undefined;
-        const text = typeof value?.['text'] === 'string' ? value['text'].trim() : '';
+        assert.equal(response.body['runId'], undefined);
+        assert.equal(response.body['traceId'], undefined);
+        const text = outputText(response.body);
         if (/^\d{4}$/.test(text)) {
-          runId = String(response.body['runId']);
           output = text;
           return true;
         }
         return false;
       });
-      assert.notEqual(runId, '');
       const numeric = Number(output);
       assert.ok(numeric >= 1000 && numeric <= 9999);
-      t.diagnostic(`observed: scheduler-triggered Codex output=${output}`);
+      t.diagnostic(`observed: scheduler-delivered Codex output=${output}`);
 
-      const runFiles = readdirSync(join(daemonDir, 'runs')).filter((name) =>
-        name.endsWith('.json'),
+      const inspected = await fetchJson(
+        info,
+        token,
+        'GET',
+        '/lives/scheduled-live/inspect',
       );
-      assert.ok(runFiles.includes(`${runId}.json`));
-      const record = JSON.parse(
-        readFileSync(join(daemonDir, 'runs', `${runId}.json`), 'utf8'),
-      ) as Record<string, unknown>;
-      assert.equal(record['liveId'], 'scheduled-live');
-      assert.equal(record['status'], 'completed');
-      assert.equal(record['operation'], 'trigger');
+      assert.equal(inspected.status, 200);
+      assert.equal(inspected.body['status']?.['rest'], true);
+      assert.equal(outputText(inspected.body), output);
+      assert.equal(existsSync(runsDirectory), false, 'a run record directory was created');
 
       const unload = await fetchJson(info, token, 'POST', '/lives/unload', {
         liveId: 'scheduled-live',
       });
       assert.equal(unload.status, 200);
+
+      // D2: the last output is a memory-only field cache, released by unload.
       const afterUnload = await fetchJson(
         info,
         token,
         'GET',
-        `/lives/scheduled-live/output?runId=${runId}`,
+        '/lives/scheduled-live/output',
       );
-      assert.equal(afterUnload.status, 200);
-      const afterEntries = afterUnload.body['outputs'] as Record<string, unknown>[];
-      assert.equal(
-        (afterEntries[0]?.['value'] as Record<string, unknown> | undefined)?.['text'],
-        output,
+      assert.equal(afterUnload.status, 404);
+      assert.equal(afterUnload.body['ok'], false);
+      assert.equal(afterUnload.body['code'], 'not-found');
+      const inspectedAfterUnload = await fetchJson(
+        info,
+        token,
+        'GET',
+        '/lives/scheduled-live/inspect',
       );
+      assert.equal(inspectedAfterUnload.status, 200);
+      assert.deepEqual(inspectedAfterUnload.body['outputs'], []);
+      assert.equal(existsSync(runsDirectory), false);
 
-      t.diagnostic('observed: run persisted and output readable after unload');
+      t.diagnostic('observed: field output readable while loaded, released by unload');
     } catch (error) {
       mainError = error;
       throw error;

@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The code is a B-core prototype; the target terms below are the source of truth for new work. M17j4 dispatch graph, ACP approval ownership and the adapter-owned prompt FIFO are implemented. M18 phase 3 receptor snapshots/overflow are aligned with this target. The M18 phase 2/4 run tracker, run/wake/trace ids and per-trace limits are **legacy and must be removed**; see §8.
+Status: **target architecture**; the M18 closeout (2026-11-25) made the code conformant: the control plane is delivery-only (`trigger`/`answer`/`dispatch` answer 202 and own no execution state), ordinary beelines move the same Pheromone (§4.2), the field owns the per-Bee last output, mailbox was renamed to receptor, and the old execution-registry surface (tracker, per-request ids, run routes and records, per-trace budgets, the old wake route) was removed. The one remaining known gap is the Honey directory layout (A23/C05, §5/§8). §9 is the owner decision record and remains normative.
 
 ## 1. One sentence
 
@@ -30,12 +30,16 @@ The control plane has no execution registry. It validates a request, hands it to
 | `BeeBinding` | `{ beeId, sessionId }` for bees that need a native session |
 | `Session` | Native session record: `sessionId`, harness, model, reasoning, params |
 | `HiveTemplate` | Optional saved graph + per-bee default session params; not required to create a LiveHive |
+| `Schedule` | Optional saved trigger on a LiveHive: target bee and `at`/`every`; not an execution identity |
 | `RoleLabel` | Comment/label on a bee; not an instance, not a route |
 | `Pheromone` | One message/value travelling through the graph; no run/wake/trace identity |
-| `PheromoneField` | The single owner of runtime state: pheromones, queues/receptores, pending, active, hover, joins/tombstones, outputs |
+| `PheromoneField` | The single owner of runtime state: pheromones, receptors, pending, active, hover, joins/tombstones, outputs |
 | `Dispatch` | A temporary Bee started for one prompt; it lives until the tool returns, then either flows to its next Bee or silently ends |
 
 There is no Agent object, no Revision/Definition object, no Actor object, and no control-plane Run/Wake/Trace object.
+
+A Bee's last completed output is a field-owned, memory-only cache (see D2 in
+§9 and §4.10); it is not a run record and has no run/wake/trace identity.
 
 ## 4. Delivery flows
 
@@ -147,6 +151,10 @@ answer request ends; no run, no result, no handle
 `answer` does not create a Pheromone and does not create a second execution
 chain. It updates the already-hovered Pheromone; the same Bee then continues,
 replaces its value and moves it along its beeline.
+
+If the downstream receptor cannot accept the answered value, the answer is
+refused with the receptor overflow error (`429 bee-receptor-full`, or the block
+timeout) before the hover is consumed; the hover remains open and answerable.
 
 ### 4.4 dispatch
 
@@ -261,12 +269,15 @@ Honey          -> owns durable snapshots of field state
 
 Consequences:
 
-- No `RunTracker`, `WakeTracker`, `TraceTracker`, per-request registry or shadow lifecycle.
-- No `runId`, `wakeId`, `traceId`, span or per-request status.
-- No `GET /lives/:id/runs/:id`; there is nothing to query after delivery.
-- No `runs/` records on disk.
+- No execution tracker, per-request registry or shadow lifecycle.
+- No control-plane run/request id, span or per-request status.
+- There is no run-history query route; there is nothing to query after delivery.
+- No run-record directory on disk.
 - The only observable execution state is the LiveHive/field: `inspect`, output, receptor/pending/active/hover/join and logs.
 - If a caller wants a result, the result is an edge to another Bee, not a control-plane return value.
+- Output ownership is D2: the field keeps a memory-only last output per Bee
+  (`text` or file/attachment path). `unload` releases it; there is no durable
+  run-history store and no `runs/` directory.
 
 ## 5. Persistence
 
@@ -284,9 +295,11 @@ Consequences:
 ```
 
 - `live.json` is keyed by `beeId` for `bees` and `bindings`; `beelines` are keyed by `beelineId`.
-- `honey/field.json` is the durable field snapshot, including awake receptores and active/pending/hover markers.
+- `honey/field.json` is the durable field snapshot, including awake receptors and active/pending/hover markers.
 - `sessions.json` is global; each session record carries its harness.
 - There is no `runs/` directory and no per-wake/per-run record.
+- The field's per-Bee last output is memory-only (D2); it is not written to
+  `field.json`. Durable results are files written by a downstream Bee.
 - Adapter prompt admission/pending is memory-only; no replay after restart. A dispatch Bee is temporary and is not persisted as a LiveHive.
 - No revision file; a content hash may be added later for audit only.
 
@@ -300,13 +313,21 @@ Consequences:
 - WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
 - `SessionOwnership` is refcounted ownership bookkeeping, not a mutex: it records which loaded LiveHives hold an explicit session. It never blocks or rejects sharing; prompt serialization is the adapter FIFO (`DshAcpAdapter.SessionPromptQueue`).
-- Loop safety is graph-level and Bee-level: counter/condition nodes, `queueMax` and receptor overflow prevent unbounded handoff. There is no per-wake hop/duration budget, because there is no wake object to budget.
+- Loop safety is graph-level and Bee-level: counter/condition nodes, `queueMax` and receptor overflow prevent unbounded handoff. There is no per-wake hop/duration budget, because there is no wake object to budget. A loop without a counter/condition is bounded by receptor overflow; every LiveHive must have a finite `queueMax` (D3).
+- `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets: they end only the current driver pass and never cancel or drop a Pheromone; a later delivery resumes. `queueTtlMs` is a per-receptor waiting TTL measured from the enqueue instant (`Pheromone.at`), not a message lifetime.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ### 6.1 Implemented vs target
 
-- **Aligned:** per-Bee receptor and on-demand drain; short delivery; receptor snapshot and overflow (`reject|block`); adapter session FIFO; ACP approval ownership.
-- **Legacy, to remove:** `RunTracker`, `runId`/`traceId`, `GET /lives/:id/runs/:runId`, `RunStore` wake records, `TraceLimitError`, per-trace `maxHops`/`maxDuration`.
+- **Aligned and implemented:** per-Bee receptor and on-demand drain; short delivery
+  (`trigger`/`answer` 202, no id); receptor snapshot and overflow (`reject|block`,
+  `bee-receptor-*`); field-owned per-Bee last output (D2, memory only); adapter
+  session FIFO; ACP approval ownership; dispatch as an ephemeral graph that is
+  released at silent end and never returns output.
+- **Removed in M18 closeout:** the execution tracker, per-request ids, run routes and
+  records, per-trace limits, the old wake route, the mailbox name and its error
+  codes, the dispatch timeout, and the synchronous answer wait. There are no
+  aliases.
 
 ## 7. Public names and API
 
@@ -318,7 +339,7 @@ POST /lives/answer      bind a value to a hovered Pheromone; 202 { ok: true }
 POST /dispatch          start a temporary Bee; 202 { ok: true }
 POST /lives/save|unload|migrate
 GET  /lives             list loaded/unloaded LiveHives
-GET  /lives/:id/inspect status + durable outputs + catalog entry
+GET  /lives/:id/inspect status + field-owned outputs + catalog entry
 GET  /lives/:id/output  field output (no run id)
 GET  /templates | POST /templates
 GET  /guards | POST /guard/decide
@@ -334,10 +355,113 @@ The legacy graph control surface and its client commands were removed in M10c; t
 
 ## 8. Current implementation gap
 
-The current code still contains the M18 phase 2/4 control-plane tracker:
-`RunTracker`, `runId`/`traceId`, `/lives/:id/runs/:runId`, RunStore wake records and
-per-trace hop/duration limits. It also still exposes `/lives/wake`, which creates
-the initial Pheromone; the target entry point is `/lives/trigger`. These are
-**not** part of this target and must be removed/renamed in the next slice. Until
-that removal lands, the code is not conformant to this document; do not treat
-the presence of those fields as approval to keep them.
+The M18 closeout is implemented: the control plane is delivery-only, ordinary
+beelines move the same Pheromone (§4.2), the field owns the per-Bee last output
+(D2), delivery is `trigger`/`answer`/`dispatch` with `202 {ok:true}`, mailbox is
+receptor with `bee-receptor-*`, and the former execution-registry surface
+(tracker, per-request ids, run query route, run records on disk, per-trace
+budgets, the old wake route and the synchronous answer wait) was removed with no
+aliases. §6.1 records the same split.
+
+The only remaining known gap is the Honey directory layout (A23/C05): the code
+still uses `apiaries/<apiary>/compositions/<liveId>/honey/...`, while §5 specifies
+`lives/<liveId>/honey/...`. That is a separate persistence-layout slice, not part
+of the delivery/field closeout. It needs an owner decision and a migration for
+existing state roots; until then do not treat the current path as the target and
+do not silently move or delete old state.
+
+## 9. Owner decision record for M18 closeout (2026-11-25)
+
+This section records the lead's architecture questions and the owner's answers.
+They are normative for the M18 closeout; code that contradicts them is
+nonconformant. The questions were asked before any code was changed.
+
+### D1. `dispatch` accepts a delivery; it does not return the output
+
+**Question (lead).** ARCHITECTURE §4.4/§7 says `POST /dispatch` returns
+`202 {ok:true}` and never returns the model output; the current code waits for
+its run and returns `output`/`sessionId`. Which semantics should the closeout
+implement?
+
+**Owner answer.** Strictly follow the architecture: `202` only. `wax dispatch`
+shows an acceptance, not the answer. A caller that needs the result must compose
+a graph whose next Bee consumes it.
+
+**Consequence.** `DispatchService` no longer waits for terminal state, returns no
+output or sessionId, and has no `dispatch-timeout`. It may still return
+`409 session-busy` when a non-queue adapter cannot admit the temporary Bee; the
+ACP adapter FIFO remains the busy path. The temporary Bee is still released at
+silent end.
+
+### D2. Per-Bee last output is a memory-only field cache
+
+**Question (lead).** Deleting `RunStore` removes the per-run history; after
+`unload`, `GET /lives/:id/output` can no longer read the last run. Is losing that
+history acceptable?
+
+**Owner clarification.** The owner asked why the result would disappear at
+unload when the result should travel with the Pheromone, and offered this
+compromise (verbatim): “每一个Bee可以暂存上一次跑完之后结果的output（只能是文字，如果是文件应该留地址）如果想reliable查看只能让下游Bee写入文件”.
+
+**Owner answer.** Each Bee may cache the output of its last completed run: text,
+or a file address/path. Reliable viewing is the graph's job; a downstream Bee
+must write the result to a file. The cache is not a run history.
+
+**Consequence.**
+
+- `PheromoneField` owns the per-Bee last output (`text` or file/attachment path).
+  It is not a run record and carries no `runId`/`requestId`/`traceId`. It holds
+  no binary payload; a file result is stored by address only.
+- The cache is in memory only. It is not written to `honey/field.json` and is
+  released with the field on `unload`; `save` does not make it durable.
+- `GET /lives/:id/output` reads the field's per-Bee last output and has no
+  `runId` parameter. `inspect` exposes the same field-owned outputs.
+- If a caller needs a durable result, the graph must route it to a Bee that
+  writes a file; WAX does not maintain run history.
+
+### D3. No per-trace loop budget
+
+**Question (lead).** ARCHITECTURE §4.2/§6.1 removes `maxHopsPerTrace` and
+`maxDurationPerTraceMs`; a loop without `counter`/`condition` is then bounded
+only by receptor overflow (`queueMax`). Is that acceptable?
+
+**Owner answer.** Yes; follow the architecture and rely on `queueMax`.
+
+**Consequence.** Delete the run-tracker trace limits, `TraceLimitError`,
+`trace-presence`, and every `traceId` gate/purge. Every LiveHive must have a
+finite `queueMax`; a loop with no counter/condition stops when the target
+receptor rejects/overflows, not by a per-trace clock.
+
+### D4. Rename mailbox to receptor
+
+**Question (lead).** The architecture calls the Bee's waiting list `receptor`
+and uses `bee-receptor-full`; the code calls it `mailbox` and uses
+`bee-mailbox-full`. Should the closeout rename both the internal concept and the
+public error codes?
+
+**Owner answer.** Rename them together.
+
+**Consequence.** Internal modules, state fields, logs, events and the public
+error codes become `receptor` / `bee-receptor-full` /
+`bee-receptor-block-timeout`. `queueMax` remains the composition config name and
+is documented as the receptor capacity (ARCHITECTURE §6). No aliases are kept.
+
+### D5. DSH real-integration provider for the M18 closeout
+
+**Question (lead).** The DSH integration child is launched with `--profile acp`;
+that profile defaults to `deepseek-official`, so setting `OPENCODE_API_KEY` alone
+still fails with `no API key for provider route "deepseek-official"`. May the
+closeout temporarily override the ACP profile to `opencode-go` /
+`deepseek-v4.1-flash`, then restore it?
+
+**Owner answer.** Allowed: temporarily patch the ACP profile and restore it after
+the run.
+
+**Consequence.** The real DSH run used `OPENCODE_API_KEY` from the User scope and
+a temporary `~/.dsh/profiles/acp/cordis.patch.yml` override (agent default, the
+`llm-pi-ai` provider block, and the `acp` plugin config). The original file was
+restored from `../docs/temp/acp-cordis.patch.yml.m18-backup` and verified by
+SHA256 (`EF189A8C27DB6D63930AA3046A3040482E952EAFCB7487C644D508E8D461F027`).
+The overlay template is `../docs/temp/acp-opencode.patch.yml`. No key file was
+read and no key value was printed; this is test-environment setup, not a product
+contract.

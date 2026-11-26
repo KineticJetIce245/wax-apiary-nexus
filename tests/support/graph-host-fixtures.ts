@@ -12,7 +12,6 @@ import {
   LiveHiveHostAnswerError,
   LiveHiveHost,
   type LiveHiveNodeStatus,
-  type LiveHiveRunState,
   type LiveHiveStatus,
 } from '../../src/daemon/graph-host.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
@@ -225,22 +224,17 @@ export function text(value: string): Value {
 
 export interface TriggerRunResult {
   readonly graphId: string;
-  readonly runId: string;
-  readonly traceId: string;
-  readonly state: LiveHiveRunState;
   readonly rest: boolean;
   readonly hovered: boolean;
   readonly status: LiveHiveStatus;
-  /** The background driver flushes Honey when it stops. */
+  /** Whether the Honey flush that follows Rest succeeded (no Honey is `true`). */
   readonly persisted: boolean;
-  /** Legacy field for tests that asserted a failed flush; always undefined now. */
-  readonly persistError?: string;
 }
 
 /**
- * Admit a wake, then wait until its trace is terminal or parked at a hover.
- * This is a test convenience over the public admission API; the product's
- * wake returns immediately.
+ * Deliver a Pheromone, then poll the field until it is at Rest or parked at a
+ * hover. This is a test convenience over the delivery API: the product's
+ * trigger returns immediately after admission and exposes no run identity.
  */
 export async function triggerRun(
   host: LiveHiveHost,
@@ -248,26 +242,31 @@ export async function triggerRun(
   nodeId: NodeId,
   value: Value,
 ): Promise<TriggerRunResult> {
-  const admission = await host.trigger(graphId, nodeId, value);
-  const run = await host.runs.wait(admission.runId, { stopAtParked: true });
-  // Let the background driver finish its synchronous Honey flush.
-  await new Promise((resolve) => setImmediate(resolve));
-  if (run.state === 'failed' || run.state === 'cancelled') {
-    const failure = host.runs.failureOf(admission.runId);
-    throw failure instanceof Error ? failure : new Error(`run ended ${run.state}`);
+  await host.trigger(graphId, nodeId, value);
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const status = host.statusOf(graphId);
+    assert.ok(status !== undefined, `graph '${graphId}' is not loaded`);
+    if (status.rest || status.hovered) {
+      // Let the background driver run its own Honey flush (and report a
+      // failure through the host's event stream) before this helper forces a
+      // deterministic save.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      let persisted = true;
+      try {
+        await host.save(graphId);
+      } catch {
+        persisted = false;
+      }
+      return { graphId, rest: status.rest, hovered: status.hovered, status, persisted };
+    }
+    assert.ok(
+      Date.now() < deadline,
+      `graph '${graphId}' did not reach Rest before the deadline`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  const status = host.statusOf(graphId);
-  assert.ok(status !== undefined, `graph '${graphId}' is not loaded`);
-  return {
-    graphId,
-    runId: admission.runId,
-    traceId: admission.traceId,
-    state: run.state,
-    rest: status.rest,
-    hovered: status.hovered,
-    status,
-    persisted: true,
-  };
 }
 
 /** Poll until an asynchronous background driver reaches the expected state. */
@@ -357,7 +356,7 @@ export function workspaceListenerCount(workspace: Workspace): number {
  */
 interface RuntimeTestAccess {
   answerHover(nodeId: string, value: Value, token?: string): void;
-  trigger(nodeId: string, value: Value): string;
+  admit(nodeId: string, value: Value): Promise<void>;
   pump(): Promise<void>;
   snapshot(): PheromoneFieldSnapshot;
 }

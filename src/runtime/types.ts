@@ -53,7 +53,6 @@ export interface BranchTag {
 
 export interface Pheromone {
   id: string;
-  traceId: string;
   forkId?: string;
   branchId?: string;
   /** Fork ancestry, outer-to-inner; absent for an untagged Pheromone. */
@@ -310,11 +309,11 @@ export interface JoinStateSnapshot {
 /** Mutable per-node runtime state. Never handed out directly. */
 export interface NodeState {
   /**
-   * The bee's mailbox: input waiting to be activated, in FIFO order. It exists
-   * only while the bee is awake; the drain removes it when the mailbox is empty
-   * and no pending activation is held, so a resting bee keeps no mailbox.
+   * The bee's receptor: input waiting to be activated, in FIFO order. It exists
+   * only while the bee is awake; the drain removes it when the receptor is empty
+   * and no pending activation is held, so a resting bee keeps no receptor.
    */
-  queue?: Pheromone[];
+  receptor?: Pheromone[];
   pending?: Pheromone;
   active?: Pheromone;
   /**
@@ -331,33 +330,25 @@ export interface NodeState {
   state?: Record<string, unknown>;
   /** Merge-only: partially complete joins, keyed by forkId. */
   joins?: Map<string, JoinState>;
-}
-
-/** Handle returned by a trace-scoped runtime trigger. */
-export interface RuntimeAdmission {
-  readonly pheromoneId: string;
-  readonly traceId: string;
-}
-
-/** Host-side observation of one trace's lifecycle (used by the run tracker). */
-export interface RuntimeRunObserver {
-  activated?(traceId: string): void;
-  output?(traceId: string, nodeId: NodeId, value: Value): void;
-  failed?(traceId: string, error: unknown): void;
-  settled?(traceId: string): void;
-  parked?(traceId: string): void;
-  present?(traceId: string): void;
+  /**
+   * The Value produced by this bee's last completed activation. It is an
+   * in-memory cache owned by the field (D2): it is never persisted, carries no
+   * run identity, and is released with the field on unload.
+   */
+  lastOutput?: Value;
 }
 
 /** Immutable view returned by PheromoneRuntime.snapshot(). */
 export interface NodeStateSnapshot {
-  queue: readonly Pheromone[];
+  receptor: readonly Pheromone[];
   pending?: Pheromone;
   active?: Pheromone;
   hover?: HoverSpec;
   lastActivatedAt?: string;
   state: Readonly<Record<string, unknown>>;
   joins?: Readonly<Record<string, JoinStateSnapshot>>;
+  /** Field-owned last completed output; memory-only and never persisted. */
+  lastOutput?: Value;
 }
 
 export interface PheromoneFieldSnapshot {
@@ -384,19 +375,18 @@ export interface PersistedJoinState {
 
 export interface PersistedNodeState {
   /**
-   * The awake bee's waiting mailbox, FIFO. A resting bee has no mailbox, so the
-   * key is omitted instead of writing an empty array (the same rule the live
-   * NodeState uses). Restore treats a missing key as an empty mailbox.
+   * The awake bee's waiting receptor, FIFO. A resting bee has no receptor, so
+   * the key is omitted instead of writing an empty array (the same rule the
+   * live NodeState uses). Restore treats a missing key as an empty receptor.
+   * The per-bee last output is memory-only and is deliberately absent here.
    */
-  queue?: Pheromone[];
+  receptor?: Pheromone[];
   pending?: Pheromone;
   active?: Pheromone;
   hover?: HoverSpec;
   hoverPheromone?: Pheromone;
   lastActivatedAt?: string;
   state?: Record<string, unknown>;
-  /** Answers that arrived before this node hovered; applied on the next hover. */
-  inputs?: Value[];
   /** Merge-only: partial joins keyed by forkId. */
   joins?: Record<string, PersistedJoinState>;
 }

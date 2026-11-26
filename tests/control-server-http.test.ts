@@ -253,7 +253,7 @@ test('unsupported media types, malformed JSON and unknown fields are rejected', 
   const unknownLiveField = await postJson(info.url, token, '/lives', { unexpected: true });
   assert.equal(unknownLiveField.status, 400);
 
-  const unknownTriggerField = await postJson(info.url, token, '/lives/wake', {
+  const unknownTriggerField = await postJson(info.url, token, '/lives/trigger', {
     liveId: 'x',
     beeId: 'y',
     input: 'z',
@@ -320,7 +320,7 @@ test('oversized bodies are rejected before the request body is sent or completed
   } as unknown as RequestInit & { readonly duplex: 'half' };
 
   try {
-    const response = await fetch(`${info.url}/lives/wake`, init);
+    const response = await fetch(`${info.url}/lives/trigger`, init);
     assert.equal(response.status, 413);
     const result = await readResponse(response);
     assert.equal(result.body?.['code'], 'too-large');
@@ -344,10 +344,19 @@ test('wrong methods return 405 and unknown or traversing paths return 404', asyn
   });
   const { info, token } = running;
 
-  const getWake = await getJson(info.url, token, '/lives/wake');
-  assert.equal(getWake.status, 405);
-  assert.equal(getWake.body?.['code'], 'method-not-allowed');
-  assert.match(getWake.headers.get('allow') ?? '', /POST/);
+  const getTrigger = await getJson(info.url, token, '/lives/trigger');
+  assert.equal(getTrigger.status, 405);
+  assert.equal(getTrigger.body?.['code'], 'method-not-allowed');
+  assert.match(getTrigger.headers.get('allow') ?? '', /POST/);
+
+  // The removed wake route is absent, not an alias of /lives/trigger.
+  const removedWake = await postJson(info.url, token, '/lives/wake', {
+    liveId: 'x',
+    beeId: 'y',
+    input: 'z',
+  });
+  assert.equal(removedWake.status, 404);
+  assert.equal(removedWake.body?.['code'], 'not-found');
 
   const postInspect = await postJson(info.url, token, '/lives/x/inspect', {});
   assert.equal(postInspect.status, 405);
@@ -519,7 +528,7 @@ test('the logger records only request metadata', async (t) => {
   const health = await getJson(info.url, token, `/health?token=${token}`);
   assert.equal(health.status, 200);
 
-  const missing = await postJson(info.url, token, '/lives/wake', {
+  const missing = await postJson(info.url, token, '/lives/trigger', {
     liveId: 'missing',
     beeId: 'missing',
     input: INPUT_SECRET,
@@ -541,7 +550,7 @@ test('the logger records only request metadata', async (t) => {
   assert.equal(joined.includes(INPUT_SECRET), false);
   assert.equal(joined.includes('/health?token='), false);
   assert.match(joined, /method=GET path=\/health status=200/);
-  assert.match(joined, /method=POST path=\/lives\/wake status=404/);
+  assert.match(joined, /method=POST path=\/lives\/trigger status=404/);
 });
 
 test('token and info files are 0600 and the daemon directory is 0700 on POSIX', async (t) => {

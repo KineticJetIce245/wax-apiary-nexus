@@ -3,22 +3,23 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { Project } from '../../src/project/kernel.js';
 import { runWaxdCli, type WaxdStartedInfo } from '../../src/cli/waxd-cli.js';
-import { waitForRunTerminal } from '../support/control-server-http.js';
+import { waitForRest } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtDshCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const codexExe = process.env.CODEX_EXE;
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 
 const missing: string[] = [];
 if (!hasKey) {
-  missing.push('DEEPSEEK_API_KEY');
+  missing.push('OPENCODE_API_KEY');
 }
 if (dshRoot === undefined || builtDshCli === undefined || !existsSync(builtDshCli)) {
   missing.push('DSH_ROOT with a built apps/cli/lib/bin.js');
@@ -48,20 +49,18 @@ type LiveRequest = (
   body?: unknown,
 ) => Promise<HttpResult>;
 
-/** Admit one bee, then wait for its own run terminal state. */
-async function wakeAndSettle(
+/** Deliver one bee, then wait for its field to settle. */
+async function triggerAndSettle(
   request: LiveRequest,
   info: WaxdStartedInfo,
   token: string,
   liveId: string,
   beeId: string,
   input: string,
-): Promise<string> {
-  const woke = await request(info, token, 'POST', '/lives/wake', { liveId, beeId, input });
+): Promise<void> {
+  const woke = await request(info, token, 'POST', '/lives/trigger', { liveId, beeId, input });
   assert.equal(woke.status, 202, JSON.stringify(woke.body));
-  const runId = String(woke.body['runId']);
-  await waitForRunTerminal(info.url, token, liveId, runId, 300_000);
-  return runId;
+  await waitForRest(info.url, token, liveId, 300_000);
 }
 
 function deferred<T>(): {
@@ -89,6 +88,22 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
       clearTimeout(timer);
     }
   }
+}
+
+async function waitFor<T>(
+  probe: () => Promise<T | undefined> | T | undefined,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await probe();
+    if (value !== undefined) {
+      return value;
+    }
+    await delay(100);
+  }
+  throw new Error(`timed out waiting for ${label}`);
 }
 
 async function request(
@@ -172,13 +187,13 @@ function readLive(path: string): Record<string, any> {
 }
 
 test(
-  'real waxd LiveHive template/instantiate/wake/save/unload/load/migrate/dispatch',
+  'real waxd LiveHive template/instantiate/trigger/save/unload/load/migrate/dispatch',
   integrationOptions,
   async (t) => {
     if (
       dshRoot === undefined ||
       codexExe === undefined ||
-      process.env.DEEPSEEK_API_KEY === undefined
+      process.env.OPENCODE_API_KEY === undefined
     ) {
       throw new Error('integration environment is missing');
     }
@@ -269,7 +284,7 @@ test(
       assert.equal(sessionIds.length, 2);
 
       for (const beeId of ['codex', 'dsh']) {
-        await wakeAndSettle(request, info, token, 'm9j-live', beeId, 'go');
+        await triggerAndSettle(request, info, token, 'm9j-live', beeId, 'go');
       }
 
       const inspected = await request(
@@ -348,7 +363,7 @@ test(
       assert.deepEqual(reloadIds, sessionIds);
 
       for (const beeId of ['codex', 'dsh']) {
-        await wakeAndSettle(request, info, token, 'm9j-live', beeId, 'again');
+        await triggerAndSettle(request, info, token, 'm9j-live', beeId, 'again');
       }
       const reloadInspect = await request(
         info,
@@ -388,7 +403,7 @@ test(
       });
       assert.equal(migrated.status, 200);
       for (const beeId of ['codex', 'dsh']) {
-        await wakeAndSettle(request, info, token, 'm9j-live', beeId, 'migrated');
+        await triggerAndSettle(request, info, token, 'm9j-live', beeId, 'migrated');
       }
       const migratedInspect = await request(
         info,
@@ -405,6 +420,7 @@ test(
         `observed after migrate: codex=${migratedCodex} (10000..99999), dsh=${migratedDsh}`,
       );
 
+      const sessionsBeforeDispatch = new Set(sessionIds);
       const dispatched = await request(info, token, 'POST', '/dispatch', {
         input:
           'Pick a random integer from 100000 through 999999. ' +
@@ -412,19 +428,39 @@ test(
         sessionParams: { harness: 'dsh' },
         project,
       });
-      assert.equal(dispatched.status, 200);
-      const dispatchOutput = String(dispatched.body['output'] ?? '')
-        .trim()
-        .replace(/,/g, '');
-      assert.match(dispatchOutput, /^\d{6}$/);
-      assert.ok(Number(dispatchOutput) >= 100000 && Number(dispatchOutput) <= 999999);
-      assert.equal(typeof dispatched.body['sessionId'], 'string');
-      const dispatchSessionId = String(dispatched.body['sessionId']);
+      // D1: dispatch accepts a delivery; it never returns the model output.
+      assert.equal(dispatched.status, 202, JSON.stringify(dispatched.body));
+      assert.equal(dispatched.body['ok'], true);
+      for (const removed of ['output', 'sessionId', 'runId', 'traceId']) {
+        assert.equal(dispatched.body[removed], undefined, removed);
+      }
       const sessionsAfterDispatch = await request(info, token, 'GET', '/sessions');
-      const dispatchSession = (sessionsAfterDispatch.body['sessions'] as Record<string, unknown>[])
-        .find((session) => session['sessionId'] === dispatchSessionId);
-      assert.equal(dispatchSession?.['harness'], 'dsh');
-      t.diagnostic(`observed dispatch: dsh=${dispatchOutput} (100000..999999), session harness=dsh`);
+      const dispatchSession = (
+        sessionsAfterDispatch.body['sessions'] as Record<string, unknown>[]
+      ).find(
+        (session) =>
+          session['harness'] === 'dsh' &&
+          !sessionsBeforeDispatch.has(String(session['sessionId'])),
+      );
+      assert.ok(dispatchSession !== undefined, 'dispatch did not create a dsh session');
+      const dispatchSessionId = String(dispatchSession['sessionId']);
+      // The temporary bee runs through the same session path; wait for it to
+      // settle (its output is not exposed by design).
+      await delay(1_000);
+      await waitFor(async () => {
+        const listed = await request(info, token, 'GET', '/sessions');
+        const current = (listed.body['sessions'] as Record<string, unknown>[]).find(
+          (session) => session['sessionId'] === dispatchSessionId,
+        );
+        return current?.['busy'] === false ? true : undefined;
+      }, 180_000, 'dispatch session to become idle');
+      const ephemeralEntry = (
+        (await request(info, token, 'GET', '/lives')).body['lives'] as Record<string, unknown>[]
+      ).find((entry) => entry['liveId'] !== 'm9j-live');
+      assert.equal(ephemeralEntry, undefined, 'dispatch leaked an ephemeral LiveHive');
+      t.diagnostic(
+        `observed dispatch: 202 accepted, session harness=dsh, no output/sessionId returned`,
+      );
 
       const finalUnload = await request(info, token, 'POST', '/lives/unload', {
         liveId: 'm9j-live',

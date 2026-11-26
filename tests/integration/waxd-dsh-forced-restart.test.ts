@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -18,12 +18,11 @@ import {
   readToken,
   request,
   requestOutcome,
-  runIdOf,
   shellWritePrompt,
   startChildDaemon,
   textOf,
   waitFor,
-  waitForRun,
+  waitForRest,
   withTimeout,
   WAXD_ENTRY,
   type ChildDaemon,
@@ -34,16 +33,28 @@ import {
 // the OS process is terminated. Node runs every test file in its own process.
 process.env.DSH_PERMISSION_MODE = 'read-only';
 
-async function wakeAndWait(
+async function triggerAndWait(
   url: string,
   token: string,
   liveId: string,
   input: string,
 ): Promise<HttpResult> {
-  const wake = await request(url, token, 'POST', '/lives/wake', { liveId, beeId: 'only', input });
-  assert.equal(wake.status, 202, JSON.stringify(wake.body));
-  await waitForRun(url, token, liveId, runIdOf(wake.body));
-  return wake;
+  const trigger = await request(url, token, 'POST', '/lives/trigger', {
+    liveId,
+    beeId: 'only',
+    input,
+  });
+  assert.equal(trigger.status, 202, JSON.stringify(trigger.body));
+  assert.equal(trigger.body['ok'], true);
+  assert.equal(trigger.body['runId'], undefined);
+  assert.equal(trigger.body['traceId'], undefined);
+  await waitForRest(url, token, liveId);
+  return trigger;
+}
+
+function outputText(body: Record<string, any>): string {
+  const entries = body['outputs'] as Record<string, unknown>[];
+  return textOf(entries[0]?.['value']).trim();
 }
 
 test(
@@ -53,12 +64,14 @@ test(
     assert.equal(existsSync(WAXD_ENTRY), true, `compiled daemon entry is missing: ${WAXD_ENTRY}`);
     const stateRoot = mkdtempSync(join(tmpdir(), 'wax-m12b-forced-state-'));
     const daemonDir = join(stateRoot, 'waxd');
+    const runsDirectory = join(daemonDir, 'runs');
     const project: Project = {
       id: 'project-m12b-forced',
       directory: mkdtempSync(join(tmpdir(), 'wax-m12b-forced-project-')),
     };
     const liveId = 'm12b-forced';
     const livePath = join(stateRoot, 'lives', liveId, 'live.json');
+    const markerFile = 'forced-wake-m12b.txt';
     assert.deepEqual(catalogOnDisk(daemonDir), {});
 
     let first: ChildDaemon | undefined;
@@ -69,12 +82,13 @@ test(
     try {
       first = await startChildDaemon(stateRoot, daemonDir);
       const firstToken = readToken(first.tokenPath);
+      assert.equal(existsSync(runsDirectory), false, 'startup created a runs/ directory');
       const loaded = await request(first.url, firstToken, 'POST', '/lives', {
         live: liveFor(liveId),
         project,
       });
       assert.equal(loaded.status, 200, JSON.stringify(loaded.body));
-      const wake = await wakeAndWait(first.url, firstToken, liveId, numberPrompt(100, 999));
+      await triggerAndWait(first.url, firstToken, liveId, numberPrompt(100, 999));
       const saved = await request(first.url, firstToken, 'POST', '/lives/save', { liveId });
       assert.equal(saved.status, 200);
       const firstOutput = await request(
@@ -84,15 +98,15 @@ test(
         `/lives/${liveId}/output`,
       );
       assert.equal(firstOutput.status, 200);
-      assert.equal(firstOutput.body['status'], 'completed');
-      assert.equal(typeof firstOutput.body['runId'], 'string');
-      const firstRunId = String(firstOutput.body['runId']);
+      assert.equal(firstOutput.body['runId'], undefined);
+      assert.equal(firstOutput.body['traceId'], undefined);
+      assert.ok(/^\d{3}$/.test(outputText(firstOutput.body)));
 
       const marker = `M12B-FORCED-${String(Date.now())}`;
-      const inFlight = requestOutcome(first.url, firstToken, 'POST', '/lives/wake', {
+      const inFlight = requestOutcome(first.url, firstToken, 'POST', '/lives/trigger', {
         liveId,
         beeId: 'only',
-        input: shellWritePrompt('forced-wake-m12b.txt', marker),
+        input: shellWritePrompt(markerFile, marker),
       });
       const guard = await waitFor(async () => {
         const listed = await request(first!.url, firstToken, 'GET', '/guards');
@@ -103,6 +117,7 @@ test(
         return guards.length === 1 ? guards[0] : undefined;
       }, 120_000, 'pending native guard before termination');
       assert.equal(typeof guard?.['requestId'], 'string');
+      assert.equal(existsSync(join(project.directory, markerFile)), false);
 
       const descendants = directChildPids(first.child.pid ?? -1);
       assert.ok(descendants.length >= 1, 'real DSH ACP child process must be running');
@@ -113,7 +128,7 @@ test(
       const sentAt = Date.now();
       assert.equal(first.child.kill('SIGTERM'), true);
       const firstExit = await withTimeout(first.exit, 30_000, 'SIGTERM exit');
-      const inFlightOutcome = await withTimeout(inFlight, 30_000, 'SIGTERM wake settlement');
+      const inFlightOutcome = await withTimeout(inFlight, 30_000, 'SIGTERM delivery settlement');
       assert.equal(inFlightOutcome.kind === 'response' && inFlightOutcome.status === 500, false);
       const staleToken = existsSync(join(daemonDir, 'token'));
       const staleInfo = existsSync(join(daemonDir, 'server.json'));
@@ -166,31 +181,37 @@ test(
       assert.ok(entry !== undefined);
       assert.equal(entry['state'], 'unloaded');
       assert.equal(readJson(livePath)['liveId'], liveId);
-      const runs = readdirSync(join(daemonDir, 'runs')).filter((name) =>
-        name.endsWith('.json'),
-      );
-      assert.ok(runs.length >= 1);
-      const recoveredRun = await request(
+      assert.equal(existsSync(runsDirectory), false, 'a runs/ record was written');
+
+      // D2: Honey restores the field, not a run history. The output cache was
+      // memory-only; after the crash there is nothing to read and nothing is
+      // replayed, including the pending side effect.
+      const staleOutput = await request(
         second.url,
         secondToken,
         'GET',
-        `/lives/${liveId}/output?runId=${firstRunId}`,
+        `/lives/${liveId}/output`,
       );
-      assert.equal(recoveredRun.status, 200);
-      assert.equal(recoveredRun.body['status'], 'completed');
-      assert.equal(recoveredRun.body['runId'], firstRunId);
+      assert.equal(staleOutput.status, 404);
+      const guardsAfterRestart = await request(second.url, secondToken, 'GET', '/guards');
+      assert.deepEqual(guardsAfterRestart.body['guards'], []);
+      assert.equal(
+        existsSync(join(project.directory, markerFile)),
+        false,
+        'the pending side effect was replayed after forced termination',
+      );
 
       const reloaded = await request(second.url, secondToken, 'POST', '/lives/load', {
         liveId,
         project,
       });
       assert.equal(reloaded.status, 200, JSON.stringify(reloaded.body));
-      const wakeAfterRestart = await wakeAndWait(
-        second.url,
-        secondToken,
-        liveId,
-        numberPrompt(1000, 9999),
-      );
+      const inspected = await request(second.url, secondToken, 'GET', `/lives/${liveId}/inspect`);
+      assert.equal(inspected.status, 200);
+      assert.equal(inspected.body['status']?.['rest'], true);
+      assert.deepEqual(inspected.body['outputs'], []);
+
+      await triggerAndWait(second.url, secondToken, liveId, numberPrompt(1000, 9999));
       const outputAfterRestart = await request(
         second.url,
         secondToken,
@@ -198,9 +219,9 @@ test(
         `/lives/${liveId}/output`,
       );
       assert.equal(outputAfterRestart.status, 200);
-      const outputs = outputAfterRestart.body['outputs'] as Record<string, unknown>[];
+      assert.equal(outputAfterRestart.body['runId'], undefined);
       assert.ok(
-        /^\d{4}$/.test(textOf(outputs[0]?.['value']).trim()),
+        /^\d{4}$/.test(outputText(outputAfterRestart.body)),
         'post-restart output must be a four-digit integer (value not recorded)',
       );
       assert.equal(
@@ -209,7 +230,8 @@ test(
       );
       t.diagnostic(
         `SIGTERM restart: health=200 catalogState=unloaded reload=200 ` +
-          `wake=${String(wakeAfterRestart.status)} staleLockStolen=true tokenReplaced=true`,
+          `staleOutput=${String(staleOutput.status)} noReplay=true ` +
+          `staleLockStolen=true tokenReplaced=true`,
       );
 
       // A second forced termination, now with SIGKILL, must behave the same.
@@ -250,6 +272,7 @@ test(
       assert.equal(thirdEntry?.['state'], 'unloaded');
       assert.equal(readJson(livePath)['liveId'], liveId);
       assert.equal(readJson(join(daemonDir, 'server.json'))['pid'], third.child.pid);
+      assert.equal(existsSync(runsDirectory), false);
       t.diagnostic(
         `SIGKILL restart: health=200 catalogState=unloaded liveJsonReadable=true ` +
           `staleLockStolen=true tokenReplaced=true`,

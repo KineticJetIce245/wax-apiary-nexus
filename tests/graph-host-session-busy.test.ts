@@ -12,7 +12,6 @@ import type { GraphBindings } from '../src/graph/binding.js';
 import type { Project } from '../src/project/kernel.js';
 import { parseComposition } from '../src/runtime/index.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
-import { SessionBusyError } from '../src/session/session-errors.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 import {
@@ -21,6 +20,7 @@ import {
   forager,
   makeEnv as makeFixtureEnv,
   triggerRun,
+  waitUntil,
 } from './support/graph-host-fixtures.js';
 
 const PROMPT_SECRET = 'M9E-PROMPT-SECRET';
@@ -205,7 +205,7 @@ test('a rejected load releases only the reservation it added', async (t) => {
   assert.equal(await env.host.unload('valid'), true);
 });
 
-test('a busy shared session rejects a second trigger when the adapter cannot queue', async (t) => {
+test('a busy shared session does not run the second trigger and keeps the first', async (t) => {
   const fixture = makeFixtureEnv(new RecordingAdapter());
   fixture.adapter.holdSubmissions = true;
   const host = new LiveHiveHost({ registry: fixture.registry });
@@ -223,21 +223,26 @@ test('a busy shared session rejects a second trigger when the adapter cannot que
   await load('first');
   await load('second');
 
-  const held = await host.trigger('first', 'only', { kind: 'text', text: 'one' });
+  await host.trigger('first', 'only', { kind: 'text', text: 'one' });
   await fixture.adapter.waitForSubmit(1);
 
   // The adapter does not advertise `queue`, so the Workspace refuses the
-  // overlap. Admission still succeeds; the refused execution is reported on
-  // the second run instead of rejecting the enqueue.
-  const second = await host.trigger('second', 'only', { kind: 'text', text: 'two' });
-  const secondRun = await host.runs.wait(second.runId);
-  assert.equal(secondRun.state, 'failed');
-  const failure = host.runs.failureOf(second.runId);
-  assert.ok(failure instanceof SessionBusyError);
-  assert.equal(failure.sessionId, session.sessionId);
+  // overlap. Delivery still succeeds (the control plane does not own execution
+  // state); the refused execution never runs and the field stays observable.
+  await host.trigger('second', 'only', { kind: 'text', text: 'two' });
+  await waitUntil(
+    () => host.statusOf('second')?.rest === true,
+    'the refused second delivery to settle',
+  );
+  assert.equal(fixture.adapter.allPrompts.length, 1);
 
   fixture.adapter.holdSubmissions = false;
   fixture.adapter.releaseHeld();
-  const firstRun = await host.runs.wait(held.runId);
-  assert.equal(firstRun.state, 'completed');
+  await waitUntil(
+    () => host.statusOf('first')?.rest === true,
+    'the held first execution to settle',
+  );
+  // The second delivery never reached the native adapter: its execution was
+  // refused while the shared session was busy.
+  assert.equal(fixture.adapter.allPrompts.length, 1);
 });

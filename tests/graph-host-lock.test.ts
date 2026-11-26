@@ -20,7 +20,7 @@ import {
 } from '../src/runtime/index.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
-import { triggerRun } from './support/graph-host-fixtures.js';
+import { nodeStatus, triggerRun, waitUntil } from './support/graph-host-fixtures.js';
 
 /**
  * A minimal adapter whose submissions can be held. Holding the native submit
@@ -273,7 +273,7 @@ test('unload is refused while a trigger owns the same live id', { timeout: 10_00
   assert.equal(await env.host.unload('live'), true);
 });
 
-test('wake returns an admission while the native execution is still held', async (t) => {
+test('trigger returns after delivery while the native execution is still held', async (t) => {
   const adapter = new GatedAdapter();
   const env = makeEnv(adapter);
   t.after(async () => {
@@ -287,18 +287,16 @@ test('wake returns an admission while the native execution is still held', async
     project: env.project,
   });
 
-  const admission = await env.host.trigger('admission', 'a', text('start'));
-  assert.equal(admission.status, 'accepted');
-  assert.equal(admission.graphId, 'admission');
-  assert.ok(admission.runId.length > 0);
-  assert.ok(admission.traceId.startsWith('tr_'));
-  const running = env.host.runs.get('admission', admission.runId);
-  assert.ok(running !== undefined);
-  assert.notEqual(running.state, 'completed');
-  assert.notEqual(running.state, 'failed');
-
+  await env.host.trigger('admission', 'a', text('start'));
   await adapter.waitForSubmits(1);
+  const running = env.host.statusOf('admission');
+  assert.ok(running !== undefined);
+  assert.equal(running.rest, false);
+  assert.equal(nodeStatus(running, 'a').active, true);
+
   adapter.releaseAll();
-  const finished = await env.host.runs.wait(admission.runId);
-  assert.equal(finished.state, 'completed');
+  await waitUntil(
+    () => env.host.statusOf('admission')?.rest === true,
+    'the released execution to settle',
+  );
 });

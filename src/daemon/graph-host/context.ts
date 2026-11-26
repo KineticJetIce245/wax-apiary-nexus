@@ -1,14 +1,12 @@
 import { GraphRegistry, type LiveHiveId } from '../../graph/registry.js';
 import { DEFAULT_IDLE_TTL_MS } from '../../graph/residency.js';
 import type { GuardDecision, GuardRequest, PheromoneFieldSnapshot } from '../../runtime/index.js';
-import { readMailboxOverflowOptions, readTraceLimitOptions } from '../../runtime/index.js';
+import { readReceptorOverflowOptions } from '../../runtime/index.js';
 import type { SessionRegistry } from '../../session/session-registry.js';
 import type { HoneyStore } from '../../storage/honey.js';
-import type { RunStore } from '../../storage/run-store.js';
 import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import { LiveHiveLock } from '../live-hive-lock.js';
 import { SchedulerService } from '../scheduler-service.js';
-import { RunTracker } from './run-tracker.js';
 import {
   LiveHiveHostDisposedError,
   type LiveHiveHostEvent,
@@ -25,7 +23,6 @@ export type UnloadHandler = (graphId: LiveHiveId, live: LiveGraph) => Promise<vo
 export class LiveHiveHostContext {
   readonly registry: SessionRegistry;
   readonly catalog: LiveHiveCatalog | undefined;
-  readonly runStore: RunStore | undefined;
   readonly guardTimeoutMs: number | undefined;
   readonly schedulers: SchedulerService;
   readonly allowHoverUnload: boolean;
@@ -39,12 +36,10 @@ export class LiveHiveHostContext {
   readonly maxWaitMs: number;
   readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
   readonly onGuardExpired: ((requestId: string) => void) | undefined;
-  readonly mailboxOverflowPolicy: 'reject' | 'block';
-  readonly mailboxBlockTimeoutMs: number;
-  readonly traceLimits: ReturnType<typeof readTraceLimitOptions>;
+  readonly receptorOverflowPolicy: 'reject' | 'block';
+  readonly receptorBlockTimeoutMs: number;
   readonly onEvent: ((event: LiveHiveHostEvent) => void) | undefined;
   readonly graphs: GraphRegistry<LiveGraph>;
-  readonly runs: RunTracker;
   readonly lock = new LiveHiveLock();
   readonly loading = new Set<LiveHiveId>();
 
@@ -56,8 +51,7 @@ export class LiveHiveHostContext {
 
   constructor(options: LiveHiveHostOptions) {
     this.registry = options.registry;
-    this.catalog = options.catalog;    this.runStore = options.runStore;
-    this.runs = createRunTracker(options, (event) => this.reportCleanupFailure(event));
+    this.catalog = options.catalog;
     this.guardTimeoutMs = positiveIntegerOption(options.guardTimeoutMs, 'guardTimeoutMs');
     this.allowHoverUnload = readBooleanOption(
       options.allowHoverUnload,
@@ -88,9 +82,9 @@ export class LiveHiveHostContext {
     if (this.onGuardExpired !== undefined && typeof this.onGuardExpired !== 'function') {
       throw new TypeError('onGuardExpired must be a function');
     }
-    const mailbox = readMailboxOverflowOptions(options);
-    this.mailboxOverflowPolicy = mailbox.policy;    this.mailboxBlockTimeoutMs = mailbox.blockTimeoutMs;
-    this.traceLimits = readTraceLimitOptions(options);
+    const receptor = readReceptorOverflowOptions(options);
+    this.receptorOverflowPolicy = receptor.policy;
+    this.receptorBlockTimeoutMs = receptor.blockTimeoutMs;
     this.onEvent = options.onEvent;
     this.schedulers = new SchedulerService({
       now: this.now,
@@ -173,24 +167,8 @@ export class LiveHiveHostContext {
   }
 }
 
-function createRunTracker(
-  options: LiveHiveHostOptions,
-  report: (event: LiveHiveHostEvent) => void,
-): RunTracker {
-  return new RunTracker({
-    now: options.now ?? Date.now,
-    ...(options.runStore === undefined ? {} : { runStore: options.runStore }),
-    onSaveError: (graphId, runId, error) =>
-      report({
-        type: 'graph.run-store-failed',
-        graphId,
-        runId,
-        error: messageOf(error),
-      }),
-  });
-}
-
-export function snapshotHovered(snapshot: PheromoneFieldSnapshot): boolean {  for (const state of Object.values(snapshot.nodes)) {
+export function snapshotHovered(snapshot: PheromoneFieldSnapshot): boolean {
+  for (const state of Object.values(snapshot.nodes)) {
     if (state.hover !== undefined) {
       return true;
     }
@@ -213,7 +191,7 @@ export function isQuiescentHover(snapshot: PheromoneFieldSnapshot): boolean {
     if (
       state.active !== undefined ||
       state.pending !== undefined ||
-      state.queue.length > 0
+      state.receptor.length > 0
     ) {
       return false;
     }

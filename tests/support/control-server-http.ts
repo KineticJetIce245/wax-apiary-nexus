@@ -95,14 +95,14 @@ export async function bLoadLive(
   });
 }
 
-export async function bWake(
+export async function bTrigger(
   url: string,
   token: string,
   liveId: string,
   beeId: string,
   value: unknown,
 ): Promise<HttpResult> {
-  return postJson(url, token, '/lives/wake', { liveId, beeId, input: inputOf(value) });
+  return postJson(url, token, '/lives/trigger', { liveId, beeId, input: inputOf(value) });
 }
 
 export async function bAnswer(
@@ -121,36 +121,40 @@ export async function bAnswer(
   });
 }
 
-export async function bRun(
-  url: string,
-  token: string,
-  liveId: string,
-  runId: string,
-): Promise<HttpResult> {
-  return getJson(
-    url,
-    token,
-    `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
-  );
+/** Every delivery answers 202 `{ok:true}` with no run or trace identity. */
+export function assertAccepted(result: HttpResult): void {
+  assert.equal(result.status, 202, result.text);
+  assert.equal(result.body?.['ok'], true, result.text);
+  assert.equal(result.body?.['runId'], undefined, result.text);
+  assert.equal(result.body?.['traceId'], undefined, result.text);
 }
 
-/** Poll the run route until it leaves accepted/running (or the deadline). */
-export async function waitForRunTerminal(
+/**
+ * Poll `inspect` until the field is at Rest (and hovered when asked). There is
+ * no run identity to wait for, so the only knobs are a timeout and whether a
+ * user hover counts as settled.
+ */
+export async function waitForRest(
   url: string,
   token: string,
   liveId: string,
-  runId: string,
   timeoutMs = 2_000,
+  stopAtHovered = true,
 ): Promise<HttpResult> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const result = await bRun(url, token, liveId, runId);
-    const state = result.body?.['run']?.['state'];
-    if (state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'unknown') {
+    const result = await bInspect(url, token, liveId);
+    const status = result.body?.['status'];
+    if (
+      result.status === 200 &&
+      (status?.rest === true || (stopAtHovered && status?.hovered === true))
+    ) {
       return result;
     }
     if (Date.now() >= deadline) {
-      throw new Error(`run ${runId} did not finish before the deadline (state=${String(state)})`);
+      throw new Error(
+        `live ${liveId} did not reach Rest before the deadline (status=${String(result.status)})`,
+      );
     }
     await delay(10);
   }
@@ -165,52 +169,45 @@ export interface RunApiCall {
   ): Promise<{ readonly status: number; readonly body: Record<string, any> }>;
 }
 
-export function admissionRunId(body: Record<string, any> | undefined): string {
-  const runId = body?.['runId'];
-  assert.equal(typeof runId, 'string', "wake response missing string 'runId'");
-  return runId;
-}
-
 /** Poll through a test-local request helper rather than global fetch. */
-export async function waitForRunTerminalWith(
+export async function waitForRestWith(
   call: RunApiCall,
   liveId: string,
-  runId: string,
   timeoutMs = 120_000,
+  stopAtHovered = true,
 ): Promise<Record<string, any>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const result = await call(
-      'GET',
-      `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
-    );
+    const result = await call('GET', `/lives/${encodeURIComponent(liveId)}/inspect`);
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    const run = result.body?.['run'];
-    if (typeof run !== 'object' || run === null) {
-      throw new Error('run response missing run object');
+    const status = result.body?.['status'];
+    if (typeof status !== 'object' || status === null) {
+      throw new Error('inspect response missing status object');
     }
-    const state = (run as Record<string, any>)['state'];
-    if (state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'unknown') {
-      return run as Record<string, any>;
+    if (status['rest'] === true || (stopAtHovered && status['hovered'] === true)) {
+      return status as Record<string, any>;
     }
     if (Date.now() >= deadline) {
-      throw new Error(`run ${runId} did not finish before the deadline (state=${String(state)})`);
+      throw new Error(
+        `live ${liveId} did not reach Rest before the deadline (status=${JSON.stringify(status)})`,
+      );
     }
     await delay(100);
   }
 }
 
-/** Await a 202 admission, then its own run terminal state. */
-export async function settleWakeWith(
+/** Await a 202 delivery, then the field's Rest/hover state. */
+export async function settleTriggerWith(
   call: RunApiCall,
   liveId: string,
-  wakePromise: Promise<{ readonly status: number; readonly body: Record<string, any> }>,
+  triggerPromise: Promise<{ readonly status: number; readonly body: Record<string, any> }>,
   timeoutMs = 120_000,
+  stopAtHovered = true,
 ): Promise<Record<string, any>> {
-  const wake = await wakePromise;
-  assert.equal(wake.status, 202, JSON.stringify(wake.body));
-  assert.equal(wake.body?.['status'], 'accepted');
-  return waitForRunTerminalWith(call, liveId, admissionRunId(wake.body), timeoutMs);
+  const trigger = await triggerPromise;
+  assert.equal(trigger.status, 202, JSON.stringify(trigger.body));
+  assert.equal(trigger.body?.['ok'], true, JSON.stringify(trigger.body));
+  return waitForRestWith(call, liveId, timeoutMs, stopAtHovered);
 }
 
 export async function bUnload(
@@ -233,10 +230,8 @@ export async function bOutput(
   url: string,
   token: string,
   liveId: string,
-  runId?: string,
 ): Promise<HttpResult> {
-  const query = runId === undefined ? '' : `?runId=${encodeURIComponent(runId)}`;
-  return getJson(url, token, `/lives/${encodeURIComponent(liveId)}/output${query}`);
+  return getJson(url, token, `/lives/${encodeURIComponent(liveId)}/output`);
 }
 
 export async function bList(url: string, token: string): Promise<HttpResult> {
@@ -414,7 +409,7 @@ export async function announcedButUnsentBody(
         host: '127.0.0.1',
         port: info.port,
         method: 'POST',
-        path: '/lives/wake',
+        path: '/lives/trigger',
         headers: {
           ...authHeader(token),
           'content-type': 'application/json',

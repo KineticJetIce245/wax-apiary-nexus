@@ -29,6 +29,33 @@ export function currentTag(lineage: readonly BranchTag[]): BranchTag | undefined
   return lineage.at(-1);
 }
 
+/**
+ * Moves one Pheromone along a normal beeline: the same object keeps its `id`
+ * and only its value and branch tags are replaced. `at` is stamped at enqueue
+ * time by the field, so it is deliberately not touched here.
+ */
+export function movePheromone(
+  pheromone: Pheromone,
+  value: Value,
+  lineage?: readonly BranchTag[],
+): Pheromone {
+  pheromone.value = structuredClone(value);
+  const current = lineage === undefined ? undefined : currentTag(lineage);
+  if (current === undefined) {
+    delete pheromone.forkId;
+    delete pheromone.branchId;
+  } else {
+    pheromone.forkId = current.forkId;
+    pheromone.branchId = current.branchId;
+  }
+  if (lineage === undefined || lineage.length === 0) {
+    delete pheromone.lineage;
+  } else {
+    pheromone.lineage = copyLineage(lineage);
+  }
+  return pheromone;
+}
+
 export function sameLineage(left: readonly BranchTag[], right: readonly BranchTag[]): boolean {
   if (left.length !== right.length) {
     return false;

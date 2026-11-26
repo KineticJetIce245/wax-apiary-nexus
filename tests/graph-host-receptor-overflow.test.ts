@@ -4,9 +4,9 @@ import test from 'node:test';
 import { toHttpError } from '../src/control/http-errors.js';
 import { LiveHiveHost } from '../src/daemon/graph-host.js';
 import {
-  MailboxBlockTimeoutError,
+  ReceptorBlockTimeoutError,
   parseComposition,
-  QueueFullError,
+  ReceptorFullError,
   type CompositionDefinition,
 } from '../src/runtime/index.js';
 import {
@@ -14,6 +14,7 @@ import {
   RecordingAdapter,
   allFresh,
   makeEnv,
+  waitUntil,
 } from './support/graph-host-fixtures.js';
 
 function cappedGraph(id: string, queueMax: number): CompositionDefinition {
@@ -54,15 +55,15 @@ async function withTimeout<T>(
   }
 }
 
-test('block policy waits outside the live lock and admits when the mailbox drains', async (t) => {
+test('block policy waits outside the live lock and admits when the receptor drains', async (t) => {
   const adapter = new RecordingAdapter();
   adapter.holdSubmissions = true;
   const env = makeEnv(adapter);
   const host = new LiveHiveHost({
     registry: env.registry,
     now: new FakeClock(1_000).now,
-    mailboxOverflowPolicy: 'block',
-    mailboxBlockTimeoutMs: 5_000,
+    receptorOverflowPolicy: 'block',
+    receptorBlockTimeoutMs: 5_000,
   });
   t.after(async () => {
     adapter.releaseHeld();
@@ -77,10 +78,9 @@ test('block policy waits outside the live lock and admits when the mailbox drain
     project: env.project,
   });
 
-  const first = await host.trigger('mbx-host', 'only', text('one'));
+  await host.trigger('mbx-host', 'only', text('one'));
   await adapter.waitForSubmit(1);
-  const second = await host.trigger('mbx-host', 'only', text('two'));
-  assert.equal(second.status, 'accepted', 'the queued admission is accepted');
+  await host.trigger('mbx-host', 'only', text('two'));
   const third = host.trigger('mbx-host', 'only', text('three'));
 
   // A blocked admission must not hold the per-live lock: save still completes.
@@ -89,17 +89,16 @@ test('block policy waits outside the live lock and admits when the mailbox drain
 
   adapter.releaseHeld();
   await adapter.waitForSubmit(2);
-  const thirdAdmission = await withTimeout(third, 1_000, 'blocked wake did not resume');
-  assert.equal(thirdAdmission.status, 'accepted');
+  await withTimeout(third, 1_000, 'blocked trigger did not resume');
   adapter.releaseHeld();
   await adapter.waitForSubmit(3);
   adapter.releaseHeld();
 
-  const finished = await host.runs.wait(thirdAdmission.runId);
-  assert.equal(finished.state, 'completed');
+  await waitUntil(
+    () => host.statusOf('mbx-host')?.rest === true,
+    'the field to drain to Rest',
+  );
   assert.deepEqual(adapter.allPrompts, ['run one', 'run two', 'run three']);
-  assert.equal(host.statusOf('mbx-host')?.rest, true);
-  assert.ok(first.runId.length > 0);
 });
 
 test('block timeout is a structured error and maps to a stable HTTP error', async (t) => {
@@ -109,8 +108,8 @@ test('block timeout is a structured error and maps to a stable HTTP error', asyn
   const host = new LiveHiveHost({
     registry: env.registry,
     now: () => Date.now(),
-    mailboxOverflowPolicy: 'block',
-    mailboxBlockTimeoutMs: 25,
+    receptorOverflowPolicy: 'block',
+    receptorBlockTimeoutMs: 25,
   });
   t.after(async () => { adapter.releaseHeld(); await host.dispose(); await env.workspace.stop(); });
   const definition = cappedGraph('mbx-timeout', 1);
@@ -120,16 +119,16 @@ test('block timeout is a structured error and maps to a stable HTTP error', asyn
     project: env.project,
   });
 
-  const first = await host.trigger('mbx-timeout', 'only', text('one'));
+  await host.trigger('mbx-timeout', 'only', text('one'));
   await adapter.waitForSubmit(1);
-  const second = await host.trigger('mbx-timeout', 'only', text('two'));
+  await host.trigger('mbx-timeout', 'only', text('two'));
 
   let failure: unknown;
   await assert.rejects(
     host.trigger('mbx-timeout', 'only', text('three')),
     (error: unknown) => {
       failure = error;
-      assert.ok(error instanceof MailboxBlockTimeoutError);
+      assert.ok(error instanceof ReceptorBlockTimeoutError);
       assert.equal(error.liveId, 'mbx-timeout');
       assert.equal(error.beeId, 'only');
       assert.equal(error.pending, 1);
@@ -142,21 +141,19 @@ test('block timeout is a structured error and maps to a stable HTTP error', asyn
 
   const http = toHttpError(failure);
   assert.equal(http.status, 429);
-  assert.equal(http.code, 'bee-mailbox-block-timeout');
-  assertTimeoutHttpBody(failure as MailboxBlockTimeoutError);
+  assert.equal(http.code, 'bee-receptor-block-timeout');
+  assertTimeoutHttpBody(failure as ReceptorBlockTimeoutError);
 
-  // The failed admission left the mailbox exactly as it was.
+  // The failed admission left the receptor exactly as it was.
   const status = host.statusOf('mbx-timeout');
-  assert.equal(status?.nodes.find((node) => node.nodeId === 'only')?.queue, 1);
-  assert.ok(first.runId.length > 0);
-  assert.ok(second.runId.length > 0);
+  assert.equal(status?.nodes.find((node) => node.nodeId === 'only')?.receptor, 1);
 });
 
-test('a reject overflow maps to 429 bee-mailbox-full with bee and depth', () => {
-  const error = new QueueFullError('only', 3, 3, { liveId: 'live-a' });
+test('a reject overflow maps to 429 bee-receptor-full with bee and depth', () => {
+  const error = new ReceptorFullError('only', 3, 3, { liveId: 'live-a' });
   const http = toHttpError(error);
   assert.equal(http.status, 429);
-  assert.equal(http.code, 'bee-mailbox-full');
+  assert.equal(http.code, 'bee-receptor-full');
   assert.deepEqual(http.options.body, {
     liveId: 'live-a',
     beeId: 'only',
@@ -166,7 +163,7 @@ test('a reject overflow maps to 429 bee-mailbox-full with bee and depth', () => 
   });
 });
 
-function assertTimeoutHttpBody(error: MailboxBlockTimeoutError): void {
+function assertTimeoutHttpBody(error: ReceptorBlockTimeoutError): void {
   assert.deepEqual(toHttpError(error).options.body, {
     liveId: 'mbx-timeout',
     beeId: 'only',

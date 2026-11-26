@@ -535,7 +535,7 @@ test('daemon discovery and network failures exit 1 without printing a token', as
   assertNoSecret(network.stderr, secret);
 });
 
-test('runCli dispatches live, wake, session and waxd', async (t) => {
+test('runCli dispatches live, trigger, session and waxd', async (t) => {
   const daemon = await startWaxd(t);
 
   const liveStdout: string[] = [];
@@ -570,7 +570,7 @@ test('runCli dispatches live, wake, session and waxd', async (t) => {
 
   const triggerStderr: string[] = [];
   const triggerCode = await runCli(
-    ['wake', 'missing-live', 'node', '--daemon-dir', daemon.daemonDir],
+    ['trigger', 'missing-live', 'node', '--daemon-dir', daemon.daemonDir],
     {
       stdout: () => undefined,
       stderr: (line) => triggerStderr.push(line),
@@ -606,7 +606,7 @@ test('runCli dispatches live, wake, session and waxd', async (t) => {
 });
 
 test('legacy graph commands are usage errors and not advertised', async () => {
-  for (const command of ['graph', 'trigger']) {
+  for (const command of ['graph', 'wake']) {
     const stderr: string[] = [];
     const code = await runCli([command], {
       stdout: () => undefined,
@@ -626,6 +626,6 @@ test('legacy graph commands are usage errors and not advertised', async () => {
     env: {},
   });
   assert.equal(helpCode, 2);
-  assert.match(helpStderr[0] as string, /usage: wax <waxd\|session\|live\|wake/);
-  assert.equal(/wax graph|wax trigger/.test(helpStderr[0] as string), false);
+  assert.match(helpStderr[0] as string, /usage: wax <waxd\|session\|live\|trigger/);
+  assert.equal(/wax graph|wax wake/.test(helpStderr[0] as string), false);
 });

@@ -208,7 +208,7 @@ test('fork routes each branch to its own session through merge to Rest', async (
     projectDirectory: project.directory,
     now: () => clock,
   });
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   const snapshot = await pumpUntilRest(runtime, () => {
     clock += 1000;
   });

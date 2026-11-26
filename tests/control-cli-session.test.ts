@@ -9,6 +9,7 @@ import { runCli } from '../src/cli/cli.js';
 import { CliUsageError } from '../src/cli/cli-shared.js';
 import { runSessionCli, type ControlCliDependencies } from '../src/cli/control-cli.js';
 import { runLiveCli } from '../src/cli/live-cli.js';
+import { runTriggerCli } from '../src/cli/trigger-cli.js';
 import { fromCompositionDefinition } from '../src/b/live-hive-codec.js';
 import { parseComposition } from '../src/runtime/index.js';
 import {
@@ -40,7 +41,7 @@ import {
   withTimeout,
 } from './support/control-cli-fixtures.js';
 import { startWaxd, startMultiWaxd } from './support/control-cli-daemons.js';
-import { waitForRunTerminal } from './support/control-server-http.js';
+import { waitForRest } from './support/control-server-http.js';
 
 async function wakeAndWait(
   info: { readonly url: string; readonly tokenPath: string },
@@ -50,19 +51,13 @@ async function wakeAndWait(
   input: string,
 ): Promise<void> {
   const trigger = await invokeControl(
-    runLiveCli,
-    ['live', 'wake', liveId, beeId, '--input', input, '--json'],
+    runTriggerCli,
+    ['trigger', liveId, beeId, '--input', input, '--json'],
     { daemonDir },
   );
-  const admission = singleJson(trigger);
-  assert.equal(admission['status'], 'accepted');
+  assert.deepEqual(singleJson(trigger), { ok: true });
   const token = readFileSync(info.tokenPath, 'utf8').trim();
-  await waitForRunTerminal(
-    info.url,
-    token,
-    liveId,
-    String(admission['runId']),
-  );
+  await waitForRest(info.url, token, liveId);
 }
 
 function liveFile(compositionPath: string, bindingsPath: string): string {  const definition = JSON.parse(readFileSync(compositionPath, 'utf8')) as Record<string, unknown>;

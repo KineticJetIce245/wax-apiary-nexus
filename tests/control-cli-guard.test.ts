@@ -12,7 +12,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions } from './support/fake-adapter.js';
-import { bLoad, bWake, getJson, waitForRunTerminal } from './support/control-server-http.js';
+import { bLoad, bTrigger, getJson, waitForRest } from './support/control-server-http.js';
 import {
   assertNoSecret,
   invokeControl,
@@ -161,8 +161,8 @@ async function settleWake(
   },
 ): Promise<void> {
   assert.equal(trigger.status, 202, trigger.text);
-  assert.equal(trigger.body?.['status'], 'accepted');
-  await waitForRunTerminal(env.url, env.token, liveId, String(trigger.body?.['runId']));
+  assert.equal(trigger.body?.['ok'], true);
+  await waitForRest(env.url, env.token, liveId);
 }
 
 async function waitForEmptyGuardList(
@@ -268,7 +268,7 @@ test('wax guard list shows pending metadata only and allows it once', async (t) 
   });
   await loadGuardedLive(env, 'guarded-list');
 
-  const triggerPromise = bWake(env.url, env.token, 'guarded-list', 'only', promptMarker);
+  const triggerPromise = bTrigger(env.url, env.token, 'guarded-list', 'only', promptMarker);
   const guard = await waitForGuard(env);
   assert.equal(typeof guard['requestId'], 'string');
   assert.equal(typeof guard['executionId'], 'string');
@@ -344,7 +344,7 @@ test('wax guard decide maps reject_once to the native decision', async (t) => {
   const env = await startGuardEnv(t);
   await loadGuardedLive(env, 'guarded-reject');
 
-  const triggerPromise = bWake(env.url, env.token, 'guarded-reject', 'only', 'go');
+  const triggerPromise = bTrigger(env.url, env.token, 'guarded-reject', 'only', 'go');
   const guard = await waitForGuard(env);
   const requestId = String(guard['requestId']);
 
@@ -381,7 +381,7 @@ test('wax guard decide maps unknown and already-settled requests without retryin
   assert.equal(counting.calls(), 1, 'an unknown decision must not be retried');
 
   await loadGuardedLive(env, 'guarded-settled');
-  const triggerPromise = bWake(env.url, env.token, 'guarded-settled', 'only', 'go');
+  const triggerPromise = bTrigger(env.url, env.token, 'guarded-settled', 'only', 'go');
   const guard = await waitForGuard(env);
   const requestId = String(guard['requestId']);
   const first = await invokeControl(
@@ -408,7 +408,7 @@ test('wax guard decide explains an expired guard and never overrides it', async 
   const env = await startGuardEnv(t, { guardTimeoutMs: 500 });
   await loadGuardedLive(env, 'guarded-expired');
 
-  const triggerPromise = bWake(env.url, env.token, 'guarded-expired', 'only', 'go');
+  const triggerPromise = bTrigger(env.url, env.token, 'guarded-expired', 'only', 'go');
   const guard = await waitForGuard(env);
   const requestId = String(guard['requestId']);
   await waitForEmptyGuardList(env, 10_000);
@@ -467,7 +467,7 @@ test('wax guard usage errors exit 2 before discovery and --help advertises guard
     env: {},
   });
   assert.equal(helpCode, 2);
-  assert.match(helpStderr[0] as string, /usage: wax <waxd\|session\|live\|wake/);
+  assert.match(helpStderr[0] as string, /usage: wax <waxd\|session\|live\|trigger/);
   assert.match(helpStderr[0] as string, /\|guard>/);
 
   const unroutedStderr: string[] = [];

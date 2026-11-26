@@ -65,8 +65,8 @@ export function matchRoute(rawUrl: string | undefined, method?: string): Route |
           return { kind: 'lives-load', methods: ['POST'] };
         case 'instantiate':
           return { kind: 'lives-instantiate', methods: ['POST'] };
-        case 'wake':
-          return { kind: 'lives-wake', methods: ['POST'] };
+        case 'trigger':
+          return { kind: 'lives-trigger', methods: ['POST'] };
         case 'answer':
           return { kind: 'lives-answer', methods: ['POST'] };
         case 'save':
@@ -104,21 +104,5 @@ export function matchRoute(rawUrl: string | undefined, method?: string): Route |
     }
   }
 
-  return matchLiveRun(parts);
-}
-
-function matchLiveRun(parts: readonly string[]): Route | undefined {
-  const [first, liveId, third, runId] = parts;
-  if (
-    parts.length !== 4 ||
-    first !== 'lives' ||
-    third !== 'runs' ||
-    liveId === undefined ||
-    runId === undefined ||
-    liveId.length > MAX_ID_LENGTH ||
-    runId.length > MAX_ID_LENGTH
-  ) {
-    return undefined;
-  }
-  return { kind: 'lives-run', methods: ['GET'], graphId: liveId, runId };
+  return undefined;
 }

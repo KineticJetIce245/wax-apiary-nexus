@@ -31,13 +31,13 @@ export interface InstantiateLiveBody {
   readonly project?: Project;
 }
 
-export interface WakeLiveBody {
+export interface TriggerLiveBody {
   readonly liveId: string;
   readonly beeId: string;
   readonly input: string;
 }
 
-export interface AnswerLiveBody extends WakeLiveBody {
+export interface AnswerLiveBody extends TriggerLiveBody {
   readonly token?: string;
 }
 
@@ -59,7 +59,6 @@ export interface DispatchBody {
   readonly input: string;
   readonly sessionParams?: SessionParams;
   readonly sessionId?: string;
-  readonly timeoutMs?: number;
   readonly project?: Project;
 }
 
@@ -122,9 +121,9 @@ export function parseInstantiateBody(
   };
 }
 
-export function parseWakeLiveBody(payload: Record<string, unknown> | undefined): WakeLiveBody {
+export function parseTriggerLiveBody(payload: Record<string, unknown> | undefined): TriggerLiveBody {
   const body = requirePayload(payload);
-  assertExactFields(body, ['liveId', 'beeId', 'input'], 'live wake request');
+  assertExactFields(body, ['liveId', 'beeId', 'input'], 'live trigger request');
   return {
     liveId: requireString(body['liveId'], 'liveId', MAX_ID_LENGTH),
     beeId: requireString(body['beeId'], 'beeId', MAX_ID_LENGTH),
@@ -180,7 +179,7 @@ export function parseDispatchBody(payload: Record<string, unknown> | undefined):
   const body = requirePayload(payload);
   assertExactFields(
     body,
-    ['input', 'sessionParams', 'sessionId', 'timeoutMs', 'project'],
+    ['input', 'sessionParams', 'sessionId', 'project'],
     'dispatch request',
   );
   const input = requireString(body['input'], 'input', MAX_PATH_LENGTH);
@@ -190,9 +189,6 @@ export function parseDispatchBody(payload: Record<string, unknown> | undefined):
   const sessionId = body['sessionId'] === undefined
     ? undefined
     : requireString(body['sessionId'], 'sessionId', MAX_ID_LENGTH);
-  const timeoutMs = body['timeoutMs'] === undefined
-    ? undefined
-    : requirePositiveInteger(body['timeoutMs'], 'timeoutMs');
   const project = body['project'] === undefined
     ? undefined
     : parseProject(body['project']);
@@ -200,7 +196,6 @@ export function parseDispatchBody(payload: Record<string, unknown> | undefined):
     input,
     ...(sessionParams === undefined ? {} : { sessionParams }),
     ...(sessionId === undefined ? {} : { sessionId }),
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(project === undefined ? {} : { project }),
   };
 }
@@ -261,13 +256,6 @@ function parseProject(value: unknown): Project {
     id: requireString(value['id'], 'project.id', 256),
     directory: requireString(value['directory'], 'project.directory', MAX_PATH_LENGTH),
   };
-}
-
-function requirePositiveInteger(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
-    throw new HttpError(400, 'bad-request', `${field} must be a positive integer`);
-  }
-  return value;
 }
 
 function requireString(

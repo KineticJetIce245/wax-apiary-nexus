@@ -7,8 +7,8 @@ export type RuntimeEvent =
   | 'pheromone.rejected'
   | 'pheromone.blocked'
   | 'pheromone.expired'
-  | 'bee-mailbox-blocked'
-  | 'bee-mailbox-block-timeout'
+  | 'bee-receptor-blocked'
+  | 'bee-receptor-block-timeout'
   | 'node.activated'
   | 'node.completed'
   | 'node.failed'
@@ -16,14 +16,9 @@ export type RuntimeEvent =
   | 'hover.resolved'
   | 'hover.blocked'
   | 'hover.cancelled'
-  | 'answer.applied'
-  | 'answer.stale'
-  | 'answer.malformed'
-  | 'answer.blocked'
   | 'guard.opened'
   | 'guard.resolved'
   | 'guard.timeout'
-  | 'input.queued'
   | 'merge.waiting'
   | 'merge.blocked'
   | 'merge.completed'
@@ -34,7 +29,6 @@ export type RuntimeEvent =
   | 'runtime.restored'
   | 'runtime.attention'
   | 'runtime.rest'
-  | 'trace.cancelled'
   | 'scheduler.unconfirmed';
 
 export interface RuntimeLogEntry {
@@ -45,19 +39,16 @@ export interface RuntimeLogEntry {
   nodeId?: NodeId;
   nodeKind?: NodeKind;
   pheromoneId?: string;
-  traceId?: string;
   forkId?: string;
   branchId?: string;
   queueDepth?: number;
-  /** Per-bee waiting limit or per-trace budget for a limit entry. */
+  /** Per-bee receptor capacity for a limit entry. */
   limit?: number;
   /** Which overflow policy produced this entry. */
   policy?: 'reject' | 'block';
   /** How long a blocked admission waited before it was admitted or timed out. */
   waitedMs?: number;
   durationMs?: number;
-  /** Answer-inbox id; the record's Value is never written to the log. */
-  answerId?: string;
   /** Scheduled-trigger id for scheduler lifecycle entries. */
   triggerId?: string;
   /** The occurrence instant a scheduler entry refers to. */

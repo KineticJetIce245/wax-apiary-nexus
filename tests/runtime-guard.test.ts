@@ -58,7 +58,7 @@ test('a guard request parks the node in a guard hover and waits for the decision
     onGuard: () => new Promise(() => undefined),
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   const pumping = runtime.pump();
   await wait(20);
 
@@ -83,7 +83,7 @@ test('without a handler the guard is rejected, never allowed', async () => {
     now: () => START,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['reject_once']);
@@ -100,12 +100,14 @@ test('a guard that times out is cancelled and cannot be settled afterwards', asy
     onLog: log.sink,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['cancelled']);
   assert.ok(log.entries.some((entry) => entry.event === 'guard.timeout'));
   assert.equal(runtime.snapshot().nodes['start']?.hover, undefined);
+  // Closing the guard hover was the last live work: the field must report Rest.
+  assert.equal(runtime.snapshot().rest, true);
 
   assert.throws(() => runtime.settleGuard('start', 'r1', 'allow_once'), /no open guard/);
 });
@@ -123,7 +125,7 @@ test('a guard timeout notifies the broker so a late decision is expired', async 
     onGuardExpired: (requestId) => broker.expire(requestId),
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['cancelled']);
@@ -143,7 +145,7 @@ test('a throwing expiry hook still cancels the guard', async () => {
     },
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['cancelled']);
@@ -159,7 +161,7 @@ test('a decision for another request is rejected and does not disturb the open o
     onGuard: () => new Promise(() => undefined),
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   const pumping = runtime.pump();
   await wait(20);
 

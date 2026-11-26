@@ -6,7 +6,7 @@ import {
   parseComposition,
   PheromoneRuntime,
   QUEUE_RETRY_MS,
-  QueueFullError,
+  ReceptorFullError,
   serializeValue,
   type NodeExecutor,
   type Value,
@@ -62,8 +62,8 @@ test('a second trigger waits for the first activation to finish', async () => {
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', text('first'));
-  runtime.trigger('start', text('second'));
+  runtime.admit('start', text('first'));
+  runtime.admit('start', text('second'));
   await runtime.pump();
 
   assert.equal(calls.length, 1);
@@ -75,7 +75,7 @@ test('a second trigger waits for the first activation to finish', async () => {
   assert.equal(start.active, undefined);
   assert.ok(start.pending !== undefined);
   assert.equal(serializeValue(start.pending.value), 'second');
-  assert.equal(start.queue.length, 0);
+  assert.equal(start.receptor.length, 0);
   assert.equal(start.lastActivatedAt, new Date(START).toISOString());
 });
 
@@ -90,8 +90,8 @@ test('early input stays in pending and runs once the minimum interval elapses', 
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', text('first'));
-  runtime.trigger('start', text('second'));
+  runtime.admit('start', text('first'));
+  runtime.admit('start', text('second'));
   await runtime.pump();
   assert.equal(calls.length, 1);
 
@@ -120,9 +120,9 @@ test('queued input is never dropped when the clock advances past several interva
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', text('a'));
-  runtime.trigger('start', text('b'));
-  runtime.trigger('start', text('c'));
+  runtime.admit('start', text('a'));
+  runtime.admit('start', text('b'));
+  runtime.admit('start', text('c'));
 
   await runtime.pump();
   clock += 1000;
@@ -136,7 +136,7 @@ test('queued input is never dropped when the clock advances past several interva
   );
   const start = runtime.snapshot().nodes['start'];
   assert.ok(start !== undefined);
-  assert.equal(start.queue.length, 0);
+  assert.equal(start.receptor.length, 0);
   assert.equal(start.pending, undefined);
   assert.equal(runtime.snapshot().rest, true);
 });
@@ -155,7 +155,7 @@ test('the queue stays FIFO while the node is busy', async () => {
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', text('running'));
+  runtime.admit('start', text('running'));
   const pumping = runtime.pump();
   await Promise.resolve();
 
@@ -164,11 +164,11 @@ test('the queue stays FIFO while the node is busy', async () => {
   assert.ok(busy !== undefined);
   assert.equal(busy.active !== undefined, true);
 
-  runtime.trigger('start', text('queued'));
+  runtime.admit('start', text('queued'));
   const afterTrigger = runtime.snapshot().nodes['start'];
   assert.ok(afterTrigger !== undefined);
-  assert.equal(afterTrigger.queue.length, 1);
-  assert.equal(serializeValue(afterTrigger.queue[0]?.value as Value), 'queued');
+  assert.equal(afterTrigger.receptor.length, 1);
+  assert.equal(serializeValue(afterTrigger.receptor[0]?.value as Value), 'queued');
 
   release({ kind: 'text', text: 'finished' });
   await pumping;
@@ -197,9 +197,9 @@ test('queue depth is reported in the log', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('a'));
-  runtime.trigger('start', text('b'));
-  runtime.trigger('start', text('c'));
+  runtime.admit('start', text('a'));
+  runtime.admit('start', text('b'));
+  runtime.admit('start', text('c'));
 
   const depths = log.entries
     .filter((entry) => entry.event === 'pheromone.enqueued')
@@ -221,11 +221,11 @@ test('rest flips back to false on a new trigger', async () => {
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', text('a'));
+  runtime.admit('start', text('a'));
   await runtime.pump();
   assert.equal(runtime.snapshot().rest, true);
 
-  runtime.trigger('start', text('b'));
+  runtime.admit('start', text('b'));
   assert.equal(runtime.snapshot().rest, false);
 });
 
@@ -245,12 +245,12 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('first'));
-  assert.throws(
-    () => runtime.trigger('start', text('second')),
+  await runtime.admit('start', text('first'));
+  await assert.rejects(
+    runtime.admit('start', text('second')),
     (error: unknown) => {
-      assert.ok(error instanceof QueueFullError);
-      assert.equal(error.name, 'QueueFullError');
+      assert.ok(error instanceof ReceptorFullError);
+      assert.equal(error.name, 'ReceptorFullError');
       assert.equal(error.nodeId, 'start');
       assert.equal(error.queueMax, 1);
       assert.equal(error.queueDepth, 1);
@@ -261,8 +261,8 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
   // Neither the rejected Pheromone nor an eviction changed the queue.
   const start = runtime.snapshot().nodes['start'];
   assert.ok(start !== undefined);
-  assert.equal(start.queue.length, 1);
-  assert.equal(serializeValue(start.queue[0]?.value as Value), 'first');
+  assert.equal(start.receptor.length, 1);
+  assert.equal(serializeValue(start.receptor[0]?.value as Value), 'first');
 
   const rejected = log.entries.filter((entry) => entry.event === 'pheromone.rejected');
   assert.equal(rejected.length, 1);
@@ -273,7 +273,6 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
   assert.equal(entry.queueDepth, 1);
   assert.equal(entry.outcome, 'queue-max');
   assert.equal(typeof entry.pheromoneId, 'string');
-  assert.equal(typeof entry.traceId, 'string');
   // The rejection log names a Pheromone that was never enqueued.
   assert.equal(
     log.entries.some(
@@ -286,7 +285,7 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
 
   await runtime.pump();
   assert.deepEqual(executed, ['first']);
-  assert.equal(runtime.snapshot().nodes['start']?.queue.length, 0);
+  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 0);
 });
 
 test('a full target pauses the upstream node, then resumes it without losing the output', async () => {
@@ -310,13 +309,13 @@ test('a full target pauses the upstream node, then resumes it without losing the
 
   // Warm the sink so its next queued input is held by minIntervalMs: the
   // target can stay full across a whole pump instead of draining immediately.
-  runtime.trigger('sink', text('warm'));
+  runtime.admit('sink', text('warm'));
   await runtime.pump();
   assert.deepEqual(executed, [{ node: 'sink', value: 'warm' }]);
   executed.length = 0;
 
-  runtime.trigger('sink', text('existing'));
-  runtime.trigger('start', text('seed'));
+  runtime.admit('sink', text('existing'));
+  runtime.admit('start', text('seed'));
 
   await runtime.pump();
 
@@ -327,7 +326,7 @@ test('a full target pauses the upstream node, then resumes it without losing the
   assert.ok(start.pending !== undefined, 'the source Pheromone stays pending');
   assert.equal(serializeValue(start.pending.value), 'seed');
   assert.equal(start.active, undefined);
-  assert.equal(start.queue.length, 0);
+  assert.equal(start.receptor.length, 0);
   assert.equal(
     log.entries.some((entry) => entry.event === 'node.failed'),
     false,
@@ -377,7 +376,7 @@ test('a full target pauses the upstream node, then resumes it without losing the
     'the source output is delivered and consumed, never lost',
   );
   assert.equal(runtime.snapshot().rest, true);
-  assert.equal(runtime.snapshot().nodes['sink']?.queue.length, 0);
+  assert.equal(runtime.snapshot().nodes['sink']?.receptor.length, 0);
   assert.equal(
     log.entries.some((entry) => entry.event === 'node.failed'),
     false,
@@ -405,7 +404,7 @@ test('a fork pauses before activation when a branch target is full and loses no 
       const pending = snapshot.nodes['fan']?.pending;
       atBlock = {
         ...(pending === undefined ? {} : { pending: serializeValue(pending.value) }),
-        rightQueue: snapshot.nodes['right']?.queue.length ?? -1,
+        rightQueue: snapshot.nodes['right']?.receptor.length ?? -1,
       };
     }
   };
@@ -433,8 +432,8 @@ test('a fork pauses before activation when a branch target is full and loses no 
     { executeForager: executor, now: () => clock, onLog },
   );
 
-  runtime.trigger('left', text('existing-left'));
-  runtime.trigger('start', text('seed'));
+  runtime.admit('left', text('existing-left'));
+  runtime.admit('start', text('seed'));
 
   // No rejection: the fork waits until every branch target had room.
   await runtime.pump();
@@ -498,7 +497,6 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
   };
   const persistedValue = (id: string, textValue: string) => ({
     id,
-    traceId: `tr_${id}`,
     value: { kind: 'text' as const, text: textValue },
     at: new Date(START).toISOString(),
   });
@@ -512,7 +510,7 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
       rest: false,
       nodes: {
         start: {
-          queue: [persistedValue('ph_one', 'one'), persistedValue('ph_two', 'two'), persistedValue('ph_three', 'three')],
+          receptor: [persistedValue('ph_one', 'one'), persistedValue('ph_two', 'two'), persistedValue('ph_three', 'three')],
         },
       },
     },
@@ -520,27 +518,27 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
   );
 
   assert.deepEqual(
-    runtime.snapshot().nodes['start']?.queue.map((pheromone) => serializeValue(pheromone.value)),
+    runtime.snapshot().nodes['start']?.receptor.map((pheromone) => serializeValue(pheromone.value)),
     ['one', 'two', 'three'],
     'restore keeps every accepted input instead of truncating to queueMax',
   );
-  assert.throws(() => runtime.trigger('start', text('new')), QueueFullError);
+  await assert.rejects(runtime.admit('start', text('new')), ReceptorFullError);
 
   await runtime.pump();
   assert.deepEqual(executed, ['one']);
-  assert.equal(runtime.snapshot().nodes['start']?.queue.length, 1);
-  assert.throws(
-    () => runtime.trigger('start', text('still-full')),
-    QueueFullError,
+  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
+  await assert.rejects(
+    runtime.admit('start', text('still-full')),
+    ReceptorFullError,
     'the queue is still at the limit until it drains below it',
   );
 
   clock += 1000;
   await runtime.pump();
   assert.deepEqual(executed, ['one', 'two']);
-  assert.equal(runtime.snapshot().nodes['start']?.queue.length, 0);
-  runtime.trigger('start', text('four'));
-  assert.equal(runtime.snapshot().nodes['start']?.queue.length, 1);
+  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 0);
+  runtime.admit('start', text('four'));
+  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
 
   clock += 1000;
   await runtime.pump();

@@ -5,7 +5,6 @@ export {
 } from './definition.js';
 export { createMemoryLog } from './log.js';
 export { FieldRestoreError } from './errors.js';
-export { traceStateFromSnapshot } from './field.js';
 export { renderPrompt, serializeValue } from './executor.js';
 export { assertJsonValue } from './json-value.js';
 export {
@@ -16,23 +15,12 @@ export {
   QUEUE_RETRY_MS,
 } from './runtime.js';
 export {
-  DEFAULT_MAILBOX_BLOCK_TIMEOUT_MS,
-  MailboxBlockTimeoutError,
-  QueueFullError,
-  readMailboxOverflowOptions,
-} from './mailbox-overflow.js';
-export type { MailboxOverflowPolicy } from './mailbox-overflow.js';
-export {
-  DEFAULT_MAX_DURATION_PER_TRACE_MS,
-  DEFAULT_MAX_HOPS_PER_TRACE,
-  TraceLimitError,
-  readTraceLimitOptions,
-} from './trace-limits.js';
-export type {
-  TraceDeadlineTimer,
-  TraceLimitKind,
-  TraceLimitOptions,
-} from './trace-limits.js';
+  DEFAULT_RECEPTOR_BLOCK_TIMEOUT_MS,
+  ReceptorFullError,
+  ReceptorBlockTimeoutError,
+  readReceptorOverflowOptions,
+} from './receptor-overflow.js';
+export type { ReceptorOverflowPolicy } from './receptor-overflow.js';
 export {
   DEFAULT_WORKER_TIMEOUT_MS,
   MAX_WORKER_OUTPUT_BYTES,
@@ -78,8 +66,6 @@ export type {
   Pheromone,
   PheromoneFieldSnapshot,
   RecoveryReport,
-  RuntimeAdmission,
-  RuntimeRunObserver,
   TriggerDefinition,
   TriggerSchedule,
   UserConfig,

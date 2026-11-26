@@ -47,7 +47,7 @@ function runtimeFor(modality: Record<string, unknown>): Harness {
 }
 
 async function openAsk(runtime: PheromoneRuntime): Promise<void> {
-  runtime.trigger('ask');
+  await runtime.admit('ask', { kind: 'text', text: '' });
   await runtime.pump();
   assert.ok(runtime.snapshot().nodes['ask']?.hover !== undefined);
 }

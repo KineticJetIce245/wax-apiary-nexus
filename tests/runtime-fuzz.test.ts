@@ -8,7 +8,7 @@ import {
   createMemoryLog,
   parseComposition,
   PheromoneRuntime,
-  QueueFullError,
+  ReceptorFullError,
   serializeValue,
   type CompositionDefinition,
   type NodeExecutor,
@@ -251,7 +251,7 @@ function openHovers(snapshot: PheromoneFieldSnapshot): OpenHover[] {
 function deriveRest(snapshot: PheromoneFieldSnapshot): boolean {
   for (const node of Object.values(snapshot.nodes)) {
     if (
-      node.queue.length > 0 ||
+      node.receptor.length > 0 ||
       node.pending !== undefined ||
       node.active !== undefined ||
       node.hover !== undefined
@@ -269,7 +269,7 @@ function deriveRest(snapshot: PheromoneFieldSnapshot): boolean {
 
 interface FieldShape {
   readonly node: string;
-  readonly queue: readonly string[];
+  readonly receptor: readonly string[];
   readonly pending: string | null;
   readonly hover: string | null;
   readonly joins: readonly string[];
@@ -290,7 +290,7 @@ function describeField(field: PersistedField): FieldShape[] {
         .sort((left, right) => left.forkId.localeCompare(right.forkId));
       return {
         node: nodeId,
-        queue: (node.queue ?? []).map((pheromone) => pheromone.id),
+        receptor: (node.receptor ?? []).map((pheromone) => pheromone.id),
         pending: node.pending?.id ?? null,
         hover: node.hover?.token ?? null,
         joins: joins.map((entry) => entry.forkId),
@@ -383,7 +383,7 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
   function checkFifoAndCapacity(step: number, snapshot: PheromoneFieldSnapshot): void {
     for (const [nodeId, node] of Object.entries(snapshot.nodes)) {
       let previousAt = Number.NEGATIVE_INFINITY;
-      for (const pheromone of node.queue) {
+      for (const pheromone of node.receptor) {
         const at = Date.parse(pheromone.at);
         assert.ok(
           Number.isFinite(at),
@@ -396,8 +396,8 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
         previousAt = at;
       }
       assert.ok(
-        node.queue.length <= queueMax,
-        `${where(step)}: node '${nodeId}' queue length ${String(node.queue.length)} exceeds queueMax ${String(queueMax)}`,
+        node.receptor.length <= queueMax,
+        `${where(step)}: node '${nodeId}' queue length ${String(node.receptor.length)} exceeds queueMax ${String(queueMax)}`,
       );
     }
   }
@@ -432,7 +432,7 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
   function checkWaitSlotsFresh(step: number, snapshot: PheromoneFieldSnapshot): void {
     for (const [nodeId, node] of Object.entries(snapshot.nodes)) {
       const waiting: [string, { readonly at: string }][] = [
-        ...node.queue.map((pheromone): [string, { readonly at: string }] => [
+        ...node.receptor.map((pheromone): [string, { readonly at: string }] => [
           'queue',
           pheromone,
         ]),
@@ -556,7 +556,7 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
   // and, on the hover graph, an open user hover).
   currentStep = -1;
   const warm = warmupToken(seed);
-  runtime.trigger(graph.entry, text(warm));
+  await runtime.admit(graph.entry, text(warm));
   acceptedRoots.push(warm);
   await checkpoint(-1);
 
@@ -570,11 +570,11 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
     } else if (action === 'trigger') {
       const token = triggerToken(seed, step);
       try {
-        runtime.trigger(graph.entry, text(token));
+        await runtime.admit(graph.entry, text(token));
         acceptedRoots.push(token);
       } catch (error) {
         // queueMax backpressure is a documented outcome, not a fuzz failure.
-        if (!(error instanceof QueueFullError)) {
+        if (!(error instanceof ReceptorFullError)) {
           throw error;
         }
       }
@@ -585,7 +585,7 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
         try {
           runtime.answerHover(hover.nodeId, text(answerToken(seed, step)), hover.token);
         } catch (error) {
-          if (!(error instanceof QueueFullError)) {
+          if (!(error instanceof ReceptorFullError)) {
             throw error;
           }
         }

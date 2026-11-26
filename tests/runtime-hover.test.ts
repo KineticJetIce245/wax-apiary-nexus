@@ -62,7 +62,7 @@ test('a user node parks the Pheromone in a hover instead of running', async () =
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   const snapshot = runtime.snapshot();
@@ -82,7 +82,7 @@ test('answering a hover resumes the graph and reaches Rest', async () => {
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
   const token = runtime.snapshot().nodes['ask']?.hover?.token;
   assert.ok(token !== undefined);
@@ -100,7 +100,7 @@ test('a user node without an outgoing edge is terminal', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(userOnlyComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('ask', { kind: 'text', text: 'ignored' });
+  runtime.admit('ask', { kind: 'text', text: 'ignored' });
   await runtime.pump();
   assert.ok(runtime.snapshot().nodes['ask']?.hover !== undefined);
 
@@ -111,7 +111,7 @@ test('a user node without an outgoing edge is terminal', async () => {
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('an answer that arrives before the hover is queued and applied later', async () => {
+test('an answer before the hover is rejected instead of being queued', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -121,17 +121,21 @@ test('an answer that arrives before the hover is queued and applied later', asyn
     onLog: log.sink,
   });
 
-  runtime.answerHover('ask', { kind: 'text', text: 'early' });
-  assert.ok(log.entries.some((entry) => entry.event === 'input.queued'));
+  assert.throws(
+    () => runtime.answerHover('ask', { kind: 'text', text: 'early' }),
+    /has no open hover/,
+  );
+  assert.deepEqual(log.entries, [], 'a refused early answer writes no log entry');
+  assert.equal(runtime.snapshot().nodes['ask']?.hover, undefined);
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   const ask = runtime.snapshot().nodes['ask'];
   assert.ok(ask !== undefined);
-  assert.equal(ask.hover, undefined);
-  assert.equal(runtime.snapshot().rest, true);
-  assert.deepEqual(calls.map((call) => call.nodeId), ['start', 'done']);
+  assert.ok(ask.hover !== undefined, 'the hover waits for a real answer');
+  assert.equal(runtime.snapshot().rest, false);
+  assert.deepEqual(calls.map((call) => call.nodeId), ['start']);
 });
 
 test('hover tokens and modalities are validated', async () => {
@@ -139,7 +143,7 @@ test('hover tokens and modalities are validated', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
   const token = runtime.snapshot().nodes['ask']?.hover?.token;
   assert.ok(token !== undefined);
@@ -157,7 +161,7 @@ test('yes-no accepts booleans and rejects text', async () => {
     now: () => clock,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   assert.throws(() => runtime.answerHover('ask', { kind: 'text', text: 'yes' }), /expects a boolean/);
@@ -174,7 +178,7 @@ test('choice accepts only an offered label', async () => {
     { executeForager: executor, now: () => clock },
   );
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
   assert.throws(() => runtime.answerHover('ask', { kind: 'choice', choice: 'maybe' }), /does not offer choice/);
@@ -188,14 +192,14 @@ test('a hovering node does not activate queued Pheromones', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(userOnlyComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('ask', { kind: 'text', text: 'first' });
-  runtime.trigger('ask', { kind: 'text', text: 'second' });
+  runtime.admit('ask', { kind: 'text', text: 'first' });
+  runtime.admit('ask', { kind: 'text', text: 'second' });
   await runtime.pump();
 
   const ask = runtime.snapshot().nodes['ask'];
   assert.ok(ask !== undefined);
   assert.ok(ask.hover !== undefined);
-  assert.equal(ask.queue.length, 1);
+  assert.equal(ask.receptor.length, 1);
 
   runtime.answerHover('ask', { kind: 'text', text: 'answer' });
   clock += 1000;
@@ -204,7 +208,7 @@ test('a hovering node does not activate queued Pheromones', async () => {
   const second = runtime.snapshot().nodes['ask'];
   assert.ok(second !== undefined);
   assert.ok(second.hover !== undefined);
-  assert.equal(second.queue.length, 0);
+  assert.equal(second.receptor.length, 0);
 });
 
 test('the log records hover open and resolve', async () => {
@@ -217,7 +221,7 @@ test('the log records hover open and resolve', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
   runtime.answerHover('ask', { kind: 'text', text: 'yes' });
   await runtime.pump();

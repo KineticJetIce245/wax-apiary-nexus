@@ -1,39 +1,40 @@
 import type { RuntimeLogEntry } from './log.js';
-import type { NodeId, Pheromone, RuntimeAdmission } from './types.js';
+import type { NodeId, Pheromone } from './types.js';
 
-/** Block policy default when `mailboxBlockTimeoutMs` is omitted. */
-export const DEFAULT_MAILBOX_BLOCK_TIMEOUT_MS = 30_000;
+/** Block policy default when `receptorBlockTimeoutMs` is omitted. */
+export const DEFAULT_RECEPTOR_BLOCK_TIMEOUT_MS = 30_000;
 
-export type MailboxOverflowPolicy = 'reject' | 'block';
+export type ReceptorOverflowPolicy = 'reject' | 'block';
 
-export interface MailboxOverflowOptions {
-  readonly mailboxOverflowPolicy?: MailboxOverflowPolicy;
-  readonly mailboxBlockTimeoutMs?: number;
+export interface ReceptorOverflowOptions {
+  /** What to do when a bee's receptor already holds `queueMax` entries. */
+  readonly receptorOverflowPolicy?: ReceptorOverflowPolicy;
+  readonly receptorBlockTimeoutMs?: number;
 }
 
 /** Validates the two overflow options once, for both the host and the runtime. */
-export function readMailboxOverflowOptions(options: MailboxOverflowOptions): {
-  readonly policy: MailboxOverflowPolicy;
+export function readReceptorOverflowOptions(options: ReceptorOverflowOptions): {
+  readonly policy: ReceptorOverflowPolicy;
   readonly blockTimeoutMs: number;
 } {
-  const policy = options.mailboxOverflowPolicy ?? 'reject';
+  const policy = options.receptorOverflowPolicy ?? 'reject';
   if (policy !== 'reject' && policy !== 'block') {
-    throw new TypeError("mailboxOverflowPolicy must be 'reject' or 'block'");
+    throw new TypeError("receptorOverflowPolicy must be 'reject' or 'block'");
   }
   const blockTimeoutMs =
-    options.mailboxBlockTimeoutMs ?? DEFAULT_MAILBOX_BLOCK_TIMEOUT_MS;
+    options.receptorBlockTimeoutMs ?? DEFAULT_RECEPTOR_BLOCK_TIMEOUT_MS;
   if (!Number.isInteger(blockTimeoutMs) || blockTimeoutMs <= 0) {
-    throw new TypeError('mailboxBlockTimeoutMs must be a positive integer');
+    throw new TypeError('receptorBlockTimeoutMs must be a positive integer');
   }
   return { policy, blockTimeoutMs };
 }
 
 /**
- * A blocked admission waited `mailboxBlockTimeoutMs` without mailbox capacity.
+ * A blocked admission waited `receptorBlockTimeoutMs` without receptor capacity.
  * The caller may retry later; the runtime never retries on its own.
  */
-export class MailboxBlockTimeoutError extends Error {
-  readonly code = 'bee-mailbox-block-timeout';
+export class ReceptorBlockTimeoutError extends Error {
+  readonly code = 'bee-receptor-block-timeout';
   readonly policy = 'block';
 
   constructor(
@@ -44,20 +45,21 @@ export class MailboxBlockTimeoutError extends Error {
     readonly waitedMs: number,
   ) {
     super(
-      `bee '${beeId}' mailbox stayed full for ${String(waitedMs)}ms ` +
+      `bee '${beeId}' receptor stayed full for ${String(waitedMs)}ms ` +
         `(pending=${String(pending)}, limit=${String(limit)})`,
     );
-    this.name = 'MailboxBlockTimeoutError';
+    this.name = 'ReceptorBlockTimeoutError';
   }
 }
 
 /**
  * A new Pheromone was refused because its target bee already holds `limit`
- * waiting entries (mailbox + reservations). Existing input is never dropped,
- * so a caller can retry once the mailbox drains.
+ * waiting entries (receptor + reservations). Existing input is never dropped,
+ * so a caller can retry once the receptor drains.
  */
-export class QueueFullError extends Error {
+export class ReceptorFullError extends Error {
   readonly policy = 'reject';
+  readonly code = 'bee-receptor-full';
   readonly liveId: string;
   readonly beeId: NodeId;
   readonly pending: number;
@@ -70,10 +72,10 @@ export class QueueFullError extends Error {
     options: { readonly liveId?: string } = {},
   ) {
     super(
-      `queue for node '${nodeId}' is full (queueMax=${String(queueMax)}, ` +
+      `receptor for node '${nodeId}' is full (queueMax=${String(queueMax)}, ` +
         `queueDepth=${String(queueDepth)}); refusing new Pheromone`,
     );
-    this.name = 'QueueFullError';
+    this.name = 'ReceptorFullError';
     this.liveId = options.liveId ?? '';
     this.beeId = nodeId;
     this.pending = queueDepth;
@@ -84,17 +86,16 @@ export class QueueFullError extends Error {
 interface Waiter {
   readonly nodeId: NodeId;
   readonly pheromone: Pheromone;
-  readonly traceId: string;
   readonly startedAt: number;
-  readonly promise: Promise<RuntimeAdmission>;
-  readonly resolve: (admission: RuntimeAdmission) => void;
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
   timer?: ReturnType<typeof setTimeout>;
   settled: boolean;
 }
 
 /** What a block-policy admission needs from the field; all calls are synchronous. */
-export interface MailboxHost {
+export interface ReceptorHost {
   readonly liveId: string;
   readonly limit: number;
   readonly now: () => number;
@@ -109,18 +110,18 @@ export interface MailboxHost {
 }
 
 /**
- * FIFO capacity waiters for one bee's mailbox.
+ * FIFO capacity waiters for one bee's receptor.
  *
  * A waiter is queued behind every older waiter, so a later admission can never
  * jump ahead. Capacity is handed out oldest-first by `dispatchLocked`, which is
  * only called inside the runtime's short state transaction: a wait never holds
  * the lock and never blocks a drain.
  */
-export class MailboxOverflow {
+export class ReceptorOverflow {
   private readonly queues = new Map<NodeId, Waiter[]>();
 
   constructor(
-    private readonly host: MailboxHost,
+    private readonly host: ReceptorHost,
     private readonly timeoutMs: number,
   ) {}
 
@@ -129,9 +130,9 @@ export class MailboxOverflow {
   }
 
   /** Queue one admission and resolve once capacity is available. */
-  admit(nodeId: NodeId, pheromone: Pheromone, traceId: string): Promise<RuntimeAdmission> {
+  admit(nodeId: NodeId, pheromone: Pheromone): Promise<void> {
     const queue = this.queueOf(nodeId);
-    const waiter = createWaiter(nodeId, pheromone, traceId, this.host.now());
+    const waiter = createWaiter(nodeId, pheromone, this.host.now());
     queue.push(waiter);
     try {
       this.host.transaction(() => this.dispatchLocked(nodeId));
@@ -207,18 +208,17 @@ export class MailboxOverflow {
     const pending = this.host.depth(waiter.nodeId);
     const limit = this.host.limit;
     this.host.log({
-      event: 'bee-mailbox-block-timeout',
+      event: 'bee-receptor-block-timeout',
       nodeId: waiter.nodeId,
       pheromoneId: waiter.pheromone.id,
-      traceId: waiter.traceId,
       queueDepth: pending,
       limit,
       policy: 'block',
       waitedMs,
-      outcome: 'mailbox-block-timeout',
+      outcome: 'receptor-block-timeout',
     });
     waiter.reject(
-      new MailboxBlockTimeoutError(
+      new ReceptorBlockTimeoutError(
         this.host.liveId,
         waiter.nodeId,
         pending,
@@ -236,19 +236,18 @@ export class MailboxOverflow {
     if (waiter.timer !== undefined) {
       clearTimeout(waiter.timer);
     }
-    waiter.resolve({ pheromoneId: waiter.pheromone.id, traceId: waiter.traceId });
+    waiter.resolve();
   }
 
   private reportBlocked(waiter: Waiter): void {
     this.host.log({
-      event: 'bee-mailbox-blocked',
+      event: 'bee-receptor-blocked',
       nodeId: waiter.nodeId,
       pheromoneId: waiter.pheromone.id,
-      traceId: waiter.traceId,
       queueDepth: this.host.depth(waiter.nodeId),
       limit: this.host.limit,
       policy: 'block',
-      outcome: 'mailbox-blocked',
+      outcome: 'receptor-blocked',
     });
   }
 
@@ -278,19 +277,17 @@ export class MailboxOverflow {
 function createWaiter(
   nodeId: NodeId,
   pheromone: Pheromone,
-  traceId: string,
   startedAt: number,
 ): Waiter {
-  let resolveWaiter: (admission: RuntimeAdmission) => void = () => undefined;
+  let resolveWaiter: () => void = () => undefined;
   let rejectWaiter: (error: unknown) => void = () => undefined;
-  const promise = new Promise<RuntimeAdmission>((resolve, reject) => {
+  const promise = new Promise<void>((resolve, reject) => {
     resolveWaiter = resolve;
     rejectWaiter = reject;
   });
   return {
     nodeId,
     pheromone,
-    traceId,
     startedAt,
     promise,
     resolve: resolveWaiter,

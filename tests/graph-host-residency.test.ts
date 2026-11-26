@@ -108,7 +108,7 @@ test('a user hover is not unloaded or swept until it reaches Rest', async (t) =>
   const ask = nodeStatus(status, 'ask');
   assert.equal(ask.hovered, true);
   assert.equal(ask.active, false);
-  assert.equal(ask.queue, 0);
+  assert.equal(ask.receptor, 0);
   assert.equal(ask.pending, false);
 
   const serialized = JSON.stringify(status);
@@ -180,8 +180,8 @@ test('allowHoverUnload unloads a quiescent hover and retains its fresh session',
   assert.equal(ask.hovered, true);
   assert.equal(ask.active, false);
   assert.equal(ask.pending, false);
-  assert.equal(ask.queue, 0);
-  assert.equal(nodeStatus(triggered.status, 'idle').queue, 0);
+  assert.equal(ask.receptor, 0);
+  assert.equal(nodeStatus(triggered.status, 'idle').receptor, 0);
 
   assert.equal(await host.unload('hover-unload'), true);
   assert.equal(host.statusOf('hover-unload'), undefined);
@@ -224,10 +224,10 @@ test('allowHoverUnload still refuses a hover while another node has queued work'
 
   // A queue entry that no host pump has drained yet. The field is therefore
   // not quiescent even though the only active wait is a user hover.
-  runtimeOf(host, 'hover-queue').trigger('idle', text('queued'));
+  await runtimeOf(host, 'hover-queue').admit('idle', text('queued'));
   const queued = host.statusOf('hover-queue');
   assert.ok(queued !== undefined);
-  assert.equal(nodeStatus(queued, 'idle').queue, 1);
+  assert.equal(nodeStatus(queued, 'idle').receptor, 1);
   assert.equal(nodeStatus(queued, 'ask').hovered, true);
 
   clock.advance(100);
@@ -246,7 +246,7 @@ test('allowHoverUnload still refuses a hover while another node has queued work'
 async function assertSecondInputPending(host: LiveHiveHost): Promise<void> {
   const first = await triggerRun(host, 'hover-pending', 'idle', text('one'));
   assert.equal(first.rest, true);
-  const secondAdmission = await host.trigger('hover-pending', 'idle', text('two'));
+  await host.trigger('hover-pending', 'idle', text('two'));
   await waitUntil(
     () =>
       host.statusOf('hover-pending')?.nodes.some(
@@ -258,7 +258,6 @@ async function assertSecondInputPending(host: LiveHiveHost): Promise<void> {
   assert.ok(secondStatus !== undefined);
   assert.equal(secondStatus.rest, false);
   assert.equal(nodeStatus(secondStatus, 'idle').pending, true);
-  assert.equal(host.runs.get('hover-pending', secondAdmission.runId)?.state, 'accepted');
 }
 
 test('allowHoverUnload still refuses a hover while a node has a pending Pheromone', async (t) => {
@@ -340,12 +339,12 @@ test('allowHoverUnload still refuses a hover while another node is active', asyn
   // Drive the runtime directly so the active execution has no LiveHiveHost lease:
   // the only thing that may keep this graph loaded is the `active` guard itself.
   const runtime = runtimeOf(host, 'hover-active');
-  runtime.trigger('ask', text('waiting'));
+  runtime.admit('ask', text('waiting'));
   await runtime.pump();
   assert.equal(host.statusOf('hover-active')?.hovered, true);
 
   env.adapter.holdSubmissions = true;
-  runtime.trigger('idle', text('hold'));
+  runtime.admit('idle', text('hold'));
   const pumping = runtime.pump();
   await env.adapter.waitForSubmit(1);
 

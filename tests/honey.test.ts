@@ -114,7 +114,6 @@ function optionalForkMergeComposition(): ReturnType<typeof parseComposition> {
 function pheromone(id = 'ph_1'): Pheromone {
   return {
     id,
-    traceId: `tr_${id}`,
     value: { kind: 'text', text: 'x' },
     at: new Date(START).toISOString(),
   };
@@ -144,8 +143,8 @@ test('save then load returns the same field', () => {
   const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor(), now: () => START });
 
-  runtime.trigger('start', { kind: 'text', text: 'one' });
-  runtime.trigger('start', { kind: 'text', text: 'two' });
+  runtime.admit('start', { kind: 'text', text: 'one' });
+  runtime.admit('start', { kind: 'text', text: 'two' });
   const field = runtime.exportField();
   store.save(field);
 
@@ -156,7 +155,7 @@ test('save leaves no temporary field file behind', () => {
   const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor(), now: () => START });
 
-  runtime.trigger('start', { kind: 'text', text: 'one' });
+  runtime.admit('start', { kind: 'text', text: 'one' });
   store.save(runtime.exportField());
 
   assert.deepEqual(
@@ -192,17 +191,17 @@ test('a loaded field with a bad node shape is rejected', () => {
   });
   writeFileSync(
     store.paths.field,
-    JSON.stringify({ schemaVersion: 1, compositionId: 'ask', graphRevision: 'rev', rest: true, nodes: { start: { queue: 'not-an-array' } } }),
+    JSON.stringify({ schemaVersion: 1, compositionId: 'ask', graphRevision: 'rev', rest: true, nodes: { start: { receptor: 'not-an-array' } } }),
   );
 
-  assert.throws(() => store.load(), /queue: expected an array/);
+  assert.throws(() => store.load(), /receptor: expected an array/);
 });
 
 test('restore keeps queue, pending and a user hover', async () => {
   const definition = askComposition();
   const first = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START });
 
-  first.trigger('start', { kind: 'text', text: 'x' });
+  await first.admit('start', { kind: 'text', text: 'x' });
   await first.pump();
   const hoverToken = first.snapshot().nodes['ask']?.hover?.token;
   assert.ok(hoverToken !== undefined);
@@ -225,7 +224,7 @@ test('restore keeps queue, pending and a user hover', async () => {
 test('an active forager after a crash becomes unknown and is never replayed', () => {
   const definition = askComposition();
   const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
-  field.nodes['start'] = { queue: [], active: pheromone('ph_crash') };
+  field.nodes['start'] = { receptor: [], active: pheromone('ph_crash') };
 
   const { runtime, report } = PheromoneRuntime.restore(definition, field, {
     executeForager: executor(),
@@ -245,7 +244,7 @@ test('an active forager after a crash becomes unknown and is never replayed', ()
 test('an active control node becomes stuck instead of unknown', () => {
   const definition = conditionComposition();
   const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
-  field.nodes['check'] = { queue: [], active: pheromone('ph_check') };
+  field.nodes['check'] = { receptor: [], active: pheromone('ph_check') };
 
   const { runtime, report } = PheromoneRuntime.restore(definition, field, {
     executeForager: executor(),
@@ -260,7 +259,7 @@ test('a hover without its Pheromone is treated as stuck', () => {
   const definition = askComposition();
   const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
   field.nodes['ask'] = {
-    queue: [],
+    receptor: [],
     hover: {
       token: 'hv_x',
       kind: 'user',
@@ -283,7 +282,7 @@ test('a hover without its Pheromone is treated as stuck', () => {
 test('restore keeps a pending slot and a queue', () => {
   const definition = askComposition();
   const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
-  field.nodes['start'] = { queue: [pheromone('ph_queue')], pending: pheromone('ph_pending') };
+  field.nodes['start'] = { receptor: [pheromone('ph_queue')], pending: pheromone('ph_pending') };
 
   const { runtime, report } = PheromoneRuntime.restore(definition, field, {
     executeForager: executor(),
@@ -293,45 +292,53 @@ test('restore keeps a pending slot and a queue', () => {
   assert.deepEqual(report, { resumedHovers: [], unknownActive: [], stuckActive: [] });
   const start = runtime.snapshot().nodes['start'];
   assert.ok(start !== undefined);
-  assert.equal(start.queue.length, 1);
+  assert.equal(start.receptor.length, 1);
   assert.equal(start.pending?.id, 'ph_pending');
   assert.equal(runtime.snapshot().rest, false);
 });
 
-test('restore keeps early user answers that arrived before any hover', async () => {
-  const definition = askComposition();
-  const calls: string[] = [];
-  const runThrough: NodeExecutor = {
-    async execute(node) {
-      calls.push(node.id);
-      return { kind: 'text', text: 'ok' };
-    },
-  };
-  const first = new PheromoneRuntime(definition, { executeForager: runThrough, now: () => START });
-  first.answerHover('ask', { kind: 'text', text: 'early' });
-
-  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'ask');
-  store.save(first.exportField());
-  const loaded = store.load();
-  assert.ok(loaded !== undefined);
-
-  const { runtime } = PheromoneRuntime.restore(definition, loaded, {
-    executeForager: runThrough,
+test('an answer without an open hover is rejected and is not persisted', () => {
+  const runtime = new PheromoneRuntime(askComposition(), {
+    executeForager: executor(),
     now: () => START,
   });
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+
+  assert.throws(
+    () => runtime.answerHover('ask', { kind: 'text', text: 'early' }),
+    /has no open hover/,
+  );
+  const field = runtime.exportField();
+  assert.deepEqual(field.nodes['ask'] ?? {}, {});
+});
+
+test('a bee last output is a memory-only field cache, never persisted', async () => {
+  const definition = askComposition();
+  const runtime = new PheromoneRuntime(definition, {
+    executeForager: executor(),
+    now: () => START,
+  });
+
+  await runtime.admit('start', { kind: 'text', text: 'x' });
   await runtime.pump();
 
-  assert.deepEqual(calls, ['start', 'done']);
-  assert.equal(runtime.snapshot().nodes['ask']?.hover, undefined);
-  assert.equal(runtime.snapshot().rest, true);
+  const snapshot = runtime.snapshot();
+  assert.deepEqual(snapshot.nodes['start']?.lastOutput, {
+    kind: 'text',
+    text: 'ok',
+  });
+  const field = runtime.exportField();
+  assert.equal(
+    (field.nodes['start'] as { lastOutput?: unknown } | undefined)?.lastOutput,
+    undefined,
+  );
+  assert.equal(JSON.stringify(field).includes('lastOutput'), false);
 });
 
 test('a guard hover cannot be resumed and is marked stuck', () => {
   const definition = askComposition();
   const field = new PheromoneRuntime(definition, { executeForager: executor(), now: () => START }).exportField();
   field.nodes['start'] = {
-    queue: [],
+    receptor: [],
     active: pheromone('ph_active'),
     hover: {
       token: 'gd_1',
@@ -375,7 +382,7 @@ test('restore refuses a different graph revision or an unknown node', () => {
     () =>
       PheromoneRuntime.restore(
         definition,
-        { ...field, nodes: { ...field.nodes, ghost: { queue: [] } } },
+        { ...field, nodes: { ...field.nodes, ghost: { receptor: [] } } },
         { executeForager: executor(), now: () => START },
       ),
     /unknown node 'ghost'/,
@@ -397,7 +404,7 @@ test('honey persists and restores a pending merge join without replaying branche
     now: () => clock,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'seed' });
+  runtime.admit('start', { kind: 'text', text: 'seed' });
   await runtime.pump();
 
   const before = runtime.snapshot();
@@ -457,7 +464,7 @@ test('honey persists a completed join and drops a late optional after restart', 
     now: () => clock,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'seed' });
+  runtime.admit('start', { kind: 'text', text: 'seed' });
   await runtime.pump();
   assert.equal(calls.filter((nodeId) => nodeId === 'done').length, 1);
   const before = runtime.snapshot();

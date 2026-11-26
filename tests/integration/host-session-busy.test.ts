@@ -15,8 +15,7 @@ import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
 import {
-  admissionRunId,
-  waitForRunTerminalWith,
+  waitForRestWith,
   type RunApiCall,
 } from '../support/control-server-http.js';
 
@@ -24,12 +23,12 @@ const dshRoot = process.env.DSH_ROOT;
 const builtCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 const integrationOptions = {
   skip:
     dshRoot === undefined || builtCli === undefined || !existsSync(builtCli) || !hasKey
-      ? 'Real shared-session admission test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
+      ? 'Real shared-session admission test needs DSH_ROOT (built CLI) and OPENCODE_API_KEY'
       : false,
   timeout: 300_000,
 };
@@ -58,14 +57,12 @@ interface HttpResult {
   readonly status: number;
   readonly body: Record<string, any>;
 }
-async function waitForThreeRuns(
+async function waitForThreeLives(
   request: RunApiCall,
-  runIds: readonly string[],
+  liveIds: readonly string[],
 ): Promise<void> {
   await Promise.all(
-    runIds.map((runId, index) =>
-      waitForRunTerminalWith(request, ['first', 'second', 'third'][index]!, runId, 240_000),
-    ),
+    liveIds.map((liveId) => waitForRestWith(request, liveId, 240_000)),
   );
 }
 
@@ -137,7 +134,7 @@ test(
       assert.equal((await load('second')).status, 200);
       assert.equal((await load('third')).status, 200);
 
-      const firstWake = request('POST', '/lives/wake', {
+      const firstWake = request('POST', '/lives/trigger', {
         liveId: 'first',
         beeId: 'only',
         input: 'first run',
@@ -150,13 +147,13 @@ test(
       // With the legacy WAX session queue gone, these requests are admitted by
       // the DSH adapter and stay open until their prompt is sent. There is no
       // queued handle and no second concurrent session/prompt.
-      const secondWake = request('POST', '/lives/wake', {
+      const secondWake = request('POST', '/lives/trigger', {
         liveId: 'second',
         beeId: 'only',
         input: 'second run',
       });
       void secondWake.catch(() => undefined);
-      const thirdWake = request('POST', '/lives/wake', {
+      const thirdWake = request('POST', '/lives/trigger', {
         liveId: 'third',
         beeId: 'only',
         input: 'third run',
@@ -168,37 +165,28 @@ test(
 
       const secondDone = await secondWake;
       assert.equal(secondDone.status, 202, JSON.stringify(secondDone.body));
-      const secondRunId = admissionRunId(secondDone.body);
+      assert.equal(secondDone.body?.['ok'], true);
       const thirdDone = await thirdWake;
       assert.equal(thirdDone.status, 202, JSON.stringify(thirdDone.body));
-      const thirdRunId = admissionRunId(thirdDone.body);
+      assert.equal(thirdDone.body?.['ok'], true);
       const firstDone = await firstWake;
       assert.equal(firstDone.status, 202, JSON.stringify(firstDone.body));
-      const firstRunId = admissionRunId(firstDone.body);
+      assert.equal(firstDone.body?.['ok'], true);
 
-      // Admission returns immediately; wait for each run's own terminal before
-      // reading outputs. The DSH adapter still serializes the three prompts.
-      await waitForThreeRuns(request, [firstRunId, secondRunId, thirdRunId]);
-      const runIds = new Set([firstRunId, secondRunId, thirdRunId]);
-      assert.equal(runIds.size, 3, 'each wake must produce its own run record');
-      const texts = await readRunOutputs(request, {
-        first: firstRunId,
-        second: secondRunId,
-        third: thirdRunId,
-      });
+      // Delivery returns immediately; wait for each field to settle before
+      // reading its output. The DSH adapter still serializes the three prompts.
+      await waitForThreeLives(request, ['first', 'second', 'third']);
+      const texts = await readLiveOutputs(request);
 
       // Serialization evidence: the adapter's own event stream proves that the
       // next execution started only after the previous one reached terminal.
-      // Run-record timestamps are WAX bookkeeping and may overlap the next
-      // native prompt by a short graph-flush window, so they are not used here.
+      // The field has no run-record timestamps to reason about.
       assertAdapterSerialized(adapterEvents);
 
-      // A run id belongs to exactly one LiveHive.
-      const crossed = await request(
-        'GET',
-        `/lives/first/output?runId=${encodeURIComponent(thirdRunId)}`,
-      );
-      assert.equal(crossed.status, 404);
+      // Each live's output route returns that live's own field output.
+      const firstOutput = await request('GET', '/lives/first/output');
+      assert.equal(firstOutput.status, 200, JSON.stringify(firstOutput.body));
+      assert.equal(firstOutput.body['liveId'], 'first');
 
       for (const liveId of ['first', 'second', 'third']) {
         assert.equal(
@@ -208,10 +196,8 @@ test(
       }
 
       t.diagnostic(
-        `observed: shared session admitted three wakes FIFO; ` +
-          `first=${texts.first} (run ${firstRunId.slice(0, 8)}), ` +
-          `second=${texts.second} (run ${secondRunId.slice(0, 8)}), ` +
-          `third=${texts.third} (run ${thirdRunId.slice(0, 8)})`,
+        `observed: shared session admitted three triggers FIFO; ` +
+          `first=${texts.first}, second=${texts.second}, third=${texts.third}`,
       );
     } finally {
       await server.stop().catch(() => undefined);
@@ -220,18 +206,17 @@ test(
   },
 );
 
-async function readRunOutputs(
+async function readLiveOutputs(
   request: (method: 'GET' | 'POST', path: string) => Promise<HttpResult>,
-  runIds: { readonly first: string; readonly second: string; readonly third: string },
 ): Promise<{ readonly first: string; readonly second: string; readonly third: string }> {
-  const first = await request('GET', `/lives/first/output?runId=${encodeURIComponent(runIds.first)}`);
+  const first = await request('GET', '/lives/first/output');
   assert.equal(first.status, 200, JSON.stringify(first.body));
   const firstText = outputText(first.body);
   assert.match(firstText, /^\d{3}$/, `first output: ${firstText}`);
   const firstNumber = Number(firstText);
   assert.ok(firstNumber >= 100 && firstNumber <= 999);
 
-  const second = await request('GET', `/lives/second/output?runId=${encodeURIComponent(runIds.second)}`);
+  const second = await request('GET', '/lives/second/output');
   assert.equal(second.status, 200, JSON.stringify(second.body));
   assert.equal(second.body['liveId'], 'second');
   const secondText = outputText(second.body);
@@ -239,7 +224,7 @@ async function readRunOutputs(
   const secondNumber = Number(secondText);
   assert.ok(secondNumber >= 100 && secondNumber <= 999);
 
-  const third = await request('GET', `/lives/third/output?runId=${encodeURIComponent(runIds.third)}`);
+  const third = await request('GET', '/lives/third/output');
   assert.equal(third.status, 200, JSON.stringify(third.body));
   assert.equal(third.body['liveId'], 'third');
   const thirdText = outputText(third.body);

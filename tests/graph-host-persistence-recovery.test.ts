@@ -47,7 +47,7 @@ import {
   userNode,
   userAndForagerDefinition,
 } from './support/graph-host-persistence-fixtures.js';
-import { triggerRun } from './support/graph-host-fixtures.js';
+import { triggerRun, waitUntil } from './support/graph-host-fixtures.js';
 
 test('a corrupt or unsupported Honey field fails load before creating a session', async (t) => {
   const env = makeEnv();
@@ -208,10 +208,9 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
     rest: false,
     nodes: {
       only: {
-        queue: [],
+        receptor: [],
         active: {
           id: 'ph_live',
-          traceId: 'tr_live',
           at: '2026-11-06T22:00:00.000Z',
           value: { kind: 'text', text: 'SECRET-BODY' },
         },
@@ -406,10 +405,16 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
   assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
   assert.equal(env.registry.list().length, 2);
 
-  const answered = await host.answer('hover-reload', 'ask', text('answered'));
+  await host.answer('hover-reload', 'ask', text('answered'));
+  await waitUntil(
+    () => host.statusOf('hover-reload')?.rest === true,
+    'the answered field to settle',
+  );
+  const answered = host.statusOf('hover-reload');
+  assert.ok(answered !== undefined);
   assert.equal(answered.rest, true);
   assert.equal(answered.hovered, false);
-  assert.equal(answered.persisted, true);
+  await host.save('hover-reload');
   const after = honey.load();
   assert.ok(after !== undefined);
   assert.equal(after.rest, true);

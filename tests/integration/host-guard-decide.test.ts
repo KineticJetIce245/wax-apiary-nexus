@@ -14,7 +14,7 @@ import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
 import {
   autoDecideGuards,
-  settleWakeWith,
+  settleTriggerWith,
   type GuardAutoDecider,
 } from '../support/control-server-http.js';
 
@@ -22,12 +22,12 @@ const dshRoot = process.env.DSH_ROOT;
 const builtCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 const integrationOptions = {
   skip:
     dshRoot === undefined || builtCli === undefined || !existsSync(builtCli) || !hasKey
-      ? 'Real guard test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
+      ? 'Real guard test needs DSH_ROOT (built CLI) and OPENCODE_API_KEY'
       : false,
   timeout: 180_000,
 };
@@ -124,7 +124,7 @@ test(
       });
       assert.equal(loaded.status, 200);
 
-      const triggerPromise = request('POST', '/lives/wake', {
+      const triggerPromise = request('POST', '/lives/trigger', {
         liveId: 'native-guard-reject',
         beeId: 'only',
         input:
@@ -156,8 +156,8 @@ test(
       });
       assert.equal(decided.status, 200);
 
-      const trigger = await settleWakeWith(request, 'native-guard-reject', triggerPromise);
-      assert.equal(trigger['state'] !== undefined, true);
+      const trigger = await settleTriggerWith(request, 'native-guard-reject', triggerPromise);
+      assert.equal(trigger['rest'] !== undefined, true);
       assert.equal(existsSync(join(project.directory, 'rejected-guard.txt')), false);
       assert.equal((await request('GET', '/guards')).body['guards'].length, 0);
       t.diagnostic(
@@ -263,7 +263,7 @@ test(
       });
       assert.equal(loaded.status, 200);
 
-      const triggerPromise = request('POST', '/lives/wake', {
+      const triggerPromise = request('POST', '/lives/trigger', {
         liveId: 'native-guard-cancel',
         beeId: 'only',
         input:
@@ -297,8 +297,8 @@ test(
       });
       assert.equal(decided.status, 200);
 
-      const trigger = await settleWakeWith(request, 'native-guard-cancel', triggerPromise);
-      assert.equal(trigger['state'] !== undefined, true);
+      const trigger = await settleTriggerWith(request, 'native-guard-cancel', triggerPromise);
+      assert.equal(trigger['rest'] !== undefined, true);
       assert.equal(existsSync(join(project.directory, 'cancelled-guard.txt')), false);
       assert.equal((await request('GET', '/guards')).body['guards'].length, 0);
       t.diagnostic(
@@ -385,7 +385,7 @@ test(
       });
       assert.equal(loaded.status, 200);
 
-      const triggerPromise = request('POST', '/lives/wake', {
+      const triggerPromise = request('POST', '/lives/trigger', {
         liveId: 'native-guard-expiry',
         beeId: 'only',
         input:
@@ -426,8 +426,8 @@ test(
       assert.equal(late.body['code'], 'guard-expired');
       assert.equal(late.body['ok'], false);
 
-      const trigger = await settleWakeWith(request, 'native-guard-expiry', triggerPromise);
-      assert.equal(trigger['state'] !== undefined, true);
+      const trigger = await settleTriggerWith(request, 'native-guard-expiry', triggerPromise);
+      assert.equal(trigger['rest'] !== undefined, true);
       assert.equal(existsSync(join(project.directory, 'expired-guard.txt')), false);
       t.diagnostic(
         `observed: requestId=${String(guard['requestId'])} phase=expired ` +
@@ -511,7 +511,7 @@ test(
       });
       assert.equal(loaded.status, 200);
 
-      const triggerPromise = request('POST', '/lives/wake', {
+      const triggerPromise = request('POST', '/lives/trigger', {
         liveId: 'native-guard',
         beeId: 'only',
         input:
@@ -542,24 +542,56 @@ test(
           t.diagnostic(`extra guard decided requestId=${requestId} decision=${decision}`),
       );
 
+      // Not auto-allowed: the field is parked, the guard is still pending and
+      // the side effect has not happened before a decision.
+      const parked = await request('GET', '/lives/native-guard/inspect');
+      assert.equal(parked.status, 200);
+      assert.equal(parked.body['status']?.['rest'], false);
+      assert.equal(existsSync(join(project.directory, 'approved-guard.txt')), false);
+
       const decided = await request('POST', '/guard/decide', {
         requestId: guard['requestId'],
         decision: 'allow_once',
       });
       assert.equal(decided.status, 200);
 
-      const run = await settleWakeWith(request, 'native-guard', triggerPromise);
-      assert.equal(run['state'], 'completed');
+      // Allowed exactly once: the same request id cannot be decided again.
+      const replay = await request('POST', '/guard/decide', {
+        requestId: guard['requestId'],
+        decision: 'allow_once',
+      });
+      assert.equal(replay.status, 409);
+      assert.equal(replay.body['code'], 'conflict');
+
+      // A guard is a hover while pending; after allowing it, wait for Rest so a
+      // second approval request cannot make this look settled too early.
+      const settled = await settleTriggerWith(
+        request,
+        'native-guard',
+        triggerPromise,
+        120_000,
+        false,
+      );
+      assert.equal(settled['rest'], true);
       assert.equal(
         readFileSync(join(project.directory, 'approved-guard.txt'), 'utf8'),
         marker,
       );
       const output = await request('GET', '/lives/native-guard/output');
       assert.equal(output.status, 200);
-      assert.equal(output.body['operation'], 'trigger');
-      assert.equal(typeof output.body['runId'], 'string');
+      assert.equal(output.body['runId'], undefined);
+      assert.equal(output.body['traceId'], undefined);
+      const outputs = output.body['outputs'] as Record<string, unknown>[];
+      assert.equal(outputs.length, 1);
+      assert.equal(typeof outputs[0]?.['nodeId'], 'string');
+      assert.ok(
+        typeof (outputs[0]?.['value'] as Record<string, unknown> | undefined)?.['text'] ===
+          'string',
+        'allowed trigger must leave a field output',
+      );
       t.diagnostic(
-        `observed: real DSH approval allowed once; marker written; run=${String(output.body['runId'])}`,
+        `observed: real DSH approval allowed once; marker written; ` +
+          `replayDecision=${String(replay.status)} outputs=${String(outputs.length)}`,
       );
     } finally {
       await autoDecider?.stop();

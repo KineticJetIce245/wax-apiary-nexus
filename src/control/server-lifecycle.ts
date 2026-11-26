@@ -7,7 +7,6 @@ import { DaemonLock } from '../daemon/daemon-lock.js';
 import { LiveHiveHost } from '../daemon/graph-host.js';
 import { HiveTemplateStore } from '../b/hive-template.js';
 import { LiveHiveService } from '../b/live-hive-service.js';
-import { RunStore } from '../storage/run-store.js';
 import { GuardBroker } from './guard-broker.js';
 import {
   closeServer,
@@ -65,7 +64,6 @@ export class ControlServerLifecycle {
     let lock: DaemonLock | undefined;
     let server: Server | undefined;
     let liveHiveHost: LiveHiveHost | undefined;
-    let runStore: RunStore | undefined;
     let guardBroker: GuardBroker | undefined;
     let tokenAttempted = false;
     let infoAttempted = false;
@@ -89,12 +87,10 @@ export class ControlServerLifecycle {
       tokenAttempted = true;
       writeSecretFile(context.tokenPath, token);
 
-      runStore = new RunStore(join(context.daemonDir, 'runs'));
       guardBroker = new GuardBroker({ timeoutMs: context.guardTimeoutMs });
       const broker = guardBroker;
       liveHiveHost = new LiveHiveHost({
         registry: context.registry,
-        runStore,
         guardTimeoutMs: context.guardTimeoutMs,
         onGuard: (request) => broker.request(request),
         onGuardExpired: (requestId) => broker.expire(requestId),
@@ -116,7 +112,6 @@ export class ControlServerLifecycle {
         templateStore: new HiveTemplateStore(
           context.options.templatesRoot ?? join(context.options.stateRoot, 'templates'),
         ),
-        ...(runStore === undefined ? {} : { runStore }),
         ...(context.options.liveProject === undefined
           ? {}
           : { defaultProject: context.options.liveProject }),
@@ -166,7 +161,6 @@ export class ControlServerLifecycle {
       context.lock = lock;
       context.liveHiveHost = liveHiveHost;
       context.liveHiveService = liveHiveService;
-      context.runStore = runStore;
       context.guardBroker = guardBroker;
       context.tokenValue = token;
       context.currentInfo = info;
@@ -199,7 +193,6 @@ export class ControlServerLifecycle {
       context.liveHiveHost = undefined;
       context.liveHiveService = undefined;
       context.guardBroker = undefined;
-      context.runStore = undefined;
       context.tokenValue = undefined;
       context.currentInfo = undefined;
       context.state = 'idle';
@@ -231,7 +224,6 @@ export class ControlServerLifecycle {
     context.liveHiveHost = undefined;
     context.liveHiveService = undefined;
     context.guardBroker = undefined;
-    context.runStore = undefined;
     context.lock = undefined;
     context.tokenValue = undefined;
     context.currentInfo = undefined;

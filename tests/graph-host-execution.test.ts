@@ -140,7 +140,6 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
   assert.equal(result.graphId, 'main');
   assert.equal(result.rest, true);
   assert.equal(result.hovered, false);
-  assert.equal(result.state, 'completed');
   assert.equal(result.status.rest, true);
   assert.deepEqual(result.status, host.statusOf('main'));
 
@@ -161,7 +160,7 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
   assert.equal(status.rest, true);
   assert.equal(status.hovered, false);
   for (const node of status.nodes) {
-    assert.equal(node.queue, 0);
+    assert.equal(node.receptor, 0);
     assert.equal(node.pending, false);
     assert.equal(node.active, false);
     assert.equal(node.hovered, false);
@@ -308,7 +307,6 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
   assert.equal(result.rest, true);
   assert.equal(result.hovered, false);
   assert.deepEqual(waits, [1_000]);
-  assert.equal(result.state, 'completed');
   assert.equal(clock.time, 2_000);
 
   const status = host.statusOf('paced-rest');
@@ -316,7 +314,7 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
   assert.equal(status.rest, true);
   const merge = nodeStatus(status, 'merge');
   assert.equal(merge.pending, false);
-  assert.equal(merge.queue, 0);
+  assert.equal(merge.receptor, 0);
   assert.equal(merge.joins, 1);
   assert.deepEqual(env.adapter.closedNativeIds, []);
 });
@@ -383,13 +381,13 @@ async function assertPacingBounds(
     bindings: allFresh(noWaitDefinition),
     project: env.project,
   });
-  const noWaitAdmission = await zeroHost.trigger('no-wait', 'start', text('seed'));
+  await zeroHost.trigger('no-wait', 'start', text('seed'));
   await waitUntil(
     () => zeroHost.statusOf('no-wait') !== undefined && !zeroHost.statusOf('no-wait')!.rest,
     'the no-wait driver to stop',
   );
   assert.deepEqual(zeroWaits, []);
-  assert.equal(zeroHost.runs.get('no-wait', noWaitAdmission.runId)?.state, 'running');
+  assert.equal(zeroHost.statusOf('no-wait')?.rest, false);
   assert.ok(zeroHost.statusOf('no-wait') !== undefined);
   const shortDefinition = pacedForkMergeDefinition('short-wait');
   await shortHost.loadGraph({
@@ -397,7 +395,7 @@ async function assertPacingBounds(
     bindings: allFresh(shortDefinition),
     project: env.project,
   });
-  const shortAdmission = await shortHost.trigger('short-wait', 'start', text('seed'));
+  await shortHost.trigger('short-wait', 'start', text('seed'));
   await waitUntil(() => shortWaits.length === 1, 'the bounded pacing wait');
   await waitUntil(
     () =>
@@ -408,7 +406,7 @@ async function assertPacingBounds(
   );
   assert.deepEqual(shortWaits, [250]);
   assert.equal(shortWaits.reduce((sum, wait) => sum + wait, 0), 250);
-  assert.equal(shortHost.runs.get('short-wait', shortAdmission.runId)?.state, 'running');
+  assert.equal(shortHost.statusOf('short-wait')?.rest, false);
   const shortStatus = shortHost.statusOf('short-wait');
   assert.ok(shortStatus !== undefined);
   assert.equal(shortStatus.rest, false);
@@ -472,12 +470,12 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
     project: env.project,
   });
 
-  const admission = await host.trigger('paced', 'start', text('seed'));
+  await host.trigger('paced', 'start', text('seed'));
   await waitUntil(
     () => host.statusOf('paced')?.nodes.some((node) => node.nodeId === 'merge' && node.pending) === true,
     'one maximum pump to leave the merge pending',
   );
-  assert.equal(host.runs.get('paced', admission.runId)?.state, 'running');
+  assert.equal(host.statusOf('paced')?.rest, false);
   assert.equal(host.statusOf('paced')?.residency.refCount, 0);
 
   const status = host.statusOf('paced');
@@ -485,14 +483,13 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
   assert.equal(status.rest, false);
   const merge = nodeStatus(status, 'merge');
   assert.equal(merge.pending, true);
-  assert.equal(merge.queue, 0);
+  assert.equal(merge.receptor, 0);
   assert.equal(merge.joins, 1);
 
   assert.equal(host.status().length, 1);
   assert.deepEqual(env.adapter.closedNativeIds, []);
-  // The graph is still loaded and can accept another admission.
-  const again = await host.trigger('paced', 'start', text('again'));
-  assert.ok(again.runId.length > 0);
+  // The graph is still loaded and can accept another delivery.
+  await host.trigger('paced', 'start', text('again'));
   assert.equal(host.statusOf('paced') !== undefined, true);
 });
 
@@ -541,12 +538,17 @@ test('answer resolves an open user hover and rejects invalid targets and tokens'
     },
   );
 
-  const answered = await host.answer('answer', 'ask', text('answered'), token);
+  await host.answer('answer', 'ask', text('answered'), token);
+  await waitUntil(
+    () => host.statusOf('answer')?.rest === true,
+    'the answered field to settle',
+  );
+  const answered = host.statusOf('answer');
+  assert.ok(answered !== undefined);
   assert.equal(answered.rest, true);
   assert.equal(answered.hovered, false);
-  assert.equal(answered.persisted, true);
-  assert.equal(answered.status.rest, true);
-  assert.equal(nodeStatus(answered.status, 'ask').hovered, false);
+  assert.equal(nodeStatus(answered, 'ask').hovered, false);
+  assert.deepEqual(host.outputsOf('answer').get('ask'), text('answered'));
 
   // The hover is gone after one answer; a second answer is not queued early.
   await assert.rejects(
@@ -560,7 +562,7 @@ test('answer resolves an open user hover and rejects invalid targets and tokens'
   assert.equal(env.adapter.promptsByNative.size, 0);
 });
 
-test('answer reports rest=false without retrying when maxPumps cannot drain it', async (t) => {
+test('answer only binds the hover; the field completes in the background', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new LiveHiveHost({
@@ -588,16 +590,18 @@ test('answer reports rest=false without retrying when maxPumps cannot drain it',
   });
   // Park a hover without the host pump (host trigger honors maxPumps: 0).
   const runtime = runtimeOf(host, 'answer-nonrest');
-  runtime.trigger('ask', text('waiting'));
+  await runtime.admit('ask', text('waiting'));
   await runtime.pump();
   assert.equal(host.statusOf('answer-nonrest')?.hovered, true);
 
-  const answered = await host.answer('answer-nonrest', 'ask', text('answered'));
-  assert.equal(answered.rest, false);
-  assert.equal(answered.hovered, false);
-  assert.equal(answered.pumps, 0);
-  const idle = nodeStatus(answered.status, 'idle');
-  assert.equal(idle.queue, 1);
+  // The answer call resolves once the hover is bound, not when the bee runs.
+  await host.answer('answer-nonrest', 'ask', text('answered'));
+  await waitUntil(
+    () => host.statusOf('answer-nonrest')?.rest === true,
+    'the answered field to settle',
+  );
+  const idle = host.outputsOf('answer-nonrest').get('idle');
+  assert.deepEqual(idle, { kind: 'text', text: 'reply(native-1):idle answered' });
   assert.equal(host.statusOf('answer-nonrest') !== undefined, true);
 });
 
@@ -659,8 +663,11 @@ test('answer refreshes the lastAccessAt of every bound session', async (t) => {
 
   clock.advance(2_000);
   const token = hoverTokenOf(host, 'touch-answer', 'ask');
-  const answered = await host.answer('touch-answer', 'ask', text('yes'), token);
-  assert.equal(answered.rest, true);
+  await host.answer('touch-answer', 'ask', text('yes'), token);
+  await waitUntil(
+    () => host.statusOf('touch-answer')?.rest === true,
+    'the answered field to settle',
+  );
   for (const record of sessions) {
     assert.equal(
       env.registry.get(record.sessionId)?.lastAccessAt,
@@ -696,9 +703,11 @@ test('a failing touch does not change a trigger or answer result', async (t) => 
   const triggered = await triggerRun(host, 'touch-failure', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
   const token = hoverTokenOf(host, 'touch-failure', 'ask');
-  const answered = await host.answer('touch-failure', 'ask', text('answered'), token);
-  assert.equal(answered.rest, true);
-  assert.equal(answered.persisted, true);
+  await host.answer('touch-failure', 'ask', text('answered'), token);
+  await waitUntil(
+    () => host.statusOf('touch-failure')?.rest === true,
+    'the answered field to settle',
+  );
   // The answer still reached the downstream forager despite every touch failing.
   assert.deepEqual(adapter.allPrompts, ['run answered']);
 });
@@ -728,10 +737,17 @@ test('onGuard is passed to the runtime and decides native approvals', async (t) 
   await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
 
   const allowed = await triggerRun(host, 'guard-decisions', 'only', text('one'));
+  await waitUntil(
+    () => host.statusOf('guard-decisions')?.rest === true,
+    'the allowed guard to settle',
+  );
   const rejected = await triggerRun(host, 'guard-decisions', 'only', text('two'));
+  await waitUntil(
+    () => host.statusOf('guard-decisions')?.rest === true,
+    'the rejected guard to settle',
+  );
 
-  assert.equal(allowed.rest, true);
-  assert.equal(rejected.rest, true);
+  assert.equal(host.statusOf('guard-decisions')?.rest, true);
   assert.equal(seen.length, 2, 'every native approval went through onGuard');
   assert.deepEqual(
     adapter.approvals.map((decision) => decision.kind),
@@ -754,9 +770,13 @@ test('a native approval is rejected when no onGuard handler is configured', asyn
   await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
 
   const result = await triggerRun(host, 'guard-default', 'only', text('go'));
+  await waitUntil(
+    () => host.statusOf('guard-default')?.rest === true,
+    'the default-rejected guard to settle',
+  );
 
-  assert.equal(result.rest, true);
-  assert.equal(result.hovered, false);
+  assert.equal(host.statusOf('guard-default')?.rest, true);
+  assert.equal(host.statusOf('guard-default')?.hovered, false);
   assert.deepEqual(
     adapter.approvals.map((decision) => decision.kind),
     ['reject_once'],

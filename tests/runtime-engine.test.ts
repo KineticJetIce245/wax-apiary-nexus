@@ -102,10 +102,9 @@ test('trigger -> forager -> terminal -> Rest', async () => {
 
   assert.equal(runtime.snapshot().rest, true);
 
-  const id = runtime.trigger('start', { kind: 'text', text: 'hello' });
-  assert.notEqual(id, '');
+  await runtime.admit('start', { kind: 'text', text: 'hello' });
   assert.equal(runtime.snapshot().rest, false);
-  assert.equal(runtime.snapshot().nodes['start']?.queue.length, 1);
+  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
 
   await runtime.pump();
 
@@ -127,7 +126,7 @@ test('a terminal node emits no new pheromone', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start');
+  runtime.admit('start', { kind: 'text', text: '' });
   await runtime.pump();
 
   assert.deepEqual(runtime.snapshot().pheromones, []);
@@ -141,10 +140,10 @@ test('condition text mode follows the true and false edges', async () => {
     now: () => clock,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'yes please' });
+  runtime.admit('start', { kind: 'text', text: 'yes please' });
   await runtime.pump();
   clock += 1000;
-  runtime.trigger('start', { kind: 'text', text: 'nope' });
+  runtime.admit('start', { kind: 'text', text: 'nope' });
   await runtime.pump();
 
   assert.deepEqual(
@@ -162,10 +161,10 @@ test('condition boolean mode reads Value.value', async () => {
     now: () => clock,
   });
 
-  runtime.trigger('start', { kind: 'boolean', value: true });
+  runtime.admit('start', { kind: 'boolean', value: true });
   await runtime.pump();
   clock += 1000;
-  runtime.trigger('start', { kind: 'boolean', value: false });
+  runtime.admit('start', { kind: 'boolean', value: false });
   await runtime.pump();
 
   assert.deepEqual(
@@ -182,10 +181,10 @@ test('condition choice mode compares the selected choice', async () => {
     now: () => clock,
   });
 
-  runtime.trigger('start', { kind: 'choice', choice: 'approve' });
+  runtime.admit('start', { kind: 'choice', choice: 'approve' });
   await runtime.pump();
   clock += 1000;
-  runtime.trigger('start', { kind: 'choice', choice: 'reject' });
+  runtime.admit('start', { kind: 'choice', choice: 'reject' });
   await runtime.pump();
 
   assert.deepEqual(
@@ -199,7 +198,7 @@ test('counter increments until max and then takes the done edge', async () => {
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(counterComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.trigger('start');
+  runtime.admit('start', { kind: 'text', text: '' });
   await runtime.pump();
   clock += 1000;
   await runtime.pump();
@@ -221,31 +220,37 @@ test('trigger rejects unknown and non-forager targets', async () => {
     now: () => START,
   });
 
-  assert.throws(() => runtime.trigger('ghost'), /unknown node 'ghost'/);
-  assert.throws(() => runtime.trigger('check'), /must be a forager, worker or user node/);
+  await assert.rejects(
+    runtime.admit('ghost', { kind: 'text', text: '' }),
+    /unknown node 'ghost'/,
+  );
+  await assert.rejects(
+    runtime.admit('check', { kind: 'text', text: '' }),
+    /must be a forager, worker or user node/,
+  );
 });
 
 test('snapshot is immutable and does not leak internal state', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => START });
 
-  runtime.trigger('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { kind: 'text', text: 'x' });
   const snapshot = runtime.snapshot();
   const start = snapshot.nodes['start'];
   assert.ok(start !== undefined);
-  assert.equal(start.queue.length, 1);
+  assert.equal(start.receptor.length, 1);
 
   assert.throws(() => {
     (snapshot as { rest: boolean }).rest = false;
   }, TypeError);
   assert.throws(() => {
-    (start.queue as unknown as unknown[]).push({});
+    (start.receptor as unknown as unknown[]).push({});
   }, TypeError);
 
   const fresh = runtime.snapshot();
   const freshStart = fresh.nodes['start'];
   assert.ok(freshStart !== undefined);
-  assert.equal(freshStart.queue.length, 1);
+  assert.equal(freshStart.receptor.length, 1);
   assert.equal(fresh.rest, false);
 });
 
@@ -258,7 +263,9 @@ test('log carries node, pheromone and outcome fields', async () => {
     onLog: log.sink,
   });
 
-  const pheromoneId = runtime.trigger('start', { kind: 'text', text: 'log me' });
+  await runtime.admit('start', { kind: 'text', text: 'log me' });
+  const pheromoneId = runtime.snapshot().nodes['start']?.receptor[0]?.id;
+  assert.equal(typeof pheromoneId, 'string');
   await runtime.pump();
 
   const events = log.entries.map((entry) => entry.event);
@@ -296,7 +303,7 @@ test('a failing executor logs node.failed and surfaces the error', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('start');
+  runtime.admit('start', { kind: 'text', text: '' });
   await assert.rejects(runtime.pump(), /boom/);
 
   const failed = log.entries.find((entry) => entry.event === 'node.failed');
@@ -314,7 +321,7 @@ test('a failed activation leaves an empty field at Rest', async () => {
   };
   const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
-  runtime.trigger('a');
+  runtime.admit('a', { kind: 'text', text: '' });
   await assert.rejects(runtime.pump(), /boom/);
 
   const snapshot = runtime.snapshot();
@@ -331,14 +338,14 @@ test('a failure keeps queued pheromones and the field is not at Rest', async () 
   };
   const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
-  runtime.trigger('a', { kind: 'text', text: 'first' });
-  runtime.trigger('a', { kind: 'text', text: 'second' });
+  runtime.admit('a', { kind: 'text', text: 'first' });
+  runtime.admit('a', { kind: 'text', text: 'second' });
   await assert.rejects(runtime.pump(), /boom/);
 
   const snapshot = runtime.snapshot();
   const node = snapshot.nodes['a'];
   assert.ok(node !== undefined);
-  assert.equal(node.queue.length, 1);
+  assert.equal(node.receptor.length, 1);
   assert.equal(snapshot.pheromones.length, 1);
   assert.equal(snapshot.rest, false);
 });
@@ -356,8 +363,8 @@ test('a failure on one node leaves another node queued work runnable', async () 
   };
   const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
-  runtime.trigger('a');
-  runtime.trigger('b');
+  runtime.admit('a', { kind: 'text', text: '' });
+  runtime.admit('b', { kind: 'text', text: '' });
   await assert.rejects(runtime.pump(), /boom/);
 
   assert.equal(runtime.snapshot().nodes['a']?.active, undefined);
@@ -379,15 +386,23 @@ test('serializeValue and renderPrompt cover the documented template rule', () =>
   assert.equal(renderPrompt('no placeholder', { kind: 'text', text: 'x' }), 'no placeholder');
 });
 
-test('trigger returns unique pheromone ids and defaults to empty text', async () => {
+test('two deliveries create independent Pheromones with no identity', async () => {
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => START });
 
-  const first = runtime.trigger('start');
-  const second = runtime.trigger('start');
-  assert.notEqual(first, second);
+  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { kind: 'text', text: '' });
+  const queued = runtime.snapshot().nodes['start']?.receptor ?? [];
+  assert.equal(queued.length, 2);
+  assert.notEqual(queued[0]?.id, queued[1]?.id);
+  for (const pheromone of queued) {
+    assert.deepEqual(Object.keys(pheromone).sort(), ['at', 'id', 'value']);
+  }
 
   await runtime.pump();
+  // The node's pacing interval holds the second input until the clock advances.
+  assert.equal(calls.length, 1);
+  assert.equal(runtime.snapshot().nodes['start']?.pending !== undefined, true);
   const call = calls[0];
   assert.ok(call !== undefined);
   assert.equal(serializeValue(call.input), '');
@@ -413,7 +428,7 @@ test('log entries are well formed for every event emitted', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'go' });
+  runtime.admit('start', { kind: 'text', text: 'go' });
   await runtime.pump();
 
   for (const entry of log.entries as RuntimeLogEntry[]) {

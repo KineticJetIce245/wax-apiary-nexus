@@ -5,7 +5,8 @@ import test from 'node:test';
 
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import type { LiveHive } from '../src/b/types.js';
-import { getJson, postJson, waitForRunTerminal } from './support/control-server-http.js';
+import { DEFAULT_QUEUE_MAX } from '../src/runtime/definition-constants.js';
+import { getJson, postJson, waitForRest } from './support/control-server-http.js';
 import {
   makeEnv,
   startServer,
@@ -39,38 +40,27 @@ function publicStatusOf(value: unknown): Record<string, unknown> {
   return status;
 }
 
-async function wakeAndAssertRun(
+async function triggerAndAssertRest(
   url: string,
   token: string,
   liveId: string,
-): Promise<string> {
-  const woke = await postJson(url, token, '/lives/wake', {
+): Promise<void> {
+  const woke = await postJson(url, token, '/lives/trigger', {
     liveId,
     beeId: 'draft',
     input: 'hello',
   });
   assert.equal(woke.status, 202);
-  assert.equal(woke.body?.['ok'], true);
-  assert.equal(woke.body?.['status'], 'accepted');
-  const runId = String(woke.body?.['runId']);
-  assert.ok(runId.length > 0);
-  assert.ok(String(woke.body?.['traceId']).startsWith('tr_'));
-  assert.equal(Object.hasOwn(woke.body ?? {}, 'result'), false);
-  const finished = await waitForRunTerminal(url, token, liveId, runId);
-  assert.equal(finished.body?.['run']?.['state'], 'completed');
-  assert.ok(Array.isArray(finished.body?.['run']?.['outputs']));
-  const unknownRun = await getJson(url, token, `/lives/${liveId}/runs/missing-run`);
-  assert.equal(unknownRun.status, 404);
-  const otherLiveRun = await getJson(
-    url,
-    token,
-    `/lives/ghost/runs/${encodeURIComponent(runId)}`,
-  );
-  assert.equal(otherLiveRun.status, 404);
-  return runId;
+  assert.deepEqual(woke.body, { ok: true });
+  const finished = await waitForRest(url, token, liveId);
+  assert.equal(finished.status, 200);
+  assert.equal(finished.body?.['status']?.['rest'], true);
+  // The removed run route stays absent; only the field is the read model.
+  const removedRunRoute = await getJson(url, token, `/lives/${liveId}/runs/missing-run`);
+  assert.equal(removedRunRoute.status, 404);
 }
 
-test('B routes create, wake, save, inspect, unload and load a live hive', async (t) => {
+test('B routes create, trigger, save, inspect, unload and load a live hive', async (t) => {
   const env = makeEnv({ output: 'b-route-output' });
   const running = await startServer(env, { liveProject: env.project });
   t.after(async () => {
@@ -101,7 +91,7 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     }
   }
 
-  const runId = await wakeAndAssertRun(running.info.url, running.token, 'demo');
+  await triggerAndAssertRest(running.info.url, running.token, 'demo');
 
   const saved = await postJson(running.info.url, running.token, '/lives/save', {
     liveId: 'demo',
@@ -115,6 +105,26 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   assert.equal(publicStatusOf(inspect.body?.['status'])['rest'], true);
   assert.ok(Array.isArray(inspect.body?.['outputs']));
 
+  const fieldOutput = await getJson(
+    running.info.url,
+    running.token,
+    '/lives/demo/output',
+  );
+  assert.equal(fieldOutput.status, 200);
+  assert.equal(fieldOutput.body?.['runId'], undefined);
+  assert.deepEqual(fieldOutput.body?.['outputs'], [
+    { nodeId: 'done', value: { kind: 'text', text: 'b-route-output' } },
+    { nodeId: 'draft', value: { kind: 'text', text: 'b-route-output' } },
+    { nodeId: 'review', value: { kind: 'text', text: 'b-route-output' } },
+  ]);
+  assert.equal(JSON.stringify(fieldOutput.body).includes('hello'), false);
+  const unknownOutput = await getJson(
+    running.info.url,
+    running.token,
+    '/lives/ghost/output',
+  );
+  assert.equal(unknownOutput.status, 404);
+
   const unloaded = await postJson(running.info.url, running.token, '/lives/unload', {
     liveId: 'demo',
   });
@@ -127,27 +137,6 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
     )?.['state'],
     'unloaded',
   );
-  const outputByRun = await getJson(
-    running.info.url,
-    running.token,
-    `/lives/demo/output?runId=${encodeURIComponent(runId)}`,
-  );
-  assert.equal(outputByRun.status, 200);
-  assert.equal(outputByRun.body?.['runId'], runId);
-  assert.equal(JSON.stringify(outputByRun.body).includes('hello'), false);
-  const latestOutput = await getJson(
-    running.info.url,
-    running.token,
-    '/lives/demo/output',
-  );
-  assert.equal(latestOutput.status, 200);
-  assert.equal(latestOutput.body?.['runId'], runId);
-  const unknownOutput = await getJson(
-    running.info.url,
-    running.token,
-    '/lives/demo/output?runId=missing-run',
-  );
-  assert.equal(unknownOutput.status, 404);
   const unloadedInspect = await getJson(
     running.info.url,
     running.token,
@@ -155,6 +144,13 @@ test('B routes create, wake, save, inspect, unload and load a live hive', async 
   );
   assert.equal(unloadedInspect.status, 200);
   assert.deepEqual(unloadedInspect.body?.['outputs'], []);
+  const releasedOutput = await getJson(
+    running.info.url,
+    running.token,
+    '/lives/demo/output',
+  );
+  assert.equal(releasedOutput.status, 404);
+  assert.equal(releasedOutput.body?.['code'], 'not-found');
 
   const loaded = await postJson(running.info.url, running.token, '/lives/load', {
     liveId: 'demo',
@@ -212,7 +208,42 @@ async function waitForHover(
   }
 }
 
-test('B answer resolves a user hover', async (t) => {
+interface InspectedBee {
+  readonly nodeId: string;
+  readonly hovered: boolean;
+  readonly receptor: number;
+}
+
+/** Poll one bee's public field state through `inspect` (there is no run id). */
+async function waitForBee(
+  url: string,
+  token: string,
+  liveId: string,
+  beeId: string,
+  predicate: (bee: InspectedBee) => boolean,
+): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  for (;;) {
+    const inspected = await getJson(
+      url,
+      token,
+      `/lives/${encodeURIComponent(liveId)}/inspect`,
+    );
+    const nodes = inspected.body?.['status']?.['nodes'];
+    const bee = Array.isArray(nodes)
+      ? (nodes as InspectedBee[]).find((node) => node.nodeId === beeId)
+      : undefined;
+    if (bee !== undefined && predicate(bee)) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`bee '${beeId}' of live '${liveId}' did not reach the expected state`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test('B answer binds a user hover', async (t) => {
   const env = makeEnv();
   const running = await startServer(env, { liveProject: env.project });
   t.after(async () => {
@@ -234,7 +265,7 @@ test('B answer resolves a user hover', async (t) => {
   );
   assert.equal(
     (
-      await postJson(running.info.url, running.token, '/lives/wake', {
+      await postJson(running.info.url, running.token, '/lives/trigger', {
         liveId: 'ask',
         beeId: 'ask',
         input: 'open',
@@ -248,9 +279,136 @@ test('B answer resolves a user hover', async (t) => {
     beeId: 'ask',
     input: 'answer',
   });
-  assert.equal(answered.status, 200);
-  assert.equal(answered.body?.['result']?.['liveId'], 'ask');
-  publicStatusOf(answered.body?.['result']?.['status']);
+  assert.equal(answered.status, 202);
+  assert.deepEqual(answered.body, { ok: true });
+  await waitForRest(running.info.url, running.token, 'ask');
+});
+
+/**
+ * `seed` moves into a fork that fills `done`'s receptor to the configured
+ * capacity, while `ask` can only answer into the same `done`.
+ */
+function answerOverflowLive(liveId: string): LiveHive {
+  const branches = Array.from({ length: DEFAULT_QUEUE_MAX }, (_, index) => ({
+    id: `b${String(index)}`,
+    to: 'done',
+  }));
+  return {
+    schemaVersion: 1,
+    liveId,
+    bees: {
+      ask: {
+        kind: 'user',
+        config: { modality: 'text', prompt: 'ask' },
+        outgoing: ['ask-done'],
+      },
+      seed: {
+        kind: 'user',
+        config: { modality: 'text', prompt: 'seed' },
+        outgoing: ['seed-fill'],
+      },
+      fill: { kind: 'fork', config: { branches }, outgoing: [] },
+      done: {
+        kind: 'user',
+        config: { modality: 'text', prompt: 'done' },
+        outgoing: [],
+      },
+    },
+    beelines: {
+      'ask-done': { fromBee: 'ask', toBee: 'done' },
+      'seed-fill': { fromBee: 'seed', toBee: 'fill' },
+    },
+    bindings: {},
+  };
+}
+
+async function triggerAndHover(
+  url: string,
+  token: string,
+  liveId: string,
+  beeId: string,
+): Promise<void> {
+  const triggered = await postJson(url, token, '/lives/trigger', {
+    liveId,
+    beeId,
+    input: 'open',
+  });
+  assert.equal(triggered.status, 202, triggered.text);
+  await waitForBee(url, token, liveId, beeId, (bee) => bee.hovered);
+}
+
+/** Answer the seed: the fork fills `done`'s receptor to capacity. */
+async function fillDoneReceptor(
+  url: string,
+  token: string,
+  liveId: string,
+): Promise<void> {
+  const answered = await postJson(url, token, '/lives/answer', {
+    liveId,
+    beeId: 'seed',
+    input: 'fill',
+  });
+  assert.equal(answered.status, 202, answered.text);
+  await waitForBee(
+    url,
+    token,
+    liveId,
+    'done',
+    (bee) => bee.receptor === DEFAULT_QUEUE_MAX,
+  );
+}
+
+/** One answer refused by `done`'s full receptor; the hover must stay open. */
+async function assertAnswerRefused(
+  url: string,
+  token: string,
+  liveId: string,
+  beeId: string,
+): Promise<void> {
+  const refused = await postJson(url, token, '/lives/answer', {
+    liveId,
+    beeId,
+    input: 'too-early',
+  });
+  assert.equal(refused.status, 429, refused.text);
+  assert.equal(refused.body?.['code'], 'bee-receptor-full');
+  assert.equal(refused.body?.['beeId'], 'done');
+  assert.equal(refused.body?.['pending'], DEFAULT_QUEUE_MAX);
+  assert.equal(refused.body?.['limit'], DEFAULT_QUEUE_MAX);
+  assert.equal(refused.body?.['policy'], 'reject');
+}
+
+test('B answer refuses a full downstream receptor without consuming the hover', async (t) => {
+  const env = makeEnv();
+  const running = await startServer(env, { liveProject: env.project });
+  t.after(async () => {
+    await running.server.stop();
+    await env.workspace.stop();
+  });
+  const url = running.info.url;
+  const token = running.token;
+  const liveId = 'answer-full';
+  assert.equal(
+    (await postJson(url, token, '/lives', { live: answerOverflowLive(liveId) })).status,
+    200,
+  );
+  for (const beeId of ['ask', 'done', 'seed']) {
+    await triggerAndHover(url, token, liveId, beeId);
+  }
+  await fillDoneReceptor(url, token, liveId);
+
+  await assertAnswerRefused(url, token, liveId, 'ask');
+  // The hover survived: a second attempt hits the same overflow refusal
+  // instead of reporting a missing hover or a stale token.
+  await assertAnswerRefused(url, token, liveId, 'ask');
+  await waitForBee(url, token, liveId, 'ask', (bee) => bee.hovered);
+  await waitForBee(
+    url,
+    token,
+    liveId,
+    'done',
+    (bee) => bee.hovered && bee.receptor === DEFAULT_QUEUE_MAX,
+  );
 });
 
 test('templates compose/list and instantiate routes materialize a live', async (t) => {
@@ -301,7 +459,7 @@ test('templates compose/list and instantiate routes materialize a live', async (
   assert.equal(publicStatusOf(inspect.body?.['status'])['rest'], true);
 });
 
-test('dispatch route runs a temporary session and rejects bad bodies', async (t) => {
+test('dispatch route accepts a temporary session and rejects bad bodies', async (t) => {
   const env = makeEnv({ output: 'dispatch-route-output' });
   const running = await startServer(env, { liveProject: env.project });
   t.after(async () => {
@@ -312,9 +470,9 @@ test('dispatch route runs a temporary session and rejects bad bodies', async (t)
     input: 'summarize',
     sessionParams: { harness: 'codex', model: 'm1' },
   });
-  assert.equal(dispatched.status, 200);
-  assert.equal(dispatched.body?.['output'], 'dispatch-route-output');
-  assert.equal(typeof dispatched.body?.['sessionId'], 'string');
+  assert.equal(dispatched.status, 202);
+  assert.deepEqual(dispatched.body, { ok: true });
+  assert.equal(dispatched.text.includes('dispatch-route-output'), false);
 
   const bad = await postJson(running.info.url, running.token, '/dispatch', {});
   assert.equal(bad.status, 400);
@@ -340,7 +498,7 @@ test('B routes reject bad bodies and unknown live ids with stable errors', async
   );
   assert.equal(unknownInspect.status, 404);
 
-  const unknownWake = await postJson(running.info.url, running.token, '/lives/wake', {
+  const unknownWake = await postJson(running.info.url, running.token, '/lives/trigger', {
     liveId: 'ghost',
     beeId: 'draft',
     input: 'x',

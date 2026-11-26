@@ -43,7 +43,6 @@ function branchPheromone(
 ): Pheromone {
   return {
     id: `ph_${forkId}_${branchId}`,
-    traceId: `tr_${forkId}`,
     forkId,
     branchId,
     value,
@@ -248,7 +247,7 @@ test('required branches complete immediately without waiting for an optional one
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const doneCalls = calls.filter((call) => call.nodeId === 'done');
@@ -276,7 +275,7 @@ test('an optional branch that arrives first waits for required, then combines', 
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const waiting = runtime.snapshot();
@@ -324,7 +323,7 @@ test('text combine uses required order, then arrived optional in optional config
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   for (let step = 0; step < 3; step += 1) {
     clock += 1000;
@@ -355,7 +354,7 @@ test('an optional branch failure is logged and does not fail the required set', 
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   assert.deepEqual(calls, ['start', 'boom', 'done']);
@@ -383,7 +382,7 @@ test('an unknown optional branch on restore is logged and does not fail the join
     now: () => START,
   }).exportField();
   field.nodes['merge'] = {
-    queue: [branchPheromone('fk_unknown_optional', 'c', text('C'))],
+    receptor: [branchPheromone('fk_unknown_optional', 'c', text('C'))],
     joins: {
       fk_unknown_optional: {
         arrived: [branchPheromone('fk_unknown_optional', 'a', text('A'))],
@@ -391,7 +390,7 @@ test('an unknown optional branch on restore is logged and does not fail the join
       },
     },
   };
-  field.nodes['make-b'] = { queue: [], active: branchPheromone('fk_unknown_optional', 'b') };
+  field.nodes['make-b'] = { receptor: [], active: branchPheromone('fk_unknown_optional', 'b') };
 
   const { runtime, report } = PheromoneRuntime.restore(definition, field, {
     executeForager: recorder().executor,
@@ -429,7 +428,7 @@ test('a late optional branch is dropped and logged without reopening the join', 
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const completed = completedJoinOf(runtime.snapshot());
@@ -469,7 +468,7 @@ test('a late required branch is a protocol error and never emits a second time',
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   clock += 1000;
   await runtime.pump();
@@ -479,7 +478,7 @@ test('a late required branch is a protocol error and never emits a second time',
   const field = runtime.exportField();
   const mergeState = field.nodes['merge'];
   assert.ok(mergeState !== undefined);
-  (mergeState.queue ??= []).push(branchPheromone(firstForkId, 'a', text('again')));
+  (mergeState.receptor ??= []).push(branchPheromone(firstForkId, 'a', text('again')));
 
   const calls: string[] = [];
   const restored = PheromoneRuntime.restore(definition, field, {
@@ -518,7 +517,7 @@ test('completed joins are bounded by count, keeping the newest markers', async (
   });
 
   const completeOne = async (): Promise<void> => {
-    runtime.trigger('start', text('seed'));
+    runtime.admit('start', text('seed'));
     let guard = 0;
     while (!runtime.snapshot().rest) {
       clock += 1000;
@@ -560,13 +559,13 @@ test('expired completed joins are pruned on the next merge activity', async () =
     }
   };
 
-  runtime.trigger('start', text('one'));
+  runtime.admit('start', text('one'));
   await settle();
   const staleForkId = completedJoinOf(runtime.snapshot())?.forkId;
   assert.ok(staleForkId !== undefined);
 
   clock += COMPLETED_JOIN_TTL_MS + 1000;
-  runtime.trigger('start', text('two'));
+  runtime.admit('start', text('two'));
   await settle();
 
   const joins = runtime.snapshot().nodes['merge']?.joins ?? {};
@@ -581,7 +580,7 @@ test('restore prunes a completed marker that outlived its retention', () => {
     now: () => START,
   }).exportField();
   field.nodes['merge'] = {
-    queue: [],
+    receptor: [],
     joins: {
       fk_expired: {
         arrived: [],

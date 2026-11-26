@@ -1,7 +1,5 @@
 import type { LiveHiveStatus } from '../daemon/graph-host.js';
-import type { LiveHiveRunState, LiveHiveRunView } from '../daemon/graph-host.js';
 import type { LiveHiveCatalogEntry } from '../daemon/live-hive-catalog.js';
-import type { RunRecord, RunStatus, RunStore } from '../storage/run-store.js';
 import type { LiveHiveHost } from '../daemon/graph-host.js';
 import type { LiveHiveRepository } from './live-hive-repository.js';
 import { LiveHiveServiceError } from './live-hive-service-errors.js';
@@ -13,21 +11,21 @@ export interface LiveHiveSummary {
   readonly catalog?: LiveHiveCatalogEntry;
 }
 
+/** The field-owned last output per bee; never a run record or history. */
+export interface LiveHiveOutputEntry {
+  readonly nodeId: string;
+  readonly value: unknown;
+}
+
 export interface LiveHiveOutputResult {
   readonly liveId: string;
-  readonly runId: string;
-  readonly outputs: RunRecord['outputs'];
-  readonly status: RunStatus;
-  readonly operation: RunRecord['operation'];
-  readonly startedAt: string;
-  readonly finishedAt?: string;
-  readonly error?: string;
+  readonly outputs: readonly LiveHiveOutputEntry[];
 }
 
 export interface LiveHiveInspectResult {
   readonly liveId: string;
   readonly status?: LiveHiveStatus;
-  readonly outputs: readonly { readonly nodeId: string; readonly value: unknown }[];
+  readonly outputs: readonly LiveHiveOutputEntry[];
   readonly catalog?: LiveHiveCatalogEntry;
 }
 
@@ -36,7 +34,6 @@ export class LiveHiveReadService {
   constructor(
     private readonly liveHiveHost: LiveHiveHost,
     private readonly repository: LiveHiveRepository,
-    private readonly runStore: RunStore | undefined,
   ) {}
 
   list(): readonly LiveHiveSummary[] {
@@ -75,11 +72,7 @@ export class LiveHiveReadService {
     }
     // outputsOf requires a loaded graph. An unloaded live is a valid read:
     // return its catalog identity and an empty output list, never a 500.
-    const outputs = status === undefined
-      ? []
-      : [...this.liveHiveHost.outputsOf(id).entries()]
-          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-          .map(([nodeId, value]) => ({ nodeId, value }));
+    const outputs = status === undefined ? [] : this.outputsOf(id);
     return {
       liveId: id,
       ...(status === undefined ? {} : { status }),
@@ -88,62 +81,22 @@ export class LiveHiveReadService {
     };
   }
 
-  output(liveId: string, runId?: string): LiveHiveOutputResult {
+  /**
+   * The field's last completed output per bee. There is no run id and no
+   * history: an unloaded LiveHive has released its field and this throws
+   * `not-found` instead of replaying a stale record.
+   */
+  output(liveId: string): LiveHiveOutputResult {
     const id = this.repository.requireLiveId(liveId);
-    const store = this.runStore;
-    if (store === undefined) {
-      throw new LiveHiveServiceError('not-found', 'run output is not available');
+    if (this.liveHiveHost.statusOf(id) === undefined) {
+      throw new LiveHiveServiceError('not-found', 'live hive is not loaded');
     }
-    const record = runId === undefined ? store.latestForLive(id) : store.get(runId);
-    if (record === undefined || record.liveId !== id) {
-      throw new LiveHiveServiceError('not-found', 'run output is not available');
-    }
-    return {
-      liveId: record.liveId,
-      runId: record.runId,
-      outputs: record.outputs,
-      status: record.status,
-      operation: record.operation,
-      startedAt: record.startedAt,
-      ...(record.finishedAt === undefined ? {} : { finishedAt: record.finishedAt }),
-      ...(record.error === undefined ? {} : { error: record.error }),
-    };
+    return { liveId: id, outputs: this.outputsOf(id) };
   }
 
-  /** One run from the live tracker, falling back to the durable record. */
-  run(liveId: string, runId: string): LiveHiveRunView {
-    const id = this.repository.requireLiveId(liveId);
-    const tracked = this.liveHiveHost.runs.get(id, runId);
-    if (tracked !== undefined) {
-      return tracked;
-    }
-    const record = this.runStore?.get(runId);
-    if (record === undefined || record.liveId !== id) {
-      throw new LiveHiveServiceError('not-found', 'run is not available');
-    }
-    return {
-      runId: record.runId,
-      traceId: record.traceId ?? '',
-      state: stateOfRecord(record.status),
-      outputs: record.outputs,
-      ...(record.error === undefined ? {} : { error: record.error }),
-      startedAt: record.startedAt,
-      ...(record.finishedAt === undefined ? {} : { finishedAt: record.finishedAt }),
-    };
-  }
-}
-
-function stateOfRecord(status: RunStatus): LiveHiveRunState {
-  switch (status) {
-    case 'completed':
-      return 'completed';
-    case 'failed':
-      return 'failed';
-    case 'cancelled':
-      return 'cancelled';
-    case 'unknown':
-      return 'unknown';
-    default:
-      return 'unknown';
+  private outputsOf(liveId: string): readonly LiveHiveOutputEntry[] {
+    return [...this.liveHiveHost.outputsOf(liveId).entries()]
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([nodeId, value]) => ({ nodeId, value }));
   }
 }

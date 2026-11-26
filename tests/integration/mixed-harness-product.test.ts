@@ -18,12 +18,12 @@ const builtDshCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const codexExe = process.env.CODEX_EXE;
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 
 const missing: string[] = [];
 if (!hasKey) {
-  missing.push('DEEPSEEK_API_KEY');
+  missing.push('OPENCODE_API_KEY');
 }
 if (dshRoot === undefined || builtDshCli === undefined || !existsSync(builtDshCli)) {
   missing.push('DSH_ROOT with a built apps/cli/lib/bin.js');

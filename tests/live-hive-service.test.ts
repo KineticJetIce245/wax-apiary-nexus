@@ -6,7 +6,6 @@ import test, { type TestContext } from 'node:test';
 
 import {
   LiveHiveHost,
-  type LiveHiveAdmission,
 } from '../src/daemon/graph-host.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import { HiveTemplateStore } from '../src/b/hive-template.js';
@@ -17,24 +16,28 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { HoneyStore } from '../src/storage/honey.js';
-import { RunStore } from '../src/storage/run-store.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 import { simpleLiveHive, simpleTemplate } from './support/b-object-fixtures.js';
 
 /**
- * Wake a fixture live and wait for its trace to settle. The public wake now
- * returns an admission only; this helper preserves the old test intent.
+ * Trigger a fixture live and wait for its field to settle. Delivery returns no
+ * run identity; the LiveHive's own status is the execution state.
  */
-async function wakeNow(
+async function triggerNow(
   host: LiveHiveHost,
   service: LiveHiveService,
   liveId: string,
   beeId: string,
   input: string,
-): Promise<LiveHiveAdmission> {
-  const admission = await service.wake(liveId, beeId, input);
-  await host.runs.wait(admission.runId);
-  return admission;
+): Promise<void> {
+  await service.trigger(liveId, beeId, input);
+  const deadline = Date.now() + 2_000;
+  while (host.statusOf(liveId)?.rest !== true) {
+    if (Date.now() >= deadline) {
+      throw new Error(`live '${liveId}' did not reach Rest`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 interface Harness {
@@ -45,7 +48,6 @@ interface Harness {
   readonly root: string;
   readonly host: LiveHiveHost;
   readonly templates: HiveTemplateStore;
-  readonly runStore: RunStore;
   readonly service: LiveHiveService;
 }
 
@@ -58,10 +60,8 @@ function setup(t: TestContext): Harness {
     directory: mkdtempSync(join(tmpdir(), 'wax-service-project-')),
   };
   const root = mkdtempSync(join(tmpdir(), 'wax-service-state-'));
-  const runStore = new RunStore(join(root, 'runs'));
   const host = new LiveHiveHost({
     registry,
-    runStore,
     honeyForGraph: (graphId) => HoneyStore.forComposition(root, 'apiary', graphId),
     bindingStore: new GraphBindingStore(join(root, 'bindings.json')),
   });
@@ -72,7 +72,6 @@ function setup(t: TestContext): Harness {
     livesRoot: join(root, 'lives'),
     templateStore: templates,
     defaultProject: project,
-    runStore,
   });
   t.after(async () => {
     await host.dispose();
@@ -86,7 +85,6 @@ function setup(t: TestContext): Harness {
     root,
     host,
     templates,
-    runStore,
     service,
   };
 }
@@ -112,7 +110,7 @@ async function boundLive(harness: Harness): Promise<LiveHive> {
   };
 }
 
-test('LiveHiveService new/wake/save/unload/load round-trips one live', async (t) => {
+test('LiveHiveService new/trigger/save/unload/load round-trips one live', async (t) => {
   const harness = setup(t);
   const live = await boundLive(harness);
   const created = await harness.service.new(live);
@@ -124,12 +122,14 @@ test('LiveHiveService new/wake/save/unload/load round-trips one live', async (t)
   assert.equal(harness.host.statusOf('demo')?.rest, true);
   assert.equal(harness.service.read.list().find((entry) => entry.liveId === 'demo')?.state, 'loaded');
 
-  const woke = await wakeNow(harness.host, harness.service, 'demo', 'draft', 'hello');
-  assert.equal(woke.graphId, 'demo');
+  await triggerNow(harness.host, harness.service, 'demo', 'draft', 'hello');
   assert.equal(harness.host.statusOf('demo')?.rest, true);
-  assert.equal(harness.service.read.output('demo').runId, woke.runId);
-  assert.equal(harness.service.read.output('demo', woke.runId).runId, woke.runId);
-  assert.throws(() => harness.service.read.output('demo', 'unknown-run'), /run output is not available/);
+  const output = harness.service.read.output('demo');
+  assert.equal(output.liveId, 'demo');
+  assert.deepEqual(
+    output.outputs.find((entry) => entry.nodeId === 'draft')?.value,
+    { kind: 'text', text: 'dispatched' },
+  );
 
   const saved = await harness.service.save('demo');
   assert.equal(saved.graphId, 'demo');
@@ -148,11 +148,13 @@ test('LiveHiveService new/wake/save/unload/load round-trips one live', async (t)
   assert.equal(unloadedInspect.status, undefined);
   assert.deepEqual(unloadedInspect.outputs, []);
   assert.equal(harness.service.read.list().find((entry) => entry.liveId === 'demo')?.state, 'unloaded');
-  assert.equal(harness.service.read.output('demo').runId, woke.runId);
+  // The field released its memory-only outputs on unload.
+  assert.throws(() => harness.service.read.output('demo'), /not loaded/);
   const loaded = await harness.service.load('demo');
   assert.equal(loaded.status.graphId, 'demo');
   assert.equal(harness.host.statusOf('demo')?.rest, true);
   assert.deepEqual(JSON.parse(readFileSync(livePath, 'utf8')), live);
+  assert.deepEqual(harness.service.read.output('demo').outputs, []);
 });
 
 test('LiveHiveService compose/instantiate uses template defaults and creates sessions', async (t) => {
@@ -185,10 +187,8 @@ test('LiveHiveService compose/instantiate uses template defaults and creates ses
   const draft = harness.registry.list().find((record) => record.model === 'override-model');
   assert.ok(draft !== undefined);
   assert.equal(harness.host.statusOf('instantiated')?.rest, true);
-  assert.equal(
-    (await wakeNow(harness.host, harness.service, 'instantiated', 'draft', 'x')).graphId,
-    'instantiated',
-  );
+  await triggerNow(harness.host, harness.service, 'instantiated', 'draft', 'x');
+  assert.equal(harness.host.statusOf('instantiated')?.rest, true);
 });
 
 test('LiveHiveService migrate replaces structure explicitly without fork semantics', async (t) => {
@@ -235,7 +235,7 @@ test('LiveHiveService rejects invalid, unknown and unsafe live inputs', async (t
   );
   await assert.rejects(harness.service.load('missing'), /not loaded/);
   await assert.rejects(harness.service.load('../escape'), LiveHiveServiceError);
-  await assert.rejects(harness.service.wake('demo', 'draft', 'x'), /Graph is not loaded/);
+  await assert.rejects(harness.service.trigger('demo', 'draft', 'x'), /Graph is not loaded/);
   await assert.rejects(
     harness.service.new({ ...simpleLiveHive(), liveId: '../escape' } as LiveHive),
     LiveHiveServiceError,

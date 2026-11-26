@@ -12,9 +12,9 @@ import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 import {
   bOutput,
-  bWake,
+  bTrigger,
   liveFrom,
-  waitForRunTerminal,
+  waitForRest,
 } from './support/control-server-http.js';
 
 interface Env {
@@ -332,7 +332,7 @@ test('a pending native approval is listed and allowed through the broker', async
     200,
   );
 
-  const triggerPromise = bWake(running.url, running.token, 'guarded', 'only', 'go');
+  const triggerPromise = bTrigger(running.url, running.token, 'guarded', 'only', 'go');
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
 
   const guard = await assertSingleGuard(running, env, 'guarded');
@@ -346,22 +346,20 @@ test('a pending native approval is listed and allowed through the broker', async
 
   const trigger = await triggerPromise;
   assert.equal(trigger.status, 202, trigger.text);
-  const finished = await waitForRunTerminal(
+  const finished = await waitForRest(
     running.url,
     running.token,
     'guarded',
-    String(trigger.body?.['runId']),
   );
-  assert.equal(finished.body?.['run']?.['state'], 'completed');
+  assert.equal(finished.body?.['status']?.['rest'], true);
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['allow_once']);
   assert.equal((await get(running, '/guards'))['guards'].length, 0);
 
-  // Guard is a wake modifier, not a separate RunOperation: the guarded wake
-  // must still leave a durable trigger run with the output.
+  // Guard is a trigger modifier, not a separate run: the field keeps the
+  // guarded bee's last output and exposes no run identity.
   const run = await bOutput(running.url, running.token, 'guarded');
   assert.equal(run.status, 200);
-  assert.equal(run.body?.['operation'], 'trigger');
-  assert.equal(typeof run.body?.['runId'], 'string');
+  assert.equal(run.body?.['runId'], undefined);
   assert.deepEqual(run.body?.['outputs'], [
     { nodeId: 'only', value: { kind: 'text', text: 'approved' } },
   ]);
@@ -397,7 +395,7 @@ test('an expired guard decision is rejected without auto-allow', async (t) => {
   assert.equal(loaded.status, 200);
 
   const startedAt = Date.now();
-  const wakePromise = bWake(running.url, running.token, 'expired', 'only', 'go');
+  const wakePromise = bTrigger(running.url, running.token, 'expired', 'only', 'go');
   const guard = await waitForGuard(running, wakePromise);
   // An empty guard list means the broker already settled the request at its
   // deadline. The runtime timer fires first and notifies the broker.
@@ -418,13 +416,12 @@ test('an expired guard decision is rejected without auto-allow', async (t) => {
 
   const wake = await wakePromise;
   assert.equal(wake.status, 202);
-  const finished = await waitForRunTerminal(
+  const finished = await waitForRest(
     running.url,
     running.token,
     'expired',
-    String(wake.body?.['runId']),
   );
-  assert.equal(finished.body?.['run']?.['state'], 'completed');
+  assert.equal(finished.body?.['status']?.['rest'], true);
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['cancelled']);
 });
 
@@ -441,7 +438,7 @@ test('reject and timeout never auto-allow', async (t) => {
     project: env.project,
   });
 
-  const rejectedPromise = bWake(running.url, running.token, 'guarded', 'only', 'reject');
+  const rejectedPromise = bTrigger(running.url, running.token, 'guarded', 'only', 'reject');
   const rejectedGuard = await waitForGuard(running, rejectedPromise);
   assert.ok(rejectedGuard !== undefined);
   assert.equal(
@@ -457,7 +454,7 @@ test('reject and timeout never auto-allow', async (t) => {
   assert.equal(rejected.status, 202);
   assert.deepEqual(adapter.approvals.map((item) => item.kind), ['reject_once']);
 
-  const timedOutPromise = bWake(running.url, running.token, 'guarded', 'only', 'timeout');
+  const timedOutPromise = bTrigger(running.url, running.token, 'guarded', 'only', 'timeout');
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 1);
   await waitFor(async () => (await get(running, '/guards'))['guards'].length === 0);
   const timedOut = await timedOutPromise;

@@ -46,7 +46,6 @@ function branchPheromone(
 ): Pheromone {
   return {
     id: `ph_${forkId}_${branchId}`,
-    traceId: `tr_${forkId}`,
     forkId,
     branchId,
     value,
@@ -186,11 +185,11 @@ function emptyField(definition: CompositionDefinition): PersistedField {
 function withJoin(
   definition: CompositionDefinition,
   join: PersistedJoinState,
-  queue: Pheromone[] = [],
+  receptor: Pheromone[] = [],
   forkId = 'fk_one',
 ): PersistedField {
   const field = emptyField(definition);
-  field.nodes['merge'] = { queue, joins: { [forkId]: join } };
+  field.nodes['merge'] = { receptor, joins: { [forkId]: join } };
   return field;
 }
 
@@ -210,7 +209,7 @@ test('required branches that arrive before the deadline emit and disable the tim
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const waiting = runtime.snapshot();
@@ -249,7 +248,7 @@ test('a deadline with required branches missing fails the fork, cancels siblings
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   assert.equal(runtime.snapshot().rest, false);
@@ -264,7 +263,7 @@ test('a deadline with required branches missing fails the fork, cancels siblings
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, true);
   assert.equal(snapshot.nodes['ask']?.hover, undefined, 'the queued sibling hover was cancelled');
-  assert.equal(snapshot.nodes['ask']?.queue.length, 0);
+  assert.equal(snapshot.nodes['ask']?.receptor.length, 0);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0, 'no merge emit');
   const join = joinOf(snapshot);
   assert.ok(join !== undefined);
@@ -397,7 +396,7 @@ test('a late required branch after a timeout is dropped without rejoining or a s
   }).runtime;
   const field = closed.exportField();
   field.nodes['merge'] = {
-    queue: [branchPheromone(forkId, 'b')],
+    receptor: [branchPheromone(forkId, 'b')],
     ...(field.nodes['merge']?.joins === undefined
       ? {}
       : { joins: field.nodes['merge']?.joins }),
@@ -442,7 +441,7 @@ test('a late optional branch after a timeout is dropped without reopening the jo
   }).runtime;
   const field = closed.exportField();
   field.nodes['merge'] = {
-    queue: [branchPheromone(forkId, 'b')],
+    receptor: [branchPheromone(forkId, 'b')],
     ...(field.nodes['merge']?.joins === undefined
       ? {}
       : { joins: field.nodes['merge']?.joins }),
@@ -476,7 +475,7 @@ test('an arrived optional branch never blocks the required timeout', async () =>
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const waiting = runtime.snapshot();
@@ -511,7 +510,7 @@ test('a required branch that arrives after the deadline times out instead of emi
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   const deadline = runtime.nextWakeAt();
   assert.ok(deadline !== undefined);
@@ -556,7 +555,7 @@ test('timed-out tombstones share the completed 1h/64 cleanup bound on restore', 
       timedOutAt: new Date(START - index * 1000).toISOString(),
     };
   }
-  field.nodes['merge'] = { queue: [], joins };
+  field.nodes['merge'] = { receptor: [], joins };
   field.rest = true;
 
   const { runtime } = PheromoneRuntime.restore(definition, field, {
@@ -572,7 +571,7 @@ test('timed-out tombstones share the completed 1h/64 cleanup bound on restore', 
 
   // A marker older than the shared TTL is pruned as well.
   field.nodes['merge'] = {
-    queue: [],
+    receptor: [],
     joins: {
       fk_stale: {
         arrived: [],

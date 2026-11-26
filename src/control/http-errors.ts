@@ -1,8 +1,6 @@
 import {
   DispatchConflictError,
-  DispatchExecutionError,
   DispatchSessionNotFoundError,
-  DispatchTimeoutError,
 } from '../b/dispatch-service.js';
 import { LiveHiveServiceError } from '../b/live-hive-service-errors.js';
 import {
@@ -12,7 +10,7 @@ import {
   LiveHiveHostNotFoundError,
 } from '../daemon/graph-host.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
-import { CompositionValidationError, MailboxBlockTimeoutError, QueueFullError } from '../runtime/index.js';
+import { CompositionValidationError, ReceptorBlockTimeoutError, ReceptorFullError } from '../runtime/index.js';
 import { ForagerExecutionError } from '../session/forager.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
 import { ConversationBusyError, SessionBusyError } from '../session/session-errors.js';
@@ -31,9 +29,9 @@ export function toHttpError(error: unknown): HttpError {
   if (service !== undefined) {
     return service;
   }
-  const mailbox = mapMailboxError(error);
-  if (mailbox !== undefined) {
-    return mailbox;
+  const receptor = mapReceptorError(error);
+  if (receptor !== undefined) {
+    return receptor;
   }
   if (error instanceof CompositionValidationError) {
     return new HttpError(400, 'bad-request', 'invalid composition definition');
@@ -96,10 +94,10 @@ function mapLiveHiveServiceError(error: unknown): HttpError | undefined {
   return undefined;
 }
 
-/** Structured mailbox overflow errors; callers can read bee, depth and limit. */
-function mapMailboxError(error: unknown): HttpError | undefined {
-  if (error instanceof QueueFullError) {
-    return new HttpError(429, 'bee-mailbox-full', 'bee mailbox is full', {
+/** Structured receptor overflow errors; callers can read bee, depth and limit. */
+function mapReceptorError(error: unknown): HttpError | undefined {
+  if (error instanceof ReceptorFullError) {
+    return new HttpError(429, 'bee-receptor-full', 'bee receptor is full', {
       body: {
         liveId: error.liveId,
         beeId: error.nodeId,
@@ -109,8 +107,8 @@ function mapMailboxError(error: unknown): HttpError | undefined {
       },
     });
   }
-  if (error instanceof MailboxBlockTimeoutError) {
-    return new HttpError(429, 'bee-mailbox-block-timeout', 'bee mailbox block wait timed out', {
+  if (error instanceof ReceptorBlockTimeoutError) {
+    return new HttpError(429, 'bee-receptor-block-timeout', 'bee receptor block wait timed out', {
       body: {
         liveId: error.liveId,
         beeId: error.beeId,
@@ -139,14 +137,6 @@ function mapSessionAndDispatchError(error: unknown): HttpError | undefined {
   }
   if (error instanceof DispatchConflictError) {
     return new HttpError(409, 'conflict', 'dispatch session parameters conflict with the session');
-  }
-  if (error instanceof DispatchTimeoutError) {
-    return new HttpError(409, 'dispatch-timeout', 'dispatch timed out');
-  }
-  if (error instanceof DispatchExecutionError) {
-    return error.state === 'cancelled'
-      ? new HttpError(409, 'execution-cancelled', 'execution was cancelled')
-      : new HttpError(500, 'internal', 'internal error');
   }
   return undefined;
 }

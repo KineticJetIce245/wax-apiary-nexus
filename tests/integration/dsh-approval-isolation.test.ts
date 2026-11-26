@@ -11,27 +11,25 @@ import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
 import {
-  admissionRunId,
   autoDecideGuards,
   bLoad,
-  bRun,
   bUnload,
-  bWake,
+  bTrigger,
   getJson,
   postJson,
-  waitForRunTerminal,
+  waitForRest,
 } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 const integrationOptions = {
   skip:
     dshRoot === undefined || builtCli === undefined || !existsSync(builtCli) || !hasKey
-      ? 'Real DSH approval-isolation test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
+      ? 'Real DSH approval-isolation test needs DSH_ROOT (built CLI) and OPENCODE_API_KEY'
       : false,
   timeout: 240_000,
 };
@@ -136,7 +134,7 @@ test(
     );
     assert.deepEqual([...(liveIds ?? [])].sort(), [liveA, liveB].sort());
 
-    const wakeA = await bWake(
+    const wakeA = await bTrigger(
       info.url,
       token,
       liveA,
@@ -145,17 +143,13 @@ test(
         `with the exact content ${marker}. Report done. Do not use any other directory.`,
     );
     assert.equal(wakeA.status, 202, wakeA.text);
-    const runIdA = admissionRunId(wakeA.body);
     const guardA = await waitForGuard(info.url, token, liveA, GUARD_TIMEOUT_MS / 2);
-    // Admission has already returned; the run must still be non-terminal while
-    // its approval is parked, proving the guard was not auto-answered.
-    const midA = await bRun(info.url, token, liveA, runIdA);
+    // Delivery has already returned; the field must still be non-Rest while its
+    // approval is parked, proving the guard was not auto-answered.
+    const midA = await getJson(info.url, token, `/lives/${liveA}/inspect`);
     assert.equal(midA.status, 200, midA.text);
-    const midState = midA.body?.['run']?.['state'];
-    assert.ok(
-      ['accepted', 'running'].includes(String(midState)),
-      `run settled while its approval was parked: ${String(midState)}`,
-    );
+    assert.equal(midA.body?.['status']?.['rest'], false);
+    assert.equal(midA.body?.['status']?.['hovered'], true);
     const stillListed = await getJson(info.url, token, '/guards');
     assert.equal(stillListed.status, 200, stillListed.text);
     const guards = (stillListed.body?.['guards'] as Record<string, any>[]) ?? [];
@@ -180,25 +174,19 @@ test(
       decision: 'allow_once',
     });
     assert.equal(allowed.status, 200, allowed.text);
-    const doneA = await waitForRunTerminal(info.url, token, liveA, runIdA, 180_000);
+    const doneA = await waitForRest(info.url, token, liveA, 180_000, false);
     assert.equal(doneA.status, 200, doneA.text);
-    assert.equal(doneA.body?.['run']?.['state'], 'completed');
+    assert.equal(doneA.body?.['status']?.['rest'], true);
     const written = existsSync(join(project.directory, fileName))
       ? readFileSync(join(project.directory, fileName), 'utf8')
       : undefined;
     assert.equal(written, marker, 'the allowed write did not happen');
 
     // The co-loaded idle live still works after the fix; it never interfered.
-    const admissionB = await bWake(info.url, token, liveB, 'only', 'Reply with just OK.');
+    const admissionB = await bTrigger(info.url, token, liveB, 'only', 'Pick a random integer from 100 through 999. Do not use tools. Reply with only the integer.');
     assert.equal(admissionB.status, 202, admissionB.text);
-    const doneB = await waitForRunTerminal(
-      info.url,
-      token,
-      liveB,
-      admissionRunId(admissionB.body),
-      180_000,
-    );
-    assert.equal(doneB.body?.['run']?.['state'], 'completed');
+    const doneB = await waitForRest(info.url, token, liveB, 180_000);
+    assert.equal(doneB.body?.['status']?.['rest'], true);
 
     for (const liveId of [liveA, liveB]) {
       const unloaded = await bUnload(info.url, token, liveId);
@@ -207,7 +195,8 @@ test(
     t.diagnostic(
       `liveA=${liveA} liveB=${liveB} guardLive=${String(guardA['liveId'])} ` +
         `guardOptions=${JSON.stringify(guardA['options'])} ` +
-        `runState=${String(doneA.body?.['run']?.['state'])} fileWritten=true`,
+        `restA=${String(doneA.body?.['status']?.['rest'])} ` +
+        `restB=${String(doneB.body?.['status']?.['rest'])} fileWritten=true`,
     );
   },
 );

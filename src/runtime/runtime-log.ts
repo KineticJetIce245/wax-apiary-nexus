@@ -22,8 +22,7 @@ export function logActivated(
     nodeId: node.id,
     nodeKind: node.kind,
     pheromoneId: pheromone.id,
-    traceId: pheromone.traceId,
-    queueDepth: state.queue?.length ?? 0,
+    queueDepth: state.receptor?.length ?? 0,
     ...(pheromone.forkId === undefined ? {} : { forkId: pheromone.forkId }),
     ...(pheromone.branchId === undefined ? {} : { branchId: pheromone.branchId }),
   });
@@ -42,7 +41,6 @@ export function logCompleted(
     nodeId: node.id,
     nodeKind: node.kind,
     pheromoneId: pheromone.id,
-    traceId: pheromone.traceId,
     outcome,
     durationMs,
     ...(extra ?? {}),
@@ -62,7 +60,6 @@ export function logFailed(
     nodeId: node.id,
     nodeKind: node.kind,
     pheromoneId: pheromone.id,
-    traceId: pheromone.traceId,
     outcome: 'failed',
     durationMs: now - startedAt,
     error: error instanceof Error ? error.message : String(error),
@@ -92,7 +89,6 @@ export function logActivationBlocked(
     nodeId: node.id,
     nodeKind: node.kind,
     pheromoneId: pheromone.id,
-    traceId: pheromone.traceId,
     queueDepth,
     outcome: `queue-max:${target}`,
   });
@@ -116,7 +112,6 @@ export function logHoverBlocked(
     nodeId: node.id,
     nodeKind: 'user',
     pheromoneId: pheromone.id,
-    traceId: pheromone.traceId,
     queueDepth: details.queueDepth,
     outcome: `${details.hoverOutcome}:queue-max:${target}`,
   });

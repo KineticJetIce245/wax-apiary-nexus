@@ -48,7 +48,7 @@ test('a single-level fork/merge still emits an untagged top-level output', async
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runToRest(runtime, () => {
     clock += 1000;
   });
@@ -81,7 +81,7 @@ test('an inner merge restores the outer branch tag so the outer merge completes'
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runToRest(runtime, () => {
     clock += 1000;
   });
@@ -132,7 +132,7 @@ test('three levels of nesting pop one lineage tag per merge', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runToRest(runtime, () => {
     clock += 1000;
   });
@@ -199,7 +199,7 @@ test('two outer branches with inner forks keep their groups separate', async () 
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runToRest(runtime, () => {
     clock += 1000;
   });
@@ -268,7 +268,7 @@ test('normal nodes preserve lineage and an inner fork copies a structured Value'
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   // The inner Merge can only activate once per minimum interval.
   clock += 1000;
@@ -314,7 +314,7 @@ test('inner optional branches complete the inner merge without changing outer se
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   // The two required inner branches share the inner Merge's minimum interval.
   clock += 1000;
@@ -369,7 +369,7 @@ test('an inner timeout cancels only the inner fork and leaves the outer sibling'
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   let snapshot = runtime.snapshot();
@@ -429,7 +429,7 @@ test('an inner branch failure cancels only the inner fork and leaves the outer s
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await assert.rejects(runtime.pump(), /inner branch exploded/);
   // The outer sibling may still be queued when the inner error leaves pump().
   await runtime.pump();

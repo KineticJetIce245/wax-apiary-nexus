@@ -7,12 +7,11 @@ import {
   parseMigrateLiveBody,
   parseNewLiveBody,
   parseTemplateBody,
-  parseWakeLiveBody,
+  parseTriggerLiveBody,
 } from './b-validation.js';
 import type { LiveHiveService } from '../b/live-hive-service.js';
-import { toPublicRunResult, toPublicStatus } from '../b/public-status.js';
+import { toPublicStatus } from '../b/public-status.js';
 import { LiveHiveHostLoadError } from '../daemon/graph-host.js';
-import { queryParam } from './route-output.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
 import { HttpError, RouteReply } from './server-types.js';
@@ -23,7 +22,6 @@ export async function dispatchLiveRoute(
   route: Route,
   payload: Record<string, unknown> | undefined,
   method?: string,
-  rawUrl?: string,
 ): Promise<Record<string, unknown> | RouteReply> {
   const service = context.requireLiveHiveService();
   if (LIVE_STATE_KINDS.has(route.kind)) {
@@ -37,13 +35,11 @@ export async function dispatchLiveRoute(
       return dispatchLifecycle(service, route.kind, payload);
     case 'lives-list':
       return listLives(service);
-    case 'lives-wake':
+    case 'lives-trigger':
     case 'lives-answer':
-      return dispatchLiveRun(service, route.kind, payload);
+      return dispatchLiveDelivery(service, route.kind, payload);
     case 'lives-output':
-      return dispatchLiveOutput(service, route, rawUrl);
-    case 'lives-run':
-      return dispatchLiveRunQuery(service, route);
+      return dispatchLiveOutput(service, route);
     case 'templates':
     case 'dispatch':
       return dispatchLiveUtility(service, route.kind, payload, method);
@@ -74,7 +70,6 @@ function listLives(service: LiveHiveService): Record<string, unknown> {
 function dispatchLiveOutput(
   service: LiveHiveService,
   route: Route,
-  rawUrl: string | undefined,
 ): Record<string, unknown> {
   const liveId = route.graphId;
   if (liveId === undefined) {
@@ -82,20 +77,8 @@ function dispatchLiveOutput(
   }
   return {
     ok: true,
-    ...service.read.output(liveId, queryParam(rawUrl, 'runId')),
+    ...service.read.output(liveId),
   };
-}
-
-function dispatchLiveRunQuery(
-  service: LiveHiveService,
-  route: Route,
-): Record<string, unknown> {
-  const liveId = route.graphId;
-  const runId = route.runId;
-  if (liveId === undefined || runId === undefined) {
-    throw new HttpError(404, 'not-found', 'not found');
-  }
-  return { ok: true, run: service.read.run(liveId, runId) };
 }
 
 async function dispatchLifecycle(
@@ -129,31 +112,24 @@ async function dispatchLifecycle(
   return { ok: true, liveId: result.liveId, status: toPublicStatus(result.status) };
 }
 
-async function dispatchLiveRun(
+/**
+ * Trigger and answer are deliveries, not runs: both hand the work to the field
+ * and answer 202 `{ok:true}` with no id. Execution state is read from the
+ * LiveHive itself (`inspect`, output).
+ */
+async function dispatchLiveDelivery(
   service: LiveHiveService,
-  kind: 'lives-wake' | 'lives-answer',
+  kind: 'lives-trigger' | 'lives-answer',
   payload: Record<string, unknown> | undefined,
-): Promise<Record<string, unknown> | RouteReply> {
-  if (kind === 'lives-wake') {
-    const body = parseWakeLiveBody(payload);
-    const result = await service.wake(body.liveId, body.beeId, body.input);
-    return new RouteReply(
-      {
-        ok: true,
-        runId: result.runId,
-        traceId: result.traceId,
-        status: 'accepted',
-      },
-      202,
-    );
+): Promise<RouteReply> {
+  if (kind === 'lives-trigger') {
+    const body = parseTriggerLiveBody(payload);
+    await service.trigger(body.liveId, body.beeId, body.input);
+  } else {
+    const body = parseAnswerLiveBody(payload);
+    await service.answer(body.liveId, body.beeId, body.input, body.token);
   }
-  const body = parseAnswerLiveBody(payload);
-  return {
-    ok: true,
-    result: toPublicRunResult(
-      await service.answer(body.liveId, body.beeId, body.input, body.token),
-    ),
-  };
+  return new RouteReply({ ok: true }, 202);
 }
 
 async function dispatchLiveState(
@@ -234,7 +210,7 @@ async function dispatchLiveUtility(
   kind: 'templates' | 'dispatch',
   payload: Record<string, unknown> | undefined,
   method?: string,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | RouteReply> {
   if (kind === 'templates') {
     if (method === 'GET') {
       return { ok: true, templates: service.listTemplates() };
@@ -244,13 +220,12 @@ async function dispatchLiveUtility(
     return { ok: true, templateId: template.templateId };
   }
   const body = parseDispatchBody(payload);
-  const result = await service.dispatchService.dispatch(body.input, {
+  await service.dispatchService.dispatch(body.input, {
     ...(body.sessionParams === undefined ? {} : { sessionParams: body.sessionParams }),
     ...(body.sessionId === undefined ? {} : { sessionId: body.sessionId }),
-    ...(body.timeoutMs === undefined ? {} : { timeoutMs: body.timeoutMs }),
     ...(body.project === undefined ? {} : { project: body.project }),
   });
-  return { ok: true, output: result.output, sessionId: result.sessionId };
+  return new RouteReply({ ok: true }, 202);
 }
 
 export const LIVE_ROUTE_KINDS = new Set<Route['kind']>([
@@ -258,14 +233,13 @@ export const LIVE_ROUTE_KINDS = new Set<Route['kind']>([
   'lives-list',
   'lives-load',
   'lives-instantiate',
-  'lives-wake',
+  'lives-trigger',
   'lives-answer',
   'lives-save',
   'lives-unload',
   'lives-migrate',
   'lives-inspect',
   'lives-output',
-  'lives-run',
   'templates',
   'dispatch',
 ]);

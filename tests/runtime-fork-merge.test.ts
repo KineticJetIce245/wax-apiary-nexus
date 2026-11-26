@@ -44,7 +44,6 @@ function branchPheromone(
 ): Pheromone {
   return {
     id: `ph_${forkId}_${branchId}`,
-    traceId: `tr_${forkId}`,
     forkId,
     branchId,
     value,
@@ -200,7 +199,7 @@ test('fork consumes one Pheromone and emits one tagged copy per branch', async (
     now: () => START,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const snapshot = runtime.snapshot();
@@ -243,7 +242,7 @@ test('merge waits for every required branch and emits exactly once', async () =>
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const waiting = runtime.snapshot();
@@ -303,7 +302,7 @@ test('text combine follows the required order, not arrival order', async () => {
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
 
@@ -324,10 +323,10 @@ test('two forkIds interleave at one merge without mixing groups', async () => {
     now: () => clock,
   });
 
-  runtime.trigger('start1', text('one'));
+  runtime.admit('start1', text('one'));
   await runtime.pump();
   clock += 1000;
-  runtime.trigger('start2', text('two'));
+  runtime.admit('start2', text('two'));
   await runtime.pump();
 
   const waiting = runtime.snapshot();
@@ -392,7 +391,7 @@ test('a missing required branch waits for the merge deadline, then times out', a
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const waiting = runtime.snapshot();
@@ -465,7 +464,7 @@ test('a failed branch fails the merge, cancels siblings and is never replayed', 
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await assert.rejects(runtime.pump(), /branch exploded/);
 
   const snapshot = runtime.snapshot();
@@ -486,7 +485,7 @@ test('an unknown active branch found on restore fails its join', () => {
     now: () => START,
   }).exportField();
   field.nodes['merge'] = {
-    queue: [],
+    receptor: [],
     joins: {
       fk_restore: {
         arrived: [branchPheromone('fk_restore', 'a')],
@@ -495,7 +494,7 @@ test('an unknown active branch found on restore fails its join', () => {
     },
   };
   field.nodes['make-b'] = {
-    queue: [],
+    receptor: [],
     active: branchPheromone('fk_restore', 'b'),
   };
 
@@ -522,7 +521,7 @@ test('a duplicate branch arrival is rejected and fails the join', async () => {
     now: () => START,
   }).exportField();
   field.nodes['merge'] = {
-    queue: [branchPheromone('fk_duplicate', 'a')],
+    receptor: [branchPheromone('fk_duplicate', 'a')],
     joins: {
       fk_duplicate: {
         arrived: [branchPheromone('fk_duplicate', 'a')],
@@ -554,7 +553,7 @@ test('Rest stays false while a restored join is incomplete', () => {
     now: () => START,
   }).exportField();
   field.nodes['merge'] = {
-    queue: [],
+    receptor: [],
     joins: {
       fk_wait: {
         arrived: [branchPheromone('fk_wait', 'a')],
@@ -588,7 +587,7 @@ test('a restored complete join settles once without replaying its branches', asy
     now: () => START,
   }).exportField();
   field.nodes['merge'] = {
-    queue: [],
+    receptor: [],
     joins: {
       fk_complete: {
         arrived: [
@@ -619,7 +618,7 @@ test('fork copies a non-text Value unchanged', async () => {
     now: () => START,
   });
 
-  runtime.trigger('start', { kind: 'boolean', value: true });
+  runtime.admit('start', { kind: 'boolean', value: true });
   await runtime.pump();
 
   const values = runtime.snapshot().pheromones.map((pheromone) => pheromone.value);
@@ -656,7 +655,7 @@ test('a merge without an outgoing edge is terminal', async () => {
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   clock += 1000;
   await runtime.pump();
@@ -698,7 +697,7 @@ test('an unexpected branch arrival fails the merge and cancels siblings', async 
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   clock += 1000;
   await runtime.pump();
@@ -750,12 +749,12 @@ test('a failed branch cancels a sibling waiting in a user hover', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await assert.rejects(runtime.pump(), /branch exploded/);
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['ask']?.hover, undefined);
-  assert.equal(snapshot.nodes['ask']?.queue.length, 0);
+  assert.equal(snapshot.nodes['ask']?.receptor.length, 0);
   assert.equal(snapshot.rest, true);
   assert.ok(log.entries.some((entry) => entry.event === 'hover.cancelled'));
 });

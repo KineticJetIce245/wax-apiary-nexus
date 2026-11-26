@@ -11,7 +11,7 @@ import type {
 } from './types.js';
 
 export function createNodeState(): NodeState {
-  // A resting bee has no mailbox; the first enqueue creates one.
+  // A resting bee has no receptor; the first enqueue creates one.
   return {};
 }
 
@@ -19,55 +19,41 @@ export function clonePheromone(pheromone: Pheromone): Pheromone {
   return structuredClone(pheromone);
 }
 
-/** The mailbox of a bee; a resting bee has none, which reads as empty here. */
-export function mailboxOf(state: NodeState): readonly Pheromone[] {
-  return state.queue ?? [];
+/** The receptor of a bee; a resting bee has none, which reads as empty here. */
+export function receptorOf(state: NodeState): readonly Pheromone[] {
+  return state.receptor ?? [];
 }
 
-/** Restores a mailbox only when it holds input; an empty one is omitted. */
-export function setMailbox(state: NodeState, mailbox: readonly Pheromone[]): void {
-  if (mailbox.length === 0) {
+/** Restores a receptor only when it holds input; an empty one is omitted. */
+export function setReceptor(state: NodeState, receptor: readonly Pheromone[]): void {
+  if (receptor.length === 0) {
     return;
   }
-  state.queue = [...mailbox];
+  state.receptor = [...receptor];
 }
 
-/** Removes the mailbox of a bee with no active or pending activation left. */
-export function restMailboxIfIdle(state: NodeState): void {
+/** Removes the receptor of a bee with no active or pending activation left. */
+export function restReceptorIfIdle(state: NodeState): void {
   if (state.active !== undefined || state.pending !== undefined) {
     return;
   }
-  if ((state.queue?.length ?? 0) > 0) {
+  if ((state.receptor?.length ?? 0) > 0) {
     return;
   }
-  delete state.queue;
+  delete state.receptor;
 }
 
-/** Drops one fork's queued siblings, keeping the mailbox only for survivors. */
-export function dropForkFromMailbox(state: NodeState, forkId: string): void {
-  const mailbox = state.queue;
-  if (mailbox === undefined || !mailbox.some((pheromone) => pheromone.forkId === forkId)) {
+/** Drops one fork's queued siblings, keeping the receptor only for survivors. */
+export function dropForkFromReceptor(state: NodeState, forkId: string): void {
+  const receptor = state.receptor;
+  if (receptor === undefined || !receptor.some((pheromone) => pheromone.forkId === forkId)) {
     return;
   }
-  const kept = mailbox.filter((pheromone) => pheromone.forkId !== forkId);
+  const kept = receptor.filter((pheromone) => pheromone.forkId !== forkId);
   if (kept.length === 0) {
-    delete state.queue;
+    delete state.receptor;
   } else {
-    state.queue = kept;
-  }
-}
-
-/** Drops one cancelled trace's waiting entries, keeping other traces in FIFO. */
-export function dropTraceFromMailbox(state: NodeState, traceId: string): void {
-  const mailbox = state.queue;
-  if (mailbox === undefined || !mailbox.some((pheromone) => pheromone.traceId === traceId)) {
-    return;
-  }
-  const kept = mailbox.filter((pheromone) => pheromone.traceId !== traceId);
-  if (kept.length === 0) {
-    delete state.queue;
-  } else {
-    state.queue = kept;
+    state.receptor = kept;
   }
 }
 
@@ -81,7 +67,7 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
       node.active !== undefined ||
       node.pending !== undefined ||
       node.hover !== undefined ||
-      mailboxOf(node).length > 0 ||
+      receptorOf(node).length > 0 ||
       hasIncompleteJoin(node)
     ) {
       return false;
@@ -130,7 +116,7 @@ export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
     if (node.pending !== undefined) {
       pheromones.push(clonePheromone(node.pending));
     }
-    for (const queued of mailboxOf(node)) {
+    for (const queued of receptorOf(node)) {
       pheromones.push(clonePheromone(queued));
     }
     if (node.joins !== undefined) {
@@ -173,7 +159,7 @@ export function snapshotField(
 
   for (const [id, state] of nodes) {
     const snapshot: NodeStateSnapshot = {
-      queue: mailboxOf(state).map(clonePheromone),
+      receptor: receptorOf(state).map(clonePheromone),
       state: state.state === undefined ? {} : cloneValue(state.state),
     };
     if (state.pending !== undefined) {
@@ -207,6 +193,9 @@ export function snapshotField(
     if (state.lastActivatedAt !== undefined) {
       snapshot.lastActivatedAt = state.lastActivatedAt;
     }
+    if (state.lastOutput !== undefined) {
+      snapshot.lastOutput = cloneValue(state.lastOutput);
+    }
     nodeSnapshots[id] = snapshot;
   }
 
@@ -220,21 +209,6 @@ export function snapshotField(
   };
 
   return deepFreeze(field);
-}
-
-/**
- * Classifies a trace from a field snapshot. A parked hover is reported as
- * `present`; the runtime observer reports parking explicitly. This backstop
- * only settles a trace whose Pheromones disappeared without an activation
- * notification (for example a TTL expiry).
- */
-export function traceStateFromSnapshot(
-  snapshot: PheromoneFieldSnapshot,
-  traceId: string,
-): 'present' | 'settled' {
-  return snapshot.pheromones.some((pheromone) => pheromone.traceId === traceId)
-    ? 'present'
-    : 'settled';
 }
 
 function deepFreeze<T>(value: T): T {

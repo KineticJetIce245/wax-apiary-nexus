@@ -22,15 +22,12 @@ import {
 
 const LIVE_USAGE =
   'usage: wax live <list|new <live.json>|load <liveId> [path]|instantiate <templateId> <liveId>|' +
-  'wake <liveId> <beeId> --input <text>|answer <liveId> <beeId> --input <text> [--token <token>]|' +
   'save <liveId>|unload <liveId>|migrate <liveId> <live.json>|inspect <liveId>> ' +
   '[--project <dir>] [--daemon-dir <dir>] [--harness <codex|dsh>] [--json]';
 const INPUT_FLAGS = new Set([
   '--daemon-dir',
   '--harness',
   '--project',
-  '--input',
-  '--token',
 ]);
 
 class LiveCliIoError extends Error {
@@ -61,14 +58,6 @@ interface LiveCommon {
   readonly json: boolean;
 }
 
-type WakeAnswerCommand = LiveCommon & {
-  readonly kind: 'wake' | 'answer';
-  readonly liveId: string;
-  readonly beeId: string;
-  readonly input: string;
-  readonly token?: string;
-};
-
 type SimpleCommand = LiveCommon & {
   readonly kind: 'save' | 'unload' | 'inspect';
   readonly liveId: string;
@@ -84,7 +73,6 @@ type LiveCommand =
       readonly liveId: string;
       readonly overrides: Readonly<Record<string, SessionParams>>;
     })
-  | WakeAnswerCommand
   | SimpleCommand
   | (LiveCommon & { readonly kind: 'migrate'; readonly liveId: string; readonly file: string });
 
@@ -100,9 +88,6 @@ function liveCommand(sub: string | undefined, parsed: ParsedCliTokens): LiveComm
       return parseLoadCommand(parsed, common);
     case 'instantiate':
       return parseInstantiateCommand(parsed, common);
-    case 'wake':
-    case 'answer':
-      return parseRunCommand(sub, parsed, common);
     case 'save':
     case 'unload':
     case 'inspect':
@@ -147,28 +132,6 @@ function parseInstantiateCommand(
   };
 }
 
-function parseRunCommand(
-  kind: 'wake' | 'answer',
-  parsed: ParsedCliTokens,
-  common: LiveCommon,
-): LiveCommand {
-  requirePositionals(parsed, 2, LIVE_USAGE);
-  const [liveId, beeId] = parsed.positionals;
-  const input = parsed.flags.get('--input');
-  if (input === undefined) {
-    throw new CliUsageError(LIVE_USAGE);
-  }
-  const token = parsed.flags.get('--token');
-  return {
-    ...common,
-    kind,
-    liveId: requireValue(liveId, 'liveId'),
-    beeId: requireValue(beeId, 'beeId'),
-    input,
-    ...(token === undefined ? {} : { token }),
-  };
-}
-
 function parseSimpleCommand(
   kind: 'save' | 'unload' | 'inspect',
   parsed: ParsedCliTokens,
@@ -205,9 +168,6 @@ async function executeLive(
       return executeLoad(client, command, json, out);
     case 'instantiate':
       return executeInstantiate(client, command, json, out);
-    case 'wake':
-    case 'answer':
-      return executeRun(client, command, json, out);
     case 'save':
       return executeSave(client, command, json, out);
     case 'unload':
@@ -274,23 +234,6 @@ async function executeInstantiate(
     json,
     out,
   );
-}
-
-async function executeRun(
-  client: LiveHiveClient,
-  command: WakeAnswerCommand,
-  json: boolean,
-  out: Writer,
-): Promise<number> {
-  const result = command.kind === 'wake'
-    ? await client.wake(command.liveId, command.beeId, command.input)
-    : await client.answerLive(command.liveId, command.beeId, command.input, command.token);
-  if (json) {
-    writeJson(out, result);
-  } else {
-    out(JSON.stringify(result));
-  }
-  return 0;
 }
 
 async function executeSave(

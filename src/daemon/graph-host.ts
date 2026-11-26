@@ -5,29 +5,21 @@ import { LiveHiveHostContext } from './graph-host/context.js';
 import { LiveHiveHostExecution } from './graph-host/execution.js';
 import { LiveHiveHostLifecycle } from './graph-host/lifecycle.js';
 import { LiveHiveHostRead } from './graph-host/read.js';
-import { RunTracker } from './graph-host/run-tracker.js';
 import { SessionOwnership } from './graph-host/session-ownership.js';
 import type {
-  LiveHiveAdmission,
   LiveHiveHostOptions,
-  LiveHiveRunResult,
   LiveHiveStatus,
   LoadGraphOptions,
 } from './graph-host/types.js';
 
 export type {
-  LiveHiveAdmission,
   LiveHiveHostAnswerErrorReason,
   LiveHiveHostEvent,
   LiveHiveHostOptions,
   LiveHiveNodeStatus,
-  LiveHiveRunResult,
-  LiveHiveRunState,
-  LiveHiveRunView,
   LiveHiveStatus,
   LoadGraphOptions,
 } from './graph-host/types.js';
-export type { RunTracker } from './graph-host/run-tracker.js';
 export {
   LiveHiveHostAnswerError,
   LiveHiveHostDisposedError,
@@ -49,11 +41,10 @@ export class LiveHiveHost {
   private readonly execution: LiveHiveHostExecution;
   private readonly ownership: SessionOwnership;
   private readonly lifecycle: LiveHiveHostLifecycle;
-  readonly runs: RunTracker;
   constructor(options: LiveHiveHostOptions) {
     this.context = new LiveHiveHostContext(options);
     this.read = new LiveHiveHostRead(this.context);
-    this.execution = new LiveHiveHostExecution(this.context, this.read);
+    this.execution = new LiveHiveHostExecution(this.context);
     this.ownership = new SessionOwnership();
     this.lifecycle = new LiveHiveHostLifecycle(
       this.context,
@@ -61,13 +52,12 @@ export class LiveHiveHost {
       this.ownership,
       this.execution,
     );
-    this.runs = this.context.runs;
   }
   loadGraph(options: LoadGraphOptions): Promise<LiveHiveStatus> {
     return this.lifecycle.loadGraph(options);
   }
 
-  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<LiveHiveAdmission> {
+  trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<void> {
     return this.execution.trigger(graphId, nodeId, value);
   }
 
@@ -76,7 +66,7 @@ export class LiveHiveHost {
     nodeId: NodeId,
     value: Value,
     token?: string,
-  ): Promise<LiveHiveRunResult> {
+  ): Promise<void> {
     return this.execution.answer(graphId, nodeId, value, token);
   }
 
@@ -105,7 +95,7 @@ export class LiveHiveHost {
     return this.read.bindingsOf(graphId);
   }
 
-  /** Last completed Value of every forager in one loaded graph. */
+  /** Last completed Value of every bee in one loaded graph. */
   outputsOf(graphId: LiveHiveId): ReadonlyMap<NodeId, Value> {
     return this.read.outputsOf(graphId);
   }

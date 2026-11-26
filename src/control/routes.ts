@@ -22,10 +22,9 @@ export class ControlRoutes {
   dispatch(
     route: Route,
     payload: Record<string, unknown> | undefined,
-    rawUrl?: string,
     method?: string,
   ): Promise<Record<string, unknown> | RouteReply> {
-    return dispatchRoutes(this.context, route, payload, rawUrl, method);
+    return dispatchRoutes(this.context, route, payload, method);
   }
 }
 
@@ -33,12 +32,11 @@ async function dispatchRoutes(
   context: ControlServerContext,
   route: Route,
   payload: Record<string, unknown> | undefined,
-  rawUrl?: string,
   method?: string,
 ): Promise<Record<string, unknown> | RouteReply> {
   const host = context.requireLiveHiveHost();
   if (LIVE_ROUTE_KINDS.has(route.kind)) {
-    return dispatchLiveRoute(context, route, payload, method, rawUrl);
+    return dispatchLiveRoute(context, route, payload, method);
   }
 
   switch (route.kind) {

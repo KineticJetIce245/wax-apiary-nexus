@@ -237,7 +237,7 @@ test('object combine keys by branchId in required then arrived optional order', 
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   // The Merge is rate-limited after its first arrival; let the queued optional
@@ -303,7 +303,7 @@ test('array combine uses required then arrived optional order and excludes a lat
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   // The second required arrival is rate-limited behind the first.
   clock += 1000;
@@ -345,7 +345,7 @@ test('text combine serializes structured branch values instead of flattening the
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   // The second required arrival is rate-limited behind the first.
   clock += 1000;
@@ -372,7 +372,7 @@ test('an optional failure does not fail a structured required set', async () => 
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const doneCalls = calls.filter((call) => call.nodeId === 'done');
@@ -401,7 +401,7 @@ test('a structured combine times out without emitting a Value', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const waiting = runtime.snapshot();

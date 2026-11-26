@@ -12,18 +12,18 @@ import {
   Workspace,
   type WorkspaceEvent,
 } from '../../src/session/workspace.js';
-import { bLoad, bWake, admissionRunId, waitForRunTerminal } from '../support/control-server-http.js';
+import { bLoad, bTrigger, waitForRest } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 const integrationOptions = {
   skip:
     dshRoot === undefined || builtCli === undefined || !existsSync(builtCli) || !hasKey
-      ? 'Real DSH approval-timeout test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
+      ? 'Real DSH approval-timeout test needs DSH_ROOT (built CLI) and OPENCODE_API_KEY'
       : false,
   timeout: 240_000,
 };
@@ -172,7 +172,7 @@ test(
     const marker = `M13B-TIMEOUT-${String(Date.now())}`;
     const fileName = 'm13b-approval-timeout.txt';
     const wakeStartedAt = Date.now();
-    const wake = await bWake(
+    const wake = await bTrigger(
       info.url,
       token,
       liveId,
@@ -187,27 +187,28 @@ test(
 
     assert.equal(wake.status, 202, `${wake.text}\nruntime: ${sequence}`);
     assert.equal(wake.body?.['ok'], true);
-    assert.equal(wake.body?.['status'], 'accepted');
     assert.equal(wake.text.includes(marker), false, 'wake response leaked the prompt marker');
     assert.equal(wake.text.includes(token), false, 'wake response leaked the token');
     assert.ok(wakeElapsedMs < 30_000, `wake admission hung for ${String(wakeElapsedMs)}ms`);
-    // The approval timeout is an asynchronous run outcome now.
-    const finished = await waitForRunTerminal(
-      info.url,
-      token,
-      liveId,
-      admissionRunId(wake.body),
-      180_000,
-    );
+    // The approval timeout is asynchronous; a guard hover is not a settled user
+    // hover, so wait for Rest specifically.
+    const finished = await waitForRest(info.url, token, liveId, 180_000, false);
     assert.equal(finished.status, 200, finished.text);
-    assert.equal(finished.body?.['run']?.['state'], 'cancelled');
+    assert.equal(
+      finished.body?.['status']?.['rest'],
+      true,
+      JSON.stringify(finished.body?.['status']),
+    );
     assert.equal(finished.text.includes(marker), false, 'run response leaked the prompt marker');
     assert.equal(finished.text.includes(token), false, 'run response leaked the token');
     assert.equal(existsSync(join(project.directory, fileName)), false);
 
     // The Workspace's own approval timer is the initiator, so the execution
     // record carries that provenance instead of looking like a bare cancel.
-    assert.ok(executionId !== undefined, 'expected a native approval request');
+    assert.ok(
+      executionId !== undefined,
+      `expected a native approval request; sequence=${sequence}`,
+    );
     const execution = workspace.getExecution(executionId);
     assert.ok(execution !== undefined);
     assert.equal(execution.state, 'cancelled');
@@ -217,7 +218,7 @@ test(
     assertApprovalTimeoutSequence(observed, sequence);
 
     const wakeLine = controlLogs.find(
-      (line) => line.includes('path=/lives/wake') && line.includes('status=202'),
+      (line) => line.includes('path=/lives/trigger') && line.includes('status=202'),
     );
     assert.ok(wakeLine !== undefined, `no 202 wake log line: ${controlLogs.join(' | ')}`);
     assert.match(wakeLine, / code=ok$/);
@@ -229,7 +230,7 @@ test(
 
     t.diagnostic(
       `observed: approvalTimeoutMs=${String(APPROVAL_TIMEOUT_MS)} ` +
-        `wakeStatus=${String(wake.status)} runState=${String(finished.body?.['run']?.['state'])} ` +
+        `wakeStatus=${String(wake.status)} rest=${String(finished.body?.['status']?.['rest'])} ` +
         `wakeElapsedMs=${String(wakeElapsedMs)} executionState=${execution.state} ` +
         `cancelReason=${String(execution.cancelReason)} executionError=none; ` +
         `sequence=${sequence}`,

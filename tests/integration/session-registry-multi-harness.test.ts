@@ -172,21 +172,29 @@ async function dispatchReal(
 ): Promise<void> {
   const liveHiveHost = new LiveHiveHost({ registry });
   try {
-    const dispatched = await new DispatchService({
+    // D1: dispatch accepts a delivery and never returns the model output. The
+    // call proves the same session/admission path is used; a caller that needs
+    // the result would have to compose a graph whose next bee consumes it.
+    await new DispatchService({
       registry,
       liveHiveHost,
       defaultProject: project,
     }).dispatch(
       'Pick a random integer from 100000 through 999999. ' +
         'Do not use tools. Reply with only the integer.',
-      { sessionId, timeoutMs: 120_000 },
+      { sessionId },
     );
-    const dispatchedDigits = dispatched.output.trim().replace(/,/g, '');
-    assert.match(dispatchedDigits, /^\d{6}$/);
-    const dispatchedValue = Number(dispatchedDigits);
-    assert.ok(dispatchedValue >= 100000 && dispatchedValue <= 999999);
-    assert.equal(dispatched.sessionId, sessionId);
-    t.diagnostic(`observed dispatch: dsh=${dispatchedDigits} (100000..999999)`);
+    // Dispatch returns at handoff (D1); the temporary Bee still owns the
+    // session until it settles. Wait for the admission state, not a run record,
+    // so dispose/close does not race a live execution.
+    const deadline = Date.now() + 120_000;
+    while (registry.isBusy(sessionId) && Date.now() < deadline) {
+      await delay(100);
+    }
+    assert.equal(registry.isBusy(sessionId), false, 'the dispatch bee never settled');
+    t.diagnostic(
+      `observed dispatch accepted and settled for session ${sessionId.slice(0, 8)}`,
+    );
   } finally {
     await liveHiveHost.dispose();
   }

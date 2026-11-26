@@ -6,7 +6,7 @@ import {
   parseComposition,
   PheromoneRuntime,
   QUEUE_RETRY_MS,
-  QueueFullError,
+  ReceptorFullError,
   serializeValue,
   type NodeExecutor,
   type PersistedField,
@@ -87,11 +87,11 @@ test('a hover answer is refused before deletion when its target queue is full', 
   });
 
   // ask hovers first, then sink hovers with one input already queued.
-  runtime.trigger('ask', text('question'));
+  runtime.admit('ask', text('question'));
   await runtime.pump();
-  runtime.trigger('sink', text('seed'));
+  runtime.admit('sink', text('seed'));
   await runtime.pump();
-  runtime.trigger('sink', text('queued'));
+  runtime.admit('sink', text('queued'));
 
   const askToken = runtime.snapshot().nodes['ask']?.hover?.token;
   assert.ok(askToken !== undefined);
@@ -99,7 +99,7 @@ test('a hover answer is refused before deletion when its target queue is full', 
   assert.throws(
     () => runtime.answerHover('ask', text('reply'), askToken),
     (error: unknown) => {
-      assert.ok(error instanceof QueueFullError);
+      assert.ok(error instanceof ReceptorFullError);
       assert.equal(error.nodeId, 'sink');
       assert.equal(error.queueMax, 1);
       assert.equal(error.queueDepth, 1);
@@ -120,7 +120,7 @@ test('a hover answer is refused before deletion when its target queue is full', 
   assert.ok(blocked !== undefined);
   assert.equal(blocked.outcome, 'answered:queue-max:sink');
   assert.equal(blocked.queueDepth, 1);
-  const sinkQueue = blockedSnapshot.nodes['sink']?.queue ?? [];
+  const sinkQueue = blockedSnapshot.nodes['sink']?.receptor ?? [];
   assert.equal(sinkQueue.length, 1);
   assert.equal(serializeValue(sinkQueue[0]?.value as Value), 'queued');
 
@@ -129,14 +129,14 @@ test('a hover answer is refused before deletion when its target queue is full', 
   assert.ok(sinkToken !== undefined);
   runtime.answerHover('sink', text('sink-answer'), sinkToken);
   await runtime.pump();
-  assert.equal(runtime.snapshot().nodes['sink']?.queue.length, 0);
+  assert.equal(runtime.snapshot().nodes['sink']?.receptor.length, 0);
 
   // Retry the preserved answer. It now reaches the target instead of vanishing.
   runtime.answerHover('ask', text('reply'), askToken);
   const sinkAfterRetry = runtime.snapshot().nodes['sink'];
   assert.ok(sinkAfterRetry !== undefined);
-  assert.equal(sinkAfterRetry.queue.length, 1);
-  assert.equal(serializeValue(sinkAfterRetry.queue[0]?.value as Value), 'reply');
+  assert.equal(sinkAfterRetry.receptor.length, 1);
+  assert.equal(serializeValue(sinkAfterRetry.receptor[0]?.value as Value), 'reply');
   assert.ok(
     log.entries.some(
       (entry) =>
@@ -168,13 +168,12 @@ function mergeComposition(): ReturnType<typeof parseComposition> {
 }
 
 function plainPheromone(id: string, value: string): Pheromone {
-  return { id, traceId: `tr_${id}`, value: text(value), at: iso(START) };
+  return { id, value: text(value), at: iso(START) };
 }
 
 function branchPheromone(forkId: string, branchId: string, value: string): Pheromone {
   return {
     id: `ph_${branchId}`,
-    traceId: `tr_${branchId}`,
     forkId,
     branchId,
     lineage: [{ forkId, branchId }],
@@ -196,7 +195,7 @@ test('a complete merge join waits for downstream space without a tombstone or ou
     rest: false,
     nodes: {
       merge: {
-        queue: [],
+        receptor: [],
         joins: {
           [forkId]: {
             arrived: [
@@ -210,7 +209,7 @@ test('a complete merge join waits for downstream space without a tombstone or ou
         },
       },
       sink: {
-        queue: [plainPheromone('ph_queued', 'existing')],
+        receptor: [plainPheromone('ph_queued', 'existing')],
         pending: plainPheromone('ph_pending', 'pending'),
         lastActivatedAt: iso(START),
       },
@@ -232,7 +231,7 @@ test('a complete merge join waits for downstream space without a tombstone or ou
   assert.equal(join.arrived.length, 2, 'the arrived branches are preserved');
   assert.equal(join.completedAt, undefined, 'no completed tombstone is written');
   assert.equal(join.timedOutAt, undefined);
-  assert.equal(blocked.nodes['sink']?.queue.length, 1);
+  assert.equal(blocked.nodes['sink']?.receptor.length, 1);
   assert.ok(blocked.nodes['sink']?.pending !== undefined);
   assert.equal(
     log.entries.some((entry) => entry.event === 'merge.completed'),
@@ -264,9 +263,9 @@ test('a complete merge join waits for downstream space without a tombstone or ou
   assert.ok(settledJoin !== undefined);
   assert.ok(settledJoin.completedAt !== undefined);
   assert.deepEqual(settledJoin.arrived, []);
-  assert.equal(settled.nodes['sink']?.queue.length, 1);
+  assert.equal(settled.nodes['sink']?.receptor.length, 1);
   assert.equal(
-    serializeValue(settled.nodes['sink']?.queue[0]?.value as Value),
+    serializeValue(settled.nodes['sink']?.receptor[0]?.value as Value),
     'A\nB',
     'the joined output is queued for the downstream node',
   );
@@ -322,11 +321,11 @@ test('a text condition only preflights the branch it will take', async () => {
   });
 
   // Fill the branch the condition will NOT take.
-  runtime.trigger('no', text('held'));
+  runtime.admit('no', text('held'));
   await runtime.pump();
-  runtime.trigger('no', text('held-2'));
+  runtime.admit('no', text('held-2'));
 
-  runtime.trigger('start', text('yes please'));
+  runtime.admit('start', text('yes please'));
   await runtime.pump();
 
   // The condition still ran and took the true edge despite the false queue.
@@ -334,7 +333,7 @@ test('a text condition only preflights the branch it will take', async () => {
   assert.ok(yes !== undefined);
   assert.ok(yes.hover !== undefined);
   const no = runtime.snapshot().nodes['no'];
-  assert.equal(no?.queue.length, 1, 'the unused branch queue is untouched');
+  assert.equal(no?.receptor.length, 1, 'the unused branch queue is untouched');
   assert.ok(
     log.entries.some(
       (entry) =>
@@ -361,11 +360,11 @@ test('a text condition is paused when the branch it will take is full', async ()
     onLog: log.sink,
   });
 
-  runtime.trigger('yes', text('held'));
+  runtime.admit('yes', text('held'));
   await runtime.pump();
-  runtime.trigger('yes', text('held-2'));
+  runtime.admit('yes', text('held-2'));
 
-  runtime.trigger('start', text('yes please'));
+  runtime.admit('start', text('yes please'));
   await runtime.pump();
 
   const check = runtime.snapshot().nodes['check'];
@@ -401,7 +400,7 @@ test('a text condition is paused when the branch it will take is full', async ()
     ),
   );
   assert.equal(after.nodes['check']?.pending, undefined);
-  assert.equal(serializeValue(after.nodes['yes']?.queue[0]?.value as Value), 'out:yes please');
+  assert.equal(serializeValue(after.nodes['yes']?.receptor[0]?.value as Value), 'out:yes please');
 });
 
 function counterComposition(): ReturnType<typeof parseComposition> {
@@ -432,10 +431,10 @@ test('a counter only preflights the edge its count will select', async () => {
     onLog: log.sink,
   });
 
-  runtime.trigger('again', text('held'));
+  runtime.admit('again', text('held'));
   await runtime.pump();
-  runtime.trigger('again', text('held-2'));
-  runtime.trigger('start', text('seed'));
+  runtime.admit('again', text('held-2'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const count = runtime.snapshot().nodes['count'];
@@ -456,7 +455,7 @@ test('a counter only preflights the edge its count will select', async () => {
 
   assert.equal(runtime.snapshot().nodes['count']?.state['count'], 1);
   assert.equal(
-    serializeValue(runtime.snapshot().nodes['again']?.queue[0]?.value as Value),
+    serializeValue(runtime.snapshot().nodes['again']?.receptor[0]?.value as Value),
     'out:seed',
   );
 });
@@ -501,10 +500,10 @@ test('a worker condition conservatively preflights both possible branches', asyn
 
   // The worker would exit 0 (true), but the false target is full. The runtime
   // cannot know that before running, so it must wait for both targets.
-  runtime.trigger('no', text('held'));
+  runtime.admit('no', text('held'));
   await runtime.pump();
-  runtime.trigger('no', text('held-2'));
-  runtime.trigger('start', text('seed'));
+  runtime.admit('no', text('held-2'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   assert.equal(

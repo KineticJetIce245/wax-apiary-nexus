@@ -15,7 +15,7 @@ import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
 import {
   autoDecideGuards,
-  settleWakeWith,
+  settleTriggerWith,
   type GuardAutoDecider,
 } from '../support/control-server-http.js';
 
@@ -23,12 +23,12 @@ const dshRoot = process.env.DSH_ROOT;
 const builtCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 const integrationOptions = {
   skip:
     dshRoot === undefined || builtCli === undefined || !existsSync(builtCli) || !hasKey
-      ? 'Real guard CLI test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
+      ? 'Real guard CLI test needs DSH_ROOT (built CLI) and OPENCODE_API_KEY'
       : false,
   timeout: 180_000,
 };
@@ -163,7 +163,7 @@ test(
       const prompt =
         `Use the shell tool to create a file named cli-guard.txt in the current directory ` +
         `with the exact content ${marker}. Report done. Do not use any other directory.`;
-      const triggerPromise = request('POST', '/lives/wake', {
+      const triggerPromise = request('POST', '/lives/trigger', {
         liveId: 'native-guard-cli',
         beeId: 'only',
         input: prompt,
@@ -243,8 +243,8 @@ test(
       });
       assert.equal((decided.stdout[0] as string).includes(token), false);
 
-      const trigger = await settleWakeWith(request, 'native-guard-cli', triggerPromise);
-      assert.equal(trigger['state'], 'completed');
+      const trigger = await settleTriggerWith(request, 'native-guard-cli', triggerPromise, 120_000, false);
+      assert.equal(trigger['rest'], true);
       assert.equal(
         readFileSync(join(project.directory, 'cli-guard.txt'), 'utf8'),
         marker,

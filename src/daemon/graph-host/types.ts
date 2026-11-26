@@ -13,7 +13,6 @@ import type {
 import type { InstantiatedForagers } from '../../session/instantiate-foragers.js';
 import type { SessionRegistry } from '../../session/session-registry.js';
 import type { HoneyStore } from '../../storage/honey.js';
-import type { RunOutput, RunStore } from '../../storage/run-store.js';
 import type { LiveHiveCatalog } from '../live-hive-catalog.js';
 import type { SchedulerTimers } from '../scheduler.js';
 
@@ -25,8 +24,6 @@ export interface LiveHiveHostOptions {
    * failure is reported as metadata and never changes residency.
    */
   readonly catalog?: LiveHiveCatalog;
-  /** Durable run records; when omitted run ids are generated but not stored. */
-  readonly runStore?: RunStore;
   /** Native guard timeout, shared with the control broker; default 1h. */
   readonly guardTimeoutMs?: number;
   /** Test seam for scheduler timers. */
@@ -85,24 +82,13 @@ export interface LiveHiveHostOptions {
   /** Called when a runtime guard deadline expires; idempotent. */
   readonly onGuardExpired?: (requestId: string) => void;
   /**
-   * Per-bee mailbox overflow policy, passed to every runtime this host loads.
-   * `reject` (default) fails a full wake; `block` waits for mailbox capacity.
-   * `defaults.queueMax` remains the only per-bee waiting limit.
+   * Per-bee receptor overflow policy, passed to every runtime this host loads.
+   * `reject` (default) fails a full trigger; `block` waits for receptor
+   * capacity. `defaults.queueMax` remains the only per-bee capacity.
    */
-  readonly mailboxOverflowPolicy?: 'reject' | 'block';
+  readonly receptorOverflowPolicy?: 'reject' | 'block';
   /** Positive integer block timeout; only used by `block`; defaults to 30s. */
-  readonly mailboxBlockTimeoutMs?: number;
-  /**
-   * Per-trace activation ceiling passed to every runtime this host loads;
-   * default 256. One node activation start (fork and merge included) is one hop;
-   * fork/merge branches share the trace's budget.
-   */
-  readonly maxHopsPerTrace?: number;
-  /**
-   * Per-trace age ceiling from admission, passed to every runtime this host
-   * loads; default 30 minutes. Cancels only that trace, never the whole hive.
-   */
-  readonly maxDurationPerTraceMs?: number;
+  readonly receptorBlockTimeoutMs?: number;
   /**
    * Optional observability for cleanup failures. Cleanup itself never rejects:
    * a failed close must not turn an unload into a residency failure.
@@ -139,7 +125,8 @@ export interface LoadGraphOptions {
 export interface LiveHiveNodeStatus {
   readonly nodeId: string;
   readonly kind: string;
-  readonly queue: number;
+  /** Waiting input in the bee's receptor. `queueMax` caps it. */
+  readonly receptor: number;
   readonly pending: boolean;
   readonly active: boolean;
   readonly hovered: boolean;
@@ -173,51 +160,6 @@ export interface LiveHiveStatus {
   };
 }
 
-export type LiveHiveRunState =
-  | 'accepted'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'unknown';
-
-/** Public run view; never carries a prompt or a native transcript. */
-export interface LiveHiveRunView {
-  readonly runId: string;
-  readonly traceId: string;
-  readonly state: LiveHiveRunState;
-  readonly outputs: readonly RunOutput[];
-  readonly error?: string;
-  readonly startedAt: string;
-  readonly finishedAt?: string;
-}
-
-/** Immediate admission result of a wake; execution continues in the background. */
-export interface LiveHiveAdmission {
-  readonly graphId: string;
-  readonly runId: string;
-  readonly traceId: string;
-  readonly status: 'accepted';
-}
-
-export interface LiveHiveRunResult {
-  readonly graphId: string;
-  readonly runId: string;
-  readonly requestId: string;
-  readonly rest: boolean;
-  readonly hovered: boolean;
-  readonly pumps: number;
-  readonly status: LiveHiveStatus;
-  /**
-   * Whether the field is durably saved after this run. `true` without Honey:
-   * there is nothing to persist. A Honey save failure is reported here instead
-   * of reloading or replaying the trigger.
-   */
-  readonly persisted: boolean;
-  /** Honey save failure message; never contains a prompt or output body. */
-  readonly persistError?: string;
-}
-
 export type LiveHiveHostEvent =
   | {
       readonly type: 'graph.cleanup-failed';
@@ -236,12 +178,6 @@ export type LiveHiveHostEvent =
       readonly type: 'graph.catalog-failed';
       readonly graphId: LiveHiveId;
       readonly phase: 'load' | 'access' | 'unload' | 'sweep' | 'dispose';
-      readonly error: string;
-    }
-  | {
-      readonly type: 'graph.run-store-failed';
-      readonly graphId: LiveHiveId;
-      readonly runId: string;
       readonly error: string;
     }
   | {

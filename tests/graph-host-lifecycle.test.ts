@@ -419,9 +419,8 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
   assert.equal(env.adapter.createdNativeIds.length, 3);
   assert.equal(workspaceListenerCount(env.workspace), 3);
 
-  const admission = await host.trigger('queued', 'start', text('seed'));
+  await host.trigger('queued', 'start', text('seed'));
   await waitForMergePending(host, 'queued');
-  assert.equal(host.runs.get('queued', admission.runId)?.state, 'running');
   const loaded = host.statusOf('queued');
   assert.ok(loaded !== undefined);
   assert.equal(loaded.rest, false);

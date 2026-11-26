@@ -5,7 +5,7 @@ import {
   createMemoryLog,
   parseComposition,
   PheromoneRuntime,
-  QueueFullError,
+  ReceptorFullError,
   serializeValue,
   type NodeExecutor,
   type PersistedField,
@@ -57,7 +57,7 @@ function recorder(): { executor: NodeExecutor; calls: { nodeId: string; value: s
 }
 
 function persisted(id: string, value: string, at: number): Pheromone {
-  return { id, traceId: `tr_${id}`, value: text(value), at: iso(at) };
+  return { id, value: text(value), at: iso(at) };
 }
 
 test('pump drops an expired queue entry, logs pheromone.expired and leaves the field at Rest', async () => {
@@ -70,19 +70,19 @@ test('pump drops an expired queue entry, logs pheromone.expired and leaves the f
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('stale'));
-  const queued = runtime.snapshot().nodes['start']?.queue[0];
+  runtime.admit('start', text('stale'));
+  const queued = runtime.snapshot().nodes['start']?.receptor[0];
   assert.ok(queued !== undefined, 'the input is queued before the TTL');
 
   // Persistence is never rewritten by the TTL: only pump/restore clean.
   clock += TTL;
-  assert.equal(runtime.exportField().nodes['start']?.queue?.length, 1);
+  assert.equal(runtime.exportField().nodes['start']?.receptor?.length, 1);
 
   await runtime.pump();
 
   assert.deepEqual(calls, [], 'an expired entry is never activated');
   const after = runtime.snapshot();
-  assert.equal(after.nodes['start']?.queue.length, 0);
+  assert.equal(after.nodes['start']?.receptor.length, 0);
   assert.equal(after.nodes['start']?.pending, undefined);
   assert.equal(after.rest, true);
 
@@ -93,7 +93,6 @@ test('pump drops an expired queue entry, logs pheromone.expired and leaves the f
   assert.equal(entry.nodeId, 'start');
   assert.equal(entry.nodeKind, 'forager');
   assert.equal(entry.pheromoneId, queued.id);
-  assert.equal(entry.traceId, queued.traceId);
   assert.equal(entry.queueDepth, 0);
   assert.equal(entry.outcome, 'ttl');
   assert.equal(
@@ -112,9 +111,9 @@ test('pump removes an expired pending entry instead of activating it', async () 
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('first'));
+  runtime.admit('start', text('first'));
   await runtime.pump();
-  runtime.trigger('start', text('second'));
+  runtime.admit('start', text('second'));
   await runtime.pump();
 
   const waiting = runtime.snapshot().nodes['start']?.pending;
@@ -164,20 +163,20 @@ test('unexpired queue entries survive TTL cleanup and keep FIFO order', async ()
     onLog: log.sink,
   });
 
-  runtime.trigger('start', text('blocker'));
+  runtime.admit('start', text('blocker'));
   const pumping = runtime.pump();
   await Promise.resolve();
   assert.ok(release !== undefined, 'the first activation is running');
 
   // Queue [old1, old2, fresh1, fresh2] while the first activation holds the node.
-  runtime.trigger('start', text('old1'));
+  runtime.admit('start', text('old1'));
   clock += 5_000;
-  runtime.trigger('start', text('old2'));
+  runtime.admit('start', text('old2'));
   clock += TTL; // START + 65s: old1/old2 are due, fresh* are brand new.
-  runtime.trigger('start', text('fresh1'));
-  runtime.trigger('start', text('fresh2'));
+  runtime.admit('start', text('fresh1'));
+  runtime.admit('start', text('fresh2'));
 
-  const before = runtime.snapshot().nodes['start']?.queue ?? [];
+  const before = runtime.snapshot().nodes['start']?.receptor ?? [];
   assert.deepEqual(
     before.map((pheromone) => serializeValue(pheromone.value)),
     ['old1', 'old2', 'fresh1', 'fresh2'],
@@ -223,7 +222,7 @@ test('restore drops queue entries older than queueTtlMs before returning', async
     rest: false,
     nodes: {
       start: {
-        queue: [
+        receptor: [
           persisted('ph_old', 'old', START),
           persisted('ph_fresh', 'fresh', START + 30_000),
         ],
@@ -239,7 +238,7 @@ test('restore drops queue entries older than queueTtlMs before returning', async
 
   assert.deepEqual(report.resumedHovers, []);
   assert.deepEqual(
-    runtime.snapshot().nodes['start']?.queue.map((pheromone) => serializeValue(pheromone.value)),
+    runtime.snapshot().nodes['start']?.receptor.map((pheromone) => serializeValue(pheromone.value)),
     ['fresh'],
     'only the entry that outlived the TTL is gone',
   );
@@ -266,16 +265,16 @@ test('expiry frees a queueMax slot so a later trigger is accepted', async () => 
     now: () => clock,
   });
 
-  runtime.trigger('start', text('stale'));
-  assert.throws(() => runtime.trigger('start', text('rejected')), QueueFullError);
+  await runtime.admit('start', text('stale'));
+  await assert.rejects(runtime.admit('start', text('rejected')), ReceptorFullError);
 
   clock += TTL;
   await runtime.pump();
-  assert.equal(runtime.snapshot().nodes['start']?.queue.length, 0);
+  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 0);
   assert.equal(runtime.snapshot().rest, true);
 
-  runtime.trigger('start', text('fresh'));
-  assert.equal(runtime.snapshot().nodes['start']?.queue.length, 1);
+  runtime.admit('start', text('fresh'));
+  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
 
   await runtime.pump();
   assert.deepEqual(calls.map((call) => call.value), ['fresh']);
@@ -295,12 +294,12 @@ test('TTL cleanup never removes an open hover or its parked Pheromone', async ()
     onLog: log.sink,
   });
 
-  const id = runtime.trigger('ask', text('question'));
+  await runtime.admit('ask', text('question'));
   await runtime.pump();
 
   const hovered = runtime.snapshot().nodes['ask']?.hover;
   assert.ok(hovered !== undefined);
-  assert.equal(hovered.pheromoneId, id);
+  assert.equal(typeof hovered.pheromoneId, 'string');
 
   clock += TTL * 2;
   await runtime.pump();

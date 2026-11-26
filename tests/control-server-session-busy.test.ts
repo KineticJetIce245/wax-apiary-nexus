@@ -9,7 +9,7 @@ import type { Project } from '../src/project/kernel.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
-import { liveFrom, waitForRunTerminal } from './support/control-server-http.js';
+import { liveFrom, waitForRest } from './support/control-server-http.js';
 
 const PROMPT_SECRET = 'M9E-HTTP-PROMPT-SECRET';
 
@@ -32,21 +32,19 @@ async function wakeSecondLive(
   token: string,
   post: (path: string, body: unknown) => Promise<{ status: number; body: Record<string, any> }>,
 ): Promise<void> {
-  const wake = await post('/lives/wake', {
+  const wake = await post('/lives/trigger', {
     liveId: 'second',
     beeId: 'only',
     input: 'still here',
   });
   assert.equal(wake.status, 202, JSON.stringify(wake.body));
-  assert.equal(wake.body['status'], 'accepted');
-  assert.equal(typeof wake.body['runId'], 'string');
-  const finished = await waitForRunTerminal(
+  assert.deepEqual(wake.body, { ok: true });
+  const finished = await waitForRest(
     url,
     token,
     'second',
-    String(wake.body['runId']),
   );
-  assert.equal(finished.body?.['run']?.['state'], 'completed');
+  assert.equal(finished.body?.['status']?.['rest'], true);
 }
 
 test('a second loaded graph may share the same session; unload is refcounted', async (t) => {

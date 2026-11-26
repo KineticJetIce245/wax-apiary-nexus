@@ -11,27 +11,26 @@ import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
 import {
-  admissionRunId,
   autoDecideGuards,
   bLoadLive,
-  bWake,
+  bTrigger,
   getJson,
   type GuardAutoDecider,
   liveFrom,
   postJson,
-  waitForRunTerminal,
+  waitForRest,
 } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 const integrationOptions = {
   skip:
     dshRoot === undefined || builtCli === undefined || !existsSync(builtCli) || !hasKey
-      ? 'Real concurrent guard test needs DSH_ROOT (built CLI) and DEEPSEEK_API_KEY'
+      ? 'Real concurrent guard test needs DSH_ROOT (built CLI) and OPENCODE_API_KEY'
       : false,
   timeout: 300_000,
 };
@@ -239,14 +238,14 @@ test(
       }
       const markerA = `CONCURRENT-A-${String(Date.now())}`;
       const markerB = `CONCURRENT-B-${String(Date.now())}`;
-      const wakeA = bWake(
+      const wakeA = bTrigger(
         info.url,
         token,
         'concurrent-a',
         'only',
         writePrompt('marker-a.txt', markerA),
       );
-      const wakeB = bWake(
+      const wakeB = bTrigger(
         info.url,
         token,
         'concurrent-b',
@@ -299,19 +298,19 @@ test(
       assert.equal(wakeAResult.status, 202, `${wakeAResult.text}${failureDetail}`);
       assert.equal(wakeBResult.status, 202, `${wakeBResult.text}${failureDetail}`);
       await Promise.all([
-        waitForRunTerminal(
+        waitForRest(
           info.url,
           token,
           'concurrent-a',
-          admissionRunId(wakeAResult.body),
           180_000,
+          false,
         ),
-        waitForRunTerminal(
+        waitForRest(
           info.url,
           token,
           'concurrent-b',
-          admissionRunId(wakeBResult.body),
           180_000,
+          false,
         ),
       ]);
 

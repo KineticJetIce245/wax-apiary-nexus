@@ -11,19 +11,19 @@ import type { Project } from '../../src/project/kernel.js';
 import { fromCompositionDefinition } from '../../src/b/live-hive-codec.js';
 import type { GraphBindings } from '../../src/graph/binding.js';
 import { parseComposition } from '../../src/runtime/index.js';
-import { waitForRunTerminal } from '../support/control-server-http.js';
+import { waitForRest } from '../support/control-server-http.js';
 
 const dshRoot = process.env.DSH_ROOT;
 const builtDshCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const codexExe = process.env.CODEX_EXE;
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 
 const missing: string[] = [];
 if (!hasKey) {
-  missing.push('DEEPSEEK_API_KEY');
+  missing.push('OPENCODE_API_KEY');
 }
 if (dshRoot === undefined || builtDshCli === undefined || !existsSync(builtDshCli)) {
   missing.push('DSH_ROOT with a built apps/cli/lib/bin.js');
@@ -53,7 +53,7 @@ type MixedRequest = (
   body?: unknown,
 ) => Promise<HttpResult>;
 
-/** Admit one bee, then wait for its own run terminal state. */
+/** Deliver one bee, then wait for its field to settle. */
 async function wakeAndSettle(
   request: MixedRequest,
   info: WaxdStartedInfo,
@@ -62,24 +62,18 @@ async function wakeAndSettle(
   beeId: string,
   input: string,
 ): Promise<Record<string, any>> {
-  const woke = await request(info, token, 'POST', '/lives/wake', {
+  const woke = await request(info, token, 'POST', '/lives/trigger', {
     liveId,
     beeId,
     input,
   });
   assert.equal(woke.status, 202, JSON.stringify(woke.body));
-  const run = await waitForRunTerminal(
-    info.url,
-    token,
-    liveId,
-    String(woke.body['runId']),
-    300_000,
-  );
-  assert.ok(run.body !== undefined, 'run response body is missing');
-  return run.body['run'] as Record<string, any>;
+  const rest = await waitForRest(info.url, token, liveId, 300_000);
+  assert.ok(rest.body !== undefined, 'inspect response body is missing');
+  return rest.body as Record<string, any>;
 }
 
-/** One run's output for one bee; outputs are isolated per run now. */
+/** One bee's field-owned output; it is isolated per bee, not per run. */
 function outputOf(run: Record<string, any>, nodeId: string): string {
   const entries = run['outputs'] as Record<string, unknown>[] | undefined;
   const entry = entries?.find((item) => item['nodeId'] === nodeId);
@@ -191,7 +185,7 @@ test(
     if (
       dshRoot === undefined ||
       codexExe === undefined ||
-      process.env.DEEPSEEK_API_KEY === undefined
+      process.env.OPENCODE_API_KEY === undefined
     ) {
       throw new Error('integration environment is missing');
     }

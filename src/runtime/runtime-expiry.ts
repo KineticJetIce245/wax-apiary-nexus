@@ -21,12 +21,11 @@ function isOlderThan(pheromone: Pheromone, now: number, ttlMs: number): boolean 
 /**
  * Drops input that has waited at a node longer than `defaults.queueTtlMs`.
  *
- * Only the two wait slots can age out: `state.queue` (the mailbox) and
- * `state.pending`. `active`, hovers, merge arrivals and early answers are live
- * or externally bound work and are never removed by the TTL. An expired
- * Pheromone is dropped outright - not failed and not retried - and its slot is
- * released. Reservations held for someone else's in-flight output are
- * untouched.
+ * Only the two wait slots can age out: `state.receptor` and `state.pending`.
+ * `active`, hovers, merge arrivals and answers are live or externally bound
+ * work and are never removed by the TTL. An expired Pheromone is dropped
+ * outright - not failed and not retried - and its slot is released.
+ * Reservations held for someone else's in-flight output are untouched.
  */
 export function expireOverdueQueues(
   definition: CompositionDefinition,
@@ -40,12 +39,12 @@ export function expireOverdueQueues(
     if (node === undefined) {
       continue;
     }
-    expireMailbox(node.id, node.kind, state, now, ttlMs, log);
+    expireReceptor(node.id, node.kind, state, now, ttlMs, log);
     expirePending(node.id, node.kind, state, now, ttlMs, log);
   }
 }
 
-function expireMailbox(
+function expireReceptor(
   nodeId: string,
   nodeKind: NodeKind,
   state: NodeState,
@@ -53,14 +52,14 @@ function expireMailbox(
   ttlMs: number,
   log: RuntimeLogSink,
 ): void {
-  const mailbox = state.queue;
-  if (mailbox === undefined || mailbox.length === 0) {
+  const receptor = state.receptor;
+  if (receptor === undefined || receptor.length === 0) {
     return;
   }
 
   const kept: Pheromone[] = [];
   const expired: Pheromone[] = [];
-  for (const pheromone of mailbox) {
+  for (const pheromone of receptor) {
     if (isOlderThan(pheromone, now, ttlMs)) {
       expired.push(pheromone);
     } else {
@@ -74,9 +73,9 @@ function expireMailbox(
   // The survivors keep their relative order: TTL cleanup never reorders the
   // FIFO, it only removes the aged-out entries.
   if (kept.length === 0) {
-    delete state.queue;
+    delete state.receptor;
   } else {
-    state.queue = kept;
+    state.receptor = kept;
   }
   for (const pheromone of expired) {
     log({
@@ -84,7 +83,6 @@ function expireMailbox(
       nodeId,
       nodeKind,
       pheromoneId: pheromone.id,
-      traceId: pheromone.traceId,
       queueDepth: kept.length,
       outcome: 'ttl',
     });
@@ -109,8 +107,7 @@ function expirePending(
     nodeId,
     nodeKind,
     pheromoneId: pending.id,
-    traceId: pending.traceId,
-    queueDepth: state.queue?.length ?? 0,
+    queueDepth: state.receptor?.length ?? 0,
     outcome: 'ttl',
   });
 }

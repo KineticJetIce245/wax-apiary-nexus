@@ -12,15 +12,15 @@ const dshRoot = process.env.DSH_ROOT;
 const builtDshCli =
   dshRoot === undefined ? undefined : join(dshRoot, 'apps', 'cli', 'lib', 'bin.js');
 const hasKey =
-  process.env.DEEPSEEK_API_KEY !== undefined &&
-  process.env.DEEPSEEK_API_KEY.trim() !== '';
+  process.env.OPENCODE_API_KEY !== undefined &&
+  process.env.OPENCODE_API_KEY.trim() !== '';
 
 const missing: string[] = [];
 if (dshRoot === undefined || builtDshCli === undefined || !existsSync(builtDshCli)) {
   missing.push('DSH_ROOT with a built apps/cli/lib/bin.js');
 }
 if (!hasKey) {
-  missing.push('DEEPSEEK_API_KEY');
+  missing.push('OPENCODE_API_KEY');
 }
 
 /** Shared gate for the real DSH shutdown tests; no Codex is involved. */
@@ -118,25 +118,13 @@ export async function request(
 }
 
 /**
- * Resolves instead of rejecting: a shutdown is allowed to destroy the socket of
- * the in-flight wake, but it must not answer that request with an HTTP 500.
+ * Poll the field until it reaches Rest or parks at a hover. There is no run
+ * object: the LiveHive's own `inspect` is the execution state.
  */
-export function runIdOf(body: Record<string, any> | undefined): string {
-  const runId = body?.['runId'];
-  if (typeof runId !== 'string' || runId === '') {
-    throw new Error("wake response is missing a string 'runId'");
-  }
-  return runId;
-}
-
-const TERMINAL_RUN_STATES = new Set(['completed', 'failed', 'cancelled', 'unknown']);
-
-/** Poll one run until it leaves accepted/running. */
-export async function waitForRun(
+export async function waitForRest(
   url: string,
   token: string,
   liveId: string,
-  runId: string,
   timeoutMs = 120_000,
 ): Promise<HttpResult> {
   return waitFor(async () => {
@@ -144,11 +132,11 @@ export async function waitForRun(
       url,
       token,
       'GET',
-      `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
+      `/lives/${encodeURIComponent(liveId)}/inspect`,
     );
-    const state = result.body?.['run']?.['state'];
-    return TERMINAL_RUN_STATES.has(state) ? result : undefined;
-  }, timeoutMs, `run ${runId}`);
+    const status = result.body?.['status'];
+    return status?.rest === true || status?.hovered === true ? result : undefined;
+  }, timeoutMs, `live ${liveId} Rest`);
 }
 
 export async function requestOutcome(  url: string,

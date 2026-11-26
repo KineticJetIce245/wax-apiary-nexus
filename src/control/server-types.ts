@@ -91,13 +91,11 @@ export type ControlErrorCode =
   | 'method-not-allowed'
   | 'conflict'
   | 'session-busy'
-  | 'queue-full'
-  | 'bee-mailbox-full'
-  | 'bee-mailbox-block-timeout'
+  | 'bee-receptor-full'
+  | 'bee-receptor-block-timeout'
   | 'guard-expired'
   | 'approval-timeout'
   | 'execution-cancelled'
-  | 'dispatch-timeout'
   | 'too-large'
   | 'unsupported-media-type'
   | 'internal';
@@ -131,14 +129,13 @@ export type RouteKind =
   | 'lives-list'
   | 'lives-load'
   | 'lives-instantiate'
-  | 'lives-wake'
+  | 'lives-trigger'
   | 'lives-answer'
   | 'lives-save'
   | 'lives-unload'
   | 'lives-migrate'
   | 'lives-inspect'
   | 'lives-output'
-  | 'lives-run'
   | 'templates'
   | 'dispatch';
 
@@ -146,11 +143,9 @@ export interface Route {
   readonly kind: RouteKind;
   readonly methods: readonly string[];
   readonly graphId?: string;
-  /** Run id for `lives-run`. */
-  readonly runId?: string;
 }
 
-/** A route result with an explicit HTTP status (for example wake 202). */
+/** A route result with an explicit HTTP status (for example trigger 202). */
 export class RouteReply {
   constructor(
     readonly body: Record<string, unknown>,

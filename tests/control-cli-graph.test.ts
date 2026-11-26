@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { fromCompositionDefinition } from '../src/b/live-hive-codec.js';
 import { runLiveCli } from '../src/cli/live-cli.js';
+import { runTriggerCli } from '../src/cli/trigger-cli.js';
 import type { GraphBindings } from '../src/graph/binding.js';
 import { parseComposition } from '../src/runtime/index.js';
 import {
@@ -15,17 +16,16 @@ import {
   tempJson,
 } from './support/control-cli-fixtures.js';
 import { startWaxd } from './support/control-cli-daemons.js';
-import { waitForRunTerminal } from './support/control-server-http.js';
+import { waitForRest } from './support/control-server-http.js';
 
 async function waitForWakeRun(
   daemon: Awaited<ReturnType<typeof startWaxd>>,
-  runId: string,
 ): Promise<void> {
   const token = readFileSync(daemon.started.tokenPath, 'utf8').trim();
-  await waitForRunTerminal(daemon.started.url, token, 'cli-live', runId);
+  await waitForRest(daemon.started.url, token, 'cli-live');
 }
 
-test('wax live round-trips new, inspect, list, wake and unload over real HTTP', async (t) => {
+test('wax live round-trips new, inspect, list, trigger and unload over real HTTP', async (t) => {
   const daemon = await startWaxd(t, [], { output: 'cli-live-output' });
   const live = fromCompositionDefinition(
     parseComposition(foragerComposition('cli-live')),
@@ -76,16 +76,13 @@ test('wax live round-trips new, inspect, list, wake and unload over real HTTP', 
   assert.equal(lives[0]?.['state'], 'loaded');
 
   const wake = await invokeControl(
-    runLiveCli,
-    ['live', 'wake', 'cli-live', 'only', '--input', 'hello live', '--json'],
+    runTriggerCli,
+    ['trigger', 'cli-live', 'only', '--input', 'hello live', '--json'],
     { daemonDir: daemon.daemonDir },
   );
   const result = singleJson(wake);
-  assert.equal(result['status'], 'accepted');
-  assert.equal(typeof result['runId'], 'string');
-  assert.equal(Object.hasOwn(result, 'graphId'), false);
-  assert.equal(Object.hasOwn(result, 'liveId'), false);
-  await waitForWakeRun(daemon, String(result['runId']));
+  assert.deepEqual(result, { ok: true });
+  await waitForWakeRun(daemon);
   assert.match(daemon.adapter.prompts[0] as string, /hello live/);
 
   const unload = singleJson(

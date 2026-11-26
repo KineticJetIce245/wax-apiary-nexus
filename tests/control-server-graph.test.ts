@@ -48,17 +48,18 @@ import {
 import { writeManifestFixture, writeManifestVariant, untriggerableComposition } from './support/control-server-manifests.js';
 import {
   authHeader,
+  assertAccepted,
   bAnswer,
   bInspect,
   bList,
   bLoad,
   bOutput,
   bUnload,
-  bWake,
+  bTrigger,
   getJson,
   postJson,
   readResponse,
-  waitForRunTerminal,
+  waitForRest,
 } from './support/control-server-http.js';
 
 /** Public status must not carry internal engine identity. */
@@ -86,37 +87,30 @@ async function waitForHover(url: string, token: string, liveId: string): Promise
   }
 }
 
-type WakeResult = Awaited<ReturnType<typeof bWake>>;
+type WakeResult = Awaited<ReturnType<typeof bTrigger>>;
 
-async function wakeAndWaitRun(
+async function triggerAndWaitRun(
   url: string,
   token: string,
   liveId: string,
   beeId: string,
   input: string,
-): Promise<{ readonly trigger: WakeResult; readonly finished: Awaited<ReturnType<typeof waitForRunTerminal>> }> {
-  const trigger = await bWake(url, token, liveId, beeId, input);
-  assert.equal(trigger.status, 202);
-  assert.equal(trigger.body?.['status'], 'accepted');
-  const finished = await waitForRunTerminal(
-    url,
-    token,
-    liveId,
-    String(trigger.body?.['runId']),
-  );
+): Promise<{ readonly trigger: WakeResult; readonly finished: Awaited<ReturnType<typeof waitForRest>> }> {
+  const trigger = await bTrigger(url, token, liveId, beeId, input);
+  assertAccepted(trigger);
+  const finished = await waitForRest(url, token, liveId);
   return { trigger, finished };
 }
 
-async function wakeBeeAndWait(
+async function triggerBeeAndWait(
   url: string,
   token: string,
   liveId: string,
   beeId: string,
   input: string,
-): Promise<string> {
-  const { trigger, finished } = await wakeAndWaitRun(url, token, liveId, beeId, input);
-  assert.equal(finished.body?.['run']?.['state'], 'completed');
-  return String(trigger.body?.['runId']);
+): Promise<void> {
+  const { finished } = await triggerAndWaitRun(url, token, liveId, beeId, input);
+  assert.equal(finished.body?.['status']?.['rest'], true);
 }
 
 test('load, status, trigger, status and unload work over real HTTP without leaking bodies', async (t) => {
@@ -161,15 +155,15 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   assert.equal(publicStatusOf(one.body?.['status'])['rest'], true);
   bodies.push(one.body);
 
-  const { trigger, finished } = await wakeAndWaitRun(info.url, token, 'main', 'only', INPUT_SECRET);
+  const { trigger, finished } = await triggerAndWaitRun(info.url, token, 'main', 'only', INPUT_SECRET);
   responses.push(trigger.text);
-  assert.equal(finished.body?.['run']?.['state'], 'completed');
+  assert.equal(finished.body?.['status']?.['rest'], true);
   bodies.push(trigger.body, finished.body);
 
   const after = await bInspect(info.url, token, 'main');
   assert.equal(after.status, 200);
   assert.equal(after.body?.['status']?.['rest'], true);
-  assert.equal(after.body?.['status']?.['nodes']?.[0]?.['queue'], 0);
+  assert.equal(after.body?.['status']?.['nodes']?.[0]?.['receptor'], 0);
 
   const unload = await bUnload(info.url, token, 'main');
   responses.push(unload.text);
@@ -244,34 +238,20 @@ test('GET /lives/<id>/output returns sorted forager output and never logs values
   assert.equal(empty.status, 200);
   assert.equal(empty.body?.['liveId'], 'outputs');
   assert.deepEqual(empty.body?.['outputs'], []);
-  let latestRunId = '';
-  const runIds = new Map<string, string>();
   for (const nodeId of ['zeta', 'alpha']) {
-    const runId = await wakeBeeAndWait(info.url, token, 'outputs', nodeId, `${nodeId}-input`);
-    runIds.set(nodeId, runId);
-    latestRunId = runId;
+    await triggerBeeAndWait(info.url, token, 'outputs', nodeId, `${nodeId}-input`);
   }
   const response = await bOutput(info.url, token, 'outputs');
   assert.equal(response.status, 200);
   assert.equal(response.body?.['ok'], true);
   assert.equal(response.body?.['liveId'], 'outputs');
-  assert.equal(response.body?.['runId'], latestRunId);
-  // Outputs are per run: the latest run is alpha only, not a global snapshot.
+  assert.equal(response.body?.['runId'], undefined);
+  // Outputs are field-owned per-bee caches: both bees' last outputs are visible,
+  // and there is no run/history identity in the response.
   assert.deepEqual(response.body?.['outputs'], [
     { nodeId: 'alpha', value: { kind: 'text', text: OUTPUT_SECRET } },
-  ]);
-  const zetaRunId = runIds.get('zeta');
-  assert.ok(zetaRunId !== undefined);
-  const zetaRun = await bOutput(info.url, token, 'outputs', zetaRunId);
-  assert.deepEqual(zetaRun.body?.['outputs'], [
     { nodeId: 'zeta', value: { kind: 'text', text: OUTPUT_SECRET } },
   ]);
-  // An explicit runId reads that run; an unknown one is a 404.
-  const explicitRun = await bOutput(info.url, token, 'outputs', latestRunId);
-  assert.equal(explicitRun.status, 200);
-  assert.deepEqual(explicitRun.body?.['outputs'], response.body?.['outputs']);
-  const unknownRun = await bOutput(info.url, token, 'outputs', 'missing');
-  assert.equal(unknownRun.status, 404);
   const status = await bInspect(info.url, token, 'outputs');
   assert.equal(status.status, 200);
   const unknown = await bOutput(info.url, token, 'missing');
@@ -283,16 +263,12 @@ test('GET /lives/<id>/output returns sorted forager output and never logs values
   assert.equal(wrongMethod.status, 405);
   assert.equal(wrongMethod.body?.['code'], 'method-not-allowed');
 
-  // Run output survives unload; the durable run is the default after unload.
+  // Unload releases the field, so its memory-only outputs are unreadable.
   const unload = await bUnload(info.url, token, 'outputs');
   assert.equal(unload.status, 200);
   const afterUnload = await bOutput(info.url, token, 'outputs');
-  assert.equal(afterUnload.status, 200);
-  assert.equal(afterUnload.body?.['runId'], latestRunId);
-  assert.deepEqual(afterUnload.body?.['outputs'], response.body?.['outputs']);
-  const retainedRun = await bOutput(info.url, token, 'outputs', latestRunId);
-  assert.equal(retainedRun.status, 200);
-  assert.deepEqual(retainedRun.body?.['outputs'], response.body?.['outputs']);
+  assert.equal(afterUnload.status, 404);
+  assert.equal(afterUnload.body?.['code'], 'not-found');
   // Metadata-only logging: no output value, prompt or bearer token.
   const logText = logs.join('\n');
   assert.equal(logText.includes(OUTPUT_SECRET), false);
@@ -322,7 +298,7 @@ test('unknown graphs return 404 and a duplicate load returns 409 with current st
   assert.equal(unknownStatus.status, 404);
   assert.equal(unknownStatus.body?.['code'], 'not-found');
 
-  const unknownTrigger = await bWake(info.url, token, 'missing', 'only', 'x');
+  const unknownTrigger = await bTrigger(info.url, token, 'missing', 'only', 'x');
   assert.equal(unknownTrigger.status, 404);
 
   const unknownUnload = await bUnload(info.url, token, 'missing');
@@ -374,7 +350,7 @@ test('unloading a non-Rest graph returns 409 with its current status', async (t)
   assert.equal(load.status, 200);
   assert.equal(load.body?.['status']?.['rest'], true);
 
-  const trigger = await bWake(info.url, token, 'hover', 'ask', INPUT_SECRET);
+  const trigger = await bTrigger(info.url, token, 'hover', 'ask', INPUT_SECRET);
   assert.equal(trigger.status, 202);
   await waitForHover(info.url, token, 'hover');
 
@@ -411,7 +387,7 @@ test('answer resolves an open user hover over real HTTP and rejects invalid targ
   responses.push(load.text);
   assert.equal(load.status, 200);
 
-  const trigger = await bWake(info.url, token, 'answer-memory', 'ask', INPUT_SECRET);
+  const trigger = await bTrigger(info.url, token, 'answer-memory', 'ask', INPUT_SECRET);
   responses.push(trigger.text);
   assert.equal(trigger.status, 202);
   await waitForHover(info.url, token, 'answer-memory');
@@ -454,18 +430,13 @@ test('answer resolves an open user hover over real HTTP and rejects invalid targ
     hoverToken,
   );
   responses.push(answered.text);
-  assert.equal(answered.status, 200);
-  assert.equal(answered.body?.['result']?.['rest'], true);
-  assert.equal(answered.body?.['result']?.['hovered'], false);
-  assert.equal(answered.body?.['result']?.['persisted'], true);
-  assert.equal(typeof answered.body?.['result']?.['runId'], 'string');
-  assert.equal(typeof answered.body?.['result']?.['requestId'], 'string');
-  assert.equal(answered.body?.['result']?.['status']?.['rest'], true);
+  assert.equal(answered.status, 202);
+  assert.deepEqual(answered.body, { ok: true });
 
   const again = await bAnswer(info.url, token, 'answer-memory', 'ask', 'again');
   responses.push(again.text);
   assert.equal(again.status, 409);
-  assert.equal(again.body?.['code'], 'conflict');
+  assert.equal(again.body?.['code'], 'conflict', again.text);
 
   const unknownGraph = await bAnswer(info.url, token, 'missing', 'ask', 'x');
   responses.push(unknownGraph.text);

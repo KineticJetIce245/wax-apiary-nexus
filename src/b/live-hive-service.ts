@@ -1,14 +1,8 @@
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
-import type {
-  LiveHiveAdmission,
-  LiveHiveHost,
-  LiveHiveRunResult,
-  LiveHiveStatus,
-} from '../daemon/graph-host.js';
+import type { LiveHiveHost, LiveHiveStatus } from '../daemon/graph-host.js';
 import type { Project } from '../project/kernel.js';
 import type { Value } from '../runtime/index.js';
 import type { SessionRegistry } from '../session/session-registry.js';
-import type { RunStore } from '../storage/run-store.js';
 import { DispatchService } from './dispatch-service.js';
 import type { HiveTemplate, LiveHive, SessionParams } from './types.js';
 import { LiveHiveReadService } from './live-hive-read.js';
@@ -29,7 +23,6 @@ export interface LiveHiveServiceOptions {
   readonly defaultProject?: Project;
   readonly dispatchService?: DispatchService;
   readonly defaultHarness?: string;
-  readonly runStore?: RunStore;
 }
 
 export interface LiveHiveOperationResult {
@@ -64,11 +57,7 @@ export class LiveHiveService {
     this.repository = new LiveHiveRepository(options.livesRoot, options.templateStore);
     this.defaultProject = options.defaultProject;
     this.defaultHarness = options.defaultHarness;
-    this.read = new LiveHiveReadService(
-      options.liveHiveHost,
-      this.repository,
-      options.runStore,
-    );
+    this.read = new LiveHiveReadService(options.liveHiveHost, this.repository);
     this.dispatchService =
       options.dispatchService ??
       new DispatchService({
@@ -155,17 +144,13 @@ export class LiveHiveService {
   }
 
   /**
-   * Admit one bee. The call only enqueues the Pheromone and returns a run
-   * handle; execution continues in the background. A session shared with other
-   * LiveHives is serialized by the harness adapter, not by this method.
+   * Deliver one Pheromone to a bee. The call only hands the input to the field
+   * and resolves; execution continues in the background. A session shared with
+   * other LiveHives is serialized by the harness adapter, not by this method.
    */
-  async wake(
-    liveId: string,
-    beeId: string,
-    input: string,
-  ): Promise<LiveHiveAdmission> {
+  async trigger(liveId: string, beeId: string, input: string): Promise<void> {
     this.repository.requireLiveId(liveId);
-    return this.options.liveHiveHost.trigger(liveId, beeId, textValue(input));
+    await this.options.liveHiveHost.trigger(liveId, beeId, textValue(input));
   }
 
   async answer(
@@ -173,9 +158,9 @@ export class LiveHiveService {
     beeId: string,
     input: string,
     token?: string,
-  ): Promise<LiveHiveRunResult> {
+  ): Promise<void> {
     this.repository.requireLiveId(liveId);
-    return this.options.liveHiveHost.answer(liveId, beeId, textValue(input), token);
+    await this.options.liveHiveHost.answer(liveId, beeId, textValue(input), token);
   }
 
   /** Flush Honey/scheduler and write live.json without releasing the graph. */

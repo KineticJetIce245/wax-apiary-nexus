@@ -83,7 +83,7 @@ test('accepts every JSON-safe payload shape and keeps it intact', () => {
       executeForager: passthrough(),
       now: () => START,
     });
-    runtime.trigger('start', structured(payload));
+    runtime.admit('start', structured(payload));
     assert.deepEqual(
       runtime.snapshot().pheromones[0]?.value,
       { kind: 'structured', value: payload },
@@ -103,12 +103,12 @@ test('a structured payload may contain existing Value objects', () => {
     now: () => START,
   });
 
-  runtime.trigger('start', input);
+  runtime.admit('start', input);
 
   assert.deepEqual(runtime.snapshot().pheromones[0]?.value, input);
 });
 
-test('rejects payloads that JSON cannot round-trip', () => {
+test('rejects payloads that JSON cannot round-trip', async () => {
   const cyclic: Record<string, unknown> = {};
   cyclic['self'] = cyclic;
   const cases: readonly {
@@ -142,7 +142,7 @@ test('rejects payloads that JSON cannot round-trip', () => {
       executeForager: passthrough(),
       now: () => START,
     });
-    assert.throws(() => runtime.trigger('start', structured(payload)), error, label);
+    await assert.rejects(runtime.admit('start', structured(payload)), error, label);
   }
 
   // A shared child is JSON-safe; only an ancestor cycle is rejected.
@@ -152,7 +152,7 @@ test('rejects payloads that JSON cannot round-trip', () => {
     now: () => START,
   });
   assert.doesNotThrow(() =>
-    runtime.trigger('start', structured({ left: shared, right: shared })),
+    runtime.admit('start', structured({ left: shared, right: shared })),
   );
 });
 
@@ -166,7 +166,7 @@ test('rejects a structured executor output with an invalid payload', async () =>
     now: () => START,
   });
 
-  runtime.trigger('start', { kind: 'text', text: 'seed' });
+  runtime.admit('start', { kind: 'text', text: 'seed' });
   await assert.rejects(runtime.pump(), /undefined is not JSON-safe/);
 });
 
@@ -195,7 +195,7 @@ test('Condition text mode compares the JSON serialization', async () => {
     now: () => START,
   });
 
-  runtime.trigger('start', structured({ go: true, note: 'ok' }));
+  runtime.admit('start', structured({ go: true, note: 'ok' }));
   await runtime.pump();
 
   assert.deepEqual(calls, ['start', 'yes']);
@@ -220,7 +220,7 @@ test('Honey persists and restores a structured Value without flattening', async 
     executeForager: executor,
     now: () => START,
   });
-  runtime.trigger('start', input);
+  runtime.admit('start', input);
 
   const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'structured-honey');
   const field = runtime.exportField();
@@ -261,10 +261,9 @@ test('Honey rejects a structured Value without a JSON-safe payload', () => {
       rest: false,
       nodes: {
         start: {
-          queue: [
+          receptor: [
             {
               id: 'ph_bad',
-              traceId: 'tr_bad',
               at: new Date(START).toISOString(),
               value: { kind: 'structured' },
             },

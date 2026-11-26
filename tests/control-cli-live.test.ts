@@ -7,7 +7,7 @@ import test from 'node:test';
 import { runDispatchCli } from '../src/cli/dispatch-cli.js';
 import { runLiveCli } from '../src/cli/live-cli.js';
 import { runTemplateCli } from '../src/cli/template-cli.js';
-import { runAnswerCli, runWakeCli } from '../src/cli/wake-cli.js';
+import { runAnswerCli, runTriggerCli } from '../src/cli/trigger-cli.js';
 import type { LiveHive } from '../src/b/types.js';
 import { GraphBindingStore } from '../src/graph/binding-store.js';
 import { startServer, makeEnv } from './support/control-server-fixtures.js';
@@ -18,11 +18,9 @@ function writer(): { lines: string[]; write: (line: string) => void } {
   return { lines, write: (line) => lines.push(line) };
 }
 
-function assertAdmissionLine(lines: readonly string[]): void {
-  const admission = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>;
-  assert.equal(admission['status'], 'accepted');
-  assert.equal(typeof admission['runId'], 'string');
-  assert.equal(Object.hasOwn(admission, 'graphId'), false);
+function assertAcceptedLine(lines: readonly string[]): void {
+  const accepted = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>;
+  assert.deepEqual(accepted, { ok: true });
 }
 
 test('wax live/template/dispatch use one daemon endpoint', async (t) => {
@@ -142,25 +140,15 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     'demo',
   );
 
-  const wakeOut = writer();
+  const triggerOut = writer();
   assert.equal(
-    await runLiveCli(
-      ['live', 'wake', 'demo', 'draft', '--input', 'hello', '--daemon-dir', env.daemonDir, '--json'],
-      { stdout: wakeOut.write, stderr: writer().write },
+    await runTriggerCli(
+      ['trigger', 'demo', 'draft', '--input', 'hello', '--daemon-dir', env.daemonDir, '--json'],
+      { stdout: triggerOut.write, stderr: writer().write },
     ),
     0,
   );
-  assertAdmissionLine(wakeOut.lines);
-
-  const topWakeOut = writer();
-  assert.equal(
-    await runWakeCli(
-      ['wake', 'demo', 'draft', '--input', 'again', '--daemon-dir', env.daemonDir, '--json'],
-      { stdout: topWakeOut.write, stderr: writer().write },
-    ),
-    0,
-  );
-  assertAdmissionLine(topWakeOut.lines);
+  assertAcceptedLine(triggerOut.lines);
 
   const templateFile = join(directory, 'template.json');
   const template = simpleTemplate();
@@ -223,12 +211,12 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
     0,
   );
   assert.equal(
-    (JSON.parse(dispatchOut.lines[0] ?? '{}') as Record<string, unknown>)['output'],
-    'cli-output',
+    (JSON.parse(dispatchOut.lines[0] ?? '{}') as Record<string, unknown>)['ok'],
+    true,
   );
 });
 
-test('top-level wax wake/answer resolves a user hover', async (t) => {
+test('top-level wax trigger/answer resolves a user hover', async (t) => {
   const env = makeEnv();
   const running = await startServer(env, { liveProject: env.project });
   t.after(async () => {
@@ -257,16 +245,15 @@ test('top-level wax wake/answer resolves a user hover', async (t) => {
     ),
     0,
   );
-  const wakeOut = writer();
+  const triggerOut = writer();
   assert.equal(
-    await runWakeCli(
-      ['wake', 'ask', 'ask', '--input', 'open', '--daemon-dir', env.daemonDir],
-      { stdout: wakeOut.write, stderr: writer().write },
+    await runTriggerCli(
+      ['trigger', 'ask', 'ask', '--input', 'open', '--daemon-dir', env.daemonDir],
+      { stdout: triggerOut.write, stderr: writer().write },
     ),
     0,
   );
-  assert.match(wakeOut.lines.join('\n'), /^runId=/);
-  assert.equal(wakeOut.lines.join('\n').includes('graphId'), false);
+  assert.deepEqual(triggerOut.lines, ['accepted']);
   assert.equal(
     await runAnswerCli(
       ['answer', 'ask', 'ask', '--input', 'answer', '--daemon-dir', env.daemonDir],
@@ -310,9 +297,9 @@ test('wax live rejects bad usage and unknown live ids without retrying', async (
   );
   assert.match(dispatchErr.lines.join('\n'), /usage: wax dispatch/);
 });
-test('wax wake rejects a response without an admission handle', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'wax-cli-wake-'));
-  writeFileSync(join(dir, 'token'), 'wake-token-0123456789', 'utf8');
+test('wax trigger posts to /lives/trigger and prints the delivery acceptance', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wax-cli-trigger-'));
+  writeFileSync(join(dir, 'token'), 'trigger-token-0123456789', 'utf8');
   writeFileSync(
     join(dir, 'server.json'),
     JSON.stringify({
@@ -328,23 +315,56 @@ test('wax wake rejects a response without an admission handle', async () => {
   const out = writer();
   const err = writer();
   const requests: string[] = [];
-  const code = await runWakeCli(
-    ['wake', 'demo', 'only', '--input', 'x', '--daemon-dir', dir],
+  const code = await runTriggerCli(
+    ['trigger', 'demo', 'only', '--input', 'x', '--daemon-dir', dir, '--json'],
     {
       stdout: out.write,
       stderr: err.write,
       fetchImpl: (async (input: string | URL | Request) => {
         requests.push(String(input));
         return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
+          status: 202,
           headers: { 'content-type': 'application/json' },
         });
       }) as typeof fetch,
     },
   );
-  // A wake must return an admission handle; a malformed body is a protocol error.
+  assert.equal(code, 0, err.lines.join('\n'));
+  assert.deepEqual(out.lines, ['{"ok":true}']);
+  assert.equal(requests.length, 1);
+  assert.match(requests[0] ?? '', /\/lives\/trigger$/);
+});
+
+test('wax trigger rejects a response that is not an acceptance', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wax-cli-trigger-bad-'));
+  writeFileSync(join(dir, 'token'), 'trigger-token-0123456789', 'utf8');
+  writeFileSync(
+    join(dir, 'server.json'),
+    JSON.stringify({
+      url: 'http://127.0.0.1:45999',
+      host: '127.0.0.1',
+      port: 45999,
+      pid: 1,
+      startedAt: '2026-11-19T00:00:00.000Z',
+      tokenPath: join(dir, 'token'),
+    }),
+    'utf8',
+  );
+  const out = writer();
+  const err = writer();
+  const code = await runTriggerCli(
+    ['trigger', 'demo', 'only', '--input', 'x', '--daemon-dir', dir],
+    {
+      stdout: out.write,
+      stderr: err.write,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ ok: false }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        })) as typeof fetch,
+    },
+  );
   assert.equal(code, 1);
   assert.deepEqual(out.lines, []);
-  assert.match(err.lines.join('\n'), /missing 'runId'\/'traceId'/);
-  assert.equal(requests.length, 1);
+  assert.match(err.lines.join('\n'), /did not have 'ok: true'/);
 });

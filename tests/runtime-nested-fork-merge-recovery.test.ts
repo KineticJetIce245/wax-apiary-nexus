@@ -47,7 +47,7 @@ test('honey round-trips nested lineage and restores an incomplete inner join', a
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
 
   const before = runtime.snapshot();
@@ -101,7 +101,7 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
   });
 
   // Pass 1: descend all three forks and park ask-outer on its user hover.
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   // Pass 2: finish the inner and mid joins, so the outer join holds only o-left.
   clock += 1000;
@@ -109,10 +109,10 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
 
   // Detached queue node: q1 drains, q2 lands in pending behind the 5s minimum
   // interval, and q3 stays queued behind q2.
-  runtime.trigger('queue-node', text('q1'));
+  runtime.admit('queue-node', text('q1'));
   await runtime.pump();
-  runtime.trigger('queue-node', text('q2'));
-  runtime.trigger('queue-node', text('q3'));
+  runtime.admit('queue-node', text('q2'));
+  runtime.admit('queue-node', text('q3'));
   await runtime.pump();
 
   const before = runtime.snapshot();
@@ -152,8 +152,8 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
 
   const queueNode = before.nodes['queue-node'];
   assert.ok(queueNode !== undefined);
-  assert.equal(queueNode.queue.length, 1);
-  const queued = queueNode.queue[0];
+  assert.equal(queueNode.receptor.length, 1);
+  const queued = queueNode.receptor[0];
   const pending = queueNode.pending;
   assert.ok(queued !== undefined);
   assert.ok(pending !== undefined, 'q2 waits in pending during the minimum interval');
@@ -169,7 +169,7 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
   assert.ok(loaded !== undefined);
   assert.deepEqual(loaded, field);
   assert.equal(loaded.nodes['ask-outer']?.hover?.token, token);
-  assert.equal(loaded.nodes['queue-node']?.queue?.[0]?.id, queued.id);
+  assert.equal(loaded.nodes['queue-node']?.receptor?.[0]?.id, queued.id);
   assert.equal(loaded.nodes['queue-node']?.pending?.id, pending.id);
 
   const restoredLog = createMemoryLog();
@@ -198,12 +198,12 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
 
   const restoredQueueNode = restoredBefore.nodes['queue-node'];
   assert.ok(restoredQueueNode !== undefined);
-  assert.equal(restoredQueueNode.queue.length, 1);
-  assert.equal(restoredQueueNode.queue[0]?.id, queued.id);
-  assert.equal(restoredQueueNode.queue[0]?.at, queued.at);
+  assert.equal(restoredQueueNode.receptor.length, 1);
+  assert.equal(restoredQueueNode.receptor[0]?.id, queued.id);
+  assert.equal(restoredQueueNode.receptor[0]?.at, queued.at);
   assert.equal(restoredQueueNode.pending?.id, pending.id);
   assert.equal(restoredQueueNode.pending?.at, pending.at);
-  assert.equal(serializeValue(restoredQueueNode.queue[0]?.value as Value), 'q3');
+  assert.equal(serializeValue(restoredQueueNode.receptor[0]?.value as Value), 'q3');
   assert.equal(serializeValue(restoredQueueNode.pending?.value as Value), 'q2');
 
   const restoredInner = joinAt(restoredBefore, 'inner-merge');
@@ -340,7 +340,7 @@ test('a restored completed nested tombstone still drops a late optional', async 
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   // Complete the inner required set before persisting the nested tombstone.
   clock += 1000;
@@ -395,7 +395,7 @@ test('a restored timed-out nested tombstone blocks a late inner branch', async (
     now: () => clock,
   });
 
-  runtime.trigger('start', text('seed'));
+  runtime.admit('start', text('seed'));
   await runtime.pump();
   const deadline = joinAt(runtime.snapshot(), 'inner-merge').deadlineAt;
   assert.ok(deadline !== undefined);
@@ -418,7 +418,6 @@ test('a restored timed-out nested tombstone blocks a late inner branch', async (
 
   const late: Pheromone = {
     id: 'ph_late_optional',
-    traceId: 'tr_late_optional',
     forkId: innerForkId,
     branchId: 'i-opt',
     lineage: [
@@ -458,7 +457,6 @@ test('honey validates Pheromone lineage and join lineage', () => {
 
   const badPheromone: Pheromone = {
     id: 'ph_bad',
-    traceId: 'tr_bad',
     forkId: 'fk_outer',
     branchId: 'i-a',
     lineage: [
@@ -468,13 +466,12 @@ test('honey validates Pheromone lineage and join lineage', () => {
     value: text('x'),
     at: new Date(START).toISOString(),
   };
-  field.nodes['done'] = { queue: [badPheromone] };
+  field.nodes['done'] = { receptor: [badPheromone] };
   store.save(field);
   assert.throws(() => store.load(), /to match the last lineage tag/);
 
   const validArrival: Pheromone = {
     id: 'ph_arrival',
-    traceId: 'tr_arrival',
     forkId: 'fk_inner',
     branchId: 'i-a',
     lineage: [
@@ -489,7 +486,7 @@ test('honey validates Pheromone lineage and join lineage', () => {
     now: () => START,
   }).exportField();
   mismatchedJoin.nodes['inner-merge'] = {
-    queue: [],
+    receptor: [],
     joins: {
       fk_inner: {
         arrived: [validArrival],
@@ -502,14 +499,14 @@ test('honey validates Pheromone lineage and join lineage', () => {
   assert.throws(() => store.load(), /lineage: does not match its branch Pheromones/);
 });
 
-/** Persisted node states may omit an empty mailbox; append without a `??`. */
+/** Persisted node states may omit an empty receptor; append without a `??`. */
 function appendQueued(
-  state: { queue?: Pheromone[] },
+  state: { receptor?: Pheromone[] },
   pheromone: Pheromone,
 ): void {
-  const queue = state.queue;
+  const queue = state.receptor;
   if (queue === undefined) {
-    state.queue = [pheromone];
+    state.receptor = [pheromone];
   } else {
     queue.push(pheromone);
   }

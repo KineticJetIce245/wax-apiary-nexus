@@ -7,27 +7,6 @@ export interface LiveOperationResult {
   readonly status: Record<string, unknown>;
 }
 
-export interface LiveAdmissionResult {
-  readonly runId: string;
-  readonly traceId: string;
-  readonly status: 'accepted';
-}
-
-export interface LiveRunView {
-  readonly runId: string;
-  readonly traceId: string;
-  readonly state: string;
-  readonly outputs: readonly { readonly nodeId: string; readonly value: unknown }[];
-  readonly error?: string;
-  readonly startedAt: string;
-  readonly finishedAt?: string;
-}
-
-export interface LiveDispatchResult {
-  readonly output: string;
-  readonly sessionId: string;
-}
-
 /**
  * Typed B operation client. It extends the established loopback-only,
  * single-attempt control client; the token never enters a URL or error text.
@@ -42,9 +21,9 @@ export class LiveHiveClient extends ControlClient {
     return lives;
   }
 
-  async output(liveId: string, runId?: string): Promise<Record<string, unknown>> {
-    const query = runId === undefined ? '' : `?runId=${encodeURIComponent(runId)}`;
-    return this.request('GET', `/lives/${encodeURIComponent(liveId)}/output${query}`);
+  /** The field-owned last output per bee; no run id and no history. */
+  async output(liveId: string): Promise<Record<string, unknown>> {
+    return this.request('GET', `/lives/${encodeURIComponent(liveId)}/output`);
   }
 
   async createLive(live: LiveHive, project?: Project): Promise<LiveOperationResult> {
@@ -84,24 +63,12 @@ export class LiveHiveClient extends ControlClient {
   }
 
   /**
-   * Admit one bee and return its run handle. Execution continues on the
-   * daemon; poll this client's `run` view for the terminal state and outputs.
+   * Deliver one Pheromone to a bee. The call returns once the daemon accepted
+   * it (202); execution continues on the daemon. Read `inspect`/`output` for
+   * the field's state.
    */
-  readonly run = async (liveId: string, runId: string): Promise<LiveRunView> => {
-    const body = await this.request(
-      'GET',
-      `/lives/${encodeURIComponent(liveId)}/runs/${encodeURIComponent(runId)}`,
-    );
-    const run = body['run'];
-    if (typeof run !== 'object' || run === null) {
-      throw protocolError("control response missing 'run'");
-    }
-    return run as unknown as LiveRunView;
-  };
-
-  async wake(liveId: string, beeId: string, input: string): Promise<LiveAdmissionResult> {
-    const body = await this.request('POST', '/lives/wake', { liveId, beeId, input });
-    return parseAdmission(body);
+  async trigger(liveId: string, beeId: string, input: string): Promise<void> {
+    await this.request('POST', '/lives/trigger', { liveId, beeId, input });
   }
 
   async answerLive(
@@ -109,14 +76,13 @@ export class LiveHiveClient extends ControlClient {
     beeId: string,
     input: string,
     token?: string,
-  ): Promise<unknown> {
-    const body = await this.request('POST', '/lives/answer', {
+  ): Promise<void> {
+    await this.request('POST', '/lives/answer', {
       liveId,
       beeId,
       input,
       ...(token === undefined ? {} : { token }),
     });
-    return requireField(body, 'result');
   }
 
   async saveLive(liveId: string): Promise<unknown> {
@@ -155,25 +121,17 @@ export class LiveHiveClient extends ControlClient {
     options: {
       readonly sessionParams?: SessionParams;
       readonly sessionId?: string;
-      readonly timeoutMs?: number;
       readonly project?: Project;
     } = {},
-  ): Promise<LiveDispatchResult> {
-    const body = await this.request('POST', '/dispatch', {
+  ): Promise<void> {
+    await this.request('POST', '/dispatch', {
       input,
       ...(options.sessionParams === undefined
         ? {}
         : { sessionParams: options.sessionParams }),
       ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.project === undefined ? {} : { project: options.project }),
     });
-    const output = body['output'];
-    const sessionId = body['sessionId'];
-    if (typeof output !== 'string' || typeof sessionId !== 'string') {
-      throw protocolError("control response missing dispatch output/sessionId");
-    }
-    return { output, sessionId };
   }
 }
 
@@ -196,18 +154,6 @@ export class TemplateClient extends LiveHiveClient {
     }
     return templates;
   }
-}
-
-function parseAdmission(body: Record<string, unknown>): LiveAdmissionResult {
-  const runId = body['runId'];
-  const traceId = body['traceId'];
-  if (typeof runId !== 'string' || typeof traceId !== 'string') {
-    throw protocolError("control response missing 'runId'/'traceId'");
-  }
-  if (body['status'] !== 'accepted') {
-    throw protocolError("control response missing wake status 'accepted'");
-  }
-  return { runId, traceId, status: 'accepted' };
 }
 
 function parseLiveResult(body: Record<string, unknown>): LiveOperationResult {

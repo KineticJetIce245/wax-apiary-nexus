@@ -60,12 +60,7 @@ export class ControlHttpServer {
       } else {
         rejectBodyOnGet(request);
       }
-      const routed = await this.routes.dispatch(
-        route,
-        payload,
-        request.url,
-        request.method,
-      );
+      const routed = await this.routes.dispatch(route, payload, request.method);
       status = sendRouteResult(response, routed);
       code = 'ok';
     } catch (error) {

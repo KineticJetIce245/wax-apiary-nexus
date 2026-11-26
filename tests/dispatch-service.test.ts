@@ -6,10 +6,8 @@ import test, { type TestContext } from 'node:test';
 
 import {
   DispatchConflictError,
-  DispatchExecutionError,
   DispatchService,
   DispatchSessionNotFoundError,
-  DispatchTimeoutError,
 } from '../src/b/dispatch-service.js';
 import { LiveHiveHost } from '../src/daemon/graph-host.js';
 import type { LiveHiveStatus, LoadGraphOptions } from '../src/daemon/graph-host.js';
@@ -39,11 +37,17 @@ class RecordingGraphHost extends LiveHiveHost {
   }
 }
 
-function assertReleased(host: RecordingGraphHost): void {
-  assert.equal(host.loadedIds.length, 1);
-  const graphId = host.loadedIds[0];
-  assert.ok(graphId !== undefined);
-  assert.equal(host.statusOf(graphId), undefined);
+/** Wait for the host driver to release the ephemeral graph after silent end. */
+async function waitForReleased(host: RecordingGraphHost): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const graphId = host.loadedIds[0];
+    if (graphId === undefined || host.statusOf(graphId) === undefined) {
+      return;
+    }
+    assert.ok(Date.now() < deadline, 'the ephemeral dispatch graph was not released');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 function setup(
@@ -80,13 +84,9 @@ function setupWithAdapter(
   return { adapter, workspace, registry, project, liveHiveHost, service };
 }
 
-/**
- * Never emits a terminal event on its own. Its cancel settles the execution the
- * way a cooperative native harness would, so the timeout cleanup path can be
- * observed instead of leaving a graph active forever.
- */
+/** Holds one execution open until the test releases it. */
 class HoldingAdapter extends FakeAdapter {
-  private heldExecutionId: string | undefined;
+  private executionId: string | undefined;
 
   override async submit(
     _nativeId: string,
@@ -94,29 +94,29 @@ class HoldingAdapter extends FakeAdapter {
     text: string,
   ): Promise<void> {
     this.prompts.push(text);
-    this.heldExecutionId = executionId;
+    this.executionId = executionId;
   }
 
-  override async cancel(_nativeId: string): Promise<void> {
-    const executionId = this.heldExecutionId;
+  release(): void {
+    const executionId = this.executionId;
+    this.executionId = undefined;
     if (executionId === undefined) {
       return;
     }
-    this.heldExecutionId = undefined;
-    this.emit({ type: 'execution/cancelled', executionId });
+    this.emit({ type: 'execution/completed', executionId, stopReason: 'end_turn' });
   }
 }
 
-test('dispatch fresh creates one temporary session and returns its output', async (t) => {
+test('dispatch fresh creates one temporary session and accepts without output', async (t) => {
   const harness = setup(t, { output: 'answer-42' });
   const result = await harness.service.dispatch('hello', {
     sessionParams: { harness: 'fake', model: 'm1', reasoning: 'high' },
   });
 
-  assert.deepEqual(result, { output: 'answer-42', sessionId: result.sessionId });
+  assert.equal(result, undefined);
   assert.equal(harness.adapter.prompts.length, 1);
   assert.equal(harness.adapter.prompts[0], 'hello');
-  const record = harness.registry.get(result.sessionId);
+  const record = harness.registry.list()[0];
   assert.ok(record !== undefined);
   assert.equal(record.harness, 'fake');
   assert.equal(record.model, 'm1');
@@ -124,7 +124,8 @@ test('dispatch fresh creates one temporary session and returns its output', asyn
   assert.equal(harness.registry.list().length, 1);
   assert.deepEqual(readdirSync(harness.project.directory), []);
   // The ephemeral graph is not left loaded or listed.
-  assertReleased(harness.liveHiveHost);
+  await waitForReleased(harness.liveHiveHost);
+  assert.equal(harness.liveHiveHost.loadedIds.length, 1);
 });
 
 test('dispatch graph is ephemeral: no catalog, Honey, live.json or list entry', async (t) => {
@@ -155,15 +156,15 @@ test('dispatch graph is ephemeral: no catalog, Honey, live.json or list entry', 
   };
   const service = new DispatchService({ registry, liveHiveHost, defaultProject: project });
 
-  const result = await service.dispatch('hello', { sessionParams: { harness: 'fake' } });
+  await service.dispatch('hello', { sessionParams: { harness: 'fake' } });
+  await waitForReleased(liveHiveHost);
 
-  assert.equal(result.output, 'ephemeral-output');
   assert.equal(honeyRequests, 0);
   assert.deepEqual(catalog.list(), []);
   assert.equal(existsSync(catalogPath), false);
   assert.equal(existsSync(join(stateRoot, 'apiaries')), false);
   assert.equal(existsSync(join(stateRoot, 'lives')), false);
-  assertReleased(liveHiveHost);
+  assert.equal(liveHiveHost.status().length, 0);
 });
 
 test('dispatch explicit session reuses it and uses its own harness metadata', async (t) => {
@@ -174,7 +175,7 @@ test('dispatch explicit session reuses it and uses its own harness metadata', as
     reasoning: 'session-reasoning',
   });
 
-  const result = await harness.service.dispatch('continue', {
+  await harness.service.dispatch('continue', {
     sessionId: session.sessionId,
     sessionParams: {
       harness: 'fake',
@@ -183,10 +184,9 @@ test('dispatch explicit session reuses it and uses its own harness metadata', as
     },
   });
 
-  assert.deepEqual(result, { output: 'reused', sessionId: session.sessionId });
   assert.equal(harness.registry.list().length, 1);
   assert.equal(harness.adapter.prompts[0], 'continue');
-  assertReleased(harness.liveHiveHost);
+  await waitForReleased(harness.liveHiveHost);
 });
 
 test('dispatch explicit session rejects conflicting creation parameters', async (t) => {
@@ -239,64 +239,37 @@ test('dispatch requires input and one session choice; fresh needs a project', as
   assert.equal(harness.adapter.prompts.length, 0);
 });
 
-test('dispatch can use a per-call project and validates timeout', async (t) => {
-  const harness = setup(t, { output: 'override' }, false);
-  const result = await harness.service.dispatch('x', {
+test('dispatch can use a per-call project and never reads the model output', async (t) => {
+  const harness = setup(t, { output: '' }, false);
+  await harness.service.dispatch('x', {
     sessionParams: { harness: 'fake' },
     project: harness.project,
   });
-  assert.equal(result.output, 'override');
-  await assert.rejects(
-    harness.service.dispatch('x', {
-      sessionParams: { harness: 'fake' },
-      project: harness.project,
-      timeoutMs: 0,
-    }),
-    TypeError,
-  );
+  // An empty model output is not an error: dispatch does not return or inspect it.
+  assert.equal(harness.adapter.prompts.length, 1);
+  await waitForReleased(harness.liveHiveHost);
 });
 
-test('dispatch timeout cancels once, releases the graph and never replays', async (t) => {
+test('dispatch resolves before a held execution ends and releases after silent end', async (t) => {
   const harness = setupWithAdapter(t, new HoldingAdapter());
   const started = Date.now();
-  await assert.rejects(
-    harness.service.dispatch('side-effect', {
-      sessionParams: { harness: 'fake' },
-      timeoutMs: 40,
-    }),
-    DispatchTimeoutError,
-  );
+  await harness.service.dispatch('side-effect', {
+    sessionParams: { harness: 'fake' },
+  });
   assert.ok(Date.now() - started < 2_000);
   assert.equal(harness.adapter.prompts.length, 1);
-  assert.equal(harness.adapter.prompts[0], 'side-effect');
-  // The cancelled execution settled, so the ephemeral graph was unloaded now
-  // rather than left for the deferred release path.
-  assertReleased(harness.liveHiveHost);
+  const graphId = harness.liveHiveHost.loadedIds[0];
+  assert.ok(graphId !== undefined);
+  assert.notEqual(harness.liveHiveHost.statusOf(graphId), undefined);
+  assert.equal(harness.liveHiveHost.statusOf(graphId)?.rest, false);
+
+  (harness.adapter as HoldingAdapter).release();
+  await waitForReleased(harness.liveHiveHost);
 });
 
-test('dispatch rejects a completed run whose output is empty', async (t) => {
-  const harness = setup(t, { output: '' });
-  await assert.rejects(
-    harness.service.dispatch('x', { sessionParams: { harness: 'fake' } }),
-    /empty output/,
-  );
-  assertReleased(harness.liveHiveHost);
-});
-
-test('dispatch reports failed and unknown terminal states without replay', async (t) => {
-  const failed = setup(t, { terminal: 'failed', error: 'native failure' });
-  await assert.rejects(
-    failed.service.dispatch('x', { sessionParams: { harness: 'fake' } }),
-    DispatchExecutionError,
-  );
-  assert.equal(failed.adapter.prompts.length, 1);
-  assertReleased(failed.liveHiveHost);
-
-  const unknown = setup(t, { terminal: 'unknown', error: 'no outcome' });
-  await assert.rejects(
-    unknown.service.dispatch('x', { sessionParams: { harness: 'fake' } }),
-    DispatchExecutionError,
-  );
-  assert.equal(unknown.adapter.prompts.length, 1);
-  assertReleased(unknown.liveHiveHost);
+test('a failed dispatch execution is accepted; the ephemeral graph is still released', async (t) => {
+  const harness = setup(t, { terminal: 'failed', error: 'native failure' });
+  await harness.service.dispatch('x', { sessionParams: { harness: 'fake' } });
+  assert.equal(harness.adapter.prompts.length, 1);
+  await waitForReleased(harness.liveHiveHost);
 });

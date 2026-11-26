@@ -78,11 +78,12 @@ export class LiveHiveHostRead {
   }
 
   /**
-   * Last completed Value of every forager in one loaded graph, keyed by node
-   * id. It is a read-only snapshot: `peek` never refreshes the idle TTL, takes
-   * a lease or changes residency, so reading output cannot extend a graph's
-   * life. An unknown graph throws `LiveHiveHostNotFoundError`; an unloaded graph's
-   * output is deliberately not persisted and therefore unreadable.
+   * Last completed Value of every bee in one loaded graph, keyed by node id.
+   * It is the field-owned, memory-only cache (D2): a read-only snapshot;
+   * `peek` never refreshes the idle TTL, takes a lease or changes residency, so
+   * reading output cannot extend a graph's life. An unknown graph throws
+   * `LiveHiveHostNotFoundError`; an unloaded graph's output is released with
+   * its field and is therefore unreadable.
    */
   outputsOf(graphId: LiveHiveId): ReadonlyMap<NodeId, Value> {
     this.context.assertNotDisposed();
@@ -91,10 +92,9 @@ export class LiveHiveHostRead {
       throw new LiveHiveHostNotFoundError(graphId);
     }
     const outputs = new Map<NodeId, Value>();
-    for (const [nodeId, executor] of entry.value.instantiated.executors) {
-      const output = executor.lastOutput;
-      if (output !== undefined) {
-        outputs.set(nodeId, output);
+    for (const [nodeId, state] of Object.entries(entry.value.runtime.snapshot().nodes)) {
+      if (state.lastOutput !== undefined) {
+        outputs.set(nodeId, state.lastOutput);
       }
     }
     return outputs;
@@ -112,7 +112,7 @@ export class LiveHiveHostRead {
       nodes.push({
         nodeId: node.id,
         kind: node.kind,
-        queue: state?.queue.length ?? 0,
+        receptor: state?.receptor.length ?? 0,
         pending: state?.pending !== undefined,
         active: state?.active !== undefined,
         hovered: state?.hover !== undefined,

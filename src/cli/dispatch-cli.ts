@@ -10,7 +10,6 @@ import {
   createClient,
   harnessOf,
   optionalFlag,
-  positiveInteger,
   projectOf,
   reportCliError,
   writeJson,
@@ -19,7 +18,7 @@ import {
 const DISPATCH_USAGE =
   'usage: wax dispatch [<input>|--input <text>] [--session <sessionId>] ' +
   '[--harness <codex|dsh>] [--model <model>] [--reasoning <reasoning>] ' +
-  '[--timeout-ms <n>] [--project <dir>] [--daemon-dir <dir>] [--json]';
+  '[--project <dir>] [--daemon-dir <dir>] [--json]';
 
 const DISPATCH_FLAGS = new Set([
   '--daemon-dir',
@@ -29,7 +28,6 @@ const DISPATCH_FLAGS = new Set([
   '--session',
   '--model',
   '--reasoning',
-  '--timeout-ms',
 ]);
 
 /** One dispatch; it never creates a LiveHive and never retries. */
@@ -42,11 +40,11 @@ export async function runDispatchCli(
   try {
     const parsed = parseCliTokens(argv.slice(1), DISPATCH_FLAGS);
     const command = dispatchCommand(parsed);
-    const result = await createClient(parsed, deps).dispatch(command.input, command.options);
+    await createClient(parsed, deps).dispatch(command.input, command.options);
     if (parsed.json) {
-      writeJson(out, result);
+      writeJson(out, { ok: true });
     } else {
-      out(result.output);
+      out('accepted');
     }
     return 0;
   } catch (error) {
@@ -75,7 +73,6 @@ function dispatchCommand(parsed: ParsedCliTokens): {
   if (sessionId !== undefined && sessionId.trim() === '') {
     throw new CliUsageError('--session must not be empty');
   }
-  const timeoutText = parsed.flags.get('--timeout-ms');
   const useFreshSession = sessionId === undefined;
   return {
     input,
@@ -84,7 +81,6 @@ function dispatchCommand(parsed: ParsedCliTokens): {
         ? { sessionParams }
         : {}),
       ...(sessionId === undefined ? {} : { sessionId }),
-      ...(timeoutText === undefined ? {} : { timeoutMs: positiveInteger(timeoutText) }),
       project: projectOf(parsed),
     },
   };

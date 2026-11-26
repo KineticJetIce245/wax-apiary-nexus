@@ -11,10 +11,10 @@ import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter } from './support/fake-adapter.js';
 import {
   bLoad,
-  bWake,
+  bTrigger,
   getJson,
   postJson,
-  waitForRunTerminal,
+  waitForRest,
 } from './support/control-server-http.js';
 
 interface Env {
@@ -107,7 +107,7 @@ test('an internal 500 is logged as errorClass only, never message or body', asyn
   });
   assert.equal(loaded.status, 200);
 
-  const wakePromise = bWake(info.url, token, 'error-log', 'only', promptSecret);
+  const wakePromise = bTrigger(info.url, token, 'error-log', 'only', promptSecret);
   await waitFor(async () => {
     const guards = await getJson(info.url, token, '/guards');
     return guards.status === 200 && (guards.body?.['guards'] as unknown[]).length === 1;
@@ -122,18 +122,21 @@ test('an internal 500 is logged as errorClass only, never message or body', asyn
   });
   assert.equal(decided.status, 200);
 
-  // The native execution fails after the decision. With admission-only wake
-  // this is an async run failure: no HTTP 500 is produced, and neither the run
-  // view nor the metadata log may carry the prompt, native error or output.
+  // The native execution fails after the decision. With delivery-only triggers
+  // this is a background execution failure: no HTTP 500 is produced, and
+  // neither the inspect view nor the metadata log may carry the prompt, native
+  // error or output.
   const wake = await wakePromise;
   assert.equal(wake.status, 202);
-  const finished = await waitForRunTerminal(
+  const finished = await waitForRest(
     info.url,
     token,
     'error-log',
-    String(wake.body?.['runId']),
+    2_000,
+    false,
   );
-  assert.equal(finished.body?.['run']?.['state'], 'failed');
+  assert.equal(finished.body?.['status']?.['rest'], true);
+  assert.deepEqual(finished.body?.['outputs'], []);
   assert.equal(finished.text.includes(promptSecret), false);
   assert.equal(finished.text.includes(nativeSecret), false);
   assert.equal(finished.text.includes('OUTPUT-SECRET'), false);
@@ -142,7 +145,7 @@ test('an internal 500 is logged as errorClass only, never message or body', asyn
   assert.equal(logs.some((line) => line.includes('status=500')), false);
 
   // Non-500 responses keep the original line shape: no class and no body.
-  const missing = await postJson(info.url, token, '/lives/wake', {
+  const missing = await postJson(info.url, token, '/lives/trigger', {
     liveId: 'missing',
     beeId: 'missing',
     input: promptSecret,
@@ -163,6 +166,6 @@ test('an internal 500 is logged as errorClass only, never message or body', asyn
   }
 
   t.diagnostic(
-    `observed: run state=failed; request log lines=${String(logs.length)}`,
+    `observed: rest=true outputs=0; request log lines=${String(logs.length)}`,
   );
 });

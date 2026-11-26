@@ -9,7 +9,7 @@ import type { Project } from '../../src/project/kernel.js';
 import { SessionRegistry } from '../../src/session/session-registry.js';
 import { Workspace } from '../../src/session/workspace.js';
 import { FakeAdapter } from './fake-adapter.js';
-import { bLoad, waitForRunTerminal } from './control-server-http.js';
+import { bLoad, waitForRest } from './control-server-http.js';
 
 /** Rounds are configurable for a longer soak; 50 is the M12a acceptance floor. */
 export const STRESS_ROUNDS = readPositiveInteger(
@@ -180,14 +180,14 @@ function rawCall(
 }
 
 export function wakeLive(running: Running, liveId: string): Promise<RawResult> {
-  return rawCall(running, 'POST', '/lives/wake', {
+  return rawCall(running, 'POST', '/lives/trigger', {
     liveId,
     beeId: 'only',
     input: 'go',
   });
 }
 
-/** Await one admission and then its run terminal state, so approvals settled. */
+/** Await one delivery and then the field's Rest state, so approvals settled. */
 export async function settleWake(
   running: Running,
   liveId: string,
@@ -195,12 +195,8 @@ export async function settleWake(
 ): Promise<RawResult> {
   const wake = await wakePromise;
   assert.equal(wake.status, 202, wake.text);
-  await waitForRunTerminal(
-    running.url,
-    running.token,
-    liveId,
-    String(wake.body?.['runId']),
-  );
+  assert.equal(wake.body?.['ok'], true, wake.text);
+  await waitForRest(running.url, running.token, liveId);
   return wake;
 }
 

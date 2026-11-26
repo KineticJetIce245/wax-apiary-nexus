@@ -24,8 +24,6 @@ export interface HoneyPaths {
   readonly field: string;
   /** Scheduler occurrence bookkeeping: `<directory>/honey/scheduler.json` */
   readonly scheduler: string;
-  /** Answer inbox: `<directory>/honey/answers/` */
-  readonly answers: string;
 }
 /**
  * Contract paths for one composition. Ids become directory names, so anything
@@ -45,7 +43,6 @@ export function honeyPaths(stateRoot: string, apiaryId: string, compositionId: s
     directory,
     field: join(directory, 'honey', 'field.json'),
     scheduler: join(directory, 'honey', 'scheduler.json'),
-    answers: join(directory, 'honey', 'answers'),
   };
 }
 function safeSegment(value: string, label: string): string {
@@ -143,12 +140,9 @@ function parsePheromone(input: unknown, path: string): Pheromone {
   if (!isRecord(input)) {
     throw new Error(`${path}: expected a Pheromone object`);
   }
-  const { id, traceId, at } = input;
+  const { id, at } = input;
   if (typeof id !== 'string' || id === '') {
     throw new Error(`${path}.id: expected a non-empty string`);
-  }
-  if (typeof traceId !== 'string' || traceId === '') {
-    throw new Error(`${path}.traceId: expected a non-empty string`);
   }
   if (typeof at !== 'string' || at === '') {
     throw new Error(`${path}.at: expected a timestamp`);
@@ -197,7 +191,6 @@ function parsePheromone(input: unknown, path: string): Pheromone {
 
   return {
     id,
-    traceId,
     value: input['value'],
     at,
     ...(current === undefined
@@ -360,7 +353,7 @@ function parseJoins(
   return Object.fromEntries(entries);
 }
 
-function parseMailbox(input: unknown, path: string): Pheromone[] | undefined {
+function parseReceptor(input: unknown, path: string): Pheromone[] | undefined {
   if (input === undefined) {
     return undefined;
   }
@@ -377,8 +370,8 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
     throw new Error(`${path}: expected a node state object`);
   }
 
-  const queue = parseMailbox(input['queue'], `${path}.queue`);
-  const state: PersistedNodeState = queue === undefined ? {} : { queue };
+  const receptor = parseReceptor(input['receptor'], `${path}.receptor`);
+  const state: PersistedNodeState = receptor === undefined ? {} : { receptor };
   if (input['pending'] !== undefined) {
     state.pending = parsePheromone(input['pending'], `${path}.pending`);
   }
@@ -396,15 +389,6 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
   }
   if (isRecord(input['state'])) {
     state.state = structuredClone(input['state']);
-  }
-  if (input['inputs'] !== undefined) {
-    if (!Array.isArray(input['inputs'])) {
-      throw new Error(`${path}.inputs: expected an array`);
-    }
-    state.inputs = input['inputs'].map((entry, index) => {
-      assertValueShape(entry, `${path}.inputs[${String(index)}]`);
-      return structuredClone(entry);
-    });
   }
   if (input['joins'] !== undefined) {
     state.joins = parseJoins(input['joins'], `${path}.joins`);

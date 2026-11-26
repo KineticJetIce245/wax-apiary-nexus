@@ -192,3 +192,4 @@ wax session list|close|sweep
 10. Logs never contain prompt/output/token bodies; output uses explicit routes.
 11. Never auto-allow Guard; ACP owns its session's approval channel with no GUI/pass-through; never replay side-effecting work. A restored active Pheromone is unknown and is not replayed.
 12. Every LiveHive has a finite `queueMax`; loop safety relies on counters/conditions and receptor overflow, not on a per-trace budget.
+13. `Pheromone.id` is a field-local message identity, not a run/execution handle. It may appear in internal logs and fork/merge/join bookkeeping, but no HTTP/CLI route, registry, tracker, persistence key, output/status lookup, wait, or idempotency key may use it. Reusing the same id across normal Bees means one message moved, not one run.

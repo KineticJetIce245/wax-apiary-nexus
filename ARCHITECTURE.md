@@ -279,6 +279,34 @@ Consequences:
   (`text` or file/attachment path). `unload` releases it; there is no durable
   run-history store and no `runs/` directory.
 
+### 4.11 Pheromone identity is not a control handle
+
+`Pheromone.id` is a field-local message identity. It exists for internal
+correlation (logs, fork/merge lineage, join bookkeeping) and for tests. It is
+not a cursor, not a run handle, and not a public object.
+
+Allowed uses:
+
+- internal log correlation by the field;
+- fork/merge/join bookkeeping and lineage;
+- tests that inspect the field.
+
+Forbidden uses:
+
+- any HTTP route, CLI command, or client method that accepts or returns a
+  pheromone id as a query key;
+- a registry, tracker, status object, wait/subscribe, callback, or retry policy
+  keyed by pheromone id;
+- a persisted record, `runs/` file, output lookup, or idempotency key keyed by
+  pheromone id;
+- treating the id as stable across LiveHives, restarts, or unloads;
+- using it to fetch a result, execution state, or lifecycle. Use `inspect`,
+  `output`, and the field state instead.
+
+A normal beeline moving the same id across Bees means one message moved, not one
+execution or run. `Pheromone.id` ends with the message (terminal, drop, a
+fork/merge cardinality change, or unload) and is not durable.
+
 ## 5. Persistence
 
 ```text
@@ -494,3 +522,20 @@ branches and emits one merged Pheromone).
 `tests/runtime-pheromone-identity.test.ts` remain valid. The last-output scope
 and the "same envelope, replaced value" semantics are documented in CONTRACT §6
 and ARCHITECTURE §3/§4.10.
+
+### D7. `Pheromone.id` is not a RunId
+
+**Question (lead).** If the Pheromone is retained/moved, is it a cursor-like
+object? The owner accepts reusing the same pheromone id across Bees, but
+requires that it must not become a runId-like handle.
+
+**Owner answer.** The owner accepts reusing `Pheromone.id`; it must not be used
+like the old runId. A Pheromone is a field-local message envelope, not a cursor:
+it has no position/fetch/next/status semantics. Its id may appear only in
+internal field/log/join bookkeeping; it must not be exposed as a public query
+key or used to own execution state.
+
+**Consequence.** §4.11 is normative. No HTTP/CLI route, registry, tracker,
+persistence key, output/status lookup, wait, or idempotency key may use
+`Pheromone.id`. The public surface has no pheromone-id route; a guard test
+asserts that adding one fails.

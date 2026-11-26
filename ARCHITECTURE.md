@@ -124,23 +124,37 @@ only `{ value }`. `ligand` is not a layer in this architecture; only if a future
 storage representation cannot hold a value may an adapter-local ligand wrapper be
 used inside that representation, never as a control-plane concept.
 
-Receptor drain:
+**Receptor drain is per Bee.** Each awake Bee drives its own receptor; there is
+no field-wide pump and no host driver pass. An enqueue into a receptor is a
+`wake(bee)` signal: if that Bee has no drain running, one starts; if it already
+has one, the new entry joins the same FIFO.
 
 ```text
 receptor[P0, P1, ...]
-  -> P0 becomes pending when pacing/minInterval requires it
+  -> P0 becomes pending (the pacing slot) when minIntervalMs requires it
   -> P0 becomes active
   -> Bee executes P0
-  -> P0 moves to the next receptor, or becomes a terminal field output
-  -> next receptor entry, or rest
+  -> P0 moves to the next receptor (waking that Bee), or becomes a terminal output
+  -> the same Bee takes its next receptor entry, or rests
 ```
 
 - Receptor order is FIFO; one Pheromone is active per Bee.
+- Different Bees drain concurrently; the field's short state lock protects
+  shared state, and a slow native execution never blocks another Bee.
+- `minIntervalMs` is a per-node pacing minimum (default 1000 ms, minimum 1000
+  ms; a composition default applies when a node omits it). A drain that is not
+  due yet schedules its own timer and resumes; there is no host pump to retry.
 - `pending` is a pacing slot for the head of the receptor, not a second queue.
-- A Bee with no outgoing beeline is terminal; its Pheromone is a field output.
+- A Bee's drain ends when its receptor and pending are empty; a hover pauses it
+  and an `answer` wakes it. A Bee with no outgoing beeline is terminal; its
+  Pheromone is a field output.
+- A failed input is dropped and logged; the same Bee's drain continues with the
+  next entry (§9 Temporary design). It never replays the side-effecting work.
 - A loop is a moved Pheromone whose target is the same or another Bee; it
   re-enters that Bee's receptor. There is no per-trigger loop budget;
   `counter`/`condition` and receptor overflow bound the loop.
+- There is no `maxPumps`. `maxWaitMs` is a host wait bound for `settle`/dispatch,
+  not an execution budget; it never cancels or drops a value.
 
 ### 4.3 answer
 
@@ -218,7 +232,7 @@ the result is graph data, not an RPC return value.
 | Created | `trigger`, `spread` or `gather` | external input is packaged, or cardinality changes | never by the control plane; it owns no reference |
 | Receptor | Bee/field | waits in FIFO order | dequeued, dropped by overflow, or unloaded with snapshot |
 | Pending | Bee/field | pacing delay before activation | activated or expired |
-| Active | Bee/field | exactly one per Bee; executing | execution ends or is marked unknown on unload |
+| Active | Bee/field | exactly one per Bee; executing | execution ends, or stays active in the unload snapshot until its result arrives |
 | Moved | producing Bee | the SAME Pheromone is placed in the next receptor; its value is updated per §4.12 | consumed by the target Bee |
 | Terminal | field | no outgoing beeline; field output | live unload/replacement; not a per-run record |
 
@@ -233,7 +247,7 @@ not the Pheromone, owns `enqueuedAt`.
 | --- | --- | --- |
 | Loaded/rest | no receptor or empty receptor; no active | live.json |
 | Awake | receptor exists; drain active | field.json includes non-empty receptor |
-| Active | one active Pheromone | field.json active marker; on reload becomes unknown |
+| Active | one active Pheromone | field.json active marker; restored as active, waiting for its own result |
 | Hover | user Bee parked with token | field.json hover + hover Pheromone |
 | Rest | no active/pending/receptor/hover/open assemble group | field.json |
 
@@ -243,8 +257,10 @@ In the target model, a Bee definition carries `reads`, `writes`, optional
 `fallback` and optional `filter`; built-in kinds have defaults and an instance
 may override them. `reads` must resolve (a missing path is an error unless
 `fallback` supplies it); `writes` lists the fields the reply must contain;
-`filter` removes unwanted reply fields before the write. Plugin-defined Bee
-kinds are a later slice (§4.12).
+`filter` removes unwanted reply fields before the write. Every Bee also has a
+per-node `minIntervalMs` pacing minimum (default 1000 ms, minimum 1000 ms; the
+composition default applies when a node omits it). Plugin-defined Bee kinds are
+a later slice (§4.12).
 
 ### 4.7 Field lifetime
 
@@ -255,11 +271,15 @@ load
   -> active/pending/receptor/hover/assemble
   -> field outputs
   -> save: snapshot to honey/field.json
-  -> unload: write snapshot, release field/runtime, keep sessions
-  -> load again: restore receptor/pending/hover; active becomes unknown, never replay
+  -> idle: write snapshot, release field/runtime, keep sessions
+  -> load again: restore the same field, including active; a late result continues it
 ```
 
 `Rest` means no active/pending/receptor/hover/incomplete assemble group remains. It is an observation of the field, not a delivery completion signal. A delivery has already ended at handoff, long before Rest.
+
+On `load`, every Bee with restored receptor/pending work starts its own drain. A restored active is the same activation: it waits for its native result; until that result arrives the Bee is occupied and later inputs wait in FIFO. Nothing is replayed; the late result is the completion of that activation.
+
+Unload is a memory-saving snapshot, not a terminal state. When the field has not changed for the configured idle TTL (default 30 min with Honey), the host may snapshot and release the runtime even with an active Bee, a hover, or an open assemble group. A pending guard blocks this idle unload. A later delivery or native result loads the field again and continues at the same point.
 
 ### 4.8 Native session and prompt admission
 
@@ -281,15 +301,17 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 - Direct Web/TUI prompts bypass the adapter. Admission priority is best-effort: WAX does not start while the session is visibly busy; once a WAX turn is running, user steer/preemption needs the reserved steer path.
 - `wax answer` is a graph/user-hover delivery, not an admission queue. `wax guard` covers ACP/WAX-owned approvals.
 - `dispatch` uses the same admission/approval path for its temporary Bee; it does not write directly to a session and does not persist as a LiveHive.
+- A native execution may outlive an idle unload. When its result arrives, the same field and Bee receive it: if the field is not loaded it is loaded first, then the restored active completes with that result. The result is the completion of the existing activation, not a second execution, and it is not a replay.
 
 ### 4.9 Failure and release
 
-- A Bee execution failure clears `active`, logs the failure, and releases that value. It never replays the side-effecting work.
+- A Bee execution failure clears `active`, logs the failure, and releases that value. It never replays the side-effecting work. The same Bee's drain then continues with its next receptor entry; other Bees are unaffected (§9 Temporary design).
 - Overflow/target-full behavior is not defined in the final design; see §4.14
   and §9 Temporary design. No silent loss; any drop must be recorded.
-- Unload persists receptor queue entries/pending/hover/assemble groups and marks active as unknown; reload never replays active work.
+- Unload persists receptor/pending/active/hover/assemble groups and releases the runtime; sessions stay. Load restores the same field. A restored active waits for its native result; a late result completes that activation (write-back and move), it is not a replay. Later inputs queue behind it.
+- An idle unload may occur with active/hover/open group when the field has not changed for the idle TTL; a pending guard blocks it. A later delivery or native result loads the field again.
 - A spread emission checks target existence and part/target matching only; target acceptance is the target Bee's responsibility. After emission it keeps no tracking/cancel state; partial fan-out is possible.
-- A process crash follows the same rule: Honey is the snapshot; active is unknown; no automatic retry.
+- A process crash follows the same rule: Honey is the snapshot; a restored active waits for its result; no automatic retry.
 - A terminal Bee output stays in the field as an output until live unload/replacement. It is not a per-delivery record.
 - A temporary dispatch Bee is released at silent end; its field is ephemeral and not persisted as a LiveHive.
 
@@ -414,11 +436,11 @@ The target model:
     typed error, ambiguous). A group is FIFO by default or by `groupBy` (a dot
     path or code-block key); a missing/empty key is an error. Every type is
     required. When every type reaches its `count`, the group emits one package
-    `{ type: [entries] }`, at most one package per pump. With one read field an
-    entry is the scalar; with multiple read fields it is an object keyed by the
-    read fields. A completed group keeps a tombstone (group key plus close time)
-    so it cannot be reopened; a late input for a closed group is a typed error
-    and is dropped.
+    `{ type: [entries] }` immediately. With one read field an entry is the scalar;
+    with multiple read fields it is a nested object keyed by the read paths (the
+    same dot-path language; a path such as `meta.score` produces `meta: { score }`).
+    A completed group keeps a tombstone (group key plus close time) so it cannot
+    be reopened; a late input for a closed group is a typed error and is dropped.
   - `batch`: `types` declares only `match` and `reads` (no `count`/`groupBy`).
     Inputs accumulate until one matches `batch.signal` (a rule); the signal is
     checked before type matching. The matching input is consumed as the flush
@@ -447,7 +469,7 @@ Undefined areas:
 2. Process stop: Ctrl+C, SIGTERM, SIGKILL.
 3. Power loss and disk: atomic writes, multi-file consistency, corruption.
 4. Native harness: child exit/orphan, session busy/unknown.
-5. Field recovery: unknown active, open assemble groups, no replay.
+5. Field recovery: a restored active waiting for its result, open assemble groups, no replay.
 6. Partial fan-out and gather timeout.
 7. Observability: typed errors, logs, inspect.
 
@@ -491,27 +513,29 @@ side-effecting work; fail closed when state is uncertain.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
 - `SessionOwnership` is refcounted ownership bookkeeping, not a mutex: it records which loaded LiveHives hold an explicit session. It never blocks or rejects sharing; prompt serialization is the adapter FIFO (`DshAcpAdapter.SessionPromptQueue`).
 - Loop safety is graph-level and Bee-level: counter/condition nodes, `queueMax` and receptor overflow prevent unbounded handoff. There is no per-wake hop/duration budget, because there is no wake object to budget. A loop without a counter/condition is bounded by receptor overflow; every LiveHive must have a finite `queueMax`.
-- `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets: they end only the current driver pass and never cancel or drop a value; a later delivery resumes. `queueTtlMs` is a per-receptor waiting TTL measured from the queue entry's `enqueuedAt`, not a message lifetime.
+- There is no `maxPumps` and no host driver pass. `maxWaitMs` is a host wait bound for `settle`/dispatch, not an execution budget: it never cancels or drops a value. `queueTtlMs` is a per-receptor waiting TTL measured from the queue entry's `enqueuedAt`, not a message lifetime.
 - A spread checks target existence and part/target matching only; target capacity and acceptance are the target Bee's concern. A spread is fire-and-forget and keeps no cancel/track state.
 - Target-full behavior for internal moves/spreads and assemble/batch per-type queues is not defined in the final design; see §4.14 and §9 Temporary design. `typeQueueMax` bounds each per-type queue.
 - No automatic replay of side-effecting work; Guard never auto-allows.
+- Idle unload is a snapshot, not an execution end: when the field has not changed for the idle TTL, the host may unload even with active/hover/open group; a pending guard blocks it. A late delivery or native result reloads and continues.
 
 ### 6.1 Implemented vs target
 
-- **Aligned and implemented:** per-Bee receptor and on-demand drain; short delivery
-  (`trigger`/`answer` 202, no id); receptor snapshot and overflow (`reject|block`,
-  `bee-receptor-*`); field-owned per-Bee last output (memory only); adapter
-  session FIFO; ACP approval ownership; dispatch as an ephemeral graph that is
-  released at silent end and never returns output.
+- **Aligned and implemented:** free JSON `Value`; `Pheromone` = `{ value }`;
+  queue entries `{ value, enqueuedAt }`; Bee `reads`/`writes`/`fallback`/
+  `filter` and `minIntervalMs`; condition `{ when }` rules; spread
+  `clone`/`cleave` by BeeId; gather `assemble`/`batch` with per-type queues,
+  packages and tombstones; field-owned per-Bee last output (memory only);
+  adapter session FIFO; ACP approval ownership; dispatch as an ephemeral graph
+  that is released at silent end and never returns output.
 - **Removed in the delivery-only closeout:** the execution tracker, per-request ids, run routes and
   records, per-trace limits, the old wake route, the mailbox name and its error
   codes, the dispatch timeout, and the synchronous answer wait. There are no
   aliases.
-- **Target, not implemented:** free JSON `Value`; `Pheromone` = `{ value }`
-  with queue-entry `enqueuedAt`; Bee `reads`/`writes`/`fallback`/`filter`;
-  spread `clone`/`cleave` by BeeId; gather `assemble`/`batch` per-type queues.
-  The code still uses the earlier tagged Value and id/lineage model; no
-  aliases/backcompat.
+- **Target, not implemented:** per-Bee self-driven drain (no field pump,
+  `maxPumps` or gather `ready`); idle snapshot/unload with restored active and
+  late-result continuation; lazy-load on delivery; B-layer `live.json`, HTTP/CLI
+  input JSON and CONTRACT/README sync; real Codex+DSH spread/gather evidence.
 
 ## 7. Public names and API
 
@@ -533,6 +557,10 @@ GET  /health
 
 There is no run/wake/trace query route and no per-request status id.
 
+`trigger`/`answer` load an unloaded LiveHive by id before delivery when its
+`live.json` and Honey exist; a native result does the same for its field. An
+idle-unloaded LiveHive is still listed and can be loaded again.
+
 `POST /lives/migrate` replaces a live structure; it is not a Honey layout
 migration. The layout migration has no route and remains a persistence decision
 (§8).
@@ -544,11 +572,21 @@ The legacy graph control surface and its client commands were removed in an earl
 ## 8. Current implementation gap
 
 The delivery-only closeout is implemented; §6.1 records the aligned and removed
-surface. The M19 target (§4.12–§4.14) is **not implemented**: the code and
-CONTRACT still use the earlier tagged Value, Pheromone.id/at/lineage and
-branch-based spread/gather. This is the next implementation slice; it has no
-backcompat and no aliases. `batch`, the `filter`/`writes` split and code-block
-rules are part of M19, not a later slice.
+surface. The M19 object model is being delivered in slices (M19a–M19d): the code
+now has the free JSON `Value`, `{ value }` `Pheromone`, queue entries with
+`enqueuedAt`, Bee `reads`/`writes`/`fallback`/`filter`, spread `clone`/`cleave`,
+and gather `assemble`/`batch` with tombstones. The remaining implementation gaps
+are:
+
+- the per-Bee self-driven drain (§4.2): the current M19d code still has a field
+  pump, `maxPumps` and gather `ready`;
+- idle snapshot/unload, restored active, late-result continuation and lazy-load
+  on delivery (§4.7–§4.9);
+- B-layer `live.json` schema/validation/codec, HTTP/CLI input JSON, and
+  CONTRACT/README sync (§4.12/§7);
+- real Codex+DSH spread/gather evidence.
+
+There is no backcompat and no aliases.
 
 One separate gap remains: the Honey directory layout (A23/C05): the code
 still uses `apiaries/<apiary>/compositions/<liveId>/honey/...`, while §5 specifies
@@ -594,6 +632,9 @@ When one of the cases above occurs:
    design invents no timeout for it.
 5. There is no block, no backpressure wait, no freeze/resume, and no automatic
    retry.
+6. A failed or dropped input ends only that input. The same Bee's drain
+   continues with its next receptor entry; other Bees and LiveHives are
+   unaffected. It never replays the side-effecting work.
 
 ### 9.3 Entry points and surfaces
 
@@ -621,8 +662,10 @@ When one of the cases above occurs:
 ### 9.5 Existing code vs temporary placeholder
 
 - Existing code (not final): `trigger`/`answer` receptor full -> 429; internal
-  moves/spreads use pre-consumption reservation and defer/pause when the target
-  is full; `waxd` does not exit.
+  moves drop + log; a failed activation ends the current field pump pass and the
+  next delivery resumes; gather uses `ready` and one package per pump. M19e
+  replaces the pump with a per-Bee drain, continues a failed Bee with its next
+  entry, and emits a completed group immediately.
 - The temporary placeholder for new target paths is error + drop as in §9.2.
 - The final design is not defined; do not infer it from either behavior.
 

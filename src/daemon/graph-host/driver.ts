@@ -50,7 +50,7 @@ async function drive(context: LiveHiveHostContext, graphId: string): Promise<voi
         await flush(context, live);
         return;
       }
-      const due = earliestDue(live.definition, live.runtime, snapshot);
+      const due = earliestDue(live.definition, snapshot);
       const wait = waitFor(due, context, waitedMs);
       if (wait === undefined) {
         await flush(context, live);

@@ -102,7 +102,7 @@ export interface ReceptorHost {
   /** True while the field state transaction is held by the caller. */
   readonly locked: () => boolean;
   transaction<T>(action: () => T): T;
-  /** Waiting entries plus output reservations; active/pending never count. */
+  /** Waiting receptor entries; active/pending never count. */
   depth(nodeId: NodeId): number;
   /** Append only when capacity exists; it must already hold the transaction. */
   tryAppend(nodeId: NodeId, value: Value): boolean;

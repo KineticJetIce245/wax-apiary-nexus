@@ -88,7 +88,7 @@ function collectKeys(value: unknown, keys: string[] = []): string[] {
   return keys;
 }
 
-test('a spread/gather graph runs to Rest and status never contains bodies or tokens', async (t) => {
+test('a spread graph runs both branches to Rest and status never contains bodies or tokens', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new LiveHiveHost({
@@ -106,22 +106,12 @@ test('a spread/gather graph runs to Rest and status never contains bodies or tok
       start: forager('start {{message}}'),
       spread: {
         kind: 'spread',
-        config: {
-          branches: [
-            { id: 'a', to: 'branch-a' },
-            { id: 'b', to: 'branch-b' },
-          ],
-        },
+        config: { strategy: 'clone', targets: ['branch-a', 'branch-b'] },
       },
       'branch-a': forager('branch-a {{message}}'),
       'branch-b': forager('branch-b {{message}}'),
-      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
     },
-    [
-      { id: 'e1', from: 'start', to: 'spread' },
-      { id: 'e2', from: 'branch-a', to: 'gather' },
-      { id: 'e3', from: 'branch-b', to: 'gather' },
-    ],
+    [{ id: 'e1', from: 'start', to: 'spread' }],
   );
   const bindings = allFresh(definition);
 
@@ -165,8 +155,6 @@ test('a spread/gather graph runs to Rest and status never contains bodies or tok
     assert.equal(node.active, false);
     assert.equal(node.hovered, false);
   }
-  // Closed gather tombstones are counted, matching `wax inspect status`.
-  assert.equal(nodeStatus(status, 'gather').gathers, 1);
 
   const serialized = JSON.stringify(host.status());
   for (const secret of ['start seed', 'reply(', 'hv_', 'gd_']) {

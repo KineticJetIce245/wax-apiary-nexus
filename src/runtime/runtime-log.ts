@@ -55,27 +55,26 @@ export function logFailed(
   });
 }
 
-/** Logs a deferred activation once per (Bee, target); retries do not spam. */
-export function logActivationBlocked(
+/** Records an item dropped because its target was full (§9.2); never a body. */
+export function logDropped(
   log: RuntimeLogFieldsSink,
-  reported: Set<string>,
-  node: NodeDefinition,
-  target: NodeId,
-  queueDepth: number,
-  limit: number,
+  nodeId: NodeId,
+  nodeKind: NodeDefinition['kind'],
+  reason: string,
+  details: {
+    readonly enqueuedAt?: string;
+    readonly queueDepth?: number;
+    readonly limit?: number;
+  } = {},
 ): void {
-  const key = `activation\0${node.id}\0${target}`;
-  if (reported.has(key)) {
-    return;
-  }
-  reported.add(key);
   log({
-    event: 'pheromone.blocked',
-    nodeId: node.id,
-    nodeKind: node.kind,
-    queueDepth,
-    limit,
-    reason: `queue-max:${target}`,
+    event: 'pheromone.dropped',
+    nodeId,
+    nodeKind,
+    outcome: reason,
+    ...(details.enqueuedAt === undefined ? {} : { enqueuedAt: details.enqueuedAt }),
+    ...(details.queueDepth === undefined ? {} : { queueDepth: details.queueDepth }),
+    ...(details.limit === undefined ? {} : { limit: details.limit }),
   });
 }
 

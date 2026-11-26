@@ -4,11 +4,7 @@ import type { EngineContext } from './engine-context.js';
 import { emitAlong } from './emit.js';
 import type { GuardDecision, GuardRequest } from './executor.js';
 import { logHoverBlocked } from './runtime-log.js';
-import {
-  releaseReservation,
-  tryReserve,
-  type OutputReservation,
-} from './queue.js';
+import { queueDepth, stateOf } from './queue.js';
 import { ReceptorFullError } from './receptor-overflow.js';
 import { cloneJson } from './value-paths.js';
 import type { HoverSpec, Pheromone, UserNode, Value } from './types.js';
@@ -44,7 +40,7 @@ export function openUserHover(
 
 /**
  * Resolves one user hover and moves the answered value along the beeline.
- * The downstream queue is reserved before the hover is consumed: when it is
+ * The downstream capacity is checked before the hover is consumed: when it is
  * full the hover stays answerable and the typed receptor error is thrown.
  */
 export function completeHover(
@@ -58,43 +54,36 @@ export function completeHover(
   if (state === undefined) {
     throw new Error(`unknown node '${node.id}'`);
   }
-  const reservation = reserveAnswer(ctx, node, pheromone, outcome);
-  try {
-    delete state.hover;
-    delete state.hoverPheromone;
-    ctx.log({ event: 'hover.resolved', nodeId: node.id, nodeKind: 'user', outcome });
-    pheromone.value = value;
-    state.lastOutput = cloneJson(value);
-    emitAlong(ctx, node, pheromone, undefined, reservation ?? undefined);
-  } finally {
-    if (reservation !== undefined) {
-      releaseReservation(ctx.queue, reservation);
-    }
-  }
+  assertAnswerCapacity(ctx, node, outcome);
+  delete state.hover;
+  delete state.hoverPheromone;
+  ctx.log({ event: 'hover.resolved', nodeId: node.id, nodeKind: 'user', outcome });
+  pheromone.value = value;
+  state.lastOutput = cloneJson(value);
+  emitAlong(ctx, node, pheromone);
 }
 
-function reserveAnswer(
+function assertAnswerCapacity(
   ctx: EngineContext,
   node: UserNode,
-  pheromone: Pheromone,
   outcome: string,
-): OutputReservation | undefined {
+): void {
   const edge = ctx.definition.edges.find((candidate) => candidate.from === node.id);
   if (edge === undefined) {
-    return undefined;
+    return;
   }
-  const reserved = tryReserve(ctx.queue, [{ targetId: edge.to, count: 1 }]);
-  if (reserved.ok) {
-    return reserved.reservation;
+  const depth = queueDepth(stateOf(ctx.queue, edge.to));
+  if (depth < ctx.definition.defaults.queueMax) {
+    return;
   }
-  logHoverBlocked(ctx.log, ctx.reportedBlocks, node, reserved.target, {
-    queueDepth: reserved.queueDepth,
+  logHoverBlocked(ctx.log, ctx.reportedBlocks, node, edge.to, {
+    queueDepth: depth,
     hoverOutcome: outcome,
   });
   throw new ReceptorFullError(
-    reserved.target,
+    edge.to,
     ctx.definition.defaults.queueMax,
-    reserved.queueDepth,
+    depth,
     { liveId: ctx.definition.id },
   );
 }

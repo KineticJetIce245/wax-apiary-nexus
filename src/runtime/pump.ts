@@ -4,18 +4,11 @@ import { isFieldResting, restReceptorIfIdle } from './field.js';
 import { expireOverdueQueues, stateOf } from './queue.js';
 
 /**
- * How long the host waits before pumping again when only a full target queue is
- * preventing progress. A blocked activation is retried, never failed.
- */
-export const QUEUE_RETRY_MS = 100;
-
-/**
  * Activates every runnable Bee until the field is quiet. `maxPumps`/waits are a
  * host driver concern; this function ends only when no drain is left.
  */
 export async function pumpField(ctx: EngineContext): Promise<void> {
   ctx.failure = undefined;
-  ctx.blockedByQueue = false;
   ctx.stateLock.runSync(() => {
     expireOverdueQueues(ctx.queue);
     ctx.receptorOverflow?.notifyAll();
@@ -24,7 +17,6 @@ export async function pumpField(ctx: EngineContext): Promise<void> {
     await drainUntilQuiet(ctx);
   } finally {
     ctx.stateLock.runSync(() => refreshRest(ctx));
-    ctx.blockedByQueue = ctx.blockedByQueue && !ctx.resting;
   }
   if (ctx.failure !== undefined) {
     // Let every started drain settle before the failure leaves the pump.
@@ -122,9 +114,4 @@ export function refreshRest(ctx: EngineContext): void {
   } else if (!resting) {
     ctx.resting = false;
   }
-}
-
-/** The field's only timed wake signal: a short retry after queue backpressure. */
-export function nextWakeAt(ctx: EngineContext): number | undefined {
-  return ctx.blockedByQueue && !ctx.resting ? ctx.now() + QUEUE_RETRY_MS : undefined;
 }

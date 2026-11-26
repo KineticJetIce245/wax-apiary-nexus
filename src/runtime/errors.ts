@@ -33,6 +33,20 @@ export class NotImplementedError extends Error {
   }
 }
 
+/**
+ * A spread could not build its parts: an unknown target, a cleave path that is
+ * absent from the value, or parts that do not align with the targets. Nothing
+ * was emitted and the incoming value is dropped.
+ */
+export class SpreadEmitError extends Error {
+  readonly code = 'spread-invalid';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'SpreadEmitError';
+  }
+}
+
 /** A dot path is malformed or targets a forbidden key. */
 export class ValuePathError extends Error {
   readonly code = 'invalid-value-path';

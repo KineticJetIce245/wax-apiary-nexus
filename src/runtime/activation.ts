@@ -6,20 +6,12 @@ import { openUserHover, requestGuard } from './hover.js';
 import { runGather } from './gather.js';
 import {
   logActivated,
-  logActivationBlocked,
   logCompleted,
   logDropMissing,
   logFailed,
   logFiltered,
 } from './runtime-log.js';
-import {
-  releaseReservation,
-  stagePending,
-  stateOf,
-  tryReserve,
-  type OutputReservation,
-  type OutputTarget,
-} from './queue.js';
+import { stagePending, stateOf } from './queue.js';
 import { workerLogFields } from './runtime-values.js';
 import { runSpread } from './spread.js';
 import { assertValue } from './runtime-input.js';
@@ -31,11 +23,7 @@ import {
   resolveReads,
 } from './value-merge.js';
 import { cloneJson } from './value-paths.js';
-import {
-  runWorker,
-  workerExitError,
-  type WorkerResult,
-} from './worker.js';
+import { runWorker, workerExitError, type WorkerResult } from './worker.js';
 import type {
   ConditionNode,
   CounterNode,
@@ -48,11 +36,10 @@ import type {
   WorkerNode,
 } from './types.js';
 
-/** One input already removed from its bee's receptor and reserved for output. */
+/** One input already moved out of its bee's receptor for this activation. */
 export interface Activation {
   readonly node: NodeDefinition;
   readonly pheromone: Pheromone;
-  readonly reservation: OutputReservation;
 }
 
 interface NodeResult {
@@ -84,9 +71,9 @@ export function takeNextForNode(ctx: EngineContext, nodeId: string): Activation 
 }
 
 /**
- * Takes the Bee's pending input only when every output slot is already
- * reserved. A full target keeps the pending Pheromone in place; the pump
- * retries instead of consuming and failing the input.
+ * Stages the receptor head as pending and, once pacing allows, hands it to one
+ * activation. Nothing is reserved here: a full downstream receptor drops the
+ * emitted value at the move (§9), it never holds the source input back.
  */
 function takeForNode(
   ctx: EngineContext,
@@ -106,86 +93,13 @@ function takeForNode(
     return null;
   }
   const pheromone = state.pending;
-  const reserved = tryReserve(ctx.queue, outputTargets(ctx, node, pheromone, state));
-  if (!reserved.ok) {
-    ctx.blockedByQueue = true;
-    logActivationBlocked(
-      ctx.log,
-      ctx.reportedBlocks,
-      node,
-      reserved.target,
-      reserved.queueDepth,
-      ctx.definition.defaults.queueMax,
-    );
-    return null;
-  }
   delete state.pending;
-  return { node, pheromone, reservation: reserved.reservation };
+  return { node, pheromone };
 }
 
-/**
- * The queue slots this activation will need. Spread/gather reserve nothing
- * here: their execution path is a typed not-implemented error until M19c/M19d.
- */
-function outputTargets(
-  ctx: EngineContext,
-  node: NodeDefinition,
-  pheromone: Pheromone,
-  state: NodeState,
-): readonly OutputTarget[] {
-  if (node.kind === 'spread' || node.kind === 'gather' || node.kind === 'user') {
-    return [];
-  }
-  if (node.kind === 'condition') {
-    return conditionTargets(ctx, node, pheromone);
-  }
-  if (node.kind === 'counter') {
-    const branch = counterBranch(node, state);
-    const edge = ctx.definition.edges.find(
-      (candidate) => candidate.from === node.id && candidate.when === branch,
-    );
-    return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
-  }
-  const edge = ctx.definition.edges.find((candidate) => candidate.from === node.id);
-  return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
-}
-
-function conditionTargets(
-  ctx: EngineContext,
-  node: ConditionNode,
-  pheromone: Pheromone,
-): readonly OutputTarget[] {
-  let branch: 'true' | 'false';
-  try {
-    const input = resolveReads(pheromone.value, node.reads, node.fallback, node.id);
-    branch = matchesRule(node.config.when, input, `condition '${node.id}'`) ? 'true' : 'false';
-  } catch {
-    // Let activation report the real input/rule error; no output is reserved.
-    return [];
-  }
-  const edge = ctx.definition.edges.find(
-    (candidate) => candidate.from === node.id && candidate.when === branch,
-  );
-  return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
-}
-
-function counterBranch(node: CounterNode, state: NodeState): 'continue' | 'done' {
-  const previous = state.state?.['count'];
-  const count = (typeof previous === 'number' ? previous : 0) + node.config.step;
-  return count >= node.config.max ? 'done' : 'continue';
-}
-
-/** Commits the counter step and returns the branch that step selects. */
-function advanceCounter(node: CounterNode, state: NodeState): 'continue' | 'done' {
-  const previous = state.state?.['count'];
-  const count = (typeof previous === 'number' ? previous : 0) + node.config.step;
-  state.state = { ...(state.state ?? {}), count };
-  return count >= node.config.max ? 'done' : 'continue';
-}
-
-/** Runs one activation to completion; the caller consumes the reservation. */
+/** Runs one activation to completion. */
 export async function activate(ctx: EngineContext, activation: Activation): Promise<void> {
-  const { node, pheromone, reservation } = activation;
+  const { node, pheromone } = activation;
   const state = stateOf(ctx.queue, node.id);
   const startedAt = beginActivation(ctx, node, pheromone, state);
   if (startedAt === null) {
@@ -193,16 +107,17 @@ export async function activate(ctx: EngineContext, activation: Activation): Prom
   }
   try {
     if (node.kind === 'spread') {
-      await controlActivation(ctx, node, startedAt, () => runSpread(node));
+      await controlActivation(ctx, node, startedAt, () =>
+        runSpread(ctx, node, pheromone),
+      );
       return;
     }
     if (node.kind === 'gather') {
       await controlActivation(ctx, node, startedAt, () => runGather(node));
       return;
     }
-    await taskActivation(ctx, node, pheromone, state, reservation, startedAt);
+    await taskActivation(ctx, node, pheromone, state, startedAt);
   } finally {
-    releaseReservation(ctx.queue, reservation);
     delete state.active;
   }
 }
@@ -225,14 +140,20 @@ function beginActivation(
   return ctx.now();
 }
 
+/**
+ * Runs a control Bee. Spread emits its copies and returns an outcome; a typed
+ * error (unknown target, missing cleave path, bad alignment) fails the one
+ * activation and emits nothing, because parts are built before any emission.
+ */
 async function controlActivation(
   ctx: EngineContext,
   node: NodeDefinition,
   startedAt: number,
-  run: () => never,
+  run: () => string,
 ): Promise<void> {
   try {
-    run();
+    const outcome = run();
+    logCompleted(ctx.log, node, ctx.now() - startedAt, outcome);
   } catch (error) {
     logFailed(ctx.log, node, startedAt, ctx.now(), error);
     ctx.failure ??= error;
@@ -245,12 +166,11 @@ async function taskActivation(
   node: NodeDefinition,
   pheromone: Pheromone,
   state: NodeState,
-  reservation: OutputReservation,
   startedAt: number,
 ): Promise<void> {
   try {
     const result = await runNode(ctx, node, pheromone, state);
-    finishActivation(ctx, node, pheromone, reservation, startedAt, result);
+    finishActivation(ctx, node, pheromone, startedAt, result);
   } catch (error) {
     logFailed(ctx.log, node, startedAt, ctx.now(), error);
     ctx.failure ??= error;
@@ -262,7 +182,6 @@ function finishActivation(
   ctx: EngineContext,
   node: NodeDefinition,
   pheromone: Pheromone,
-  reservation: OutputReservation,
   startedAt: number,
   result: NodeResult,
 ): void {
@@ -271,7 +190,7 @@ function finishActivation(
   if ((node.kind === 'forager' || node.kind === 'worker') && result.value !== undefined) {
     applyReply(ctx, node, pheromone, state, result);
   }
-  emitAlong(ctx, node, pheromone, result.branch, reservation);
+  emitAlong(ctx, node, pheromone, result.branch);
 }
 
 /**
@@ -371,6 +290,14 @@ function requireProjectDirectory(ctx: EngineContext, node: NodeDefinition): stri
 function runCondition(node: ConditionNode, input: Value): NodeResult {
   const branch = matchesRule(node.config.when, input, `condition '${node.id}'`) ? 'true' : 'false';
   return { outcome: branch, branch };
+}
+
+/** Commits the counter step and returns the branch that step selects. */
+function advanceCounter(node: CounterNode, state: NodeState): 'continue' | 'done' {
+  const previous = state.state?.['count'];
+  const count = (typeof previous === 'number' ? previous : 0) + node.config.step;
+  state.state = { ...(state.state ?? {}), count };
+  return count >= node.config.max ? 'done' : 'continue';
 }
 
 /** A user answer is completed by the hover path, not by `runNode`. */

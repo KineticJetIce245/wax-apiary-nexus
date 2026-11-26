@@ -1,24 +1,14 @@
 import type {
   CompositionDefinition,
   PheromoneFieldSnapshot,
-  PheromoneRuntime,
 } from '../../runtime/index.js';
 
-/** Earliest runtime wake or pending-node due instant. */
+/** Earliest pending-node due instant; there is no separate runtime timed wake. */
 export function earliestDue(
   definition: CompositionDefinition,
-  runtime: PheromoneRuntime,
   snapshot: PheromoneFieldSnapshot,
 ): number | undefined {
-  const runtimeWake = runtime.nextWakeAt();
-  const pendingDue = nextPendingAt(definition, snapshot);
-  if (runtimeWake === undefined) {
-    return pendingDue;
-  }
-  if (pendingDue === undefined) {
-    return runtimeWake;
-  }
-  return Math.min(runtimeWake, pendingDue);
+  return nextPendingAt(definition, snapshot);
 }
 
 /** Earliest `lastActivatedAt + minIntervalMs` among pending nodes. */

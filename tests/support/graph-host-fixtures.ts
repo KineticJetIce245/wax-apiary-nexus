@@ -405,8 +405,9 @@ export function runnableForagerGraph(id: string, prompt = 'run {{message}}'): Co
 }
 
 /**
- * A spread/gather graph that keeps the production 1000ms node pacing. One pump
- * cannot reach Rest because the gather waits for its second activation.
+ * A spread/gather graph that keeps the production 1000ms node pacing. The
+ * spread config is the M19 clone form; gather execution and its status fields
+ * are still M19d, so the pacing tests that use this fixture belong to M19d.
  */
 export function pacedSpreadGatherDefinition(id: string): CompositionDefinition {
   return parseComposition({
@@ -416,16 +417,20 @@ export function pacedSpreadGatherDefinition(id: string): CompositionDefinition {
       start: forager('start {{message}}'),
       spread: {
         kind: 'spread',
-        config: {
-          branches: [
-            { id: 'a', to: 'branch-a' },
-            { id: 'b', to: 'branch-b' },
-          ],
-        },
+        config: { strategy: 'clone', targets: ['branch-a', 'branch-b'] },
       },
       'branch-a': forager('branch-a {{message}}'),
       'branch-b': forager('branch-b {{message}}'),
-      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: {
+        kind: 'gather',
+        config: {
+          strategy: 'assemble',
+          types: {
+            a: { match: { path: 'role', equals: 'a' }, count: 1, reads: ['message'] },
+            b: { match: { path: 'role', equals: 'b' }, count: 1, reads: ['message'] },
+          },
+        },
+      },
     },
     edges: [
       { id: 'e1', from: 'start', to: 'spread' },

@@ -11,7 +11,7 @@ import {
 import { createNodeState, isFieldResting, snapshotField } from './field.js';
 import { applyPersistedField, exportField as exportPersistedField } from './restore.js';
 import { completeHover, settleGuard as settleGuardHover } from './hover.js';
-import { nextWakeAt, pumpField, refreshRest, startOtherDrains, QUEUE_RETRY_MS } from './pump.js';
+import { pumpField, refreshRest, startOtherDrains } from './pump.js';
 import {
   ReceptorFullError,
   ReceptorOverflow,
@@ -63,15 +63,14 @@ const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
 /** Re-exported so callers that imported it from the runtime keep working. */
 export { ReceptorFullError } from './receptor-overflow.js';
 export { GuardDecisionError } from './hover.js';
-export { QUEUE_RETRY_MS } from './pump.js';
 
 /**
  * PheromoneField runtime.
  *
  * A normal Bee consumes one value and moves the same Pheromone object along its
- * beeline. A Spread creates one value per target and a Gather assembles one
- * package; both execution paths are M19c/M19d and currently raise a typed
- * not-implemented error. There is no message identity, branch or join.
+ * beeline. A Spread creates one new value per target BeeId (clone or cleave); a
+ * Gather assembles one package and its execution path is M19d. There is no
+ * message identity, branch or join.
  */
 export class PheromoneRuntime {
   private readonly engine: EngineContext;
@@ -143,11 +142,6 @@ export class PheromoneRuntime {
   /** Activates every runnable Bee until the field is quiet. */
   pump(): Promise<void> {
     return pumpField(this.engine);
-  }
-
-  /** The field's only timed wake signal (queue retry); no gather deadlines yet. */
-  nextWakeAt(): number | undefined {
-    return nextWakeAt(this.engine);
   }
 
   /** Immutable view of the PheromoneField. */
@@ -319,7 +313,6 @@ function buildEngine(parts: EngineParts): EngineContext {
     onGuardExpired: parts.options.onGuardExpired,
     reportedBlocks: new Set(),
     failure: undefined,
-    blockedByQueue: false,
     resting: isFieldResting(parts.states.values()),
   };
 }

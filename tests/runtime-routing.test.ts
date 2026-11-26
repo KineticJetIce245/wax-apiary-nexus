@@ -49,24 +49,12 @@ function routingDefinition(): ReturnType<typeof parseComposition> {
       start: foragerNode('start {{message}}'),
       spread: {
         kind: 'spread',
-        config: {
-          branches: [
-            { id: 'a', to: 'branch-a' },
-            { id: 'b', to: 'branch-b' },
-          ],
-        },
+        config: { strategy: 'clone', targets: ['branch-a', 'branch-b'] },
       },
       'branch-a': foragerNode('branch-a {{message}}'),
       'branch-b': foragerNode('branch-b {{message}}'),
-      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
-      done: foragerNode('done {{message}}'),
     },
-    edges: [
-      { id: 'e1', from: 'start', to: 'spread' },
-      { id: 'e2', from: 'branch-a', to: 'gather' },
-      { id: 'e3', from: 'branch-b', to: 'gather' },
-      { id: 'e4', from: 'gather', to: 'done' },
-    ],
+    edges: [{ id: 'e1', from: 'start', to: 'spread' }],
   });
 }
 
@@ -146,8 +134,7 @@ function waitForExecutionSettled(workspace: Workspace, executionId: string): Pro
 
 /**
  * Pumps until Rest. Each pump may activate a node once; advancing the injected
- * clock past `minIntervalMs` lets the same node (here: gather) run again without
- * a real sleep.
+ * clock past `minIntervalMs` lets a paced node run again without a real sleep.
  */
 async function pumpUntilRest(
   runtime: PheromoneRuntime,
@@ -165,7 +152,7 @@ async function pumpUntilRest(
   throw new Error(`field did not reach Rest after ${String(maxPumps)} pumps`);
 }
 
-test('spread routes each branch to its own session through gather to Rest', async (t) => {
+test('spread routes each branch to its own session and the field reaches Rest', async (t) => {
   const adapter = new EchoAdapter();
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
@@ -178,7 +165,6 @@ test('spread routes each branch to its own session through gather to Rest', asyn
     start: { kind: 'fresh' },
     'branch-a': { kind: 'session', sessionId: sessionA.sessionId },
     'branch-b': { kind: 'session', sessionId: sessionB.sessionId },
-    done: { kind: 'fresh' },
   };
   const instantiated = await instantiateForagers({
     definition,
@@ -192,14 +178,13 @@ test('spread routes each branch to its own session through gather to Rest', asyn
     start: sessionOf(instantiated, 'start'),
     branchA: sessionOf(instantiated, 'branch-a'),
     branchB: sessionOf(instantiated, 'branch-b'),
-    done: sessionOf(instantiated, 'done'),
   };
   assert.equal(records.branchA.sessionId, sessionA.sessionId);
   assert.equal(records.branchB.sessionId, sessionB.sessionId);
   assert.equal(
     new Set(Object.values(records).map((record) => record.sessionId)).size,
-    4,
-    'all four foragers use distinct sessions',
+    3,
+    'all three foragers use distinct sessions',
   );
 
   let clock = START;
@@ -214,7 +199,7 @@ test('spread routes each branch to its own session through gather to Rest', asyn
   });
 
   assert.equal(snapshot.rest, true);
-  assert.equal(adapter.prompts.length, 4);
+  assert.equal(adapter.prompts.length, 3);
 
   assert.deepEqual(promptsFor(adapter, records.start), ['start seed']);
   const branchAPrompts = promptsFor(adapter, records.branchA);
@@ -230,34 +215,10 @@ test('spread routes each branch to its own session through gather to Rest', asyn
   assert.equal(branchAPrompts[0]?.includes('branch-b '), false);
   assert.equal(branchBPrompts[0]?.includes('branch-a '), false);
 
-  const donePrompts = promptsFor(adapter, records.done);
-  assert.equal(donePrompts.length, 1);
-  const donePrompt = donePrompts[0] ?? '';
-  assert.match(donePrompt, /^done /);
-  // The gather output carried the two branch results from their two sessions.
-  assert.ok(donePrompt.includes(`reply(${records.branchA.nativeId}):branch-a `));
-  assert.ok(donePrompt.includes(`reply(${records.branchB.nativeId}):branch-b `));
-  assert.equal(
-    (donePrompt.match(new RegExp(`reply\\(${escapeRegExp(records.branchA.nativeId)}\\)`, 'g')) ?? [])
-      .length,
-    1,
-  );
-  assert.equal(
-    (donePrompt.match(new RegExp(`reply\\(${escapeRegExp(records.branchB.nativeId)}\\)`, 'g')) ?? [])
-      .length,
-    1,
-  );
-
-  assert.deepEqual(
-    instantiated.routing.lastOutput,
-    instantiated.executors.get('done')?.lastOutput,
-  );
-  const finalText = instantiated.routing.lastOutput;
-  assert.equal(typeof finalText?.['message'], 'string');
-  assert.match(
-    String(finalText?.['message']),
-    new RegExp(`^reply\\(${escapeRegExp(records.done.nativeId)}\\):done `),
-  );
+  // The two copies are the two terminal field outputs; neither was merged into
+  // the other branch's value.
+  assert.equal(snapshot.nodes['spread']?.lastOutput, undefined);
+  assert.equal(snapshot.nodes['spread']?.receptor.length, 0);
 });
 
 test('a busy session stops instantiation before the graph runs', async (t) => {
@@ -313,7 +274,3 @@ test('a busy session stops instantiation before the graph runs', async (t) => {
   }
   assert.equal(registry.isBusy(busy.sessionId), false);
 });
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}

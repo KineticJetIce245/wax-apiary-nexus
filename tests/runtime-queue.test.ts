@@ -5,7 +5,6 @@ import {
   createMemoryLog,
   parseComposition,
   PheromoneRuntime,
-  QUEUE_RETRY_MS,
   ReceptorFullError,
   serializeValue,
   type NodeExecutor,
@@ -284,7 +283,7 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
   assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 0);
 });
 
-test('a full target pauses the upstream node, then resumes it without losing the output', async () => {
+test('an internal move to a full target is dropped and logged, not deferred', async () => {
   let clock = START;
   const log = createMemoryLog();
   const executed: { node: string; value: string }[] = [];
@@ -303,8 +302,7 @@ test('a full target pauses the upstream node, then resumes it without losing the
     { executeForager: executor, now: () => clock, onLog: log.sink },
   );
 
-  // Warm the sink so its next queued input is held by minIntervalMs: the
-  // target can stay full across a whole pump instead of draining immediately.
+  // Warm the sink so its next input stays pacing-held while the target is full.
   runtime.admit('sink', text('warm'));
   await runtime.pump();
   assert.deepEqual(executed, [{ node: 'sink', value: 'warm' }]);
@@ -312,75 +310,46 @@ test('a full target pauses the upstream node, then resumes it without losing the
 
   runtime.admit('sink', text('existing'));
   runtime.admit('start', text('seed'));
-
   await runtime.pump();
 
-  // The upstream node did not run and did not fail: its input is preserved.
-  assert.deepEqual(executed, [], 'the upstream node is not activated while the target is full');
-  const start = runtime.snapshot().nodes['start'];
-  assert.ok(start !== undefined);
-  assert.ok(start.pending !== undefined, 'the source Pheromone stays pending');
-  assert.equal(serializeValue(start.pending.value), 'seed');
-  assert.equal(start.active, undefined);
-  assert.equal(start.receptor.length, 0);
+  // The source ran and its output was dropped at the full target: no deferral,
+  // no retry, no failure.
+  assert.deepEqual(executed, [{ node: 'start', value: 'seed' }]);
+  const snapshot = runtime.snapshot();
+  assert.equal(snapshot.nodes['start']?.pending, undefined);
+  assert.equal(snapshot.nodes['start']?.active, undefined);
+  assert.equal(serializeValue(snapshot.nodes['sink']?.pending?.value as Value), 'existing');
+  assert.equal(snapshot.nodes['sink']?.receptor.length, 0);
   assert.equal(
     log.entries.some((entry) => entry.event === 'node.failed'),
     false,
-    'backpressure is not a node failure',
+    'a full target is a drop, not a node failure',
   );
   assert.equal(
-    log.entries.some((entry) => entry.event === 'pheromone.rejected'),
-    false,
-    'the source is held, not rejected',
+    log.entries.filter((entry) => entry.event === 'pheromone.rejected').length,
+    1,
+    'the target still records the refused enqueue',
   );
-
-  const blocked = log.entries.find(
-    (entry) => entry.event === 'pheromone.blocked' && entry.nodeId === 'start',
+  const dropped = log.entries.find(
+    (entry) => entry.event === 'pheromone.dropped' && entry.nodeId === 'start',
   );
-  assert.ok(blocked !== undefined);
-  assert.equal(blocked.reason, 'queue-max:sink');
-  assert.equal(blocked.queueDepth, 1);
-  assert.equal(blocked.limit, 1);
+  assert.ok(dropped !== undefined);
+  assert.equal(dropped.nodeKind, 'forager');
+  assert.equal(dropped.outcome, 'target-full:sink');
+  assert.equal(dropped.queueDepth, 1);
+  assert.equal(dropped.limit, 1);
 
-  // The retry hint is a real future instant, not a 0ms spin.
-  assert.equal(runtime.snapshot().rest, false);
-  assert.equal(runtime.nextWakeAt(), clock + QUEUE_RETRY_MS);
-
-  // Free the target by letting its rate limit expire, then pump again.
+  // The held sink input still runs; the dropped output never reappears.
   clock += 1000;
   await runtime.pump();
-
-  assert.deepEqual(
-    executed,
-    [
-      { node: 'start', value: 'seed' },
-      { node: 'sink', value: 'existing' },
-    ],
-    'the preserved input runs once the target has room',
-  );
-
-  clock += 1000;
-  await runtime.pump();
-
-  assert.deepEqual(
-    executed,
-    [
-      { node: 'start', value: 'seed' },
-      { node: 'sink', value: 'existing' },
-      { node: 'sink', value: 'out:seed' },
-    ],
-    'the source output is delivered and consumed, never lost',
-  );
+  assert.deepEqual(executed, [
+    { node: 'start', value: 'seed' },
+    { node: 'sink', value: 'existing' },
+  ]);
   assert.equal(runtime.snapshot().rest, true);
-  assert.equal(runtime.snapshot().nodes['sink']?.receptor.length, 0);
-  assert.equal(
-    log.entries.some((entry) => entry.event === 'node.failed'),
-    false,
-    'nothing failed during the pause or the resume',
-  );
 });
 
-test('a spread pauses before activation when a branch target is full and loses no branch', async () => {
+test('a spread drops only the part whose target is full and keeps the rest', async () => {
   let clock = START;
   const log = createMemoryLog();
   const executed: { node: string; value: string }[] = [];
@@ -390,94 +359,61 @@ test('a spread pauses before activation when a branch target is full and loses n
       return { message: `out:${serializeValue(input)}` };
     },
   };
-
-  let runtime: PheromoneRuntime | undefined;
-  let atBlock: { pending?: string; rightQueue: number } | undefined;
-  const onLog = (entry: Parameters<typeof log.sink>[0]): void => {
-    log.sink(entry);
-    if (entry.event === 'pheromone.blocked' && entry.nodeId === 'fan' && runtime !== undefined) {
-      const snapshot = runtime.snapshot();
-      const pending = snapshot.nodes['fan']?.pending;
-      atBlock = {
-        ...(pending === undefined ? {} : { pending: serializeValue(pending.value) }),
-        rightQueue: snapshot.nodes['right']?.receptor.length ?? -1,
-      };
-    }
-  };
-
-  runtime = new PheromoneRuntime(
+  const runtime = new PheromoneRuntime(
     queueCappedComposition(
-      2,
+      1,
       {
         start: foragerNode(),
         fan: {
           kind: 'spread',
-          config: {
-            branches: [
-              { id: 'a', to: 'left' },
-              { id: 'b', to: 'left' },
-              { id: 'c', to: 'right' },
-            ],
-          },
+          config: { strategy: 'clone', targets: ['left', 'right'] },
         },
         left: foragerNode(),
         right: foragerNode(),
       },
       [{ id: 'e1', from: 'start', to: 'fan' }],
     ),
-    { executeForager: executor, now: () => clock, onLog },
+    { executeForager: executor, now: () => clock, onLog: log.sink },
   );
 
   runtime.admit('left', text('existing-left'));
   runtime.admit('start', text('seed'));
-
-  // No rejection: the spread waits until every branch target had room.
   await runtime.pump();
 
-  assert.ok(atBlock !== undefined, 'the spread activation was deferred once');
+  // `left` was full, so its part was dropped; `right` still received the whole
+  // copy. Partial fan-out is not a cancellation and never rolls back.
   assert.deepEqual(
-    atBlock,
-    { pending: 'out:seed', rightQueue: 0 },
-    'the spread input stays pending and no branch is emitted while one target is full',
+    executed.map((call) => call.node),
+    ['start', 'left', 'right'],
   );
-
-  const blocked = log.entries.find(
-    (entry) => entry.event === 'pheromone.blocked' && entry.nodeId === 'fan',
-  );
-  assert.ok(blocked !== undefined);
-  assert.equal(blocked.outcome, 'queue-max:left');
-  assert.equal(blocked.queueDepth, 1, 'one existing input plus two branches exceeds queueMax: 2');
+  assert.equal(executed.find((call) => call.node === 'left')?.value, 'existing-left');
+  assert.equal(executed.find((call) => call.node === 'right')?.value, 'out:seed');
   assert.equal(
-    log.entries.some((entry) => entry.event === 'pheromone.rejected'),
+    executed.filter((call) => call.node === 'left').length,
+    1,
+    'the dropped part is never retried and the existing input is not lost',
+  );
+
+  const dropped = log.entries.find(
+    (entry) => entry.event === 'pheromone.dropped' && entry.nodeId === 'fan',
+  );
+  assert.ok(dropped !== undefined);
+  assert.equal(dropped.nodeKind, 'spread');
+  assert.equal(dropped.outcome, 'target-full:left');
+  assert.equal(dropped.queueDepth, 1);
+  assert.equal(dropped.limit, 1);
+  assert.equal(
+    log.entries.some((entry) => entry.event === 'node.failed'),
     false,
-    'the spread is not rejected after activation',
+    'a partial fan-out is not a node failure',
   );
-  assert.equal(log.entries.some((entry) => entry.event === 'node.failed'), false);
 
-  // The spread resumed in the same pump once `left` drained its existing input.
-  assert.deepEqual(executed, [
-    { node: 'start', value: 'seed' },
-    { node: 'left', value: 'existing-left' },
-    { node: 'right', value: 'out:seed' },
-  ]);
-  const fanPending = runtime.snapshot().nodes['fan']?.pending;
-  assert.equal(fanPending, undefined, 'the spread input was consumed by its one activation');
-
-  // The two `left` branches are spaced by minIntervalMs; drain both.
-  clock += 1000;
-  await runtime.pump();
-  clock += 1000;
-  await runtime.pump();
-
-  assert.deepEqual(
-    executed.filter((call) => call.node === 'left').map((call) => call.value),
-    ['existing-left', 'out:seed', 'out:seed'],
-    'both repeated-target branches are delivered exactly once',
-  );
-  assert.deepEqual(
-    executed.filter((call) => call.node === 'right').map((call) => call.value),
-    ['out:seed'],
-  );
+  const fan = runtime.snapshot().nodes['fan'];
+  assert.ok(fan !== undefined);
+  assert.equal(fan.pending, undefined, 'the spread input was consumed');
+  assert.equal(fan.active, undefined);
+  assert.equal(fan.receptor.length, 0, 'the spread has no ordinary out-edge receptor');
+  assert.equal(fan.lastOutput, undefined, 'a spread writes no last output');
   assert.equal(runtime.snapshot().rest, true);
 });
 

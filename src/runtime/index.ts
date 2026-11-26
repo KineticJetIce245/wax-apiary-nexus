@@ -6,6 +6,7 @@ export {
   HoneyIncompatibleError,
   NotImplementedError,
   RuleExecutionError,
+  SpreadEmitError,
   ValueDropOverlapError,
   ValuePathError,
 } from './errors.js';
@@ -38,7 +39,6 @@ export {
 export {
   GuardDecisionError,
   PheromoneRuntime,
-  QUEUE_RETRY_MS,
   ReceptorFullError,
 } from './runtime.js';
 export {

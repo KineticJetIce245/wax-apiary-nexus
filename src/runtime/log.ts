@@ -5,7 +5,7 @@ export type RuntimeEvent =
   | 'pheromone.pending'
   | 'pheromone.emitted'
   | 'pheromone.rejected'
-  | 'pheromone.blocked'
+  | 'pheromone.dropped'
   | 'pheromone.expired'
   | 'bee-receptor-blocked'
   | 'bee-receptor-block-timeout'

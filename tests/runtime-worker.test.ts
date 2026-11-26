@@ -78,7 +78,7 @@ function workerChain(config: WorkerConfig): CompositionDefinition {
   });
 }
 
-/** start -> spread (a -> gather, b -> ask, c -> failing worker); gather requires a,c. */
+/** start -> spread sharing the input with a user hover and a failing worker. */
 function spreadWorkerFailureComposition(config: WorkerConfig): CompositionDefinition {
   return parseComposition({
     schemaVersion: 1,
@@ -87,25 +87,12 @@ function spreadWorkerFailureComposition(config: WorkerConfig): CompositionDefini
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start' } },
       spread: {
         kind: 'spread',
-        config: {
-          branches: [
-            { id: 'a', to: 'gather' },
-            { id: 'b', to: 'ask' },
-            { id: 'c', to: 'fail' },
-          ],
-        },
+        config: { strategy: 'clone', targets: ['ask', 'fail'] },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      gather: { kind: 'gather', config: { required: ['a', 'c'], combine: 'text' } },
       fail: { kind: 'worker', config },
-      done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
-    edges: [
-      { id: 'e1', from: 'start', to: 'spread' },
-      { id: 'e2', from: 'ask', to: 'gather' },
-      { id: 'e3', from: 'fail', to: 'gather' },
-      { id: 'e4', from: 'gather', to: 'done' },
-    ],
+    edges: [{ id: 'e1', from: 'start', to: 'spread' }],
   });
 }
 
@@ -535,7 +522,7 @@ test('a worker without a registered project directory fails before spawning', as
   assert.equal(existsSync(marker), false);
 });
 
-test('a worker failure on a spread branch cancels siblings through spread semantics', async () => {
+test('a worker failure on one spread branch leaves the sibling hover open', async () => {
   const log = createMemoryLog();
   const { executor, calls } = recorder();
   const project = projectDir();
@@ -552,15 +539,16 @@ test('a worker failure on a spread branch cancels siblings through spread semant
   await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), /exited with code 1/);
 
+  // The failure belongs to the failing activation only: the sibling user hover
+  // is still open and no spread-level cleanup cancelled it.
   const snapshot = runtime.snapshot();
-  assert.equal(snapshot.nodes['ask']?.hover, undefined);
-  assert.equal(snapshot.nodes['ask']?.receptor.length, 0);
-  assert.equal(snapshot.rest, true);
+  assert.equal(snapshot.nodes['fail']?.active, undefined);
+  assert.equal(snapshot.nodes['fail']?.lastOutput, undefined);
+  assert.ok(snapshot.nodes['ask']?.hover !== undefined, 'the sibling hover survives');
+  assert.ok(snapshot.nodes['ask']?.hoverPheromone !== undefined);
+  assert.equal(snapshot.rest, false, 'the open hover keeps the field non-Rest');
   assert.deepEqual(calls.map((call) => call.nodeId), ['start']);
-  assert.ok(log.entries.some((entry) => entry.event === 'hover.cancelled'));
-  const failed = (log.entries as { event: string; outcome?: string }[]).find((entry) => entry.event === 'gather.failed');
-  assert.ok(failed !== undefined);
-  assert.equal(failed.outcome, 'failed-branch');
+  assert.equal(log.entries.some((entry) => entry.event === 'hover.cancelled'), false);
 });
 
 test('worker logs carry metadata but not stdout or stderr bodies', async () => {

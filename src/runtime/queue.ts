@@ -43,14 +43,17 @@ export function requireNode(ctx: QueueContext, nodeId: NodeId): NodeDefinition {
   return node;
 }
 
-/** Waiting receptor entries only; active and pending never count. */
+/** Waiting entries only; active and pending never count. */
 export function receptorDepth(state: NodeState): number {
   return state.receptor?.length ?? 0;
 }
 
-/** Waiting entries plus output reservations; the queueMax comparison basis. */
+/**
+ * The queueMax comparison basis. Capacity is checked and consumed by the same
+ * synchronous append; there is no pre-consumption reservation (§4.13/§9).
+ */
 export function queueDepth(state: NodeState): number {
-  return receptorDepth(state) + (state.reserved ?? 0);
+  return receptorDepth(state);
 }
 
 /** Creates one queue entry; the entry is a Pheromone plus its enqueue instant. */
@@ -136,99 +139,6 @@ export function tryAppendEntry(ctx: QueueContext, nodeId: NodeId, entry: QueueEn
   }
   appendEntry(ctx, nodeId, entry, 'pheromone.enqueued');
   return true;
-}
-
-export interface OutputTarget {
-  readonly targetId: NodeId;
-  readonly count: number;
-}
-
-/**
- * Queue slots held for one activation's future output. Every target is
- * reserved before the source Pheromone is consumed, so a full queue can never
- * reject a result after its task already ran.
- */
-export interface OutputReservation {
-  readonly slots: Map<NodeId, number>;
-}
-
-export type ReserveOutcome =
-  | { readonly ok: true; readonly reservation: OutputReservation }
-  | { readonly ok: false; readonly target: NodeId; readonly queueDepth: number };
-
-function queueAvailable(ctx: QueueContext, targetId: NodeId): number {
-  return ctx.definition.defaults.queueMax - queueDepth(stateOf(ctx, targetId));
-}
-
-/**
- * Reserves every required slot atomically: if any target cannot take all of
- * its outputs, nothing is reserved and the caller keeps its input.
- */
-export function tryReserve(
-  ctx: QueueContext,
-  targets: readonly OutputTarget[],
-): ReserveOutcome {
-  const needed = new Map<NodeId, number>();
-  for (const { targetId, count } of targets) {
-    if (!ctx.definition.nodes.has(targetId)) {
-      throw new Error(`unknown edge target '${targetId}'`);
-    }
-    needed.set(targetId, (needed.get(targetId) ?? 0) + count);
-  }
-  for (const [targetId, count] of needed) {
-    if (count > queueAvailable(ctx, targetId)) {
-      return { ok: false, target: targetId, queueDepth: queueDepth(stateOf(ctx, targetId)) };
-    }
-  }
-  const slots = new Map<NodeId, number>();
-  for (const [targetId, count] of needed) {
-    const state = stateOf(ctx, targetId);
-    state.reserved = (state.reserved ?? 0) + count;
-    slots.set(targetId, count);
-  }
-  return { ok: true, reservation: { slots } };
-}
-
-/** Gives back every slot this reservation still holds. */
-export function releaseReservation(ctx: QueueContext, reservation: OutputReservation): void {
-  for (const [targetId, count] of reservation.slots) {
-    const state = stateOf(ctx, targetId);
-    const reserved = (state.reserved ?? 0) - count;
-    if (reserved <= 0) {
-      delete state.reserved;
-    } else {
-      state.reserved = reserved;
-    }
-    ctx.notifyOverflow?.(targetId);
-  }
-  reservation.slots.clear();
-}
-
-/** Converts one reserved slot into an enqueued entry. */
-export function consumeReservation(
-  ctx: QueueContext,
-  reservation: OutputReservation,
-  targetId: NodeId,
-): void {
-  const held = reservation.slots.get(targetId);
-  if (held === undefined || held <= 0) {
-    throw new Error(`node '${targetId}' has no reserved output slot for this activation`);
-  }
-  const state = stateOf(ctx, targetId);
-  const reserved = state.reserved ?? 0;
-  if (reserved <= 0) {
-    throw new Error(`node '${targetId}' lost its reserved output slot`);
-  }
-  if (reserved === 1) {
-    delete state.reserved;
-  } else {
-    state.reserved = reserved - 1;
-  }
-  if (held === 1) {
-    reservation.slots.delete(targetId);
-  } else {
-    reservation.slots.set(targetId, held - 1);
-  }
 }
 
 /**

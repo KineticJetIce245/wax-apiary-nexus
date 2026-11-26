@@ -36,7 +36,5 @@ export interface EngineContext {
   readonly reportedBlocks: Set<string>;
   /** The first activation failure; the pump stops starting unrelated bees. */
   failure: unknown;
-  /** True while a target queue blocked the pump; drives a short retry wake. */
-  blockedByQueue: boolean;
   resting: boolean;
 }

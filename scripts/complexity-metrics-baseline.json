@@ -612,20 +612,20 @@
       "nesting": 1,
       "parameters": 0
     },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@188>": {
+    "tests/graph-host-execution.test.ts::arrow <anonymous@176>": {
       "lines": 57,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@496>": {
+    "tests/graph-host-execution.test.ts::arrow <anonymous@484>": {
       "lines": 68,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
     "tests/graph-host-execution.test.ts::arrow <anonymous@91>": {
-      "lines": 96,
+      "lines": 84,
       "cyclomatic": 4,
       "nesting": 1,
       "parameters": 1
@@ -888,19 +888,19 @@
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-queue.test.ts::arrow <anonymous@232>": {
+    "tests/runtime-queue.test.ts::arrow <anonymous@231>": {
       "lines": 54,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-routing.test.ts::arrow <anonymous@168>": {
-      "lines": 94,
-      "cyclomatic": 6,
+    "tests/runtime-routing.test.ts::arrow <anonymous@155>": {
+      "lines": 68,
+      "cyclomatic": 3,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/runtime-routing.test.ts::arrow <anonymous@263>": {
+    "tests/runtime-routing.test.ts::arrow <anonymous@224>": {
       "lines": 53,
       "cyclomatic": 1,
       "nesting": 1,
@@ -1002,19 +1002,19 @@
       "nesting": 0,
       "parameters": 1
     },
-    "tests/runtime-queue.test.ts::arrow <anonymous@287>": {
-      "lines": 95,
+    "tests/runtime-queue.test.ts::arrow <anonymous@286>": {
+      "lines": 65,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-queue.test.ts::arrow <anonymous@383>": {
-      "lines": 100,
+    "tests/runtime-queue.test.ts::arrow <anonymous@352>": {
+      "lines": 67,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-queue.test.ts::arrow <anonymous@484>": {
+    "tests/runtime-queue.test.ts::arrow <anonymous@420>": {
       "lines": 62,
       "cyclomatic": 1,
       "nesting": 0,

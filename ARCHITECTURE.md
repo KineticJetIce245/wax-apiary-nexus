@@ -636,9 +636,10 @@ When one of the cases above occurs:
    design invents no timeout for it.
 5. There is no block, no backpressure wait, no freeze/resume, and no automatic
    retry.
-6. A failed or dropped input ends only that input. The same Bee's drain
-   continues with its next receptor entry; other Bees and LiveHives are
-   unaffected. It never replays the side-effecting work.
+6. A failed or dropped input ends only that input; it never replays the
+   side-effecting work. In the current pump placeholder the pass stops and the
+   next delivery resumes; M19d's per-Bee drain continues with the next entry
+   (§9.6).
 
 ### 9.3 Entry points and surfaces
 

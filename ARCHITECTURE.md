@@ -281,6 +281,11 @@ Consequences:
 
 ### 4.11 Pheromone identity is not a control handle
 
+> M19 draft (not implemented): the target model removes `Pheromone.id` entirely.
+> This section describes the M18 current behavior; it will be replaced by "no
+> message identity at all" when M19 lands. The M19 draft is in
+> `../docs/temp/M19-spread-gather-design.md`.
+
 `Pheromone.id` is a field-local message identity. It exists for internal
 correlation (logs, spread/gather lineage, join bookkeeping) and for tests. It is
 not a cursor, not a run handle, and not a public object.
@@ -306,6 +311,38 @@ Forbidden uses:
 A normal beeline moving the same id across Bees means one message moved, not one
 execution or run. `Pheromone.id` ends with the message (terminal, drop, a
 spread/gather cardinality change, or unload) and is not durable.
+
+### 4.12 Error handling and extreme recovery (M19 draft)
+
+Status: **draft, not implemented**. The owner is designing a freeze system; this
+section is intentionally incomplete. Current behavior remains §4.9. Do not treat
+these notes as a finished contract.
+
+Open questions recorded so far:
+
+- **Queue full / freeze.** When a target Bee's receptor or an assemble per-type
+  queue is full, the temporary policy is a typed error: no silent drop, no
+  automatic retry. A freeze/resume system (pause producers, resume after space)
+  is under consideration; its scope, timeout, and persisted state are undefined.
+- **Spread target acceptance.** A spread only checks that every split Pheromone
+  has a corresponding target Bee. Whether the target accepts (queue full, busy,
+  failure) is the target Bee's responsibility; the spread is fire-and-forget and
+  keeps no tracking/cancel state. Partial fan-out is therefore possible; a
+  gather that never receives the missing part must resolve it by its own
+  timeout/failure policy.
+
+To be filled when the owner defines the freeze system:
+
+1. Backpressure/freeze: queue full, freeze/resume, timeout, fairness.
+2. Process stop: Ctrl+C, SIGTERM, SIGKILL.
+3. Power loss and disk: atomic writes, multi-file consistency, corruption.
+4. Native harness: child exit/orphan, session busy/unknown.
+5. Field recovery: unknown active, open assemble groups, no replay.
+6. Partial fan-out and gather timeout.
+7. Observability: typed errors, logs, inspect.
+
+Rules that already hold: no silent loss; no automatic replay of side-effecting
+work; fail closed when state is uncertain.
 
 ## 5. Persistence
 

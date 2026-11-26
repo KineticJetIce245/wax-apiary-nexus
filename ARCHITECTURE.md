@@ -1,8 +1,8 @@
 # WAX Apiary neXus — Architecture
 
 Status: **target architecture**. The delivery-only closeout (2026-11-25) is implemented: the control plane is delivery-only, ordinary beelines move the same Pheromone, the field owns the per-Bee last output, and the old execution-registry surface is gone. The target object model (2026-11-26) changes `Value` to a free JSON object and `Pheromone` to `{ value }` (no id/at/lineage); spread/gather use BeeId and value fields. The code still implements the earlier model until these slices land; §4.11
-states the target no-identity rule; §4.12–§4.13 are the target, and §4.14 is an
-open draft. The Honey directory layout (A23/C05, §5/§8) remains a separate known gap.
+states the target no-identity rule; §4.12–§4.13 are the target; §4.14 is not
+defined yet (see §9 Temporary design). The Honey directory layout (A23/C05, §5/§8) remains a separate known gap.
 
 ## 1. One sentence
 
@@ -264,14 +264,10 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 ### 4.9 Failure and release
 
 - A Bee execution failure clears `active`, logs the failure, and releases that value. It never replays the side-effecting work.
-- A receptor overflow rejection does not enqueue the new queue entry. Current
-  code throws/returns `ReceptorFullError` (`trigger`/`answer` map it to 429) or
-  defers an internal move through pre-consumption reservation; `waxd` does not
-  exit on receptor full. The target block/reject/logged-drop policy is open
-  (§4.14).
+- Overflow/target-full behavior is not defined in the final design; see §4.14
+  and §9 Temporary design. No silent loss; any drop must be recorded.
 - Unload persists receptor queue entries/pending/hover/assemble groups and marks active as unknown; reload never replays active work.
 - A spread emission checks target existence and part/target matching only; target acceptance is the target Bee's responsibility. After emission it keeps no tracking/cancel state; partial fan-out is possible.
-- Target-full/rejection (receptor or per-type queue) is an error-handling concern: the exact block/reject/logged-drop policy is open in §4.14. No silent loss is allowed.
 - A process crash follows the same rule: Honey is the snapshot; active is unknown; no automatic retry.
 - A terminal Bee output stays in the field as an output until live unload/replacement. It is not a per-delivery record.
 - A temporary dispatch Bee is released at silent end; its field is ephemeral and not persisted as a LiveHive.
@@ -357,38 +353,18 @@ The target model:
   error. A completed group emits one package; at most one package per pump (a
   host driver pass). A closed group keeps a tombstone: a marker that the group
   completed or timed out and must not be reopened.
-  Target-full behavior is part of error handling (§4.14); no default is assumed
-  here. `batch` (time window) is not part of this target slice.
+  Target-full behavior is not defined in the final design; see §4.14 and §9
+  Temporary design. `batch` (time window) is not part of this target slice.
 - There is no spreadId/branchId/lineage and no message identity. Condition
   true/false outcomes remain graph edge labels, separate from spread targets.
 
-### 4.14 Error handling and extreme recovery (open)
+### 4.14 Error handling and extreme recovery
 
-Status: **draft, not implemented**. The owner is designing a freeze system; this
-section is intentionally incomplete. Current behavior remains §4.9. Do not treat
-these notes as a finished contract.
+**Final design: not defined.** Freeze/resume, target-full handling, and extreme
+recovery are not decided. §9 Temporary design describes the current placeholder;
+it is not part of the final design.
 
-Open questions recorded so far:
-
-- **Target full / freeze.** Current code: `trigger`/`answer` receptor full maps to
-  429; internal moves/spreads use pre-consumption reservation and defer/pause when
-  the target is full; `waxd` does not exit. For the target assemble per-type
-  queues, the target Bee's policy (block, typed rejection, or logged drop) is
-  part of this error-handling design and is not defined yet. Until freeze exists,
-  the temporary policy is error + drop (§9). `trigger` has the 429 path; internal
-  moves/spreads have no HTTP response, so the target policy must be explicit.
-- **Unimplemented target paths (temporary error + drop).** For paths with no
-  implementation yet (assemble per-type queue overflow, freeze), report a typed
-  error, log it, and drop that item/operation; do not block, retry, or replay.
-  `waxd` continues. Replace this with the freeze design later; do not exit the
-  process.
-- **Spread target acceptance.** A spread only checks that every split value/copy
-  has a corresponding target Bee. Whether the target accepts (queue full, busy,
-  failure) is the target Bee's responsibility; the spread is fire-and-forget and
-  keeps no tracking/cancel state. Partial fan-out is therefore possible; the
-  gather timeout/failure policy for a missing part is open (§4.14 item 6).
-
-To be filled when the owner defines the freeze system:
+Undefined areas:
 
 1. Backpressure/freeze: queue full, freeze/resume, timeout, fairness.
 2. Process stop: Ctrl+C, SIGTERM, SIGKILL.
@@ -398,8 +374,8 @@ To be filled when the owner defines the freeze system:
 6. Partial fan-out and gather timeout.
 7. Observability: typed errors, logs, inspect.
 
-Rules that already hold: no unrecorded loss; no automatic replay of side-effecting
-work; fail closed when state is uncertain.
+Principles: no silent loss; any drop must be recorded; no automatic replay of
+side-effecting work; fail closed when state is uncertain.
 
 ## 5. Persistence
 
@@ -440,7 +416,7 @@ work; fail closed when state is uncertain.
 - Loop safety is graph-level and Bee-level: counter/condition nodes, `queueMax` and receptor overflow prevent unbounded handoff. There is no per-wake hop/duration budget, because there is no wake object to budget. A loop without a counter/condition is bounded by receptor overflow; every LiveHive must have a finite `queueMax`.
 - `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets: they end only the current driver pass and never cancel or drop a value; a later delivery resumes. `queueTtlMs` is a per-receptor waiting TTL measured from the queue entry's `enqueuedAt`, not a message lifetime.
 - A spread checks target existence and part/target matching only; target capacity and acceptance are the target Bee's concern. A spread is fire-and-forget and keeps no cancel/track state.
-- Target-full behavior for internal moves/spreads and assemble queues is defined by the open error-handling section (§4.14), not by a silent default.
+- Target-full behavior for internal moves/spreads and assemble queues is not defined in the final design; see §4.14 and §9 Temporary design.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ### 6.1 Implemented vs target
@@ -504,18 +480,79 @@ do not silently move or delete old state.
 
 ## 9. Temporary design
 
-This section records temporary choices, not the long-term error/recovery design.
+Status: **temporary, not final**. This section describes the current placeholder
+for target-full and unimplemented paths until the freeze/recovery design lands.
+The final design is not defined (§4.14). Do not copy this section into final
+rules or treat it as a guarantee.
 
-- **Temporary design: error + drop.** When a queue/target is full or a target
-  path is not implemented, report a typed error and drop that incoming item/
-  operation. No block, retry, replay, or freeze; `waxd` continues. This is a
-  placeholder until the freeze design lands.
-- **Existing receptor overflow.** The current code for existing receptors maps
-  `trigger`/`answer` rejection to 429 and defers internal moves/spreads through
-  pre-consumption reservation; it does not exit `waxd`. This is existing
-  behavior, not the target for new paths.
-- **Real-harness test setup.** DSH integration tests may temporarily override the
-  ACP profile to `opencode-go` / `deepseek-v4.1-flash` and must restore it after
-  the run. Use `OPENCODE_API_KEY` from the User scope; do not read or print the
-  key. Verify the restore (SHA256 in the integration notes). This is test setup,
-  not a product contract.
+### 9.1 Scope
+
+The temporary design applies to:
+
+- a target Bee receptor that is full during an internal move;
+- an assemble per-type queue that is full;
+- a target path with no implementation yet (freeze, per-type queue overflow).
+
+It does not change the final Value, Pheromone, spread, gather, read/write or
+persistence rules in §3/§4.12/§4.13/§5.
+
+### 9.2 Behavior: error + drop
+
+When one of the cases above occurs:
+
+1. The operation fails fast with a typed error and a structured log. The log
+   carries the node/edge, the reason, and the dropped item/operation; it never
+   carries a prompt/output/token body.
+2. The incoming item/operation is dropped. It is not enqueued, retried, replayed,
+   or held for a later freeze.
+3. `waxd` continues; other Bees and LiveHives are unaffected.
+4. For a spread, copies already emitted are not rolled back; the dropped branch
+   is lost and partial fan-out remains. For an assemble, the dropped input is not
+   retried; the group may remain incomplete and this temporary design invents no
+   timeout for it.
+5. There is no block, no backpressure wait, no freeze/resume, and no automatic
+   retry.
+
+### 9.3 Entry points and surfaces
+
+- `trigger`/`answer`: a full receptor is reported to the caller. Current code maps
+  it to 429 `bee-receptor-full` or `bee-receptor-block-timeout`; the temporary
+  design does not change that HTTP behavior.
+- Internal move/spread: there is no HTTP response. The typed error is logged and
+  that item/operation is dropped.
+- Assemble per-type queue: not implemented yet. Until it is, the placeholder is
+  error + drop; there is no HTTP surface.
+- `inspect`: no freeze state is added. A dropped item is gone; logs are the only
+  record.
+
+### 9.4 State, recovery and observability
+
+- A dropped input is not persisted and creates no tombstone. Normal queue/active
+  removal still applies.
+- Restart does not replay a dropped item; the caller must re-deliver if it still
+  wants the work.
+- Logs are the observable record. There is no wait/subscribe/query for a dropped
+  item, and no new identity is minted.
+- This temporary design does not define what happens to an assemble group left
+  incomplete by a drop; that is part of the final error design (§4.14).
+
+### 9.5 Existing code vs temporary placeholder
+
+- Existing code (not final): `trigger`/`answer` receptor full -> 429; internal
+  moves/spreads use pre-consumption reservation and defer/pause when the target
+  is full; `waxd` does not exit.
+- The temporary placeholder for new target paths is error + drop as in §9.2.
+- The final design is not defined; do not infer it from either behavior.
+
+### 9.6 Temporary test environment
+
+DSH integration tests may temporarily override the ACP profile to
+`opencode-go` / `deepseek-v4.1-flash` and must restore it after the run. Use
+`OPENCODE_API_KEY` from the User scope; do not read or print the key. Verify the
+restore (SHA256 in the integration notes). This is test setup, not a product
+contract.
+
+### 9.7 Replacement
+
+The freeze/recovery design replaces §9.2 when it lands. At that point this whole
+section becomes historical, and §4.14 receives the final policy.

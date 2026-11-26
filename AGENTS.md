@@ -185,6 +185,22 @@ A new concept is an architecture change: update `ARCHITECTURE.md` and obtain
 owner approval before implementation. Passing tests, a new name, or a new file
 does not prove that a concept is necessary.
 
+### 13. Final design vs temporary design
+
+Architecture and contract documents must separate the final design from temporary
+placeholders.
+
+- The main body states only the final design. Do not present current code,
+  workarounds, or temporary placeholders as final.
+- If a behavior is not defined, say so explicitly ("not defined in the final
+  design") and point to the Temporary design section. Do not invent a final rule
+  to fill the gap.
+- The Temporary design section is first-class: describe the current placeholder
+  as fully as a normal design (scope, behavior, entry points, state, recovery,
+  observability), mark it temporary, and name what replaces it.
+- Current implementation details belong in the current-gap section, not in
+  final-design sections.
+
 ## Definition of Done
 
 A milestone is complete only when its stated acceptance criteria are demonstrated with reproducible evidence, including at least one real test (Rule 9) executed in this environment.

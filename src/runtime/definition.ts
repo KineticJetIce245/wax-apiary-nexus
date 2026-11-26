@@ -18,10 +18,6 @@ import { isNonEmptyString, isRecord, pushUnknownFields } from './definition-prim
 import { parseTriggers } from './definition-triggers.js';
 
 export { CompositionValidationError } from './definition-error.js';
-export {
-  DEFAULT_MERGE_TIMEOUT_MS,
-  MAX_MERGE_TIMEOUT_MS,
-} from './definition-constants.js';
 
 export function parseComposition(input: unknown): CompositionDefinition {
   const issues: string[] = [];

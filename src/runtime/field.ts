@@ -1,31 +1,33 @@
 import type {
   CompositionDefinition,
-  GatherState,
-  GatherStateSnapshot,
   NodeId,
   NodeState,
   NodeStateSnapshot,
-  PersistedGatherState,
   Pheromone,
   PheromoneFieldSnapshot,
+  QueueEntry,
 } from './types.js';
+import { cloneJson } from './value-paths.js';
 
 export function createNodeState(): NodeState {
   // A resting bee has no receptor; the first enqueue creates one.
   return {};
 }
-
 export function clonePheromone(pheromone: Pheromone): Pheromone {
-  return structuredClone(pheromone);
+  return { value: cloneJson(pheromone.value) };
+}
+
+export function cloneEntry(entry: QueueEntry): QueueEntry {
+  return { value: cloneJson(entry.value), enqueuedAt: entry.enqueuedAt };
 }
 
 /** The receptor of a bee; a resting bee has none, which reads as empty here. */
-export function receptorOf(state: NodeState): readonly Pheromone[] {
+export function receptorOf(state: NodeState): readonly QueueEntry[] {
   return state.receptor ?? [];
 }
 
 /** Restores a receptor only when it holds input; an empty one is omitted. */
-export function setReceptor(state: NodeState, receptor: readonly Pheromone[]): void {
+export function setReceptor(state: NodeState, receptor: readonly QueueEntry[]): void {
   if (receptor.length === 0) {
     return;
   }
@@ -43,111 +45,18 @@ export function restReceptorIfIdle(state: NodeState): void {
   delete state.receptor;
 }
 
-/** Drops one spread's queued siblings, keeping the receptor only for survivors. */
-export function dropSpreadFromReceptor(state: NodeState, spreadId: string): void {
-  const receptor = state.receptor;
-  if (receptor === undefined || !receptor.some((pheromone) => pheromone.spreadId === spreadId)) {
-    return;
-  }
-  const kept = receptor.filter((pheromone) => pheromone.spreadId !== spreadId);
-  if (kept.length === 0) {
-    delete state.receptor;
-  } else {
-    state.receptor = kept;
-  }
-}
-
-function cloneValue<T>(value: T): T {
-  return structuredClone(value);
-}
-
 export function isFieldResting(nodes: Iterable<NodeState>): boolean {
   for (const node of nodes) {
     if (
       node.active !== undefined ||
       node.pending !== undefined ||
       node.hover !== undefined ||
-      receptorOf(node).length > 0 ||
-      hasIncompleteGather(node)
+      receptorOf(node).length > 0
     ) {
       return false;
     }
   }
   return true;
-}
-
-/**
- * A closed join is a tombstone for late branches. Stage 5A closed gathers with
- * `completedAt`; Stage 5B closes a timed-out join with `timedOutAt`. Neither is
- * live work, so neither keeps the field out of Rest nor blocks an edit.
- */
-export function isGatherClosed(join: {
-  readonly completedAt?: string;
-  readonly timedOutAt?: string;
-}): boolean {
-  return join.completedAt !== undefined || join.timedOutAt !== undefined;
-}
-
-/**
- * A closed join is a tombstone for late branches, not live work: it never keeps
- * the field out of Rest.
- */
-function hasIncompleteGather(node: NodeState): boolean {
-  if (node.gathers === undefined) {
-    return false;
-  }
-  for (const join of node.gathers.values()) {
-    if (!isGatherClosed(join)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
-  const pheromones: Pheromone[] = [];
-  for (const node of nodes) {
-    if (node.active !== undefined) {
-      pheromones.push(clonePheromone(node.active));
-    }
-    if (node.hoverPheromone !== undefined) {
-      pheromones.push(clonePheromone(node.hoverPheromone));
-    }
-    if (node.pending !== undefined) {
-      pheromones.push(clonePheromone(node.pending));
-    }
-    for (const queued of receptorOf(node)) {
-      pheromones.push(clonePheromone(queued));
-    }
-    if (node.gathers !== undefined) {
-      for (const join of node.gathers.values()) {
-        for (const arrived of join.arrived.values()) {
-          pheromones.push(clonePheromone(arrived));
-        }
-      }
-    }
-  }
-  return pheromones;
-}
-
-/** JSON shape of the open/closed gathers a Gather keeps across a pause. */
-export function gathersToPersisted(
-  gathers: ReadonlyMap<string, GatherState>,
-): Record<string, PersistedGatherState> {
-  return Object.fromEntries(
-    [...gathers].map(([spreadId, join]) => [
-      spreadId,
-      {
-        arrived: [...join.arrived.values()].map(clonePheromone),
-        ...(join.lineage === undefined
-          ? {}
-          : { lineage: join.lineage.map((tag) => ({ ...tag })) }),
-        ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
-        ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
-        ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),
-      },
-    ]),
-  );
 }
 
 export function snapshotField(
@@ -159,8 +68,8 @@ export function snapshotField(
 
   for (const [id, state] of nodes) {
     const snapshot: NodeStateSnapshot = {
-      receptor: receptorOf(state).map(clonePheromone),
-      state: state.state === undefined ? {} : cloneValue(state.state),
+      receptor: receptorOf(state).map(cloneEntry),
+      state: state.state === undefined ? {} : structuredClone(state.state),
     };
     if (state.pending !== undefined) {
       snapshot.pending = clonePheromone(state.pending);
@@ -169,42 +78,25 @@ export function snapshotField(
       snapshot.active = clonePheromone(state.active);
     }
     if (state.hover !== undefined) {
-      snapshot.hover = cloneValue(state.hover);
+      snapshot.hover = structuredClone(state.hover);
     }
-    if (state.gathers !== undefined && state.gathers.size > 0) {
-      const entries: [string, GatherStateSnapshot][] = [];
-      for (const [spreadId, join] of state.gathers) {
-        entries.push([
-          spreadId,
-          {
-            spreadId,
-            arrived: [...join.arrived.values()].map(clonePheromone),
-            ...(join.lineage === undefined
-              ? {}
-              : { lineage: join.lineage.map((tag) => ({ ...tag })) }),
-            ...(join.completedAt === undefined ? {} : { completedAt: join.completedAt }),
-            ...(join.deadlineAt === undefined ? {} : { deadlineAt: join.deadlineAt }),
-            ...(join.timedOutAt === undefined ? {} : { timedOutAt: join.timedOutAt }),
-          },
-        ]);
-      }
-      snapshot.gathers = Object.fromEntries(entries);
+    if (state.hoverPheromone !== undefined) {
+      snapshot.hoverPheromone = clonePheromone(state.hoverPheromone);
     }
     if (state.lastActivatedAt !== undefined) {
       snapshot.lastActivatedAt = state.lastActivatedAt;
     }
     if (state.lastOutput !== undefined) {
-      snapshot.lastOutput = cloneValue(state.lastOutput);
+      snapshot.lastOutput = cloneJson(state.lastOutput);
     }
     nodeSnapshots[id] = snapshot;
   }
 
   const field: PheromoneFieldSnapshot = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     compositionId: definition.id,
     graphRevision: definition.graphRevision,
     rest,
-    pheromones: collectPheromones(nodes.values()),
     nodes: nodeSnapshots,
   };
 
@@ -216,8 +108,7 @@ function deepFreeze<T>(value: T): T {
     return value;
   }
   for (const key of Object.keys(value)) {
-    const child = (value as Record<string, unknown>)[key];
-    deepFreeze(child);
+    deepFreeze((value as Record<string, unknown>)[key]);
   }
   return Object.freeze(value);
 }

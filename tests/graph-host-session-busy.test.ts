@@ -94,7 +94,7 @@ test('two loaded graphs may share one explicit session; release is refcounted', 
   assert.deepEqual([...env.host.loadedSessionIds()], [session.sessionId]);
 
   // The survivor still executes on the shared session.
-  const result = await triggerRun(env.host, 'second', 'only', { kind: 'text', text: 'hi' });
+  const result = await triggerRun(env.host, 'second', 'only', { message: 'hi' });
   assert.equal(result.graphId, 'second');
 
   assert.equal(await env.host.unload('second'), true);
@@ -223,13 +223,13 @@ test('a busy shared session does not run the second trigger and keeps the first'
   await load('first');
   await load('second');
 
-  await host.trigger('first', 'only', { kind: 'text', text: 'one' });
+  await host.trigger('first', 'only', { message: 'one' });
   await fixture.adapter.waitForSubmit(1);
 
   // The adapter does not advertise `queue`, so the Workspace refuses the
   // overlap. Delivery still succeeds (the control plane does not own execution
   // state); the refused execution never runs and the field stays observable.
-  await host.trigger('second', 'only', { kind: 'text', text: 'two' });
+  await host.trigger('second', 'only', { message: 'two' });
   await waitUntil(
     () => host.statusOf('second')?.rest === true,
     'the refused second delivery to settle',

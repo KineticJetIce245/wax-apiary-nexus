@@ -249,8 +249,8 @@ test('GET /lives/<id>/output returns sorted forager output and never logs values
   // Outputs are field-owned per-bee caches: both bees' last outputs are visible,
   // and there is no run/history identity in the response.
   assert.deepEqual(response.body?.['outputs'], [
-    { nodeId: 'alpha', value: { kind: 'text', text: OUTPUT_SECRET } },
-    { nodeId: 'zeta', value: { kind: 'text', text: OUTPUT_SECRET } },
+    { nodeId: 'alpha', value: { message: OUTPUT_SECRET } },
+    { nodeId: 'zeta', value: { message: OUTPUT_SECRET } },
   ]);
   const status = await bInspect(info.url, token, 'outputs');
   assert.equal(status.status, 200);

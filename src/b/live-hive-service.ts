@@ -150,7 +150,7 @@ export class LiveHiveService {
    */
   async trigger(liveId: string, beeId: string, input: string): Promise<void> {
     this.repository.requireLiveId(liveId);
-    await this.options.liveHiveHost.trigger(liveId, beeId, textValue(input));
+    await this.options.liveHiveHost.trigger(liveId, beeId, messageValue(input));
   }
 
   async answer(
@@ -160,7 +160,7 @@ export class LiveHiveService {
     token?: string,
   ): Promise<void> {
     this.repository.requireLiveId(liveId);
-    await this.options.liveHiveHost.answer(liveId, beeId, textValue(input), token);
+    await this.options.liveHiveHost.answer(liveId, beeId, messageValue(input), token);
   }
 
   /** Flush Honey/scheduler and write live.json without releasing the graph. */
@@ -363,9 +363,9 @@ function gatherDefaults(
   return gatherd;
 }
 
-function textValue(input: string): Value {
+function messageValue(input: string): Value {
   if (typeof input !== 'string') {
     throw new LiveHiveServiceError('invalid', 'input must be a string');
   }
-  return { kind: 'text', text: input };
+  return { message: input };
 }

@@ -152,7 +152,7 @@ export function makeEnv(adapter: RecordingAdapter = new RecordingAdapter()): Tes
 }
 
 export function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 export function forager(prompt: string): Record<string, unknown> {

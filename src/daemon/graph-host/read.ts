@@ -116,7 +116,8 @@ export class LiveHiveHostRead {
         pending: state?.pending !== undefined,
         active: state?.active !== undefined,
         hovered: state?.hover !== undefined,
-        gathers: state?.gathers === undefined ? 0 : Object.keys(state.gathers).length,
+        // Assemble/batch group state is M19d; the field has none in this slice.
+        gathers: 0,
       });
     }
 

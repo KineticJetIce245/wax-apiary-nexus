@@ -215,7 +215,7 @@ test('outputsOf snapshots one graph without touching residency or taking a lease
   assert.equal(touches, 0, 'reading output must not refresh the idle clock');
   assert.deepEqual(
     [...outputs.entries()],
-    [['zeta', { kind: 'text', text: 'reply(native-1):zeta z' }]],
+    [['zeta', { message: 'reply(native-1):zeta z' }]],
   );
   // It is a snapshot: mutating the returned Map cannot touch the host.
   (outputs as Map<NodeId, Value>).clear();

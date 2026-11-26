@@ -34,7 +34,7 @@ function makeProject(): Project {
 }
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 function foragerNode(prompt: string): Record<string, unknown> {
@@ -214,7 +214,6 @@ test('spread routes each branch to its own session through gather to Rest', asyn
   });
 
   assert.equal(snapshot.rest, true);
-  assert.deepEqual(snapshot.pheromones, []);
   assert.equal(adapter.prompts.length, 4);
 
   assert.deepEqual(promptsFor(adapter, records.start), ['start seed']);
@@ -254,10 +253,11 @@ test('spread routes each branch to its own session through gather to Rest', asyn
     instantiated.executors.get('done')?.lastOutput,
   );
   const finalText = instantiated.routing.lastOutput;
-  assert.equal(finalText?.kind, 'text');
-  if (finalText?.kind === 'text') {
-    assert.match(finalText.text, new RegExp(`^reply\\(${escapeRegExp(records.done.nativeId)}\\):done `));
-  }
+  assert.equal(typeof finalText?.['message'], 'string');
+  assert.match(
+    String(finalText?.['message']),
+    new RegExp(`^reply\\(${escapeRegExp(records.done.nativeId)}\\):done `),
+  );
 });
 
 test('a busy session stops instantiation before the graph runs', async (t) => {

@@ -3,7 +3,6 @@
   "files": {
     "src/adapters/codex/adapter.ts": 1025,
     "src/adapters/dsh-acp/adapter.ts": 644,
-    "src/runtime/runtime.ts": 2154,
     "src/session/workspace.ts": 742
   }
 }

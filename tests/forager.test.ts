@@ -58,12 +58,12 @@ test('completed execution returns the assistant text and renders the prompt', as
     await bridge.workspace.stop();
   });
 
-  const value = await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'hi' });
+  const value = await bridge.executor.execute(foragerNode(), { message: 'hi' });
 
-  assert.deepEqual(value, { kind: 'text', text: 'HELLO' });
+  assert.deepEqual(value, { message: 'HELLO' });
   assert.deepEqual(bridge.adapter.prompts, ['do hi']);
   assert.deepEqual(bridge.adapter.submittedAttachments, [[]]);
-  assert.deepEqual(bridge.executor.lastOutput, { kind: 'text', text: 'HELLO' });
+  assert.deepEqual(bridge.executor.lastOutput, { message: 'HELLO' });
 });
 
 test('renders a structured input as JSON and forwards no nested attachments', async (t) => {
@@ -74,20 +74,13 @@ test('renders a structured input as JSON and forwards no nested attachments', as
   });
 
   const input: Value = {
-    kind: 'structured',
-    value: {
-      branch: { kind: 'text', text: 'A' },
-      nested: {
-        kind: 'message',
-        text: 'm',
-        attachments: [{ kind: 'file', path: '/tmp/notes.md' }],
-      },
+      branch: { message: 'A' },
+      nested: { message: 'm', attachments: [{ path: '/tmp/notes.md' }] },
       n: 2,
-    },
-  };
+    };
   await bridge.executor.execute(foragerNode(), input);
 
-  assert.deepEqual(bridge.adapter.prompts, [`do ${JSON.stringify(input.value)}`]);
+  assert.deepEqual(bridge.adapter.prompts, [`do ${JSON.stringify(input)}`]);
   assert.deepEqual(bridge.adapter.submittedAttachments, [[]]);
 });
 
@@ -98,10 +91,7 @@ test('forwards an image attachment with an inferred mime type', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), {
-    kind: 'attachments',
-    attachments: [{ kind: 'image', path: 'C:/tmp/photo.PNG' }],
-  });
+  await bridge.executor.execute(foragerNode(), { attachments: [{ path: 'C:/tmp/photo.PNG' }] });
 
   assert.deepEqual(bridge.adapter.prompts, ['do ']);
   assert.deepEqual(bridge.adapter.submittedAttachments, [
@@ -116,23 +106,20 @@ test('forwards file attachments from a message and skips unusable entries', asyn
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), {
-    kind: 'message',
-    text: 'please review',
-    attachments: [
-      { kind: 'file', path: '/tmp/notes.md' },
-      { kind: 'image', path: '/tmp/diagram.jpeg' },
-      { kind: 'audio', path: '/tmp/recording.mp3' },
+  await bridge.executor.execute(foragerNode(), { message: 'please review', attachments: [
+      { path: '/tmp/notes.md' },
+      { path: '/tmp/diagram.jpeg' },
+      { path: '/tmp/recording.mp3' },
       { kind: 'file' },
-      { kind: 'file', path: '   ' },
-    ],
-  });
+      { path: '   ' },
+    ] });
 
   assert.deepEqual(bridge.adapter.prompts, ['do please review']);
   assert.deepEqual(bridge.adapter.submittedAttachments, [
     [
       { kind: 'file', path: '/tmp/notes.md', mimeType: 'text/markdown' },
       { kind: 'image', path: '/tmp/diagram.jpeg', mimeType: 'image/jpeg' },
+      { kind: 'file', path: '/tmp/recording.mp3', mimeType: 'application/octet-stream' },
     ],
   ]);
 });
@@ -144,7 +131,7 @@ test('submits no attachments when the input carries none', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'plain' });
+  await bridge.executor.execute(foragerNode(), { message: 'plain' });
 
   assert.deepEqual(bridge.adapter.prompts, ['do plain']);
   assert.deepEqual(bridge.adapter.submittedAttachments, [[]]);
@@ -157,15 +144,8 @@ test('uses a stable prompt when only attachments remain', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode('{{input}}'), {
-    kind: 'attachments',
-    attachments: [{ kind: 'image', path: '/tmp/photo.webp' }],
-  });
-  await bridge.executor.execute(foragerNode('{{input}}'), {
-    kind: 'message',
-    text: '   ',
-    attachments: [{ kind: 'file', path: '/tmp/report.pdf' }],
-  });
+  await bridge.executor.execute(foragerNode('{{input}}'), { attachments: [{ path: '/tmp/photo.webp' }] });
+  await bridge.executor.execute(foragerNode('{{input}}'), { message: '   ', attachments: [{ path: '/tmp/report.pdf' }] });
 
   assert.deepEqual(bridge.adapter.prompts, ['See attached input.', 'See attached input.']);
   assert.deepEqual(
@@ -196,10 +176,7 @@ test('infers mimeType from a small extension map with an octet-stream fallback',
   ];
 
   for (const [extension] of cases) {
-    await bridge.executor.execute(foragerNode(), {
-      kind: 'attachments',
-      attachments: [{ kind: 'file', path: `/tmp/input${extension}` }],
-    });
+    await bridge.executor.execute(foragerNode(), { attachments: [{ path: `/tmp/input${extension}` }] });
   }
 
   assert.deepEqual(
@@ -217,7 +194,7 @@ for (const state of ['failed', 'cancelled', 'unknown'] as const satisfies readon
     });
 
     await assert.rejects(
-      bridge.executor.execute(foragerNode(), { kind: 'text', text: 'x' }),
+      bridge.executor.execute(foragerNode(), { message: 'x' }),
       (error: unknown) => {
         assert.ok(error instanceof ForagerExecutionError);
         assert.equal(error.state, state);
@@ -246,9 +223,9 @@ test('an approval handler decides the native request (allow_once)', async (t) =>
     await bridge.workspace.stop();
   });
 
-  const value = await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
+  const value = await bridge.executor.execute(foragerNode(), { message: 'go' });
 
-  assert.deepEqual(value, { kind: 'text', text: 'APPROVED' });
+  assert.deepEqual(value, { message: 'APPROVED' });
   assert.equal(seen.length, 1);
   assert.equal(seen[0]?.summary, 'run a command');
   assert.deepEqual(
@@ -264,7 +241,7 @@ test('without a handler the bridge rejects instead of allowing', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
+  await bridge.executor.execute(foragerNode(), { message: 'go' });
 
   assert.deepEqual(
     bridge.adapter.approvals.map((decision) => decision.kind),
@@ -279,7 +256,7 @@ test('a handler may cancel the approval', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
+  await bridge.executor.execute(foragerNode(), { message: 'go' });
 
   assert.deepEqual(
     bridge.adapter.approvals.map((decision) => decision.kind),
@@ -296,7 +273,7 @@ test('a throwing approval handler falls back to rejecting', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
+  await bridge.executor.execute(foragerNode(), { message: 'go' });
 
   assert.deepEqual(
     bridge.adapter.approvals.map((decision) => decision.kind),
@@ -310,11 +287,11 @@ test('dispose stops approval handling but keeps the last output', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'x' });
+  await bridge.executor.execute(foragerNode(), { message: 'x' });
   bridge.executor.dispose();
   bridge.executor.dispose();
 
-  assert.deepEqual(bridge.executor.lastOutput, { kind: 'text', text: 'LAST' });
+  assert.deepEqual(bridge.executor.lastOutput, { message: 'LAST' });
 });
 
 /** Emits its approval from inside submit(), before submit() resolves. */
@@ -410,9 +387,9 @@ for (const conversationOf of ['shared', 'separate'] as const) {
       await fixture.workspace.stop();
     });
 
-    const value = await fixture.owner.execute(foragerNode(), { kind: 'text', text: 'go' });
+    const value = await fixture.owner.execute(foragerNode(), { message: 'go' });
 
-    assert.deepEqual(value, { kind: 'text', text: 'APPROVED' });
+    assert.deepEqual(value, { message: 'APPROVED' });
     assert.deepEqual(
       fixture.adapter.approvals.map((decision) => decision.kind),
       ['allow_once'],
@@ -440,9 +417,9 @@ test(
       await workspace.stop();
     });
 
-    const value = await executor.execute(foragerNode(), { kind: 'text', text: 'early' });
+    const value = await executor.execute(foragerNode(), { message: 'early' });
 
-    assert.deepEqual(value, { kind: 'text', text: 'EARLY' });
+    assert.deepEqual(value, { message: 'EARLY' });
     assert.deepEqual(
       adapter.approvals.map((decision) => decision.kind),
       ['allow_once'],
@@ -518,8 +495,8 @@ test('a late approval after the terminal event is not adopted', { timeout: 2_000
     await bridge.workspace.stop();
   });
 
-  const value = await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
-  assert.deepEqual(value, { kind: 'text', text: 'DONE' });
+  const value = await bridge.executor.execute(foragerNode(), { message: 'go' });
+  assert.deepEqual(value, { message: 'DONE' });
   assert.equal(handled, 1);
   assert.deepEqual([...ownedIds(bridge.executor)], [], 'the terminal event must release the id');
 
@@ -545,8 +522,8 @@ test(
       await bridge.workspace.stop();
     });
 
-    const value = await bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' });
-    assert.deepEqual(value, { kind: 'text', text: '' });
+    const value = await bridge.executor.execute(foragerNode(), { message: 'go' });
+    assert.deepEqual(value, { message: '' });
     assert.equal(handled, 0);
     assert.deepEqual([...ownedIds(bridge.executor)], [], 'submit() must not re-add the settled id');
 
@@ -574,7 +551,7 @@ test('a conversation already held by another execution surfaces SessionBusyError
   await workspace.submit(conversation.id, 'hold');
 
   await assert.rejects(
-    executor.execute(foragerNode(), { kind: 'text', text: 'wake' }),
+    executor.execute(foragerNode(), { message: 'wake' }),
     (error: unknown) => {
       assert.ok(error instanceof SessionBusyError);
       assert.equal(error.sessionId, conversation.id);

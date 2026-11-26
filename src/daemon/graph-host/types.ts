@@ -130,7 +130,7 @@ export interface LiveHiveNodeStatus {
   readonly pending: boolean;
   readonly active: boolean;
   readonly hovered: boolean;
-  /** Gather records, including closed tombstones (same as `wax inspect status`). */
+  /** Assemble/batch group records; zero until M19d implements gather. */
   readonly gathers: number;
 }
 

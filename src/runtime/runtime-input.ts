@@ -1,119 +1,139 @@
 import { assertJsonValue } from './json-value.js';
-import type { UserNode, Value } from './types.js';
+import type { Attachment, JsonValue, UserNode, Value } from './types.js';
 
-const VALUE_KINDS = ['text', 'choice', 'boolean', 'message', 'attachments', 'structured'] as const;
+const ATTACHMENT_KEYS = ['path', 'mediaType'] as const;
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'];
 
-export function assertValue(value: unknown): asserts value is Value {
-  if (typeof value !== 'object' || value === null) {
-    throw new TypeError('value must be an object');
+/** A Value is a plain JSON object; arrays and `null` are not root values. */
+export function assertValue(value: unknown, label = 'value'): asserts value is Value {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError(`${label} must be a JSON object`);
   }
-  const kind = (value as { kind?: unknown }).kind;
-  if (typeof kind !== 'string' || !(VALUE_KINDS as readonly string[]).includes(kind)) {
-    throw new TypeError(`value.kind must be one of ${VALUE_KINDS.join(', ')}`);
+  assertJsonValue(value, label);
+}
+
+export function isAttachment(value: unknown): value is Attachment {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
   }
-  if (kind === 'structured') {
-    assertJsonValue((value as { value?: unknown }).value, 'value.value');
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.some((key) => !(ATTACHMENT_KEYS as readonly string[]).includes(key))) {
+    return false;
   }
+  if (typeof record['path'] !== 'string' || record['path'].trim() === '') {
+    return false;
+  }
+  return record['mediaType'] === undefined || typeof record['mediaType'] === 'string';
+}
+
+/**
+ * Reads the `attachments` convention from a Value. Entries that are not
+ * `{ path, mediaType? }` are ignored here; a user answer uses the strict
+ * validator below instead.
+ */
+export function readAttachments(value: Value): Attachment[] {
+  const raw = value['attachments'];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter(isAttachment) as unknown as Attachment[];
+}
+
+/** True when the attachment is an image by media type prefix or extension. */
+export function isImageAttachment(attachment: Attachment): boolean {
+  if (attachment.mediaType !== undefined && attachment.mediaType.startsWith('image/')) {
+    return true;
+  }
+  const path = attachment.path.toLowerCase();
+  return IMAGE_EXTENSIONS.some((extension) => path.endsWith(extension));
 }
 
 export function assertUserValue(node: UserNode, value: Value): void {
-  const modality = node.config.modality;
-  if (modality === 'text') {
-    if (value.kind !== 'text') {
-      throw new TypeError(`user node '${node.id}' expects a text value, got '${value.kind}'`);
-    }
-    return;
+  switch (node.config.modality) {
+    case 'text':
+      requireStringMessage(node, value);
+      return;
+    case 'yes-no':
+      requireBoolean(node, value);
+      return;
+    case 'message':
+      requireStringMessage(node, value);
+      assertAttachmentList(node.id, value['attachments'] ?? [], 0, Number.POSITIVE_INFINITY);
+      return;
+    case 'image':
+      requireAttachment(node, value, 'image');
+      return;
+    case 'file':
+      requireAttachment(node, value, 'file');
+      return;
+    case 'choice':
+      requireChoice(node, value);
+      return;
   }
-  if (modality === 'yes-no') {
-    if (value.kind !== 'boolean') {
-      throw new TypeError(`user node '${node.id}' expects a boolean value, got '${value.kind}'`);
-    }
-    return;
-  }
-  if (modality === 'message') {
-    assertMessageAnswer(node, value);
-    return;
-  }
-  if (isAttachmentModality(modality)) {
-    assertAttachmentAnswer(node, modality, value);
-    return;
-  }
+}
 
-  if (value.kind !== 'choice') {
-    throw new TypeError(`user node '${node.id}' expects a choice value, got '${value.kind}'`);
+function requireBoolean(node: UserNode, value: Value): void {
+  if (typeof value['boolean'] !== 'boolean') {
+    throw new TypeError(`user node '${node.id}' expects a boolean field 'boolean'`);
+  }
+}
+
+function requireAttachment(
+  node: UserNode,
+  value: Value,
+  modality: 'image' | 'file',
+): void {
+  const attachments = assertAttachmentList(node.id, value['attachments'], 1, 1);
+  if (modality === 'image' && !isImageAttachment(attachments[0] as Attachment)) {
+    throw new TypeError(`user node '${node.id}' expects one image attachment`);
+  }
+}
+
+function requireChoice(node: UserNode, value: Value): void {
+  const choice = value['choice'];
+  if (typeof choice !== 'string') {
+    throw new TypeError(`user node '${node.id}' expects a string field 'choice'`);
   }
   const choices = node.config.choices ?? [];
-  if (!choices.includes(value.choice)) {
+  if (!choices.includes(choice)) {
     throw new TypeError(
-      `user node '${node.id}' does not offer choice '${value.choice}' (${choices.join(', ')})`,
+      `user node '${node.id}' does not offer choice '${choice}' (${choices.join(', ')})`,
     );
   }
 }
 
-function isAttachmentModality(
-  modality: UserNode['config']['modality'],
-): modality is 'image' | 'file' {
-  return modality === 'image' || modality === 'file';
-}
-
-/**
- * A message answer is text plus the (empty) attachment list fixed by Stage
- * 3C-2. The runtime validates the shape only: it never reads the filesystem.
- */
-function assertMessageAnswer(node: UserNode, value: Value): void {
-  if (value.kind !== 'message') {
-    throw new TypeError(`user node '${node.id}' expects a message value, got '${value.kind}'`);
-  }
-  if (typeof value.text !== 'string') {
-    throw new TypeError(`user node '${node.id}' message value must carry text`);
-  }
-  if (!Array.isArray(value.attachments) || value.attachments.length !== 0) {
-    throw new TypeError(
-      `user node '${node.id}' message value must have an empty attachments array`,
-    );
+function requireStringMessage(node: UserNode, value: Value): void {
+  if (typeof value['message'] !== 'string') {
+    throw new TypeError(`user node '${node.id}' expects a string field 'message'`);
   }
 }
 
 /**
- * An image/file answer is exactly one local path reference. Existence, file
- * type and absolute resolution belong to the CLI; the runtime checks shape.
+ * Validates `attachments` as `[{ path: string; mediaType?: string }]`. The
+ * runtime never reads the filesystem; path existence belongs to the CLI.
  */
-function assertAttachmentAnswer(
-  node: UserNode,
-  modality: 'image' | 'file',
-  value: Value,
-): void {
-  if (value.kind !== 'attachments') {
+function assertAttachmentList(
+  nodeId: string,
+  raw: JsonValue | undefined,
+  min: number,
+  max: number,
+): Attachment[] {
+  if (!Array.isArray(raw)) {
+    throw new TypeError(`user node '${nodeId}' attachments must be an array`);
+  }
+  if (raw.length < min || raw.length > max) {
+    const expected = min === max ? String(min) : `${String(min)}..${String(max)}`;
     throw new TypeError(
-      `user node '${node.id}' expects an attachments value, got '${value.kind}'`,
+      `user node '${nodeId}' expects ${expected} attachment(s), got ${String(raw.length)}`,
     );
   }
-  if (!Array.isArray(value.attachments) || value.attachments.length !== 1) {
-    throw new TypeError(
-      `user node '${node.id}' expects exactly one ${modality} attachment`,
-    );
-  }
-  const attachment = value.attachments[0];
-  if (attachment === undefined || attachment.kind !== modality) {
-    const expected = modality === 'image' ? 'an image' : 'a file';
-    throw new TypeError(
-      `user node '${node.id}' expects ${expected} attachment, got '${attachment?.kind ?? 'none'}'`,
-    );
-  }
-  if (!hasNonEmptyPath(attachment.path)) {
-    throw new TypeError(`user node '${node.id}' attachment must carry a non-empty path`);
-  }
-  if (!isOptionalString(attachment.mediaType)) {
-    throw new TypeError(
-      `user node '${node.id}' attachment mediaType must be a string when present`,
-    );
-  }
-}
-
-function hasNonEmptyPath(path: unknown): path is string {
-  return typeof path === 'string' && path.trim() !== '';
-}
-
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === 'string';
+  return raw.map((entry) => {
+    if (!isAttachment(entry)) {
+      throw new TypeError(
+        `user node '${nodeId}' attachment must be { path: string; mediaType?: string }`,
+      );
+    }
+    return entry;
+  }) as Attachment[];
 }

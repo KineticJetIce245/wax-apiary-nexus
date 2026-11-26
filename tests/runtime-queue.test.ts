@@ -48,7 +48,7 @@ function foragerNode(): unknown {
 }
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 test('a second trigger waits for the first activation to finish', async () => {
@@ -57,7 +57,7 @@ test('a second trigger waits for the first activation to finish', async () => {
   const executor: NodeExecutor = {
     async execute(_node, input) {
       calls.push(input);
-      return { kind: 'text', text: `done:${serializeValue(input)}` };
+      return { message: `done:${serializeValue(input)}` };
     },
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
@@ -85,7 +85,7 @@ test('early input stays in pending and runs once the minimum interval elapses', 
   const executor: NodeExecutor = {
     async execute(_node, input) {
       calls.push(input);
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
@@ -115,7 +115,7 @@ test('queued input is never dropped when the clock advances past several interva
   const executor: NodeExecutor = {
     async execute(_node, input) {
       calls.push(input);
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
@@ -170,7 +170,7 @@ test('the queue stays FIFO while the node is busy', async () => {
   assert.equal(afterTrigger.receptor.length, 1);
   assert.equal(serializeValue(afterTrigger.receptor[0]?.value as Value), 'queued');
 
-  release({ kind: 'text', text: 'finished' });
+  release({ message: 'finished' });
   await pumping;
 
   assert.deepEqual(
@@ -188,7 +188,7 @@ test('queue depth is reported in the log', async () => {
   const log = createMemoryLog();
   const executor: NodeExecutor = {
     async execute() {
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), {
@@ -216,7 +216,7 @@ test('rest flips back to false on a new trigger', async () => {
   let clock = START;
   const executor: NodeExecutor = {
     async execute() {
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
@@ -236,7 +236,7 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
   const executor: NodeExecutor = {
     async execute(_node, input) {
       executed.push(serializeValue(input));
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
   const runtime = new PheromoneRuntime(queueCappedComposition(1, { start: foragerNode() }), {
@@ -272,15 +272,11 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
   assert.equal(entry.nodeKind, 'forager');
   assert.equal(entry.queueDepth, 1);
   assert.equal(entry.outcome, 'queue-max');
-  assert.equal(typeof entry.pheromoneId, 'string');
-  // The rejection log names a Pheromone that was never enqueued.
+  assert.equal(typeof entry.enqueuedAt, 'string');
+  // The rejection is logged without a message identity and never enqueued.
   assert.equal(
-    log.entries.some(
-      (candidate) =>
-        candidate.event === 'pheromone.enqueued' &&
-        candidate.pheromoneId === entry.pheromoneId,
-    ),
-    false,
+    log.entries.filter((candidate) => candidate.event === 'pheromone.enqueued').length,
+    1,
   );
 
   await runtime.pump();
@@ -295,7 +291,7 @@ test('a full target pauses the upstream node, then resumes it without losing the
   const executor: NodeExecutor = {
     async execute(node, input) {
       executed.push({ node: node.id, value: serializeValue(input) });
-      return { kind: 'text', text: `out:${serializeValue(input)}` };
+      return { message: `out:${serializeValue(input)}` };
     },
   };
   const runtime = new PheromoneRuntime(
@@ -342,9 +338,9 @@ test('a full target pauses the upstream node, then resumes it without losing the
     (entry) => entry.event === 'pheromone.blocked' && entry.nodeId === 'start',
   );
   assert.ok(blocked !== undefined);
-  assert.equal(blocked.outcome, 'queue-max:sink');
+  assert.equal(blocked.reason, 'queue-max:sink');
   assert.equal(blocked.queueDepth, 1);
-  assert.equal(typeof blocked.pheromoneId, 'string');
+  assert.equal(blocked.limit, 1);
 
   // The retry hint is a real future instant, not a 0ms spin.
   assert.equal(runtime.snapshot().rest, false);
@@ -391,7 +387,7 @@ test('a spread pauses before activation when a branch target is full and loses n
   const executor: NodeExecutor = {
     async execute(node, input) {
       executed.push({ node: node.id, value: serializeValue(input) });
-      return { kind: 'text', text: `out:${serializeValue(input)}` };
+      return { message: `out:${serializeValue(input)}` };
     },
   };
 
@@ -492,19 +488,18 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
   const executor: NodeExecutor = {
     async execute(_node, input) {
       executed.push(serializeValue(input));
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
-  const persistedValue = (id: string, textValue: string) => ({
-    id,
-    value: { kind: 'text' as const, text: textValue },
-    at: new Date(START).toISOString(),
+  const persistedValue = (_id: string, textValue: string) => ({
+    value: { message: textValue },
+    enqueuedAt: new Date(START).toISOString(),
   });
   // A field written before the limit was enforced can hold more than queueMax.
   const { runtime } = PheromoneRuntime.restore(
     definition,
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       compositionId: definition.id,
       graphRevision: definition.graphRevision,
       rest: false,

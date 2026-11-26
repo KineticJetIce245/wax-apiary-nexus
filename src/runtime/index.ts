@@ -1,22 +1,38 @@
 export { parseComposition, CompositionValidationError } from './definition.js';
-export {
-  DEFAULT_MERGE_TIMEOUT_MS,
-  MAX_MERGE_TIMEOUT_MS,
-} from './definition.js';
 export { createMemoryLog } from './log.js';
-export { FieldRestoreError } from './errors.js';
+export {
+  FieldRestoreError,
+  HoneyIncompatibleError,
+  NotImplementedError,
+  ValueDropOverlapError,
+  ValuePathError,
+} from './errors.js';
 export { renderPrompt, serializeValue } from './executor.js';
 export { assertJsonValue } from './json-value.js';
+export { assertValue, isAttachment, readAttachments, assertUserValue } from './runtime-input.js';
 export {
-  COMPLETED_GATHER_TTL_MS,
+  applyDrop,
+  applyWriteBack,
+  assertNoDropOverlap,
+  deepMerge,
+  mergeInto,
+} from './value-merge.js';
+export {
+  deletePath,
+  getPath,
+  isSubtreePath,
+  isValidPath,
+  parsePath,
+  setPath,
+} from './value-paths.js';
+export {
   GuardDecisionError,
-  MAX_COMPLETED_GATHERS,
   PheromoneRuntime,
   QUEUE_RETRY_MS,
+  ReceptorFullError,
 } from './runtime.js';
 export {
   DEFAULT_RECEPTOR_BLOCK_TIMEOUT_MS,
-  ReceptorFullError,
   ReceptorBlockTimeoutError,
   readReceptorOverflowOptions,
 } from './receptor-overflow.js';
@@ -34,8 +50,9 @@ export type { ExecutionContext, GuardDecision, GuardRequest, NodeExecutor } from
 export type { RuntimeOptions } from './runtime.js';
 export type { WorkerCwdErrorCode, WorkerFailureCode, WorkerResult } from './worker.js';
 export type {
+  AssembleGatherConfig,
   Attachment,
-  BranchTag,
+  BatchGatherConfig,
   CompositionDefaults,
   CompositionDefinition,
   ConditionConfig,
@@ -45,26 +62,28 @@ export type {
   EdgeWhen,
   ForagerConfig,
   ForagerNode,
-  SpreadBranch,
+  GroupKey,
+  JsonType,
+  Rule,
+  SpreadCleaveConfig,
+  SpreadCloneConfig,
   SpreadConfig,
   SpreadNode,
-  HoverSpec,
-  GatherState,
-  JsonValue,
-  GatherStateSnapshot,
-  CombineMode,
+  GatherTypeConfig,
   GatherConfig,
   GatherNode,
+  HoverSpec,
+  JsonValue,
   NodeDefinition,
   NodeId,
   NodeKind,
   NodeState,
   NodeStateSnapshot,
   PersistedField,
-  PersistedGatherState,
   PersistedNodeState,
   Pheromone,
   PheromoneFieldSnapshot,
+  QueueEntry,
   RecoveryReport,
   TriggerDefinition,
   TriggerSchedule,
@@ -75,4 +94,4 @@ export type {
   WorkerConfig,
   WorkerNode,
 } from './types.js';
-export type { RuntimeEvent, RuntimeLogEntry, RuntimeLogSink } from './log.js';
+export type { RuntimeEvent, RuntimeLogEntry, RuntimeLogFields, RuntimeLogSink } from './log.js';

@@ -6,14 +6,13 @@ import {
   PheromoneRuntime,
   serializeValue,
   type NodeExecutor,
-  type Pheromone,
   type Value,
 } from '../src/runtime/index.js';
 
 const START = Date.parse('2026-03-01T00:00:00.000Z');
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 function composition(id: string, nodeIds: readonly string[]): ReturnType<typeof parseComposition> {
@@ -53,7 +52,7 @@ function gatedExecutor(): GatedExecutor {
         return new Promise<Value>((resolve) => {
           waiters.set(key, () => {
             waiters.delete(key);
-            resolve({ kind: 'text', text: `done:${key}` });
+            resolve({ message: `done:${key}` });
           });
         });
       },
@@ -77,15 +76,23 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 }
 
 interface Internals {
-  readonly states: ReadonlyMap<string, { readonly receptor?: readonly Pheromone[] }>;
-  readonly drains: ReadonlyMap<string, unknown>;
+  readonly engine: {
+    readonly states: ReadonlyMap<
+      string,
+      { readonly receptor?: readonly import('../src/runtime/index.js').QueueEntry[] }
+    >;
+    readonly drains: ReadonlyMap<string, unknown>;
+  };
 }
 
-function internalsOf(runtime: PheromoneRuntime): Internals {
-  return runtime as unknown as Internals;
+function internalsOf(runtime: PheromoneRuntime): Internals['engine'] {
+  return (runtime as unknown as Internals).engine;
 }
 
-function mailboxOf(runtime: PheromoneRuntime, nodeId: string): readonly Pheromone[] | undefined {
+function mailboxOf(
+  runtime: PheromoneRuntime,
+  nodeId: string,
+): readonly import('../src/runtime/index.js').QueueEntry[] | undefined {
   return internalsOf(runtime).states.get(nodeId)?.receptor;
 }
 
@@ -147,7 +154,7 @@ test('one bee stays FIFO with one active activation and no second drain', async 
   // the mailbox and does not start a second drain for the same bee.
   runtime.admit('a', text('two'));
   assert.deepEqual(
-    mailboxOf(runtime, 'a')?.map((pheromone) => serializeValue(pheromone.value)),
+    mailboxOf(runtime, 'a')?.map((entry) => serializeValue(entry.value)),
     ['two'],
   );
   assert.equal(internalsOf(runtime).drains.size, 1);

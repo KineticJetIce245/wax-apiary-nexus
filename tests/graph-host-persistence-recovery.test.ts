@@ -93,7 +93,7 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
   writeFileSync(
     unsupported.paths.field,
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 1,
       compositionId: 'old-schema',
       graphRevision: 'rev',
       rest: true,
@@ -202,7 +202,7 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
   // A forager was mid-execution when the process stopped: restore must flag it
   // as unknown and never replay it.
   honey.save({
-    schemaVersion: 1,
+    schemaVersion: 2,
     compositionId: definition.id,
     graphRevision: definition.graphRevision,
     rest: false,
@@ -210,9 +210,7 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
       only: {
         receptor: [],
         active: {
-          id: 'ph_live',
-          at: '2026-11-06T22:00:00.000Z',
-          value: { kind: 'text', text: 'SECRET-BODY' },
+          value: { message: 'SECRET-BODY' },
         },
       },
     },
@@ -271,7 +269,7 @@ test('a failed restore closes created fresh_once sessions and removes their mapp
   // The field is valid JSON but belongs to another revision, so instantiation
   // succeeds and restore fails afterwards. That is the rollback window.
   honey.save({
-    schemaVersion: 1,
+    schemaVersion: 2,
     compositionId: definition.id,
     graphRevision: 'stale-revision',
     rest: true,
@@ -336,7 +334,7 @@ test('a failed reload never closes a reused fresh_once session or removes its ma
 
   // Make the next restore fail after instantiation has reused the once session.
   honey.save({
-    schemaVersion: 1,
+    schemaVersion: 2,
     compositionId: definition.id,
     graphRevision: 'other-revision',
     rest: true,

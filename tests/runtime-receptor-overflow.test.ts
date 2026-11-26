@@ -21,7 +21,7 @@ import {
 const START = Date.parse('2026-03-01T00:00:00.000Z');
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 function oneBeeComposition(id: string, queueMax: number): CompositionDefinition {
@@ -55,7 +55,7 @@ function gatedExecutor(): GatedExecutor {
         return new Promise<Value>((resolve) => {
           waiters.set(key, () => {
             waiters.delete(key);
-            resolve({ kind: 'text', text: `done:${key}` });
+            resolve({ message: `done:${key}` });
           });
         });
       },

@@ -128,7 +128,7 @@ test('LiveHiveService new/trigger/save/unload/load round-trips one live', async 
   assert.equal(output.liveId, 'demo');
   assert.deepEqual(
     output.outputs.find((entry) => entry.nodeId === 'draft')?.value,
-    { kind: 'text', text: 'dispatched' },
+    { message: 'dispatched' },
   );
 
   const saved = await harness.service.save('demo');

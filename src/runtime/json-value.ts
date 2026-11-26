@@ -3,11 +3,11 @@ import type { JsonValue } from './types.js';
 /**
  * Asserts that a value is JSON-safe.
  *
- * The `structured` Value may only carry data that survives a
- * `JSON.parse(JSON.stringify(...))` round trip: null, booleans, finite numbers,
- * strings, arrays and plain objects. Undefined, functions, BigInts, symbols,
- * cycles, non-finite numbers and non-plain objects are rejected because
- * `JSON.stringify` would drop, coerce or throw on them.
+ * A Value may only carry data that survives a `JSON.parse(JSON.stringify(...))`
+ * round trip: null, booleans, finite numbers, strings, arrays and plain objects.
+ * Undefined, functions, BigInts, symbols, cycles, non-finite numbers and
+ * non-plain objects are rejected because `JSON.stringify` would drop, coerce or
+ * throw on them.
  */
 export function assertJsonValue(
   value: unknown,

@@ -28,7 +28,7 @@ import {
 const START = Date.parse('2026-05-01T00:00:00.000Z');
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 function projectDir(): string {
@@ -164,7 +164,7 @@ test('worker argv runs and stdout becomes the Value', async () => {
 
   const after = calls.find((call) => call.nodeId === 'after');
   assert.ok(after !== undefined);
-  assert.deepEqual(after.input, { kind: 'text', text: 'worker output' });
+  assert.deepEqual(after.input, { message: 'worker output' });
   assert.equal(runtime.snapshot().rest, true);
 
   const completed = log.entries.find(
@@ -214,8 +214,8 @@ test('two worker activations stay queued and never overlap', async () => {
     onLog: log.sink,
   });
 
-  await runtime.admit('a', { kind: 'text', text: '' });
-  await runtime.admit('b', { kind: 'text', text: '' });
+  await runtime.admit('a', { message: '' });
+  await runtime.admit('b', { message: '' });
   await runtime.pump();
 
   const waiting = runtime.snapshot();
@@ -244,7 +244,7 @@ test('worker cwd defaults to the registered project directory', async () => {
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await runtime.pump();
 
   const after = calls.find((call) => call.nodeId === 'after');
@@ -280,7 +280,7 @@ test('shell metacharacters in argv are passed literally and not interpreted', as
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await runtime.pump();
 
   const after = calls.find((call) => call.nodeId === 'after');
@@ -306,7 +306,7 @@ test('a non-zero worker exit is one failed activation and is never retried', asy
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), (error: unknown) => {
     assert.ok(error instanceof WorkerExecutionError);
     assert.equal(error.code, 'exit');
@@ -366,7 +366,7 @@ test('timeout kills the worker process tree', async () => {
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), (error: unknown) => {
     assert.ok(error instanceof WorkerExecutionError);
     assert.equal(error.code, 'timeout');
@@ -401,7 +401,7 @@ test('stdout over the 64 KiB cap fails and is not buffered', async () => {
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), (error: unknown) => {
     assert.ok(error instanceof WorkerExecutionError);
     assert.equal(error.code, 'output-cap');
@@ -432,7 +432,7 @@ test('stderr over the 64 KiB cap fails and is not buffered', async () => {
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), (error: unknown) => {
     assert.ok(error instanceof WorkerExecutionError);
     assert.equal(error.code, 'output-cap');
@@ -464,7 +464,7 @@ test('rejects an absolute worker cwd outside the project before spawning', async
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), (error: unknown) => {
     assert.ok(error instanceof WorkerExecutionError);
     assert.equal(error.code, 'cwd');
@@ -497,7 +497,7 @@ test('rejects a worker cwd that escapes through a symlink', async (context) => {
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), (error: unknown) => {
     assert.ok(error instanceof WorkerExecutionError);
     assert.equal(error.code, 'cwd');
@@ -523,7 +523,7 @@ test('a worker without a registered project directory fails before spawning', as
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(
     runtime.pump(),
     /is a worker but no project directory is registered/,
@@ -548,7 +548,7 @@ test('condition worker branches true on exit 0 and false on non-zero without fai
       onLog: log.sink,
     },
   );
-  await trueRuntime.admit('start', { kind: 'text', text: '' });
+  await trueRuntime.admit('start', { message: '' });
   await trueRuntime.pump();
   assert.deepEqual(
     trueRecorder.calls.map((call) => call.nodeId),
@@ -568,7 +568,7 @@ test('condition worker branches true on exit 0 and false on non-zero without fai
       onLog: log.sink,
     },
   );
-  await falseRuntime.admit('start', { kind: 'text', text: '' });
+  await falseRuntime.admit('start', { message: '' });
   await falseRuntime.pump();
   assert.deepEqual(
     falseRecorder.calls.map((call) => call.nodeId),
@@ -608,7 +608,7 @@ test('a Condition worker timeout is a runtime failure, not a false branch', asyn
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), (error: unknown) => {
     assert.ok(error instanceof WorkerExecutionError);
     assert.equal(error.code, 'timeout');
@@ -631,17 +631,16 @@ test('a worker failure on a spread branch cancels siblings through spread semant
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), /exited with code 1/);
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['ask']?.hover, undefined);
   assert.equal(snapshot.nodes['ask']?.receptor.length, 0);
-  assert.equal(snapshot.nodes['gather']?.gathers, undefined);
   assert.equal(snapshot.rest, true);
   assert.deepEqual(calls.map((call) => call.nodeId), ['start']);
   assert.ok(log.entries.some((entry) => entry.event === 'hover.cancelled'));
-  const failed = log.entries.find((entry) => entry.event === 'gather.failed');
+  const failed = (log.entries as { event: string; outcome?: string }[]).find((entry) => entry.event === 'gather.failed');
   assert.ok(failed !== undefined);
   assert.equal(failed.outcome, 'failed-branch');
 });
@@ -667,7 +666,7 @@ test('worker logs carry metadata but not stdout or stderr bodies', async () => {
     },
   );
 
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
   await runtime.pump();
 
   const after = calls.find((call) => call.nodeId === 'after');
@@ -695,7 +694,7 @@ test('worker is a trigger target in Stage 3C', async () => {
     now: () => START,
   });
 
-  await runtime.admit('work', { kind: 'text', text: '' });
+  await runtime.admit('work', { message: '' });
 
   assert.equal(runtime.snapshot().nodes['work']?.receptor.length, 1);
 
@@ -715,9 +714,7 @@ test('an active worker on restore is stuck and never replayed', () => {
   field.nodes['work'] = {
     receptor: [],
     active: {
-      id: 'ph_active_worker',
       value: text('x'),
-      at: new Date(START).toISOString(),
     },
   };
 

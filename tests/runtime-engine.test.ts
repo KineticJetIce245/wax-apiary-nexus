@@ -28,7 +28,7 @@ function recorder(output?: (node: ForagerNode, input: Value) => Value): Recorder
       async execute(node, input) {
         calls.push({ nodeId: node.id, input });
         return output === undefined
-          ? { kind: 'text', text: `echo:${serializeValue(input)}` }
+          ? { message: `echo:${serializeValue(input)}` }
           : output(node, input);
       },
     },
@@ -102,7 +102,7 @@ test('trigger -> forager -> terminal -> Rest', async () => {
 
   assert.equal(runtime.snapshot().rest, true);
 
-  await runtime.admit('start', { kind: 'text', text: 'hello' });
+  await runtime.admit('start', { message: 'hello' });
   assert.equal(runtime.snapshot().rest, false);
   assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
 
@@ -115,7 +115,7 @@ test('trigger -> forager -> terminal -> Rest', async () => {
   assert.equal(first.nodeId, 'start');
 
   const after = runtime.snapshot();
-  assert.equal(after.pheromones.length, 0);
+  assert.equal(queuedEntries(after).length, 0);
   assert.equal(after.rest, true);
   assert.equal(after.nodes['start']?.active, undefined);
   assert.equal(after.nodes['start']?.lastActivatedAt, new Date(START).toISOString());
@@ -126,10 +126,10 @@ test('a terminal node emits no new pheromone', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.admit('start', { kind: 'text', text: '' });
+  runtime.admit('start', { message: '' });
   await runtime.pump();
 
-  assert.deepEqual(runtime.snapshot().pheromones, []);
+  assert.deepEqual(queuedEntries(runtime.snapshot()), []);
 });
 
 test('condition text mode follows the true and false edges', async () => {
@@ -140,10 +140,10 @@ test('condition text mode follows the true and false edges', async () => {
     now: () => clock,
   });
 
-  runtime.admit('start', { kind: 'text', text: 'yes please' });
+  runtime.admit('start', { message: 'yes please' });
   await runtime.pump();
   clock += 1000;
-  runtime.admit('start', { kind: 'text', text: 'nope' });
+  runtime.admit('start', { message: 'nope' });
   await runtime.pump();
 
   assert.deepEqual(
@@ -161,10 +161,10 @@ test('condition boolean mode reads Value.value', async () => {
     now: () => clock,
   });
 
-  runtime.admit('start', { kind: 'boolean', value: true });
+  runtime.admit('start', { boolean: true });
   await runtime.pump();
   clock += 1000;
-  runtime.admit('start', { kind: 'boolean', value: false });
+  runtime.admit('start', { boolean: false });
   await runtime.pump();
 
   assert.deepEqual(
@@ -181,10 +181,10 @@ test('condition choice mode compares the selected choice', async () => {
     now: () => clock,
   });
 
-  runtime.admit('start', { kind: 'choice', choice: 'approve' });
+  runtime.admit('start', { choice: 'approve' });
   await runtime.pump();
   clock += 1000;
-  runtime.admit('start', { kind: 'choice', choice: 'reject' });
+  runtime.admit('start', { choice: 'reject' });
   await runtime.pump();
 
   assert.deepEqual(
@@ -198,7 +198,7 @@ test('counter increments until max and then takes the done edge', async () => {
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(counterComposition(), { executeForager: executor, now: () => clock });
 
-  runtime.admit('start', { kind: 'text', text: '' });
+  runtime.admit('start', { message: '' });
   await runtime.pump();
   clock += 1000;
   await runtime.pump();
@@ -213,7 +213,7 @@ test('counter increments until max and then takes the done edge', async () => {
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('trigger rejects unknown and non-forager targets', async () => {
+test('trigger rejects unknown targets and accepts any loaded Bee', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(conditionComposition({ mode: 'text', contains: 'x' }), {
     executeForager: executor,
@@ -221,20 +221,20 @@ test('trigger rejects unknown and non-forager targets', async () => {
   });
 
   await assert.rejects(
-    runtime.admit('ghost', { kind: 'text', text: '' }),
+    runtime.admit('ghost', { message: '' }),
     /unknown node 'ghost'/,
   );
-  await assert.rejects(
-    runtime.admit('check', { kind: 'text', text: '' }),
-    /must be a forager, worker or user node/,
-  );
+  // ARCH §4.1: any loaded Bee may be the entry Bee; a control Bee applies its
+  // own rules to the delivered value.
+  await runtime.admit('check', { message: '' });
+  assert.equal(runtime.snapshot().nodes['check']?.receptor.length, 1);
 });
 
 test('snapshot is immutable and does not leak internal state', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => START });
 
-  runtime.admit('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { message: 'x' });
   const snapshot = runtime.snapshot();
   const start = snapshot.nodes['start'];
   assert.ok(start !== undefined);
@@ -263,9 +263,9 @@ test('log carries node, pheromone and outcome fields', async () => {
     onLog: log.sink,
   });
 
-  await runtime.admit('start', { kind: 'text', text: 'log me' });
-  const pheromoneId = runtime.snapshot().nodes['start']?.receptor[0]?.id;
-  assert.equal(typeof pheromoneId, 'string');
+  await runtime.admit('start', { message: 'log me' });
+  const enqueuedAt = runtime.snapshot().nodes['start']?.receptor[0]?.enqueuedAt;
+  assert.equal(typeof enqueuedAt, 'string');
   await runtime.pump();
 
   const events = log.entries.map((entry) => entry.event);
@@ -280,7 +280,7 @@ test('log carries node, pheromone and outcome fields', async () => {
   assert.ok(activated !== undefined);
   assert.equal(activated.nodeId, 'start');
   assert.equal(activated.nodeKind, 'forager');
-  assert.equal(activated.pheromoneId, pheromoneId);
+  assert.equal(activated.queueDepth, 0);
   assert.equal(activated.compositionId, 'terminal');
   assert.equal(typeof activated.graphRevision, 'string');
 
@@ -303,7 +303,7 @@ test('a failing executor logs node.failed and surfaces the error', async () => {
     onLog: log.sink,
   });
 
-  runtime.admit('start', { kind: 'text', text: '' });
+  runtime.admit('start', { message: '' });
   await assert.rejects(runtime.pump(), /boom/);
 
   const failed = log.entries.find((entry) => entry.event === 'node.failed');
@@ -321,12 +321,12 @@ test('a failed activation leaves an empty field at Rest', async () => {
   };
   const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
-  runtime.admit('a', { kind: 'text', text: '' });
+  runtime.admit('a', { message: '' });
   await assert.rejects(runtime.pump(), /boom/);
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['a']?.active, undefined);
-  assert.deepEqual(snapshot.pheromones, []);
+  assert.deepEqual(queuedEntries(snapshot), []);
   assert.equal(snapshot.rest, true);
 });
 
@@ -338,15 +338,15 @@ test('a failure keeps queued pheromones and the field is not at Rest', async () 
   };
   const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
-  runtime.admit('a', { kind: 'text', text: 'first' });
-  runtime.admit('a', { kind: 'text', text: 'second' });
+  runtime.admit('a', { message: 'first' });
+  runtime.admit('a', { message: 'second' });
   await assert.rejects(runtime.pump(), /boom/);
 
   const snapshot = runtime.snapshot();
   const node = snapshot.nodes['a'];
   assert.ok(node !== undefined);
   assert.equal(node.receptor.length, 1);
-  assert.equal(snapshot.pheromones.length, 1);
+  assert.equal(queuedEntries(snapshot).length, 1);
   assert.equal(snapshot.rest, false);
 });
 
@@ -358,13 +358,13 @@ test('a failure on one node leaves another node queued work runnable', async () 
         throw new Error('boom');
       }
       calls.push(node.id);
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
   const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
-  runtime.admit('a', { kind: 'text', text: '' });
-  runtime.admit('b', { kind: 'text', text: '' });
+  runtime.admit('a', { message: '' });
+  runtime.admit('b', { message: '' });
   await assert.rejects(runtime.pump(), /boom/);
 
   assert.equal(runtime.snapshot().nodes['a']?.active, undefined);
@@ -376,27 +376,27 @@ test('a failure on one node leaves another node queued work runnable', async () 
 });
 
 test('serializeValue and renderPrompt cover the documented template rule', () => {
-  assert.equal(serializeValue({ kind: 'text', text: 'hello' }), 'hello');
-  assert.equal(serializeValue({ kind: 'choice', choice: 'a' }), 'a');
-  assert.equal(serializeValue({ kind: 'boolean', value: true }), 'true');
-  assert.equal(serializeValue({ kind: 'message', text: 'hi', attachments: [] }), 'hi');
-  assert.equal(serializeValue({ kind: 'attachments', attachments: [] }), '');
+  assert.equal(serializeValue({ message: 'hello' }), 'hello');
+  assert.equal(serializeValue({ choice: 'a' }), '{"choice":"a"}');
+  assert.equal(serializeValue({ boolean: true }), '{"boolean":true}');
+  assert.equal(serializeValue({ message: 'hi', attachments: [] }), 'hi');
+  assert.equal(serializeValue({ attachments: [] }), '');
 
-  assert.equal(renderPrompt('Review:\n{{input}}', { kind: 'text', text: 'code' }), 'Review:\ncode');
-  assert.equal(renderPrompt('no placeholder', { kind: 'text', text: 'x' }), 'no placeholder');
+  assert.equal(renderPrompt('Review:\n{{input}}', { message: 'code' }), 'Review:\ncode');
+  assert.equal(renderPrompt('no placeholder', { message: 'x' }), 'no placeholder');
 });
 
 test('two deliveries create independent Pheromones with no identity', async () => {
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => START });
 
-  await runtime.admit('start', { kind: 'text', text: '' });
-  await runtime.admit('start', { kind: 'text', text: '' });
+  await runtime.admit('start', { message: '' });
+  await runtime.admit('start', { message: '' });
   const queued = runtime.snapshot().nodes['start']?.receptor ?? [];
   assert.equal(queued.length, 2);
-  assert.notEqual(queued[0]?.id, queued[1]?.id);
+  assert.notEqual(queued[0], queued[1]);
   for (const pheromone of queued) {
-    assert.deepEqual(Object.keys(pheromone).sort(), ['at', 'id', 'value']);
+    assert.deepEqual(Object.keys(pheromone).sort(), ['enqueuedAt', 'value']);
   }
 
   await runtime.pump();
@@ -416,7 +416,7 @@ test('pump is idempotent when nothing is runnable', async () => {
   await runtime.pump();
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, true);
-  assert.deepEqual(snapshot.pheromones, []);
+  assert.deepEqual(queuedEntries(snapshot), []);
 });
 
 test('log entries are well formed for every event emitted', async () => {
@@ -428,7 +428,7 @@ test('log entries are well formed for every event emitted', async () => {
     onLog: log.sink,
   });
 
-  runtime.admit('start', { kind: 'text', text: 'go' });
+  runtime.admit('start', { message: 'go' });
   await runtime.pump();
 
   for (const entry of log.entries as RuntimeLogEntry[]) {
@@ -437,3 +437,7 @@ test('log entries are well formed for every event emitted', async () => {
     assert.equal(typeof entry.event, 'string');
   }
 });
+
+function queuedEntries(snapshot: import('../src/runtime/index.js').PheromoneFieldSnapshot) {
+  return Object.values(snapshot.nodes).flatMap((node) => [...node.receptor]);
+}

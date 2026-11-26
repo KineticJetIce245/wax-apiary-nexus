@@ -5,3 +5,50 @@ export class FieldRestoreError extends Error {
     this.name = 'FieldRestoreError';
   }
 }
+
+/**
+ * A persisted Honey file written by an incompatible schema or data shape.
+ * Loading fails closed: there is no migration and the old state is kept.
+ * The HTTP mapping is deliberately not decided in this slice (M19e).
+ */
+export class HoneyIncompatibleError extends FieldRestoreError {
+  readonly code = 'honey-incompatible';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'HoneyIncompatibleError';
+  }
+}
+
+/** A target path that this slice has not implemented yet (spread/gather). */
+export class NotImplementedError extends Error {
+  readonly code = 'not-implemented';
+
+  constructor(
+    readonly feature: string,
+    message: string,
+  ) {
+    super(`${feature}: ${message}`);
+    this.name = 'NotImplementedError';
+  }
+}
+
+/** A dot path is malformed or targets a forbidden key. */
+export class ValuePathError extends Error {
+  readonly code = 'invalid-value-path';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValuePathError';
+  }
+}
+
+/** A result carries a value and a drop for the same path. */
+export class ValueDropOverlapError extends Error {
+  readonly code = 'drop-overlap';
+
+  constructor(readonly path: string) {
+    super(`result carries a value and a drop for the same path '${path}'`);
+    this.name = 'ValueDropOverlapError';
+  }
+}

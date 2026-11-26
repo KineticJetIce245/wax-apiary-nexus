@@ -19,7 +19,7 @@ function foragerNode(id: string): ForagerNode {
 }
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 interface Call {
@@ -43,10 +43,10 @@ class RecordingExecutor implements NodeExecutor {
 
 test('routes each node id to its own child without crossing inputs or outputs', async () => {
   const childA = new RecordingExecutor((node, input) =>
-    text(`A:${node.id}:${(input as { text: string }).text}`),
+    text(`A:${node.id}:${(input as { message: string }).message}`),
   );
   const childB = new RecordingExecutor((node, input) =>
-    text(`B:${node.id}:${(input as { text: string }).text}`),
+    text(`B:${node.id}:${(input as { message: string }).message}`),
   );
   const routing = new RoutingForagerExecutor({
     executors: new Map([

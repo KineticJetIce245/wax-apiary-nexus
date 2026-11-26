@@ -253,62 +253,90 @@ export function validateEdgeShape(
 ): void {
   for (const node of nodes.values()) {
     const outgoing = edges.filter((edge) => edge.from === node.id);
-
     if (node.kind === 'spread') {
-      node.config.branches.forEach((branch, index) => {
-        if (!nodes.has(branch.to)) {
-          issues.push(
-            `nodes.${node.id}.config.branches[${index}].to: unknown node '${branch.to}'`,
-          );
-        }
-      });
-      if (outgoing.length > 0) {
-        issues.push(`nodes.${node.id}: a spread node uses branches and has no normal outgoing edge`);
-      }
+      validateSpreadTargets(node, nodes, outgoing, issues);
       continue;
     }
-
     if (node.kind === 'gather') {
-      for (const edge of outgoing) {
-        if (edge.when !== undefined) {
-          issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);
-        }
-      }
-      if (outgoing.length > 1) {
-        issues.push(`nodes.${node.id}: a gather node has at most one outgoing edge`);
-      }
+      validateGatherEdges(node, outgoing, issues);
       continue;
     }
-
-    if (node.kind === 'forager' || node.kind === 'worker' || node.kind === 'user') {
-      for (const edge of outgoing) {
-        if (edge.when !== undefined) {
-          issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);
-        }
-      }
-      if (outgoing.length > 1) {
-        issues.push(`nodes.${node.id}: a ${node.kind} node has at most one outgoing edge`);
-      }
+    if (node.kind === 'condition' || node.kind === 'counter') {
+      validateBranchedEdges(node, outgoing, issues);
       continue;
     }
+    validateTaskEdges(node, outgoing, issues);
+  }
+}
 
-    const required: readonly EdgeWhen[] =
-      node.kind === 'condition' ? ['true', 'false'] : ['continue', 'done'];
-
-    for (const when of required) {
-      const matches = outgoing.filter((edge) => edge.when === when);
-      if (matches.length !== 1) {
-        issues.push(
-          `nodes.${node.id}: expected exactly one '${when}' outgoing edge, found ${matches.length}`,
-        );
-      }
+function validateSpreadTargets(
+  node: Extract<NodeDefinition, { kind: 'spread' }>,
+  nodes: ReadonlyMap<NodeId, NodeDefinition>,
+  outgoing: readonly EdgeDefinition[],
+  issues: string[],
+): void {
+  const targets = Array.isArray(node.config.targets)
+    ? node.config.targets
+    : Object.keys(node.config.targets);
+  for (const target of targets) {
+    if (!nodes.has(target)) {
+      issues.push(`nodes.${node.id}.config.targets: unknown node '${target}'`);
     }
+  }
+  if (outgoing.length > 0) {
+    issues.push(`nodes.${node.id}: a spread node uses config.targets and has no normal outgoing edge`);
+  }
+}
 
-    if (outgoing.length !== required.length) {
-      const labels = outgoing.map((edge) => edge.when ?? '(default)').join(', ');
+function validateGatherEdges(
+  node: Extract<NodeDefinition, { kind: 'gather' }>,
+  outgoing: readonly EdgeDefinition[],
+  issues: string[],
+): void {
+  for (const edge of outgoing) {
+    if (edge.when !== undefined) {
+      issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);
+    }
+  }
+  if (outgoing.length > 1) {
+    issues.push(`nodes.${node.id}: a gather node has at most one outgoing edge`);
+  }
+}
+
+function validateTaskEdges(
+  node: Extract<NodeDefinition, { kind: 'forager' | 'worker' | 'user' }>,
+  outgoing: readonly EdgeDefinition[],
+  issues: string[],
+): void {
+  for (const edge of outgoing) {
+    if (edge.when !== undefined) {
+      issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);
+    }
+  }
+  if (outgoing.length > 1) {
+    issues.push(`nodes.${node.id}: a ${node.kind} node has at most one outgoing edge`);
+  }
+}
+
+function validateBranchedEdges(
+  node: Extract<NodeDefinition, { kind: 'condition' | 'counter' }>,
+  outgoing: readonly EdgeDefinition[],
+  issues: string[],
+): void {
+  const required: readonly EdgeWhen[] =
+    node.kind === 'condition' ? ['true', 'false'] : ['continue', 'done'];
+  for (const when of required) {
+    const matches = outgoing.filter((edge) => edge.when === when);
+    if (matches.length !== 1) {
       issues.push(
-        `nodes.${node.id}: expected only the ${required.join("/")} edges, found ${outgoing.length} (${labels})`,
+        `nodes.${node.id}: expected exactly one '${when}' outgoing edge, found ${matches.length}`,
       );
     }
+  }
+  if (outgoing.length !== required.length) {
+    const labels = outgoing.map((edge) => edge.when ?? '(default)').join(', ');
+    issues.push(
+      `nodes.${node.id}: expected only the ${required.join('/')} edges, found ${outgoing.length} (${labels})`,
+    );
   }
 }

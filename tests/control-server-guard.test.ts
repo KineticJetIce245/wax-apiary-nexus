@@ -361,7 +361,7 @@ test('a pending native approval is listed and allowed through the broker', async
   assert.equal(run.status, 200);
   assert.equal(run.body?.['runId'], undefined);
   assert.deepEqual(run.body?.['outputs'], [
-    { nodeId: 'only', value: { kind: 'text', text: 'approved' } },
+    { nodeId: 'only', value: { message: 'approved' } },
   ]);
 
   // A second decision for the same request is a conflict, not a re-open.

@@ -601,7 +601,7 @@ test('answer only binds the hover; the field completes in the background', async
     'the answered field to settle',
   );
   const idle = host.outputsOf('answer-nonrest').get('idle');
-  assert.deepEqual(idle, { kind: 'text', text: 'reply(native-1):idle answered' });
+  assert.deepEqual(idle, { message: 'reply(native-1):idle answered' });
   assert.equal(host.statusOf('answer-nonrest') !== undefined, true);
 });
 

@@ -101,7 +101,7 @@ test('the approval timer is recorded as approval-timeout', async (t) => {
   const requested = approvalRequested(bridge.workspace);
 
   const rejection = assert.rejects(
-    bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' }),
+    bridge.executor.execute(foragerNode(), { message: 'go' }),
     rejectedWith('approval-timeout'),
   );
   const executionId = await requested;
@@ -120,7 +120,7 @@ test('an explicit cancel is recorded as explicit-cancel', async (t) => {
   const requested = approvalRequested(bridge.workspace);
 
   const rejection = assert.rejects(
-    bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' }),
+    bridge.executor.execute(foragerNode(), { message: 'go' }),
     rejectedWith('explicit-cancel'),
   );
   const executionId = await requested;
@@ -138,7 +138,7 @@ test('a close settles the execution as close provenance', async (t) => {
   const requested = approvalRequested(bridge.workspace);
 
   const rejection = assert.rejects(
-    bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' }),
+    bridge.executor.execute(foragerNode(), { message: 'go' }),
     rejectedWith('close'),
   );
   const executionId = await requested;
@@ -185,7 +185,7 @@ test('a native cancel without a Workspace call stays unattributed', async (t) =>
   });
 
   await assert.rejects(
-    executor.execute(foragerNode(), { kind: 'text', text: 'go' }),
+    executor.execute(foragerNode(), { message: 'go' }),
     rejectedWith(undefined),
   );
 
@@ -200,7 +200,7 @@ test('a bridge-decided approval cancel is not claimed as approval-timeout', asyn
   cleanup(t, bridge);
 
   await assert.rejects(
-    bridge.executor.execute(foragerNode(), { kind: 'text', text: 'go' }),
+    bridge.executor.execute(foragerNode(), { message: 'go' }),
     rejectedWith(undefined),
   );
 });

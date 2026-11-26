@@ -130,7 +130,7 @@ export class DispatchService {
       if (!this.liveHiveHost.bindingsOf(graphId).has(BEE_ID)) {
         throw new DispatchError('dispatch graph has no session binding');
       }
-      await this.liveHiveHost.trigger(graphId, BEE_ID, textValue(input));
+      await this.liveHiveHost.trigger(graphId, BEE_ID, messageValue(input));
       // Accepted: the host driver owns the ephemeral graph and releases it
       // after its field reaches Rest.
       pendingRelease = false;
@@ -240,6 +240,6 @@ function normalizeDispatchError(error: unknown): unknown {
   return error;
 }
 
-function textValue(input: string): Value {
-  return { kind: 'text', text: input };
+function messageValue(input: string): Value {
+  return { message: input };
 }

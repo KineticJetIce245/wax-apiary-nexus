@@ -1,5 +1,5 @@
-import type { RuntimeLogEntry } from './log.js';
-import type { NodeId, Pheromone } from './types.js';
+import type { RuntimeLogFields } from './log.js';
+import type { NodeId, Value } from './types.js';
 
 /** Block policy default when `receptorBlockTimeoutMs` is omitted. */
 export const DEFAULT_RECEPTOR_BLOCK_TIMEOUT_MS = 30_000;
@@ -54,8 +54,8 @@ export class ReceptorBlockTimeoutError extends Error {
 
 /**
  * A new Pheromone was refused because its target bee already holds `limit`
- * waiting entries (receptor + reservations). Existing input is never dropped,
- * so a caller can retry once the receptor drains.
+ * waiting entries. Existing input is never dropped, so a caller can retry once
+ * the receptor drains.
  */
 export class ReceptorFullError extends Error {
   readonly policy = 'reject';
@@ -85,7 +85,7 @@ export class ReceptorFullError extends Error {
 
 interface Waiter {
   readonly nodeId: NodeId;
-  readonly pheromone: Pheromone;
+  readonly value: Value;
   readonly startedAt: number;
   readonly promise: Promise<void>;
   readonly resolve: () => void;
@@ -105,8 +105,8 @@ export interface ReceptorHost {
   /** Waiting entries plus output reservations; active/pending never count. */
   depth(nodeId: NodeId): number;
   /** Append only when capacity exists; it must already hold the transaction. */
-  tryAppend(nodeId: NodeId, pheromone: Pheromone): boolean;
-  log(entry: Omit<RuntimeLogEntry, 'at' | 'compositionId' | 'graphRevision'>): void;
+  tryAppend(nodeId: NodeId, value: Value): boolean;
+  log(entry: RuntimeLogFields): void;
 }
 
 /**
@@ -130,9 +130,9 @@ export class ReceptorOverflow {
   }
 
   /** Queue one admission and resolve once capacity is available. */
-  admit(nodeId: NodeId, pheromone: Pheromone): Promise<void> {
+  admit(nodeId: NodeId, value: Value): Promise<void> {
     const queue = this.queueOf(nodeId);
-    const waiter = createWaiter(nodeId, pheromone, this.host.now());
+    const waiter = createWaiter(nodeId, value, this.host.now());
     queue.push(waiter);
     try {
       this.host.transaction(() => this.dispatchLocked(nodeId));
@@ -161,7 +161,7 @@ export class ReceptorOverflow {
     this.host.transaction(() => this.dispatchLocked(nodeId));
   }
 
-  /** Re-check every bee after a bulk capacity change (expiry or spread failure). */
+  /** Re-check every bee after a bulk capacity change. */
   notifyAll(): void {
     for (const nodeId of [...this.queues.keys()]) {
       this.notify(nodeId);
@@ -172,7 +172,7 @@ export class ReceptorOverflow {
     const queue = this.queues.get(nodeId);
     while (queue !== undefined && queue.length > 0) {
       const head = queue[0];
-      if (head === undefined || !this.host.tryAppend(nodeId, head.pheromone)) {
+      if (head === undefined || !this.host.tryAppend(nodeId, head.value)) {
         break;
       }
       queue.shift();
@@ -210,7 +210,6 @@ export class ReceptorOverflow {
     this.host.log({
       event: 'bee-receptor-block-timeout',
       nodeId: waiter.nodeId,
-      pheromoneId: waiter.pheromone.id,
       queueDepth: pending,
       limit,
       policy: 'block',
@@ -226,8 +225,6 @@ export class ReceptorOverflow {
         waitedMs,
       ),
     );
-    // This waiter occupied the head of the line; let the next one proceed if
-    // the capacity that was unavailable to it is still there for a smaller set.
     this.notify(waiter.nodeId);
   }
 
@@ -243,7 +240,6 @@ export class ReceptorOverflow {
     this.host.log({
       event: 'bee-receptor-blocked',
       nodeId: waiter.nodeId,
-      pheromoneId: waiter.pheromone.id,
       queueDepth: this.host.depth(waiter.nodeId),
       limit: this.host.limit,
       policy: 'block',
@@ -274,11 +270,7 @@ export class ReceptorOverflow {
   }
 }
 
-function createWaiter(
-  nodeId: NodeId,
-  pheromone: Pheromone,
-  startedAt: number,
-): Waiter {
+function createWaiter(nodeId: NodeId, value: Value, startedAt: number): Waiter {
   let resolveWaiter: () => void = () => undefined;
   let rejectWaiter: (error: unknown) => void = () => undefined;
   const promise = new Promise<void>((resolve, reject) => {
@@ -287,7 +279,7 @@ function createWaiter(
   });
   return {
     nodeId,
-    pheromone,
+    value,
     startedAt,
     promise,
     resolve: resolveWaiter,

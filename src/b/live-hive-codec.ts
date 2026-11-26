@@ -134,10 +134,8 @@ function importNode(
   sessionBindings: Record<string, string>,
 ): Bee {
   const config: Record<string, unknown> = { ...node.config };
-  const outgoing = importEdges(nodeId, edges, beelines);
-  if (node.kind === 'spread') {
-    appendSpreadBranches(nodeId, node.config.branches, beelines, outgoing);
-  }
+  // Spread targets live in config.targets and have no normal beelines.
+  const outgoing = node.kind === 'spread' ? [] : importEdges(nodeId, edges, beelines);
   const sessionMode = importBinding(nodeId, binding, config, sessionBindings);
   return {
     kind: node.kind as BeeKind,
@@ -168,26 +166,6 @@ function importEdges(
     outgoing.push(edge.id);
   }
   return outgoing;
-}
-
-function appendSpreadBranches(
-  nodeId: string,
-  branches: readonly { readonly id: string; readonly to: string }[],
-  beelines: Record<string, Beeline>,
-  outgoing: string[],
-): void {
-  for (const branch of branches) {
-    const beelineId = `spread:${nodeId}:${branch.id}`;
-    if (Object.hasOwn(beelines, beelineId)) {
-      throw new LiveHiveCodecError(`duplicate beeline id '${beelineId}'`);
-    }
-    beelines[beelineId] = {
-      fromBee: nodeId,
-      toBee: branch.to,
-      branch: branch.id,
-    };
-    outgoing.push(beelineId);
-  }
 }
 
 function importBinding(
@@ -228,20 +206,22 @@ function spreadConfig(
   if (bee.kind !== 'spread') {
     return bee.config;
   }
-  const existing = bee.config['branches'];
-  if (Array.isArray(existing) && existing.length > 0) {
+  if (Array.isArray(bee.config['targets']) || isRecord(bee.config['targets'])) {
     return bee.config;
   }
-
-  const branches = bee.outgoing.map((beelineId) => {
+  const targets = bee.outgoing.map((beelineId) => {
     const line = live.beelines[beelineId];
     if (line === undefined) {
       throw new LiveHiveCodecError(`bee '${beeId}' has an unknown outgoing beeline`);
     }
-    return { id: line.branch ?? beelineId, to: line.toBee };
+    return line.toBee;
   });
-  if (branches.length === 0) {
-    throw new LiveHiveCodecError(`spread bee '${beeId}' needs at least one branch`);
+  if (targets.length === 0) {
+    throw new LiveHiveCodecError(`spread bee '${beeId}' needs at least one target BeeId`);
   }
-  return { ...bee.config, branches };
+  return { ...bee.config, strategy: 'clone', targets };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

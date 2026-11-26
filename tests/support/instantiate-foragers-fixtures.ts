@@ -81,7 +81,7 @@ export function foragerOf(definition: CompositionDefinition, nodeId: string): Fo
 }
 
 export function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 export async function waitForExecutionSettled(workspace: Workspace, executionId: string): Promise<void> {

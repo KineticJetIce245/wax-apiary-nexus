@@ -34,7 +34,7 @@ function cappedGraph(id: string, queueMax: number): CompositionDefinition {
 }
 
 function text(value: string) {
-  return { kind: 'text' as const, text: value };
+  return { message: value };
 }
 
 async function withTimeout<T>(

@@ -1,37 +1,28 @@
-import type { RuntimeLogEntry } from './log.js';
-import type { RuntimeLogSink } from './runtime-expiry.js';
-import { workerLogFields } from './runtime-values.js';
 import type {
-  GatherNode,
-  NodeDefinition,
-  NodeId,
-  NodeState,
-  Pheromone,
-  UserNode,
-} from './types.js';
+  RuntimeLogEntry,
+  RuntimeLogFields,
+  RuntimeLogFieldsSink,
+} from './log.js';
+import type { NodeDefinition, NodeId } from './types.js';
 import { WorkerExecutionError } from './worker.js';
+import { workerLogFields } from './runtime-values.js';
 
 export function logActivated(
-  log: RuntimeLogSink,
+  log: RuntimeLogFieldsSink,
   node: NodeDefinition,
-  pheromone: Pheromone,
-  state: NodeState,
+  queueDepth: number,
 ): void {
   log({
     event: 'node.activated',
     nodeId: node.id,
     nodeKind: node.kind,
-    pheromoneId: pheromone.id,
-    queueDepth: state.receptor?.length ?? 0,
-    ...(pheromone.spreadId === undefined ? {} : { spreadId: pheromone.spreadId }),
-    ...(pheromone.branchId === undefined ? {} : { branchId: pheromone.branchId }),
+    queueDepth,
   });
 }
 
 export function logCompleted(
-  log: RuntimeLogSink,
+  log: RuntimeLogFieldsSink,
   node: NodeDefinition,
-  pheromone: Pheromone,
   durationMs: number,
   outcome: string,
   extra?: Partial<RuntimeLogEntry>,
@@ -40,7 +31,6 @@ export function logCompleted(
     event: 'node.completed',
     nodeId: node.id,
     nodeKind: node.kind,
-    pheromoneId: pheromone.id,
     outcome,
     durationMs,
     ...(extra ?? {}),
@@ -48,9 +38,8 @@ export function logCompleted(
 }
 
 export function logFailed(
-  log: RuntimeLogSink,
+  log: RuntimeLogFieldsSink,
   node: NodeDefinition,
-  pheromone: Pheromone,
   startedAt: number,
   now: number,
   error: unknown,
@@ -59,7 +48,6 @@ export function logFailed(
     event: 'node.failed',
     nodeId: node.id,
     nodeKind: node.kind,
-    pheromoneId: pheromone.id,
     outcome: 'failed',
     durationMs: now - startedAt,
     error: error instanceof Error ? error.message : String(error),
@@ -67,19 +55,16 @@ export function logFailed(
   });
 }
 
-/**
- * Logs a deferred activation once per source Pheromone. Retrying every 100ms
- * must not append a Honey line per attempt.
- */
+/** Logs a deferred activation once per (Bee, target); retries do not spam. */
 export function logActivationBlocked(
-  log: RuntimeLogSink,
+  log: RuntimeLogFieldsSink,
   reported: Set<string>,
   node: NodeDefinition,
-  pheromone: Pheromone,
   target: NodeId,
   queueDepth: number,
+  limit: number,
 ): void {
-  const key = `activation\0${pheromone.id}\0${target}`;
+  const key = `activation\0${node.id}\0${target}`;
   if (reported.has(key)) {
     return;
   }
@@ -88,21 +73,20 @@ export function logActivationBlocked(
     event: 'pheromone.blocked',
     nodeId: node.id,
     nodeKind: node.kind,
-    pheromoneId: pheromone.id,
     queueDepth,
-    outcome: `queue-max:${target}`,
+    limit,
+    reason: `queue-max:${target}`,
   });
 }
 
 export function logHoverBlocked(
-  log: RuntimeLogSink,
+  log: RuntimeLogFieldsSink,
   reported: Set<string>,
-  node: UserNode,
-  pheromone: Pheromone,
+  node: NodeDefinition,
   target: NodeId,
   details: { readonly queueDepth: number; readonly hoverOutcome: string },
 ): void {
-  const key = `hover\0${pheromone.id}\0${target}`;
+  const key = `hover\0${node.id}\0${target}`;
   if (reported.has(key)) {
     return;
   }
@@ -110,32 +94,29 @@ export function logHoverBlocked(
   log({
     event: 'hover.blocked',
     nodeId: node.id,
-    nodeKind: 'user',
-    pheromoneId: pheromone.id,
+    nodeKind: node.kind,
     queueDepth: details.queueDepth,
-    outcome: `${details.hoverOutcome}:queue-max:${target}`,
+    reason: `${details.hoverOutcome}:queue-max:${target}`,
   });
 }
 
-export function logGatherBlocked(
-  log: RuntimeLogSink,
-  reported: Set<string>,
-  node: GatherNode,
-  spreadId: string,
-  target: NodeId,
-  queueDepth: number,
+/** Records paths whose drop found nothing; paths only, never values. */
+export function logDropMissing(
+  log: RuntimeLogFieldsSink,
+  node: NodeDefinition,
+  paths: readonly string[],
 ): void {
-  const key = `gather\0${node.id}\0${spreadId}\0${target}`;
-  if (reported.has(key)) {
+  if (paths.length === 0) {
     return;
   }
-  reported.add(key);
   log({
-    event: 'gather.blocked',
+    event: 'value.drop-missing',
     nodeId: node.id,
-    nodeKind: 'gather',
-    spreadId,
-    queueDepth,
-    outcome: `queue-max:${target}`,
+    nodeKind: node.kind,
+    paths,
+    outcome: 'no-op',
   });
 }
+
+/** The partial log shape a module writes; the facade stamps the rest. */
+export type PartialLogEntry = RuntimeLogFields;

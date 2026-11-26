@@ -49,7 +49,7 @@ function foragerOf(definition: CompositionDefinition, nodeId: string): ForagerNo
 }
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 test('routes each forager binding to its own harness workspace', async (t) => {

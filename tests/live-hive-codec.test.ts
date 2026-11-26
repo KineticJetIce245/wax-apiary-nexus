@@ -62,7 +62,7 @@ test('spread beelines become config branches, never normal edges', () => {
   );
   const spread = composition.nodes.get('spread');
   assert.ok(spread !== undefined && spread.kind === 'spread');
-  assert.deepEqual(spread.config.branches, [
+  assert.deepEqual((spread.config as { branches?: unknown }).branches, [
     { id: 'a', to: 'left' },
     { id: 'b', to: 'right' },
   ]);
@@ -78,7 +78,7 @@ test('spread branches are derived from beeline branch labels when config omits t
   const composition = toCompositionDefinition(withoutConfig);
   const node = composition.nodes.get('spread');
   assert.ok(node !== undefined && node.kind === 'spread');
-  assert.deepEqual(node.config.branches, [
+  assert.deepEqual((node.config as { branches?: unknown }).branches, [
     { id: 'a', to: 'left' },
     { id: 'b', to: 'right' },
   ]);

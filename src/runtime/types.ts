@@ -1,24 +1,20 @@
 /**
  * Core value and graph types for the PheromoneField runtime.
  *
- * The full contract lives in CONTRACT.md; this module mirrors the implemented
- * parts: Value, Pheromone, NodeState, gathers, and the composition definition.
+ * M19 target model (ARCHITECTURE.md §3/§4.12/§4.13): a Value is a free JSON
+ * object, a Pheromone is `{ value }`, and the field's queue entry owns
+ * `enqueuedAt`. There is no message identity, no lineage and no branch/join.
  */
 
 export type NodeId = string;
 
+/** A local file reference carried by the universal `attachments` convention. */
 export interface Attachment {
-  kind: 'image' | 'file' | 'audio';
-  path?: string;
+  path: string;
+  /** Optional and not an enum; image/audio are inferred from the prefix. */
   mediaType?: string;
 }
 
-/**
- * The JSON-safe data a `structured` Value may carry: null, booleans, finite
- * numbers, strings, arrays and plain objects. Existing Value objects are legal
- * members because they are plain JSON objects; the type itself stays JSON-only
- * so the Honey and serialization boundaries have one shape to check.
- */
 export type JsonValue =
   | null
   | boolean
@@ -28,43 +24,24 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * A Value is what a Pheromone carries. Triggers, executors and Gather use the
- * same union. Stage 5C adds `structured` so an object/array Gather can preserve
- * structure instead of flattening every branch to text.
+ * A Value is a free JSON object: `message` is the universal text field,
+ * `attachments` the file convention, and every other field is arbitrary JSON.
+ * A plain `null` may appear as a field value but the root is always an object.
  */
-export type Value =
-  | { kind: 'text'; text: string }
-  | { kind: 'choice'; choice: string }
-  | { kind: 'boolean'; value: boolean }
-  | { kind: 'message'; text?: string; attachments: Attachment[] }
-  | { kind: 'attachments'; attachments: Attachment[] }
-  | { kind: 'structured'; value: JsonValue };
+export type Value = { [key: string]: JsonValue };
 
-/**
- * One Spread branch a Pheromone belongs to. A nested Spread appends its tag to the
- * incoming lineage, so the array is ordered outer-to-inner and the last tag is
- * the current spread. Stage 5D adds the lineage; `spreadId`/`branchId` stay on the
- * Pheromone for compatibility and always point at the last tag.
- */
-export interface BranchTag {
-  spreadId: string;
-  branchId: string;
+/** The only thing a Pheromone carries. No id, timestamp or lineage. */
+export interface Pheromone {
+  value: Value;
 }
 
-export interface Pheromone {
-  id: string;
-  spreadId?: string;
-  branchId?: string;
-  /** Spread ancestry, outer-to-inner; absent for an untagged Pheromone. */
-  lineage?: readonly BranchTag[];
-  value: Value;
-  /**
-   * The enqueue instant, as an ISO timestamp: the moment this Pheromone was
-   * pushed into its target node's queue. `defaults.queueTtlMs` is measured from
-   * here. Restore keeps the persisted value unchanged; it is never rewritten
-   * when the Pheromone is dequeued, activated, or moved to `pending`.
-   */
-  at: string;
+/**
+ * One receptor slot: the same Pheromone object plus its queue instant. The
+ * field moves this object by reference along a normal beeline; only cardinality
+ * changes (spread/gather) create new Pheromones.
+ */
+export interface QueueEntry extends Pheromone {
+  enqueuedAt: string;
 }
 
 export interface ForagerConfig {
@@ -144,8 +121,9 @@ export interface CounterNode {
 }
 
 /**
- * Stage 3C-2 adds the rich manual modalities. `message` answers carry text
- * only; `image` and `file` answers carry one local path as an attachment.
+ * The manual answer modalities. The answer maps to ordinary Value fields:
+ * text/message -> `message`, choice -> `choice`, yes-no -> `boolean`,
+ * image/file -> `attachments`.
  */
 export type UserModality = 'text' | 'choice' | 'yes-no' | 'message' | 'image' | 'file';
 
@@ -163,37 +141,68 @@ export interface UserNode {
   minIntervalMs: number;
 }
 
-/** One labelled branch created by a Spread. Branch is not a node kind. */
-export interface SpreadBranch {
-  id: string;
-  to: NodeId;
+/**
+ * A rule is declarative (one dot path plus an operator) or a local code block.
+ * M19b implements evaluation; M19a only parses and carries the shape.
+ */
+export type JsonType = 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null';
+
+export type Rule =
+  | { code: string }
+  | { path: string; equals: JsonValue }
+  | { path: string; oneOf: readonly JsonValue[] }
+  | { path: string; exists: true }
+  | { path: string; type: JsonType };
+
+/** A group key is a dot path or a code block returning a non-empty string. */
+export type GroupKey = string | { code: string };
+
+/** `clone` targets are BeeIds, as an ordered list or a map keyed by BeeId. */
+export interface SpreadCloneConfig {
+  strategy: 'clone';
+  targets: readonly NodeId[] | Readonly<Record<NodeId, JsonValue>>;
 }
 
-export interface SpreadConfig {
-  branches: readonly SpreadBranch[];
+/** `cleave` projects the listed dot paths into each target's part. */
+export interface SpreadCleaveConfig {
+  strategy: 'cleave';
+  targets: Readonly<Record<NodeId, readonly string[]>>;
 }
+
+export type SpreadConfig = SpreadCloneConfig | SpreadCleaveConfig;
+
+export interface GatherTypeConfig {
+  match: Rule;
+  /** Positive integer; always 1 for batch. */
+  count: number;
+  /** Dot paths projected into a package entry. */
+  reads: readonly string[];
+}
+
+/** `assemble` waits until every declared type reaches its count. */
+export interface AssembleGatherConfig {
+  strategy: 'assemble';
+  types: Readonly<Record<string, GatherTypeConfig>>;
+  groupBy?: GroupKey;
+  /** Defaults to 256; M19d enforces it. */
+  typeQueueMax: number;
+}
+
+/** `batch` accumulates until one input matches `batch.signal`. */
+export interface BatchGatherConfig {
+  strategy: 'batch';
+  batch: { signal: Rule };
+  types: Readonly<Record<string, GatherTypeConfig>>;
+  typeQueueMax: number;
+}
+
+export type GatherConfig = AssembleGatherConfig | BatchGatherConfig;
 
 export interface SpreadNode {
   id: NodeId;
   kind: 'spread';
   config: SpreadConfig;
   minIntervalMs: number;
-}
-
-/**
- * Stage 5A adds optional branches to the Stage 3A text combine. `optional` is
- * best effort: the required set completes the join immediately and an optional
- * branch only contributes when it has already arrived. Stage 5B adds
- * `timeoutMs`, measured from the first branch arrival for one spreadId. Stage 5C
- * adds `object` and `array`, which emit a `structured` Value instead of text.
- */
-export type CombineMode = 'text' | 'object' | 'array';
-
-export interface GatherConfig {
-  required: readonly string[];
-  optional: readonly string[];
-  combine: CombineMode;
-  timeoutMs: number;
 }
 
 export interface GatherNode {
@@ -216,14 +225,13 @@ export type NodeKind = NodeDefinition['kind'];
 
 /**
  * A Hover parks one Pheromone while the runtime waits for an external event.
- * The runtime opens user and Guard hovers; forager/timer are reserved.
+ * It has no Pheromone id: the parked Pheromone is the field's state.
  */
 export interface HoverSpec {
   token: string;
   kind: 'user' | 'forager' | 'guard' | 'timer';
   compositionId: string;
   nodeId: NodeId;
-  pheromoneId: string;
   expiresAt?: string;
   meta?: Record<string, unknown>;
 }
@@ -244,9 +252,8 @@ export interface CompositionDefaults {
 }
 
 /**
- * A scheduled trigger. Stage 3C-1 supports one-shot `at` and fixed-interval
- * `every`; a manual trigger is a CLI action and is never stored in the file.
- * `at` must carry `Z` or an explicit offset, so it names one instant.
+ * A scheduled trigger. Supports one-shot `at` and fixed-interval `every`; a
+ * manual trigger is a CLI action and is never stored in the file.
  */
 export type TriggerSchedule =
   | { kind: 'at'; at: string }
@@ -273,54 +280,20 @@ export interface CompositionDefinition {
   triggers: readonly TriggerDefinition[];
 }
 
-/**
- * Branch Pheromones a Gather has already received for one spreadId. The branch id
- * is the map key; a second arrival for the same branch is a protocol error.
- *
- * Stage 5A keeps a completed join as a tombstone: `completedAt` is set and the
- * consumed `arrived` entries are cleared, so a late optional branch can still be
- * dropped rather than reopening the join. Stage 5B adds the same tombstone for a
- * deadline failure (`timedOutAt`). `deadlineAt` is an absolute epoch-ms time set
- * when the first branch of the spread arrives; it is cleared when the join closes.
- *
- * Stage 5D adds `lineage`: the parent lineage shared by every arrival, i.e. the
- * arrived Pheromones' lineage with their current (last) tag removed. A nested
- * Gather emits with this lineage restored; a top-level join has none.
- */
-export interface GatherState {
-  spreadId: string;
-  /** Parent lineage; absent when the joined spread is top-level. */
-  lineage?: readonly BranchTag[];
-  arrived: Map<string, Pheromone>;
-  completedAt?: string;
-  deadlineAt?: number;
-  timedOutAt?: string;
-}
-
-export interface GatherStateSnapshot {
-  spreadId: string;
-  lineage?: readonly BranchTag[];
-  arrived: readonly Pheromone[];
-  completedAt?: string;
-  deadlineAt?: number;
-  timedOutAt?: string;
-}
-
 /** Mutable per-node runtime state. Never handed out directly. */
 export interface NodeState {
   /**
-   * The bee's receptor: input waiting to be activated, in FIFO order. It exists
-   * only while the bee is awake; the drain removes it when the receptor is empty
-   * and no pending activation is held, so a resting bee keeps no receptor.
+   * The bee's receptor: queue entries waiting to be activated, in FIFO order.
+   * It exists only while the bee is awake; the drain removes it when the
+   * receptor is empty and no pending activation is held.
    */
-  receptor?: Pheromone[];
+  receptor?: QueueEntry[];
   pending?: Pheromone;
   active?: Pheromone;
   /**
    * Output slots reserved by an in-flight activation that is about to enqueue
-   * here. Reservations make `queueMax` a pre-consumption limit: a running task
-   * already owns the space its result will need, so no result can be refused
-   * after the task has run. They are process-local and never persisted.
+   * here. Reservations make `queueMax` a pre-consumption limit. They are
+   * process-local and never persisted.
    */
   reserved?: number;
   lastActivatedAt?: string;
@@ -328,71 +301,53 @@ export interface NodeState {
   /** The Pheromone parked behind `hover`; it is still part of the field. */
   hoverPheromone?: Pheromone;
   state?: Record<string, unknown>;
-  /** Gather-only: partially complete gathers, keyed by spreadId. */
-  gathers?: Map<string, GatherState>;
   /**
    * The Value produced by this bee's last completed activation. It is an
-   * in-memory cache owned by the field (D2): it is never persisted, carries no
-   * run identity, and is released with the field on unload.
+   * in-memory cache owned by the field: never persisted, no run identity, and
+   * released with the field on unload.
    */
   lastOutput?: Value;
 }
 
 /** Immutable view returned by PheromoneRuntime.snapshot(). */
 export interface NodeStateSnapshot {
-  receptor: readonly Pheromone[];
+  receptor: readonly QueueEntry[];
   pending?: Pheromone;
   active?: Pheromone;
   hover?: HoverSpec;
+  /** The Pheromone parked behind `hover`; field state, not persisted output. */
+  hoverPheromone?: Pheromone;
   lastActivatedAt?: string;
   state: Readonly<Record<string, unknown>>;
-  gathers?: Readonly<Record<string, GatherStateSnapshot>>;
   /** Field-owned last completed output; memory-only and never persisted. */
   lastOutput?: Value;
 }
 
 export interface PheromoneFieldSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 2;
   compositionId: string;
   graphRevision: string;
   rest: boolean;
-  pheromones: readonly Pheromone[];
   nodes: Readonly<Record<NodeId, NodeStateSnapshot>>;
 }
 
 /** JSON shape of `honey/field.json`. */
-export interface PersistedGatherState {
-  /** Parent lineage restored by this join's Gather; absent at top level. */
-  lineage?: BranchTag[];
-  arrived: Pheromone[];
-  /** Set on a completed tombstone; its `arrived` list is empty. */
-  completedAt?: string;
-  /** Absolute epoch-ms deadline for an incomplete join. */
-  deadlineAt?: number;
-  /** Set on a timed-out tombstone; its `arrived` list is empty. */
-  timedOutAt?: string;
-}
-
 export interface PersistedNodeState {
   /**
-   * The awake bee's waiting receptor, FIFO. A resting bee has no receptor, so
-   * the key is omitted instead of writing an empty array (the same rule the
-   * live NodeState uses). Restore treats a missing key as an empty receptor.
-   * The per-bee last output is memory-only and is deliberately absent here.
+   * Queue entries as persisted. A resting bee omits the key instead of writing
+   * an empty array. The per-bee last output is memory-only and absent here.
    */
-  receptor?: Pheromone[];
+  receptor?: QueueEntry[];
   pending?: Pheromone;
   active?: Pheromone;
   hover?: HoverSpec;
   hoverPheromone?: Pheromone;
   lastActivatedAt?: string;
   state?: Record<string, unknown>;
-  /** Gather-only: partial gathers keyed by spreadId. */
-  gathers?: Record<string, PersistedGatherState>;
 }
 
 export interface PersistedField {
-  schemaVersion: 1;
+  schemaVersion: 2;
   compositionId: string;
   graphRevision: string;
   rest: boolean;

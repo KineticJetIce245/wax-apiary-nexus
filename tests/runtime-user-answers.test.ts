@@ -34,7 +34,7 @@ function runtimeFor(modality: Record<string, unknown>): Harness {
   const executor: NodeExecutor = {
     async execute(_node, input) {
       calls.push(input);
-      return { kind: 'text', text: 'ok' };
+      return { message: 'ok' };
     },
   };
   return {
@@ -47,7 +47,7 @@ function runtimeFor(modality: Record<string, unknown>): Harness {
 }
 
 async function openAsk(runtime: PheromoneRuntime): Promise<void> {
-  await runtime.admit('ask', { kind: 'text', text: '' });
+  await runtime.admit('ask', { message: '' });
   await runtime.pump();
   assert.ok(runtime.snapshot().nodes['ask']?.hover !== undefined);
 }
@@ -56,7 +56,7 @@ test('accepts a message answer and forwards the exact Value', async () => {
   const { runtime, calls } = runtimeFor({ modality: 'message' });
   await openAsk(runtime);
 
-  const answer: Value = { kind: 'message', text: 'hello', attachments: [] };
+  const answer: Value = { message: 'hello', attachments: [] };
   runtime.answerHover('ask', answer);
   await runtime.pump();
 
@@ -69,10 +69,7 @@ test('accepts an image attachment path without touching the filesystem', async (
   await openAsk(runtime);
 
   // The path deliberately does not exist: the runtime validates shape only.
-  const answer: Value = {
-    kind: 'attachments',
-    attachments: [{ kind: 'image', path: '/wax-3c2-missing/photo.png', mediaType: 'image/png' }],
-  };
+  const answer: Value = { attachments: [{ path: '/wax-3c2-missing/photo.png', mediaType: 'image/png' }] };
   runtime.answerHover('ask', answer);
   await runtime.pump();
 
@@ -84,10 +81,7 @@ test('accepts a file attachment path', async () => {
   const { runtime, calls } = runtimeFor({ modality: 'file' });
   await openAsk(runtime);
 
-  const answer: Value = {
-    kind: 'attachments',
-    attachments: [{ kind: 'file', path: '/wax-3c2-missing/report.pdf' }],
-  };
+  const answer: Value = { attachments: [{ path: '/wax-3c2-missing/report.pdf' }] };
   runtime.answerHover('ask', answer);
   await runtime.pump();
 
@@ -95,26 +89,26 @@ test('accepts a file attachment path', async () => {
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('rejects a value whose kind does not match the user modality', async () => {
-  const message = runtimeFor({ modality: 'message' });
-  await openAsk(message.runtime);
+test('rejects an answer whose Value fields do not match the user modality', async () => {
+  const text = runtimeFor({ modality: 'text' });
+  await openAsk(text.runtime);
   assert.throws(
-    () => message.runtime.answerHover('ask', { kind: 'text', text: 'no' }),
-    /expects a message value, got 'text'/,
+    () => text.runtime.answerHover('ask', { choice: 'no' }),
+    /expects a string field 'message'/,
   );
 
   const image = runtimeFor({ modality: 'image' });
   await openAsk(image.runtime);
   assert.throws(
-    () => image.runtime.answerHover('ask', { kind: 'message', text: 'no', attachments: [] }),
-    /expects an attachments value, got 'message'/,
+    () => image.runtime.answerHover('ask', { message: 'no', attachments: [] }),
+    /expects 1 attachment/,
   );
 
   const file = runtimeFor({ modality: 'file' });
   await openAsk(file.runtime);
   assert.throws(
-    () => file.runtime.answerHover('ask', { kind: 'choice', choice: 'no' }),
-    /expects an attachments value, got 'choice'/,
+    () => file.runtime.answerHover('ask', { choice: 'no' }),
+    /attachments must be an array/,
   );
 });
 
@@ -124,64 +118,56 @@ test('rejects empty and multi-entry attachment answers', async () => {
     await openAsk(runtime);
 
     assert.throws(
-      () => runtime.answerHover('ask', { kind: 'attachments', attachments: [] }),
-      /expects exactly one/,
+      () => runtime.answerHover('ask', { attachments: [] }),
+      /expects 1 attachment/,
     );
     assert.throws(
       () =>
-        runtime.answerHover('ask', {
-          kind: 'attachments',
-          attachments: [
-            { kind: modality, path: '/one' },
-            { kind: modality, path: '/two' },
-          ],
-        }),
-      /expects exactly one/,
+        runtime.answerHover('ask', { attachments: [
+            { path: '/one' },
+            { path: '/two' },
+          ] }),
+      /expects 1 attachment/,
     );
   }
 });
 
-test('rejects an attachment whose kind does not match the modality', async () => {
+test('an image attachment is inferred from mediaType or extension', async () => {
   const image = runtimeFor({ modality: 'image' });
   await openAsk(image.runtime);
   assert.throws(
     () =>
-      image.runtime.answerHover('ask', {
-        kind: 'attachments',
-        attachments: [{ kind: 'file', path: '/report.pdf' }],
-      }),
-    /expects an image attachment, got 'file'/,
+      image.runtime.answerHover('ask', { attachments: [{ path: '/report.pdf' }] }),
+    /expects one image attachment/,
   );
+  const answer: Value = { attachments: [{ path: '/photo.png' }] };
+  image.runtime.answerHover('ask', answer);
+  await image.runtime.pump();
+  assert.deepEqual(image.calls, [answer]);
 
+  // The file modality accepts any local path; the kind is not a tag.
   const file = runtimeFor({ modality: 'file' });
   await openAsk(file.runtime);
-  assert.throws(
-    () =>
-      file.runtime.answerHover('ask', {
-        kind: 'attachments',
-        attachments: [{ kind: 'image', path: '/photo.png' }],
-      }),
-    /expects a file attachment, got 'image'/,
-  );
+  const fileAnswer: Value = { attachments: [{ path: '/photo.png' }] };
+  file.runtime.answerHover('ask', fileAnswer);
+  await file.runtime.pump();
+  assert.deepEqual(file.calls, [fileAnswer]);
 });
 
-test('rejects a message without text or with attachments', async () => {
+test('a message answer needs a string message; attachments are optional', async () => {
   const { runtime } = runtimeFor({ modality: 'message' });
   await openAsk(runtime);
 
   assert.throws(
-    () => runtime.answerHover('ask', { kind: 'message', attachments: [] }),
-    /must carry text/,
+    () => runtime.answerHover('ask', { attachments: [] }),
+    /expects a string field 'message'/,
   );
-  assert.throws(
-    () =>
-      runtime.answerHover('ask', {
-        kind: 'message',
-        text: 'hello',
-        attachments: [{ kind: 'file', path: '/report.pdf' }],
-      }),
-    /empty attachments array/,
-  );
+  runtime.answerHover('ask', {
+    message: 'hello',
+    attachments: [{ path: '/report.pdf' }],
+  });
+  await runtime.pump();
+  assert.equal(runtime.snapshot().rest, true);
 });
 
 test('rejects an attachment without a usable path or mediaType', async () => {
@@ -190,20 +176,14 @@ test('rejects an attachment without a usable path or mediaType', async () => {
 
   assert.throws(
     () =>
-      runtime.answerHover('ask', {
-        kind: 'attachments',
-        attachments: [{ kind: 'image', path: '   ' }],
-      }),
-    /non-empty path/,
+      runtime.answerHover('ask', { attachments: [{ path: '   ' }] }),
+    /attachment must be/,
   );
   assert.throws(
     () =>
-      runtime.answerHover('ask', {
-        kind: 'attachments',
-        attachments: [
-          { kind: 'image', path: '/photo.png', mediaType: 5 as unknown as string },
-        ],
-      }),
-    /mediaType must be a string/,
+      runtime.answerHover('ask', { attachments: [
+          { path: '/photo.png', mediaType: 5 as unknown as string },
+        ] }),
+    /attachment must be/,
   );
 });

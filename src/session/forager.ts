@@ -3,6 +3,7 @@ import { extname } from 'node:path';
 import type { ApprovalDecisionKind, ApprovalRequest } from '../adapters/harness.js';
 import type { AttachmentDraft } from '../shared/content.js';
 import {
+  isAttachment,
   renderPrompt,
   type ExecutionContext,
   type ForagerNode,
@@ -105,37 +106,9 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   }
 
   async execute(node: ForagerNode, input: Value, context?: ExecutionContext): Promise<Value> {
-    const attachments = attachmentsOf(input);
-    const rendered = renderPrompt(node.config.prompt, input);
-    // The adapter rejects an empty prompt. An attachment-only Value serializes
-    // to '', so submit a stable sentence instead.
-    const prompt =
-      rendered.trim() === '' && attachments.length > 0 ? ATTACHMENT_ONLY_PROMPT : rendered;
-
+    const { prompt, attachments } = renderForagerInput(node, input);
     this.activeContext = context;
-    this.pendingSubmissions += 1;
-    let submitted: Execution;
-    try {
-      submitted = await this.workspace.submit(this.conversation.id, prompt, attachments);
-      // A native adapter may emit the terminal state before `submit()`
-      // resolves. That handler already released the id; re-adding it here would
-      // let a late approval for the settled execution be adopted.
-      if (!this.terminals.has(submitted.id)) {
-        this.ownedExecutionIds.add(submitted.id);
-      }
-    } catch (error) {
-      this.activeContext = undefined;
-      if (error instanceof ConversationBusyError) {
-        // Another caller (for example `POST /dispatch`) holds the same native
-        // conversation. That is a session-level busy outcome, not a failed
-        // execution: reporting it as `failed` would turn it into a 500.
-        throw new SessionBusyError(this.conversation.id);
-      }
-      throw new ForagerExecutionError(node.id, 'failed', messageOf(error), { cause: error });
-    } finally {
-      this.pendingSubmissions -= 1;
-    }
-
+    const submitted = await this.submitPrompt(node, prompt, attachments);
     let settled: Execution;
     try {
       settled = await this.waitForTerminal(submitted.id);
@@ -143,7 +116,7 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
       this.activeContext = undefined;
     }
     if (settled.state === 'completed') {
-      const output: Value = { kind: 'text', text: settled.output };
+      const output = completedValue(settled);
       this.lastProduced = output;
       return output;
     }
@@ -153,6 +126,34 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     throw new ForagerExecutionError(node.id, settled.state, settled.error ?? '', {
       ...(settled.cancelReason === undefined ? {} : { cancelReason: settled.cancelReason }),
     });
+  }
+
+  private async submitPrompt(
+    node: ForagerNode,
+    prompt: string,
+    attachments: readonly AttachmentDraft[],
+  ): Promise<Execution> {
+    this.pendingSubmissions += 1;
+    try {
+      const submitted = await this.workspace.submit(this.conversation.id, prompt, attachments);
+      // A native adapter may emit the terminal state before `submit()`
+      // resolves. That handler already released the id; re-adding it here would
+      // let a late approval for the settled execution be adopted.
+      if (!this.terminals.has(submitted.id)) {
+        this.ownedExecutionIds.add(submitted.id);
+      }
+      return submitted;
+    } catch (error) {
+      this.activeContext = undefined;
+      if (error instanceof ConversationBusyError) {
+        // Another caller holds the same native conversation: a session-level
+        // busy outcome, not a failed execution.
+        throw new SessionBusyError(this.conversation.id);
+      }
+      throw new ForagerExecutionError(node.id, 'failed', messageOf(error), { cause: error });
+    } finally {
+      this.pendingSubmissions -= 1;
+    }
   }
 
   private waitForTerminal(executionId: string): Promise<Execution> {
@@ -285,27 +286,54 @@ const MEDIA_TYPES: Readonly<Record<string, string>> = {
   '.md': 'text/markdown',
 };
 
+/** Renders `{{input}}` and the adapter drafts; empty-only input gets a sentence. */
+function renderForagerInput(
+  node: ForagerNode,
+  input: Value,
+): { readonly prompt: string; readonly attachments: readonly AttachmentDraft[] } {
+  const attachments = attachmentsOf(input);
+  const rendered = renderPrompt(node.config.prompt, input);
+  const prompt =
+    rendered.trim() === '' && attachments.length > 0 ? ATTACHMENT_ONLY_PROMPT : rendered;
+  return { prompt, attachments };
+}
+
+/** Maps a completed execution to the universal `message`/`attachments` Value. */
+function completedValue(execution: Execution): Value {
+  return {
+    message: execution.output,
+    ...(execution.attachments.length === 0
+      ? {}
+      : {
+          attachments: execution.attachments.map((attachment) => ({
+            path: attachment.path,
+            ...(attachment.mimeType === '' ? {} : { mediaType: attachment.mimeType }),
+          })),
+        }),
+  };
+}
+
 /**
- * Runtime attachments are local path references. Only image/file entries with a
- * non-empty path become AttachmentDrafts; audio and pathless entries are
- * skipped. No filesystem access: mimeType comes from the extension.
+ * Runtime attachments are local path references. Every valid `{ path,
+ * mediaType? }` entry becomes an AttachmentDraft; image/file is inferred from
+ * the media-type prefix (or the file extension), never from a `kind` tag.
  */
 function attachmentsOf(value: Value): AttachmentDraft[] {
-  if (value.kind !== 'message' && value.kind !== 'attachments') {
+  const raw = value['attachments'];
+  if (!Array.isArray(raw)) {
     return [];
   }
   const drafts: AttachmentDraft[] = [];
-  for (const attachment of value.attachments) {
-    if (attachment.kind !== 'image' && attachment.kind !== 'file') {
+  for (const entry of raw) {
+    if (!isAttachment(entry)) {
       continue;
     }
-    if (typeof attachment.path !== 'string' || attachment.path.trim() === '') {
-      continue;
-    }
+    const mimeType =
+      entry.mediaType ?? MEDIA_TYPES[extname(entry.path).toLowerCase()] ?? 'application/octet-stream';
     drafts.push({
-      kind: attachment.kind,
-      path: attachment.path,
-      mimeType: MEDIA_TYPES[extname(attachment.path).toLowerCase()] ?? 'application/octet-stream',
+      kind: mimeType.startsWith('image/') ? 'image' : 'file',
+      path: entry.path,
+      mimeType,
     });
   }
   return drafts;

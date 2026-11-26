@@ -64,7 +64,7 @@ function bindings(): GraphBindings {
 }
 
 function text(value: string): Value {
-  return { kind: 'text', text: value };
+  return { message: value };
 }
 
 function catalogPath(): string {

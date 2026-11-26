@@ -319,18 +319,6 @@
       "publicMethods": 16,
       "constructorDependencies": 2
     },
-    "src/runtime/definition-flow-config.ts::function parseSpreadConfig": {
-      "lines": 53,
-      "cyclomatic": 4,
-      "nesting": 1,
-      "parameters": 3
-    },
-    "src/runtime/definition-flow-config.ts::function parseGatherConfig": {
-      "lines": 88,
-      "cyclomatic": 21,
-      "nesting": 6,
-      "parameters": 3
-    },
     "src/runtime/definition-nodes.ts::arrow <anonymous@190>": {
       "lines": 55,
       "cyclomatic": 13,
@@ -347,12 +335,6 @@
       "lines": 101,
       "cyclomatic": 31,
       "nesting": 8,
-      "parameters": 3
-    },
-    "src/runtime/definition-nodes.ts::function validateEdgeShape": {
-      "lines": 66,
-      "cyclomatic": 18,
-      "nesting": 4,
       "parameters": 3
     },
     "src/runtime/definition-task-config.ts::function parseConditionConfig": {
@@ -385,88 +367,11 @@
       "nesting": 1,
       "parameters": 3
     },
-    "src/runtime/field.ts::function snapshotField": {
-      "lines": 60,
-      "cyclomatic": 15,
-      "nesting": 3,
-      "parameters": 3
-    },
     "src/runtime/json-value.ts::function walk": {
       "lines": 51,
       "cyclomatic": 16,
       "nesting": 3,
       "parameters": 3
-    },
-    "src/runtime/runtime.ts::class PheromoneRuntime": {
-      "bodyLines": 1938,
-      "publicMethods": 8,
-      "constructorDependencies": 2
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.applyField": {
-      "lines": 119,
-      "cyclomatic": 22,
-      "nesting": 4,
-      "parameters": 1
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.arriveAtGather": {
-      "lines": 165,
-      "cyclomatic": 26,
-      "nesting": 2,
-      "parameters": 3
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.exportField": {
-      "lines": 29,
-      "cyclomatic": 11,
-      "nesting": 1,
-      "parameters": 0
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.failSpread": {
-      "lines": 51,
-      "cyclomatic": 14,
-      "nesting": 4,
-      "parameters": 3
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.failMissingGathers": {
-      "lines": 42,
-      "cyclomatic": 12,
-      "nesting": 3,
-      "parameters": 0
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.nextWakeAt": {
-      "lines": 30,
-      "cyclomatic": 12,
-      "nesting": 3,
-      "parameters": 0
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.outputTargets": {
-      "lines": 57,
-      "cyclomatic": 16,
-      "nesting": 4,
-      "parameters": 2
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.pruneGatherTombstones": {
-      "lines": 37,
-      "cyclomatic": 11,
-      "nesting": 2,
-      "parameters": 1
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.requestGuard": {
-      "lines": 75,
-      "cyclomatic": 6,
-      "nesting": 2,
-      "parameters": 4
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.runNode": {
-      "lines": 56,
-      "cyclomatic": 12,
-      "nesting": 2,
-      "parameters": 3
-    },
-    "src/runtime/runtime.ts::method PheromoneRuntime.settleCompleteGathers": {
-      "lines": 66,
-      "cyclomatic": 16,
-      "nesting": 4,
-      "parameters": 0
     },
     "src/runtime/worker.ts::arrow <anonymous@212>": {
       "lines": 184,
@@ -532,30 +437,6 @@
       "cyclomatic": 12,
       "nesting": 1,
       "parameters": 1
-    },
-    "src/storage/honey.ts::function assertValueShape": {
-      "lines": 36,
-      "cyclomatic": 12,
-      "nesting": 2,
-      "parameters": 2
-    },
-    "src/storage/honey.ts::function parseHover": {
-      "lines": 24,
-      "cyclomatic": 11,
-      "nesting": 2,
-      "parameters": 2
-    },
-    "src/storage/honey.ts::function parseGathers": {
-      "lines": 127,
-      "cyclomatic": 25,
-      "nesting": 3,
-      "parameters": 2
-    },
-    "src/storage/honey.ts::function parsePheromone": {
-      "lines": 63,
-      "cyclomatic": 24,
-      "nesting": 3,
-      "parameters": 2
     },
     "tests/control-cli-graph.test.ts::arrow <anonymous@28>": {
       "lines": 68,
@@ -816,27 +697,9 @@
       "parameters": 1
     },
     "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@186>": {
-      "lines": 64,
+      "lines": 62,
       "cyclomatic": 3,
       "nesting": 1,
-      "parameters": 1
-    },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@251>": {
-      "lines": 54,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@306>": {
-      "lines": 58,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@365>": {
-      "lines": 62,
-      "cyclomatic": 1,
-      "nesting": 0,
       "parameters": 1
     },
     "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@52>": {
@@ -904,18 +767,6 @@
       "cyclomatic": 3,
       "nesting": 1,
       "parameters": 1
-    },
-    "tests/honey.test.ts::arrow <anonymous@392>": {
-      "lines": 58,
-      "cyclomatic": 4,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/honey.test.ts::arrow <anonymous@451>": {
-      "lines": 58,
-      "cyclomatic": 4,
-      "nesting": 0,
-      "parameters": 0
     },
     "tests/instantiate-foragers-fresh-once.test.ts::arrow <anonymous@177>": {
       "lines": 52,
@@ -1061,154 +912,16 @@
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-spread-gather.test.ts::arrow <anonymous@235>": {
-      "lines": 53,
-      "cyclomatic": 4,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-spread-gather.test.ts::arrow <anonymous@361>": {
-      "lines": 64,
-      "cyclomatic": 4,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-spread-gather.test.ts::arrow <anonymous@426>": {
-      "lines": 53,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-fuzz.test.ts::function checkpoint": {
-      "lines": 73,
-      "cyclomatic": 3,
-      "nesting": 1,
-      "parameters": 1
-    },
-    "tests/runtime-fuzz.test.ts::function nestedHoverGraph": {
-      "lines": 62,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-fuzz.test.ts::function runSeed": {
-      "lines": 336,
-      "cyclomatic": 17,
-      "nesting": 7,
-      "parameters": 2
-    },
-    "tests/runtime-gather-structured.test.ts::arrow <anonymous@219>": {
-      "lines": 67,
-      "cyclomatic": 4,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@333>": {
-      "lines": 54,
-      "cyclomatic": 2,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@388>": {
-      "lines": 61,
-      "cyclomatic": 2,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@41>": {
-      "lines": 52,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@450>": {
-      "lines": 51,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@94>": {
-      "lines": 238,
-      "cyclomatic": 8,
-      "nesting": 1,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@125>": {
-      "lines": 55,
-      "cyclomatic": 2,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@224>": {
-      "lines": 82,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@307>": {
-      "lines": 54,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@362>": {
-      "lines": 53,
-      "cyclomatic": 2,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue-backpressure.test.ts::arrow <anonymous@185>": {
-      "lines": 105,
-      "cyclomatic": 3,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue-backpressure.test.ts::arrow <anonymous@353>": {
-      "lines": 52,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue-backpressure.test.ts::arrow <anonymous@79>": {
-      "lines": 71,
-      "cyclomatic": 2,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue-ttl.test.ts::arrow <anonymous@144>": {
-      "lines": 68,
-      "cyclomatic": 2,
-      "nesting": 0,
-      "parameters": 0
-    },
     "tests/runtime-queue.test.ts::arrow <anonymous@232>": {
-      "lines": 58,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue.test.ts::arrow <anonymous@291>": {
-      "lines": 95,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue.test.ts::arrow <anonymous@387>": {
-      "lines": 100,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue.test.ts::arrow <anonymous@488>": {
-      "lines": 63,
+      "lines": 54,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
     "tests/runtime-routing.test.ts::arrow <anonymous@168>": {
       "lines": 94,
-      "cyclomatic": 7,
-      "nesting": 1,
+      "cyclomatic": 6,
+      "nesting": 0,
       "parameters": 1
     },
     "tests/runtime-routing.test.ts::arrow <anonymous@263>": {
@@ -1289,18 +1002,6 @@
       "nesting": 1,
       "parameters": 1
     },
-    "tests/support/runtime-nested-advanced.ts::function siblingInnerSpreadsComposition": {
-      "lines": 54,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/support/runtime-nested-fixtures.ts::function threeLevelHoverComposition": {
-      "lines": 53,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
     "tests/waxd-catalog.test.ts::arrow <anonymous@48>": {
       "lines": 76,
       "cyclomatic": 1,
@@ -1312,6 +1013,42 @@
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@249>": {
+      "lines": 54,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@304>": {
+      "lines": 58,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@363>": {
+      "lines": 62,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/runtime-queue.test.ts::arrow <anonymous@287>": {
+      "lines": 95,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue.test.ts::arrow <anonymous@383>": {
+      "lines": 100,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
+    "tests/runtime-queue.test.ts::arrow <anonymous@484>": {
+      "lines": 62,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
     }
   }
 }

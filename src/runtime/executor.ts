@@ -6,8 +6,8 @@ export type GuardDecision = 'allow_once' | 'reject_once' | 'cancelled';
  * A native approval request that the runtime parks as a Guard hover.
  *
  * The attribution fields are optional because a request can be raised outside
- * a LiveHive (a runtime driven directly by an executor) or before the owning
- * layer is known. An absent field means "not known", never an empty id.
+ * a LiveHive or before the owning layer is known. An absent field means "not
+ * known", never an empty id.
  */
 export interface GuardRequest {
   readonly requestId: string;
@@ -43,34 +43,20 @@ export interface NodeExecutor {
 }
 
 /**
- * Serializes a Value to the text carried by `{{input}}`.
- *
- * Stage 1 keeps this a pure helper so the contract's template rule is testable
- * without an adapter: the executor renders `node.config.prompt` with
- * `renderPrompt` before handing it to a harness. Stage 5C serializes a
- * `structured` Value as JSON so Forager prompts and Condition text mode keep
- * the structure without a second rendering path.
+ * Serializes a Value to the text carried by `{{input}}`. `message` is the
+ * universal text field; any other object is rendered as JSON.
  */
 export function serializeValue(value: Value): string {
-  switch (value.kind) {
-    case 'text':
-      return value.text;
-    case 'choice':
-      return value.choice;
-    case 'boolean':
-      return value.value ? 'true' : 'false';
-    case 'message':
-      return value.text ?? '';
-    case 'attachments':
-      return '';
-    case 'structured': {
-      const json = JSON.stringify(value.value);
-      if (json === undefined) {
-        throw new TypeError('structured value is not JSON-serializable');
-      }
-      return json;
-    }
+  const message = value['message'];
+  if (typeof message === 'string') {
+    return message;
   }
+  // An attachment-only value renders as empty text: the file convention is
+  // carried by the attachments themselves, not by the prompt.
+  if (Object.keys(value).every((key) => key === 'attachments')) {
+    return '';
+  }
+  return JSON.stringify(value);
 }
 
 export function renderPrompt(template: string, input: Value): string {

@@ -39,7 +39,7 @@ function guardExecutor(): { executor: NodeExecutor; decisions: GuardDecision[] }
           options: ['allow_once', 'reject_once'],
         });
         decisions.push(decision);
-        return { kind: 'text', text: `decision:${decision}` };
+        return { message: `decision:${decision}` };
       },
     },
   };
@@ -58,7 +58,7 @@ test('a guard request parks the node in a guard hover and waits for the decision
     onGuard: () => new Promise(() => undefined),
   });
 
-  runtime.admit('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { message: 'x' });
   const pumping = runtime.pump();
   await wait(20);
 
@@ -83,7 +83,7 @@ test('without a handler the guard is rejected, never allowed', async () => {
     now: () => START,
   });
 
-  runtime.admit('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { message: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['reject_once']);
@@ -100,7 +100,7 @@ test('a guard that times out is cancelled and cannot be settled afterwards', asy
     onLog: log.sink,
   });
 
-  runtime.admit('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { message: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['cancelled']);
@@ -125,7 +125,7 @@ test('a guard timeout notifies the broker so a late decision is expired', async 
     onGuardExpired: (requestId) => broker.expire(requestId),
   });
 
-  runtime.admit('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { message: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['cancelled']);
@@ -145,7 +145,7 @@ test('a throwing expiry hook still cancels the guard', async () => {
     },
   });
 
-  runtime.admit('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { message: 'x' });
   await runtime.pump();
 
   assert.deepEqual(decisions, ['cancelled']);
@@ -161,7 +161,7 @@ test('a decision for another request is rejected and does not disturb the open o
     onGuard: () => new Promise(() => undefined),
   });
 
-  runtime.admit('start', { kind: 'text', text: 'x' });
+  runtime.admit('start', { message: 'x' });
   const pumping = runtime.pump();
   await wait(20);
 

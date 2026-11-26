@@ -311,7 +311,7 @@ async function loadGraphLocked(
         },
       },
       (trigger) =>
-        execution.trigger(graphId, trigger.target, { kind: 'text', text: '' }).then(
+        execution.trigger(graphId, trigger.target, { message: '' }).then(
           () => undefined,
         ),
     );

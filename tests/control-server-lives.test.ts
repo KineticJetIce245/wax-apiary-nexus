@@ -113,9 +113,9 @@ test('B routes create, trigger, save, inspect, unload and load a live hive', asy
   assert.equal(fieldOutput.status, 200);
   assert.equal(fieldOutput.body?.['runId'], undefined);
   assert.deepEqual(fieldOutput.body?.['outputs'], [
-    { nodeId: 'done', value: { kind: 'text', text: 'b-route-output' } },
-    { nodeId: 'draft', value: { kind: 'text', text: 'b-route-output' } },
-    { nodeId: 'review', value: { kind: 'text', text: 'b-route-output' } },
+    { nodeId: 'done', value: { message: 'b-route-output' } },
+    { nodeId: 'draft', value: { message: 'b-route-output' } },
+    { nodeId: 'review', value: { message: 'b-route-output' } },
   ]);
   assert.equal(JSON.stringify(fieldOutput.body).includes('hello'), false);
   const unknownOutput = await getJson(

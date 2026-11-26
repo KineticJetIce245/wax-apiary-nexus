@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { LiveHiveHost } from '../src/daemon/graph-host.js';
 import { parseComposition, type CompositionDefinition } from '../src/runtime/index.js';
-import { deferred, makeEnv, text, waitUntil } from './support/graph-host-fixtures.js';
+import { makeEnv, text, waitUntil } from './support/graph-host-fixtures.js';
 
 /** A user-only graph parks at a hover without any native execution. */
 function userOnlyDefinition(id: string): CompositionDefinition {
@@ -18,26 +18,14 @@ function userOnlyDefinition(id: string): CompositionDefinition {
 }
 
 test(
-  'an ephemeral graph held past the old release cap stays loaded until silent end',
+  'an ephemeral graph stays loaded while hovered and is released at silent end',
   async (t) => {
     const env = makeEnv();
-    const gate = deferred();
-    const reachedCap = deferred();
-    let sleeps = 0;
     const host = new LiveHiveHost({
       registry: env.registry,
-      // Every poll is a yield, not a real 25ms wait. The 2401st poll parks on
-      // the gate so the test can observe the old attempt cap being crossed.
-      sleep: async () => {
-        sleeps += 1;
-        if (sleeps === 2_401) {
-          reachedCap.resolve();
-          await gate.promise;
-        }
-      },
+      now: () => 1_000,
     });
     t.after(async () => {
-      gate.resolve();
       await host.dispose();
       await env.workspace.stop();
     });
@@ -50,21 +38,26 @@ test(
       ephemeral: true,
     });
     await host.trigger('ephemeral-driver', 'ask', text('waiting'));
-    await waitUntil(() => sleeps === 2_401, 'the driver to pass the old 2400 cap');
 
-    // The graph is still loaded and observable, not silently dropped at a cap.
+    // The hover is a real field state: the ephemeral graph stays loaded and
+    // observable, never dropped at a release cap. It is not listed as a
+    // LiveHive while it lives.
+    await waitUntil(
+      () => host.statusOf('ephemeral-driver')?.hovered === true,
+      'the ephemeral graph to park on its hover',
+    );
     const held = host.statusOf('ephemeral-driver');
-    assert.ok(held !== undefined, 'ephemeral graph disappeared at the old cap');
+    assert.ok(held !== undefined);
     assert.equal(held.rest, false);
     assert.equal(held.hovered, true);
     assert.equal(host.status().length, 0, 'an ephemeral graph is not listed as a LiveHive');
 
+    // Answering completes the field; the Rest transition releases the graph
+    // without a polling driver.
     await host.answer('ephemeral-driver', 'ask', text('done'));
-    gate.resolve();
     await waitUntil(
       () => host.statusOf('ephemeral-driver') === undefined,
       'the ephemeral graph to unload after silent end',
     );
-    assert.ok(sleeps >= 2_401);
   },
 );

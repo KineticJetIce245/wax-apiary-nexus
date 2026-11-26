@@ -323,7 +323,7 @@ test('unknown graphs return 404 and a duplicate load returns 409 with current st
   assert.equal(env.registry.list().length, 1);
 });
 
-test('unloading a non-Rest graph returns 409 with its current status', async (t) => {
+test('a hover graph unloads at idle and answer lazy-loads it again', async (t) => {
   const env = makeEnv();
   t.after(async () => {
     await env.workspace.stop();
@@ -354,15 +354,17 @@ test('unloading a non-Rest graph returns 409 with its current status', async (t)
   assert.equal(trigger.status, 202);
   await waitForHover(info.url, token, 'hover');
 
+  // A user hover no longer blocks unload: the field is snapshotted and released.
   const unload = await bUnload(info.url, token, 'hover');
-  assert.equal(unload.status, 409);
-  assert.equal(unload.body?.['code'], 'conflict');
-  assert.equal(publicStatusOf(unload.body?.['status'])['rest'], false);
-  assert.equal(unload.body?.['status']?.['hovered'], true);
+  assert.equal(unload.status, 200);
+  const released = await bInspect(info.url, token, 'hover');
+  assert.equal(released.status, 200);
+  assert.equal(released.body?.['status'], undefined);
 
-  const still = await bInspect(info.url, token, 'hover');
-  assert.equal(still.status, 200);
-  assert.equal(still.body?.['status']?.['rest'], false);
+  // The persisted hover is answerable: the delivery loads the same field first.
+  const answer = await bAnswer(info.url, token, 'hover', 'ask', 'done');
+  assert.equal(answer.status, 202);
+  await waitForRest(info.url, token, 'hover');
 });
 
 test('answer resolves an open user hover over real HTTP and rejects invalid targets and tokens', async (t) => {

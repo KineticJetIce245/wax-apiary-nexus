@@ -46,53 +46,82 @@ test('queueTtlMs is measured from the queue entry enqueuedAt', async () => {
   const runtime = runtimeAt(() => clock, log);
   // Warm the pacing clock so the next input waits in pending.
   await runtime.admit('start', text('warm'));
-  await runtime.pump();
+  await runtime.settle();
   await runtime.admit('start', text('one'));
-  await runtime.pump();
+  await runtime.settle();
 
   clock = START + TTL - 1;
-  await runtime.pump();
+  await runtime.settle();
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['start']?.receptor.length, 0);
   assert.ok(snapshot.nodes['start']?.pending !== undefined, 'a pending entry is not a queue wait');
   assert.equal(log.entries.some((entry) => entry.event === 'pheromone.expired'), false);
 });
 
+/** One user Bee keeps its receptor queued behind an open hover. */
+function hoverDefinition(id: string): CompositionDefinition {
+  return parseComposition({
+    schemaVersion: 1,
+    id,
+    defaults: { minIntervalMs: 1_000, queueMax: 8, queueTtlMs: TTL },
+    nodes: {
+      ask: { kind: 'user', config: { modality: 'text', prompt: '?' } },
+    },
+    edges: [],
+  });
+}
+
 test('an entry older than the TTL is dropped and logged with enqueuedAt', async () => {
   let clock = START;
   const log = createMemoryLog();
-  const runtime = runtimeAt(() => clock, log);
-  await runtime.admit('start', text('old'));
+  const runtime = new PheromoneRuntime(hoverDefinition('ttl-expire'), {
+    executeForager: executor,
+    now: () => clock,
+    onLog: log.sink,
+  });
+  await runtime.admit('ask', text('open'));
+  await runtime.settle();
+  await runtime.admit('ask', text('old'));
+  await runtime.settle();
+  assert.equal(runtime.snapshot().nodes['ask']?.receptor.length, 1);
 
   clock = START + TTL;
-  await runtime.pump();
+  await runtime.settle();
 
   const expired = log.entries.find((entry) => entry.event === 'pheromone.expired');
   assert.ok(expired !== undefined);
   assert.equal(expired.enqueuedAt, new Date(START).toISOString());
   assert.equal(expired.queueDepth, 0);
   assert.equal('pheromoneId' in expired, false);
-  assert.equal(runtime.snapshot().rest, true);
+  assert.equal(runtime.snapshot().nodes['ask']?.receptor.length, 0);
+  assert.equal(runtime.snapshot().nodes['ask']?.hover?.kind, 'user');
 });
 
 test('TTL cleanup keeps FIFO order for the surviving entries', async () => {
   let clock = START;
-  const runtime = new PheromoneRuntime(definition('ttl-fifo', 5_000), {
+  const log = createMemoryLog();
+  const runtime = new PheromoneRuntime(hoverDefinition('ttl-fifo'), {
     executeForager: executor,
     now: () => clock,
+    onLog: log.sink,
   });
-  await runtime.admit('start', text('warm'));
-  await runtime.pump();
-  await runtime.admit('start', text('old'));
+  await runtime.admit('ask', text('open'));
+  await runtime.settle();
+  await runtime.admit('ask', text('old'));
   clock = START + 500;
-  await runtime.admit('start', text('new'));
+  await runtime.admit('ask', text('new'));
+  await runtime.settle();
+  assert.deepEqual(
+    runtime.snapshot().nodes['ask']?.receptor.map((entry) => entry.value),
+    [{ message: 'old' }, { message: 'new' }],
+  );
 
   clock = START + TTL;
-  await runtime.pump();
+  await runtime.settle();
 
-  const pending = runtime.snapshot().nodes['start']?.pending;
-  assert.ok(pending !== undefined);
-  assert.deepEqual(pending.value, { message: 'new' });
+  const receptor = runtime.snapshot().nodes['ask']?.receptor ?? [];
+  assert.deepEqual(receptor.map((entry) => entry.value), [{ message: 'new' }]);
+  assert.ok(log.entries.some((entry) => entry.event === 'pheromone.expired'));
 });
 
 test('pending and active are never expired: only receptor entries have a clock', async () => {
@@ -102,13 +131,13 @@ test('pending and active are never expired: only receptor entries have a clock',
     now: () => clock,
   });
   await runtime.admit('start', text('warm'));
-  await runtime.pump();
+  await runtime.settle();
   await runtime.admit('start', text('parked'));
-  await runtime.pump();
+  await runtime.settle();
   assert.ok(runtime.snapshot().nodes['start']?.pending !== undefined);
 
   clock = START + 4_000;
-  await runtime.pump();
+  await runtime.settle();
   // The pacing slot still holds the value; the TTL applies to receptor waits.
   assert.equal(runtime.snapshot().rest, false);
 });

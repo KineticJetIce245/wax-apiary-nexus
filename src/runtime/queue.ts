@@ -19,6 +19,22 @@ export interface QueueContext {
   readonly log: RuntimeLogFieldsSink;
   /** Notified when capacity frees (block-policy waiters). */
   readonly notifyOverflow?: (nodeId: NodeId) => void;
+  /** Enqueue = wake: start the Bee's drain if it is not already running. */
+  readonly wake?: (nodeId: NodeId) => void;
+  /** Observation of the last field mutation; never awaited. */
+  readonly onChange?: () => void;
+  /** Last field mutation instant; the host's idle clock reads it. */
+  lastChangedAt: number;
+}
+
+/** Records one field mutation and notifies the host's idle clock. */
+export function markChanged(ctx: QueueContext): void {
+  ctx.lastChangedAt = ctx.now();
+  try {
+    ctx.onChange?.();
+  } catch {
+    // Observability must never turn a field mutation into a failure.
+  }
 }
 
 /** The partial entry shape the runtime log accepts. */
@@ -79,6 +95,7 @@ export function stagePending(
     return false;
   }
   state.pending = head;
+  markChanged(ctx);
   if (waiting) {
     ctx.log({
       event: 'pheromone.pending',
@@ -121,6 +138,7 @@ export function appendEntry(
     });
   }
   (state.receptor ?? (state.receptor = [])).push(entry);
+  markChanged(ctx);
   ctx.log({
     event,
     nodeId,
@@ -129,6 +147,7 @@ export function appendEntry(
     queueDepth: depth + 1,
   });
   ctx.notifyOverflow?.(nodeId);
+  ctx.wake?.(nodeId);
 }
 
 /** Appends only when capacity exists; used by the block-policy waiter path. */
@@ -152,6 +171,15 @@ export function expireOverdueQueues(ctx: QueueContext): void {
     if (node !== undefined) {
       expireReceptorOf(ctx, node, state);
     }
+  }
+}
+
+/** Expires overdue receptor entries for one Bee, before its next drain step. */
+export function expireReceptorOfNode(ctx: QueueContext, nodeId: NodeId): void {
+  const node = ctx.definition.nodes.get(nodeId);
+  const state = ctx.states.get(nodeId);
+  if (node !== undefined && state !== undefined) {
+    expireReceptorOf(ctx, node, state);
   }
 }
 
@@ -183,6 +211,7 @@ function expireReceptorOf(
   } else {
     state.receptor = kept;
   }
+  markChanged(ctx);
   for (const entry of expired) {
     ctx.log({
       event: 'pheromone.expired',

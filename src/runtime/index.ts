@@ -63,7 +63,7 @@ export type {
   GuardRequest,
   NodeExecutor,
 } from './executor.js';
-export type { RuntimeOptions } from './runtime.js';
+export type { RuntimeOptions, LateActivationOutcome } from './runtime.js';
 export type { WorkerCwdErrorCode, WorkerFailureCode, WorkerResult } from './worker.js';
 export type {
   AssembleGatherConfig,

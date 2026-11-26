@@ -95,9 +95,6 @@ export class ControlServerLifecycle {
         onGuard: (request) => broker.request(request),
         onGuardExpired: (requestId) => broker.expire(requestId),
         ...(context.options.catalog === undefined ? {} : { catalog: context.options.catalog }),
-        ...(context.options.allowHoverUnload === undefined
-          ? {}
-          : { allowHoverUnload: context.options.allowHoverUnload }),
         ...(context.options.now === undefined ? {} : { now: context.options.now }),
         honeyForGraph: context.honeyForGraph,
         ...(context.options.bindingStore === undefined
@@ -112,6 +109,7 @@ export class ControlServerLifecycle {
         templateStore: new HiveTemplateStore(
           context.options.templatesRoot ?? join(context.options.stateRoot, 'templates'),
         ),
+        honeyForGraph: context.honeyForGraph,
         ...(context.options.liveProject === undefined
           ? {}
           : { defaultProject: context.options.liveProject }),

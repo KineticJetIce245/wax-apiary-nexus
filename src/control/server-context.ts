@@ -124,12 +124,6 @@ export class ControlServerContext {
     if (options.honeyForGraph !== undefined && typeof options.honeyForGraph !== 'function') {
       throw new TypeError('honeyForGraph must be a function');
     }
-    if (
-      options.allowHoverUnload !== undefined &&
-      typeof options.allowHoverUnload !== 'boolean'
-    ) {
-      throw new TypeError('allowHoverUnload must be a boolean');
-    }
     this.honeyForGraph =
       options.honeyForGraph ??
       ((graphId: string) => HoneyStore.forComposition(options.stateRoot, options.apiary, graphId));

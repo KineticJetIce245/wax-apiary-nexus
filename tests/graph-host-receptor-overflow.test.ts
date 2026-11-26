@@ -64,6 +64,7 @@ test('block policy waits outside the live lock and admits when the receptor drai
     now: new FakeClock(1_000).now,
     receptorOverflowPolicy: 'block',
     receptorBlockTimeoutMs: 5_000,
+    maxWaitMs: 0,
   });
   t.after(async () => {
     adapter.releaseHeld();

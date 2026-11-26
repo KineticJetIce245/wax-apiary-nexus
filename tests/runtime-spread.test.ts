@@ -4,7 +4,6 @@ import test from 'node:test';
 import {
   createMemoryLog,
   PheromoneRuntime,
-  SpreadEmitError,
   type CompositionDefinition,
   type PheromoneFieldSnapshot,
   type SpreadNode,
@@ -53,7 +52,7 @@ test('clone with an ordered BeeId list emits one new Pheromone per target', asyn
   });
 
   await runtime.admit('fan', { message: 'seed', meta: { nested: { n: 1 } } });
-  await runtime.pump();
+  await runtime.settle();
 
   const snapshot = runtime.snapshot();
   const left = parkedValue(snapshot, 'left');
@@ -96,7 +95,7 @@ test('clone accepts a BeeId map and ignores its values', async () => {
   const runtime = runtimeOf(definition, executor);
 
   await runtime.admit('fan', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(calls.map((call) => call.nodeId), ['left', 'right']);
   assert.deepEqual(calls[0]?.input, { message: 'seed' });
@@ -120,7 +119,7 @@ test('cleave projects only the listed dot paths into each part', async () => {
     meta: { topic: 'review', extra: true, secret: 'never-projected' },
     items: [{ name: 'one' }],
   });
-  await runtime.pump();
+  await runtime.settle();
 
   const snapshot = runtime.snapshot();
   assert.deepEqual(parkedValue(snapshot, 'topic'), {
@@ -146,14 +145,14 @@ test('cleave supports a read through an array index path', async () => {
   const runtime = runtimeOf(definition, recorder().executor);
 
   await runtime.admit('fan', { items: [{ name: 'first' }, { name: 'second' }] });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(parkedValue(runtime.snapshot(), 'first'), {
     items: [{ name: 'first' }],
   });
 });
 
-test('a missing cleave path is a typed error and emits nothing', async () => {
+test('a missing cleave path drops the input and emits nothing', async () => {
   const log = createMemoryLog();
   const definition = fastDefinition('spread-cleave-missing', {
     fan: cleaveNode({
@@ -167,29 +166,25 @@ test('a missing cleave path is a typed error and emits nothing', async () => {
   const runtime = runtimeOf(definition, executor, { onLog: log.sink });
 
   await runtime.admit('fan', { message: 'seed', meta: {} });
-  await assert.rejects(
-    runtime.pump(),
-    (error: unknown) =>
-      error instanceof SpreadEmitError &&
-      /target 'left' is missing path 'meta.absent'/.test(error.message),
-  );
+  await runtime.settle();
 
   // Nothing was emitted: the valid sibling target was not partially served.
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['left']?.hover, undefined);
   assert.equal(snapshot.nodes['right']?.receptor.length, 0);
   assert.deepEqual(calls, []);
+  assert.equal(snapshot.nodes['fan']?.active, undefined);
   assert.equal(snapshot.nodes['fan']?.lastOutput, undefined);
   assert.equal(snapshot.rest, true);
-  assert.ok(
-    log.entries.some(
-      (entry) => entry.event === 'node.failed' && entry.nodeId === 'fan',
-    ),
-    'the typed error is logged',
+  const failed = log.entries.find(
+    (entry) => entry.event === 'node.failed' && entry.nodeId === 'fan',
   );
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /target 'left' is missing path 'meta.absent'/);
 });
 
-test('a hand-built spread with an unknown target fails before emitting', async () => {
+test('a hand-built spread with an unknown target drops before emitting', async () => {
+  const log = createMemoryLog();
   const parsed = fastDefinition('spread-unknown', {
     fan: cloneNode(['left', 'right']),
     left: user('left'),
@@ -198,14 +193,18 @@ test('a hand-built spread with an unknown target fails before emitting', async (
   const nodes = new Map(parsed.nodes);
   nodes.delete('right');
   const broken: CompositionDefinition = { ...parsed, nodes };
-  const runtime = new PheromoneRuntime(broken, { executeForager: recorder().executor });
+  const runtime = new PheromoneRuntime(broken, {
+    executeForager: recorder().executor,
+    onLog: log.sink,
+  });
 
   await runtime.admit('fan', text('seed'));
-  await assert.rejects(
-    runtime.pump(),
-    (error: unknown) =>
-      error instanceof SpreadEmitError && /targets unknown bee 'right'/.test(error.message),
+  await runtime.settle();
+  const failed = log.entries.find(
+    (entry) => entry.event === 'node.failed' && entry.nodeId === 'fan',
   );
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /targets unknown bee 'right'/);
   assert.equal(runtime.snapshot().nodes['left']?.hover, undefined);
 });
 

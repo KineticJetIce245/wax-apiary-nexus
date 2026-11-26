@@ -72,6 +72,7 @@ function setup(t: TestContext): Harness {
     livesRoot: join(root, 'lives'),
     templateStore: templates,
     defaultProject: project,
+    honeyForGraph: (id) => HoneyStore.forComposition(root, 'apiary', id),
   });
   t.after(async () => {
     await host.dispose();
@@ -239,5 +240,64 @@ test('LiveHiveService rejects invalid, unknown and unsafe live inputs', async (t
   await assert.rejects(
     harness.service.new({ ...simpleLiveHive(), liveId: '../escape' } as LiveHive),
     LiveHiveServiceError,
+  );
+});
+
+test('trigger lazy-loads an unloaded live when live.json and Honey exist', async (t) => {
+  const harness = setup(t);
+  const live = await boundLive(harness);
+  await harness.service.new(live);
+  await triggerNow(harness.host, harness.service, 'demo', 'draft', 'hello');
+  assert.equal(await harness.service.unload('demo'), true);
+  assert.equal(harness.host.statusOf('demo'), undefined);
+  assert.equal(existsSync(join(harness.root, 'lives', 'demo', 'live.json')), true);
+
+  // No explicit load: the delivery loads the same field and then hands off.
+  await harness.service.trigger('demo', 'draft', 'again');
+  assert.notEqual(harness.host.statusOf('demo'), undefined);
+  const deadline = Date.now() + 2_000;
+  while (harness.host.statusOf('demo')?.rest !== true) {
+    if (Date.now() >= deadline) {
+      throw new Error('the lazy-loaded delivery did not reach Rest');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await triggerNow(harness.host, harness.service, 'demo', 'draft', 'third');
+  assert.equal(harness.host.statusOf('demo')?.rest, true);
+});
+
+test('answer lazy-loads an unloaded live and its persisted user hover', async (t) => {
+  const harness = setup(t);
+  const live: LiveHive = {
+    schemaVersion: 1,
+    liveId: 'ask-live',
+    bees: {
+      ask: {
+        kind: 'user',
+        config: { modality: 'text', prompt: 'Name?' },
+        outgoing: [],
+      },
+    },
+    beelines: {},
+    bindings: {},
+  };
+  await harness.service.new(live);
+  await harness.service.trigger('ask-live', 'ask', 'waiting');
+  const deadline = Date.now() + 2_000;
+  while (harness.host.statusOf('ask-live')?.hovered !== true) {
+    if (Date.now() >= deadline) {
+      throw new Error('the user hover did not open');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(await harness.service.unload('ask-live'), true);
+  assert.equal(harness.host.statusOf('ask-live'), undefined);
+
+  await harness.service.answer('ask-live', 'ask', 'Ada');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(harness.host.statusOf('ask-live')?.rest, true);
+  assert.deepEqual(
+    harness.host.outputsOf('ask-live').get('ask'),
+    { message: 'Ada' },
   );
 });

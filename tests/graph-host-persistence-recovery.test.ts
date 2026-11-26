@@ -199,8 +199,8 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
   });
 
   const definition = runnableForagerGraph('recovery', 'secret {{message}}');
-  // A forager was mid-execution when the process stopped: restore must flag it
-  // as unknown and never replay it.
+  // A forager was mid-execution when the process stopped: restore resumes the
+  // same activation, which waits for its result and is never replayed.
   honey.save({
     schemaVersion: 2,
     compositionId: definition.id,
@@ -223,11 +223,9 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
   });
   assert.deepEqual(status.recovery, {
     resumedHovers: [],
-    unknownActive: ['only'],
-    stuckActive: [],
   });
-  assert.equal(status.rest, true);
-  assert.equal(status.nodes.find((node) => node.nodeId === 'only')?.active, false);
+  assert.equal(status.rest, false);
+  assert.equal(status.nodes.find((node) => node.nodeId === 'only')?.active, true);
   assert.deepEqual(host.status()[0]?.recovery, status.recovery);
   // No replay: the persisted active execution never reached a session.
   assert.deepEqual(env.adapter.allPrompts, []);
@@ -369,7 +367,6 @@ test('a quiescent hover flushes to Honey, survives unload and is answered after 
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
-    allowHoverUnload: true,
   });
   t.after(async () => {
     await host.dispose();
@@ -431,11 +428,11 @@ function assertHoverFlushEvent(events: readonly LiveHiveHostEvent[]): void {
         event.phase === 'routing' &&
         event.error === SAVE_ERROR,
     ),
-    'the failed background Honey flush must be reported',
+    'the failed Honey flush must be reported',
   );
 }
 
-test('a failed Honey flush blocks a hover-only unload and keeps it loaded', async (t) => {
+test('a failed Honey flush blocks a hover unload and keeps it loaded', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const root = mkdtempSync(join(tmpdir(), 'wax-m6b-hover-flush-'));
@@ -445,7 +442,6 @@ test('a failed Honey flush blocks a hover-only unload and keeps it loaded', asyn
     registry: env.registry,
     now: clock.now,
     honeyForGraph: () => honey,
-    allowHoverUnload: true,
     onEvent: (event) => events.push(event),
   });
   t.after(async () => {
@@ -464,9 +460,9 @@ test('a failed Honey flush blocks a hover-only unload and keeps it loaded', asyn
   honey.failSave = true;
   const triggered = await triggerRun(host, 'hover-flush', 'ask', text('waiting'));
   assert.equal(triggered.hovered, true);
-  assertHoverFlushEvent(events);
-
+  assert.equal(triggered.persisted, false);
   assert.equal(await host.unload('hover-flush'), false);
+  assertHoverFlushEvent(events);
   const retained = host.statusOf('hover-flush');
   assert.ok(retained !== undefined);
   assert.equal(retained.rest, false);

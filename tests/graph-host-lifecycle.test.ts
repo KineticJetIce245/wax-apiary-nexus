@@ -42,6 +42,7 @@ import {
 } from '../src/session/instantiate-foragers.js';
 import { SessionRegistry } from '../src/session/session-registry.js';
 import { Workspace } from '../src/session/workspace.js';
+import { HoneyStore } from '../src/storage/honey.js';
 import {
   FIXED_NOW,
   FakeClock,
@@ -61,7 +62,6 @@ import {
   userNode,
   userAndForagerGraph,
   runnableForagerGraph,
-  pacedSpreadGatherDefinition,
   triggerRun,
   waitUntil,
 } from './support/graph-host-fixtures.js';
@@ -332,23 +332,14 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   assert.equal(env.registry.list().length, 2);
 });
 
-async function waitForGatherPending(host: LiveHiveHost, graphId: string): Promise<void> {
-  await waitUntil(
-    () =>
-      host
-        .statusOf(graphId)
-        ?.nodes.some((node) => node.nodeId === 'gather' && node.pending) === true,
-    `the maximum pump to leave ${graphId} gather pending`,
-  );
-}
-
-test('a busy graph is neither unloaded nor swept while its trigger is in flight', async (t) => {
+test('unload observes the running drain within its host wait bound', async (t) => {
   const env = makeEnv();
   env.adapter.holdSubmissions = true;
   const clock = new FakeClock(1_000);
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
+    maxWaitMs: 2_000,
   });
   t.after(async () => {
     env.adapter.releaseHeld();
@@ -360,97 +351,67 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
     definition,
     bindings: allFresh(definition),
     project: env.project,
-    idleTtlMs: 100,
   });
 
-  const run = triggerRun(host, 'busy', 'only', text('hold'));
+  await host.trigger('busy', 'only', text('hold'));
   await env.adapter.waitForSubmit(1);
+  const unload = host.unload('busy');
+  await new Promise((resolve) => setTimeout(resolve, 20));
 
-  // Admission releases the host lock immediately; the active Pheromone keeps
-  // the field unsafe for unload/sweep without holding a lease.
-  clock.advance(1_000);
-  assert.equal(await host.unload('busy'), false);
-  const report = await host.sweep();
-  assert.deepEqual(report.unloaded, []);
-  assert.deepEqual(report.failed, []);
-  assert.deepEqual(report.skipped, [{ id: 'busy', reason: 'unsafe' }]);
-
-  const busy = host.statusOf('busy');
-  assert.ok(busy !== undefined);
-  assert.equal(busy.rest, false);
-  assert.equal(busy.residency.refCount, 0);
-  assert.equal(nodeStatus(busy, 'only').active, true);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-
+  // The unload is settling the running drain, not refusing a busy graph.
+  assert.notEqual(host.statusOf('busy'), undefined);
   env.adapter.releaseHeld();
-  const result = await run;
-  assert.equal(result.rest, true);
-  assert.equal(result.status.residency.refCount, 0);
-  assert.equal(host.statusOf('busy')?.rest, true);
-
-  // Once the active execution settles, the graph is Rest and unload succeeds.
-  assert.equal(await host.unload('busy'), true);
+  assert.equal(await unload, true);
   assert.equal(host.statusOf('busy'), undefined);
   assert.deepEqual(env.adapter.closedNativeIds, []);
   assert.equal(env.registry.list().length, 1);
   assert.equal(workspaceListenerCount(env.workspace), 0);
 });
 
-test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t) => {
+test('dispose snapshots and releases a field with an active execution', async (t) => {
   const env = makeEnv();
+  env.adapter.holdSubmissions = true;
   const clock = new FakeClock(1_000);
+  const root = mkdtempSync(join(tmpdir(), 'wax-m19d-dispose-active-'));
+  const honey = HoneyStore.forComposition(root, 'apiary', 'dispose-active');
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
-    maxPumps: 1,
+    honeyForGraph: () => honey,
+    maxWaitMs: 0,
   });
   t.after(async () => {
+    env.adapter.releaseHeld();
     await host.dispose();
     await env.workspace.stop();
   });
 
-  const definition = pacedSpreadGatherDefinition('queued');
+  const definition = fastDefinition('dispose-active', {
+    only: forager('run {{message}}'),
+  });
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
     project: env.project,
-    idleTtlMs: 100,
   });
-  assert.equal(env.adapter.createdNativeIds.length, 3);
-  assert.equal(workspaceListenerCount(env.workspace), 3);
+  await host.trigger('dispose-active', 'only', text('work'));
+  await env.adapter.waitForSubmit(1);
 
-  await host.trigger('queued', 'start', text('seed'));
-  await waitForGatherPending(host, 'queued');
-  const loaded = host.statusOf('queued');
-  assert.ok(loaded !== undefined);
-  assert.equal(loaded.rest, false);
-  assert.equal(nodeStatus(loaded, 'gather').pending, true);
-  assert.equal(nodeStatus(loaded, 'gather').gathers, 1);
-
-  clock.advance(1_000);
-  assert.equal(await host.unload('queued'), false);
-  const report = await host.sweep();
-  assert.deepEqual(report.unloaded, []);
-  assert.deepEqual(report.skipped, [{ id: 'queued', reason: 'unsafe' }]);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-  assert.equal(env.registry.list().length, 3);
-  assert.equal(workspaceListenerCount(env.workspace), 3);
-
-  const retained = host.statusOf('queued');
-  assert.ok(retained !== undefined);
-  assert.equal(retained.rest, false);
-  assert.equal(retained.residency.refCount, 0);
-  assert.equal(nodeStatus(retained, 'gather').pending, true);
-  assert.equal(nodeStatus(retained, 'gather').gathers, 1);
-
-  // dispose is best-effort: it must not bypass Rest-only safety. The non-Rest
-  // graph is still visible to the caller, with its field and sessions intact.
   await host.dispose();
-  assert.equal(host.statusOf('queued') !== undefined, true);
-  assert.equal(host.status().length, 1);
+  assert.equal(host.statusOf('dispose-active'), undefined);
+  // Disposing a non-Rest field is a snapshot, not a refusal: the active
+  // activation is durable and its session is retained.
+  const saved = honey.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.nodes['only']?.active !== undefined, true);
   assert.deepEqual(env.adapter.closedNativeIds, []);
-  assert.equal(env.registry.list().length, 3);
-  assert.equal(workspaceListenerCount(env.workspace), 3);
+  assert.equal(env.registry.list().length, 1);
+
+  env.adapter.releaseHeld();
+  await waitUntil(
+    () => workspaceListenerCount(env.workspace) === 0,
+    'the detached executor to release its subscription',
+  );
 });
 
 test('dispose unloads every Rest graph, is idempotent and refuses later work', async (t) => {
@@ -517,7 +478,6 @@ test('fresh_once keeps its session and mapping across unload and reuses it on re
     await host.dispose();
     await env.workspace.stop();
   });
-
   const definition = runnableForagerGraph('once', 'run {{message}}');
   const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'once' } };
   await host.loadGraph({ definition, bindings, project: env.project });

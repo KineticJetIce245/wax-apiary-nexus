@@ -49,6 +49,8 @@ export interface InstantiatedForagers {
    * "attached" without guessing from bindings.
    */
   readonly createdSessionIds: readonly string[];
+  /** True while any child executor still awaits a native terminal event. */
+  hasPendingExecutions(): boolean;
   dispose(): void;
 }
 
@@ -121,25 +123,7 @@ export async function instantiateForagers(
 
   // A `fresh_once` binding cannot be resolved without a store. Reject it here,
   // before the creation loop, instead of falling back to `fresh_always`.
-  if (bindingStore === undefined) {
-    const issues: BindingIssue[] = [];
-    for (const node of definition.nodes.values()) {
-      if (node.kind !== 'forager') {
-        continue;
-      }
-      const binding = bindings[node.id];
-      if (binding?.kind === 'fresh' && (binding.mode ?? 'always') === 'once') {
-        issues.push({
-          code: 'invalid-binding',
-          message: `forager '${node.id}' fresh_once binding requires a graph binding store`,
-          nodeId: node.id,
-        });
-      }
-    }
-    if (issues.length > 0) {
-      throw new BindingValidationError(issues);
-    }
-  }
+  assertOnceBindingsSupported(definition, bindings, bindingStore);
 
   const createdSessionIds: string[] = [];
   /** Node ids whose `fresh_once` mapping this call created. */
@@ -330,6 +314,7 @@ export async function instantiateForagers(
       sessions,
       routing,
       createdSessionIds: [...createdSessionIds],
+      hasPendingExecutions: () => hasPendingExecutions(executors),
       dispose(): void {
         if (disposed) {
           return;
@@ -375,6 +360,46 @@ export async function instantiateForagers(
     }
     throw error;
   }
+}
+
+/** Rejecting a `fresh_once` binding without a store happens before creation. */
+function assertOnceBindingsSupported(
+  definition: CompositionDefinition,
+  bindings: GraphBindings,
+  bindingStore: GraphBindingStore | undefined,
+): void {
+  if (bindingStore !== undefined) {
+    return;
+  }
+  const issues: BindingIssue[] = [];
+  for (const node of definition.nodes.values()) {
+    if (node.kind !== 'forager') {
+      continue;
+    }
+    const binding = bindings[node.id];
+    if (binding?.kind === 'fresh' && (binding.mode ?? 'always') === 'once') {
+      issues.push({
+        code: 'invalid-binding',
+        message: `forager '${node.id}' fresh_once binding requires a graph binding store`,
+        nodeId: node.id,
+      });
+    }
+  }
+  if (issues.length > 0) {
+    throw new BindingValidationError(issues);
+  }
+}
+
+/** True when any child executor still awaits a native terminal event. */
+function hasPendingExecutions(
+  executors: ReadonlyMap<NodeId, WorkspaceForagerExecutor>,
+): boolean {
+  for (const executor of executors.values()) {
+    if (executor.hasPendingExecution()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Reusing a busy session is only safe when its adapter owns a prompt FIFO. */

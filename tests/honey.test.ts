@@ -56,7 +56,7 @@ test('field.json v2 roundtrips queue entries, pending and a user hover', async (
   await runtime.admit('start', { message: 'two' });
   await runtime.admit('start', { message: 'three' });
   // Stage the second entry into pending; the third stays queued.
-  await runtime.pump();
+  await runtime.settle();
 
   const saved = runtime.exportField();
   assert.equal(saved.schemaVersion, 2);
@@ -88,7 +88,7 @@ test('v2 saves and restores a user hover without a Pheromone id', async () => {
     now: () => START,
   });
   await runtime.admit('start', text('go'));
-  await runtime.pump();
+  await runtime.settle();
   const hover = runtime.snapshot().nodes['ask']?.hover;
   assert.ok(hover !== undefined);
   store.save(runtime.exportField());
@@ -125,7 +125,7 @@ test('the last output is memory-only and never written to Honey', async () => {
     now: () => START,
   });
   await runtime.admit('start', text('go'));
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, { message: 'SECRET-OUTPUT' });
 
   const saved = runtime.exportField();

@@ -56,7 +56,7 @@ test('a normal beeline carries the same value object (no message identity)', asy
   };
   const runtime = runtimeWith(executor);
   await runtime.admit('first', text('start'));
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(seen.map((call) => call.nodeId), ['first', 'second']);
   const firstInput = seen[0]?.input;
@@ -94,10 +94,10 @@ test('a user answer is bound to the same object the caller supplied', async () =
     },
   );
   await runtime.admit('ask', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
   const answer: Value = { message: 'yes', extra: { n: 1 } };
   runtime.answerHover('ask', answer);
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(seen.length, 1);
   assert.equal(seen[0], answer, 'the answered object moves along the beeline');
   assert.deepEqual(seen[0], { message: 'yes', extra: { n: 1 } });
@@ -151,12 +151,12 @@ test('every activation overwrites the field-owned last output', async () => {
     },
   );
   await runtime.admit('start', text('x'));
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, { message: 'A' });
 
   reply = 'B';
   await runtime.admit('start', text('x'));
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, { message: 'B' });
 });
 
@@ -174,6 +174,7 @@ function queueContext(definition: ReturnType<typeof parseComposition>): QueueCon
     states: new Map([['first', createNodeState()], ['second', createNodeState()]]),
     now: () => START,
     log: () => undefined,
+    lastChangedAt: START,
   };
 }
 
@@ -258,9 +259,9 @@ test('a deferred normal beeline hands the same Pheromone object downstream', asy
   } satisfies RuntimeOptions);
 
   await runtime.admit('start', text('seed'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitUntil(() => sinkActive !== undefined, 'the sink activation');
   assert.equal(sinkActive, startActive, 'the downstream activation is the same Pheromone object');
   release();
-  await pumping;
+  await settling;
 });

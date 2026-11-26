@@ -348,7 +348,6 @@ export async function runWaxdCli(
       catalog,
       sessionIdleTtlMs: command.sessionTtlMs,
       sessionSweepIntervalMs: command.sessionSweepIntervalMs,
-      allowHoverUnload: true,
       liveProject: {
         id: basename(process.cwd()) || 'project',
         directory: process.cwd(),

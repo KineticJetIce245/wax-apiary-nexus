@@ -11,7 +11,14 @@ import {
 import { createNodeState, isFieldResting, snapshotField } from './field.js';
 import { applyPersistedField, exportField as exportPersistedField } from './restore.js';
 import { completeHover, settleGuard as settleGuardHover } from './hover.js';
-import { pumpField, refreshRest, startOtherDrains } from './pump.js';
+import {
+  completeRestored,
+  detachField,
+  refreshRest,
+  settleField,
+  wakeBee,
+  wakeRestored,
+} from './drain.js';
 import {
   ReceptorFullError,
   ReceptorOverflow,
@@ -19,7 +26,7 @@ import {
   type ReceptorOverflowPolicy,
 } from './receptor-overflow.js';
 import { StateLock } from './state-lock.js';
-import type { EngineContext, GuardWaiter } from './engine-context.js';
+import type { EngineContext, GuardWaiter, LateActivationOutcome } from './engine-context.js';
 import type {
   CompositionDefinition,
   NodeDefinition,
@@ -56,9 +63,25 @@ export interface RuntimeOptions {
   receptorOverflowPolicy?: ReceptorOverflowPolicy;
   /** Positive integer; only used by `block`; defaults to 30s. */
   receptorBlockTimeoutMs?: number;
+  /** Per-Bee pacing timer seam; defaults to an unref'd `setTimeout`. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Observation of the last field mutation; never awaited. */
+  onChange?: () => void;
+  /** Observation of a busy -> Rest transition; never awaited. */
+  onRest?: () => void;
+  /** Completion of a native activation whose field was released by `detach()`. */
+  onLateResult?: (nodeId: NodeId, outcome: LateActivationOutcome) => void;
 }
 
 const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
+
+/** Default pacing timer: the handle is unref'd so a test process can exit. */
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const handle = setTimeout(resolve, ms);
+    (handle as unknown as { unref?: () => void }).unref?.();
+  });
+}
 
 /** Re-exported so callers that imported it from the runtime keep working. */
 export { ReceptorFullError } from './receptor-overflow.js';
@@ -69,8 +92,11 @@ export { GuardDecisionError } from './hover.js';
  *
  * A normal Bee consumes one value and moves the same Pheromone object along its
  * beeline. A Spread creates one new value per target BeeId (clone or cleave); a
- * Gather assembles one package and its execution path is M19d. There is no
+ * Gather assembles one package and its execution path is M19e. There is no
  * message identity, branch or join.
+ *
+ * Every enqueue wakes its Bee; each Bee drains its own receptor. The host
+ * observes with `settle` and releases with `detach`; there is no field pump.
  */
 export class PheromoneRuntime {
   private readonly engine: EngineContext;
@@ -93,12 +119,20 @@ export class PheromoneRuntime {
     const iso = () => new Date(now()).toISOString();
     const log = (entry: RuntimeLogFields) => this.log(entry);
     let overflow: ReceptorOverflow | undefined;
+    let engineRef: EngineContext | undefined;
     const queue: QueueContext = {
       definition,
       states,
       now,
       log,
+      lastChangedAt: now(),
+      ...(options.onChange === undefined ? {} : { onChange: options.onChange }),
       notifyOverflow: (nodeId) => overflow?.notify(nodeId),
+      wake: (nodeId) => {
+        if (engineRef !== undefined) {
+          wakeBee(engineRef, nodeId);
+        }
+      },
     };
     overflow = createOverflow(definition, options, stateLock, queue, iso, log);
     this.engine = buildEngine({
@@ -112,6 +146,7 @@ export class PheromoneRuntime {
       overflow,
       guardTimeoutMs,
     });
+    engineRef = this.engine;
   }
 
   /**
@@ -139,9 +174,28 @@ export class PheromoneRuntime {
     });
   };
 
-  /** Activates every runnable Bee until the field is quiet. */
-  pump(): Promise<void> {
-    return pumpField(this.engine);
+  /**
+   * Observes running drains until they finish, including drains they start.
+   * With `maxWaitMs` it is a host wait bound and also observes due pacing timers
+   * inside the budget; it never cancels, drops or replays a value.
+   */
+  settle(maxWaitMs?: number): Promise<void> {
+    return settleField(this.engine, maxWaitMs);
+  }
+
+  /** Releases the field; a running native activation hands its result to the host. */
+  detach(): void {
+    detachField(this.engine);
+  }
+
+  /** Completes a restored active with its own late native result. */
+  applyRestoredResult(nodeId: NodeId, outcome: LateActivationOutcome): void {
+    completeRestored(this.engine, nodeId, outcome);
+  }
+
+  /** Last field mutation instant; the host's idle clock reads it. */
+  lastChangeAt(): number {
+    return this.engine.queue.lastChangedAt;
   }
 
   /** Immutable view of the PheromoneField. */
@@ -174,7 +228,7 @@ export class PheromoneRuntime {
       throw new Error(`hover for node '${nodeId}' has no Pheromone`);
     }
     completeHover(this.engine, node, pheromone, value, 'answered');
-    startOtherDrains(this.engine);
+    wakeBee(this.engine, nodeId);
     refreshRest(this.engine);
   }
 
@@ -187,9 +241,9 @@ export class PheromoneRuntime {
   }
 
   /**
-   * Rebuilds a runtime from a persisted field. Queue entries, pending slots and
-   * user hovers are resumed; an `active` execution becomes unknown and is never
-   * replayed.
+   * Rebuilds a runtime from a persisted field. Queue entries, pending slots,
+   * user hovers and active activations are resumed. A restored active is the
+   * same activation: it waits for its result and is never replayed.
    */
   static restore(
     definition: CompositionDefinition,
@@ -203,8 +257,9 @@ export class PheromoneRuntime {
     const stateLock = runtime.engine.stateLock;
     stateLock.runSync(() => {
       expireOverdueQueues(runtime.engine.queue);
-      runtime.engine.resting = isFieldResting(runtime.engine.states.values());
     });
+    refreshRest(runtime.engine);
+    wakeRestored(runtime.engine);
     return { runtime, report };
   }
 
@@ -305,14 +360,22 @@ function buildEngine(parts: EngineParts): EngineContext {
     receptorOverflow: parts.overflow,
     stateLock: parts.stateLock,
     drains: new Map(),
+    scheduledWakes: new Map(),
+    timers: new Map(),
+    sleep: parts.options.sleep ?? defaultSleep,
     executor: parts.options.executeForager,
     projectDirectory: parts.options.projectDirectory,
     guardTimeoutMs: parts.guardTimeoutMs,
     guardWaiters: new Map<string, GuardWaiter>(),
     onGuard: parts.options.onGuard,
     onGuardExpired: parts.options.onGuardExpired,
+    onRest: parts.options.onRest,
+    onLateResult: parts.options.onLateResult,
     reportedBlocks: new Set(),
-    failure: undefined,
+    detached: false,
     resting: isFieldResting(parts.states.values()),
   };
 }
+
+export type { LateActivationOutcome };
+export type { RuntimeLogEntry };

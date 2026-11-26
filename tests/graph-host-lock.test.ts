@@ -123,7 +123,7 @@ interface Env {
   readonly project: Project;
 }
 
-function makeEnv(adapter: GatedAdapter): Env {
+function makeEnv(adapter: GatedAdapter, maxWaitMs?: number): Env {
   const workspace = new Workspace(adapter);
   const project: Project = {
     id: `project-${String(Date.now())}`,
@@ -133,7 +133,10 @@ function makeEnv(adapter: GatedAdapter): Env {
     workspaces: new Map([['fake', workspace]]),
   });
   return {
-    host: new LiveHiveHost({ registry }),
+    host: new LiveHiveHost({
+      registry,
+      ...(maxWaitMs === undefined ? {} : { maxWaitMs }),
+    }),
     workspace,
     project,
   };
@@ -246,9 +249,9 @@ test('a failing locked trigger does not poison the next one', { timeout: 10_000 
   assert.deepEqual(adapter.prompts, ['a good']);
 });
 
-test('unload is refused while a trigger owns the same live id', { timeout: 10_000 }, async (t) => {
+test('unload snapshots a held trigger after the host wait bound', { timeout: 10_000 }, async (t) => {
   const adapter = new GatedAdapter();
-  const env = makeEnv(adapter);
+  const env = makeEnv(adapter, 0);
   t.after(async () => {
     adapter.releaseAll();
     await env.host.dispose();
@@ -261,17 +264,31 @@ test('unload is refused while a trigger owns the same live id', { timeout: 10_00
     project: env.project,
   });
 
-  const trigger = triggerRun(env.host, 'live', 'a', text('one'));
+  await env.host.trigger('live', 'a', text('one'));
   await adapter.waitForSubmits(1);
+  await waitUntil(
+    () => hostNodeActive(env.host, 'live', 'a'),
+    'the held activation to become active',
+  );
 
-  // Explicit unload keeps its "refused while busy" contract instead of
-  // queuing behind the trigger; the try-lock still prevents any overlap.
-  assert.equal(await env.host.unload('live'), false);
+  // An explicit unload observes the running drain only up to `maxWaitMs`, then
+  // snapshots the active field and releases it; it does not deadlock on the
+  // held native execution.
+  assert.equal(await env.host.unload('live'), true);
+  assert.equal(env.host.statusOf('live'), undefined);
 
   adapter.releaseAll();
-  await trigger;
-  assert.equal(await env.host.unload('live'), true);
+  await waitUntil(() => listenerCount(env.workspace) === 0, 'the detached executor to release');
 });
+
+function hostNodeActive(host: LiveHiveHost, graphId: string, nodeId: string): boolean {
+  const status = host.statusOf(graphId);
+  return status?.nodes.some((node) => node.nodeId === nodeId && node.active) === true;
+}
+
+function listenerCount(workspace: Workspace): number {
+  return (workspace as unknown as { readonly listeners: ReadonlySet<unknown> }).listeners.size;
+}
 
 test('trigger returns after delivery while the native execution is still held', async (t) => {
   const adapter = new GatedAdapter();

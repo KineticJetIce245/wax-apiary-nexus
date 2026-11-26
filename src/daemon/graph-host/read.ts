@@ -116,7 +116,7 @@ export class LiveHiveHostRead {
         pending: state?.pending !== undefined,
         active: state?.active !== undefined,
         hovered: state?.hover !== undefined,
-        // Assemble/batch group state is M19d; the field has none in this slice.
+        // Assemble/batch group state is M19e; the field has none yet.
         gathers: 0,
       });
     }
@@ -132,8 +132,6 @@ export class LiveHiveHostRead {
         : {
             recovery: {
               resumedHovers: [...live.recovery.resumedHovers],
-              unknownActive: [...live.recovery.unknownActive],
-              stuckActive: [...live.recovery.stuckActive],
             },
           }),
       residency: {

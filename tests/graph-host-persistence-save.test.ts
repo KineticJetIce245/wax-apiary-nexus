@@ -127,8 +127,6 @@ test('unload and reload restore the field and continue the counter', async (t) =
   assert.equal(reloaded.rest, true);
   assert.deepEqual(reloaded.recovery, {
     resumedHovers: [],
-    unknownActive: [],
-    stuckActive: [],
   });
   assert.deepEqual(env.adapter.createdNativeIds, [
     'native-1',
@@ -484,8 +482,6 @@ test('an idle sweep flushes, unloads and reloads the field', async (t) => {
   assert.equal(reloaded.rest, true);
   assert.deepEqual(reloaded.recovery, {
     resumedHovers: [],
-    unknownActive: [],
-    stuckActive: [],
   });
   assert.equal(counterCount(runtimeOf(host, 'sweep-counter').exportField()), 1);
 

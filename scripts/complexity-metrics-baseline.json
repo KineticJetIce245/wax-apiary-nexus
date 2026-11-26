@@ -131,7 +131,7 @@
       "parameters": 2
     },
     "src/cli/waxd-cli.ts::function runWaxdCli": {
-      "lines": 129,
+      "lines": 128,
       "cyclomatic": 13,
       "nesting": 2,
       "parameters": 2
@@ -203,14 +203,14 @@
       "parameters": 4
     },
     "src/control/server-context.ts::constructor ControlServerContext": {
-      "lines": 106,
-      "cyclomatic": 34,
+      "lines": 100,
+      "cyclomatic": 32,
       "nesting": 2,
       "parameters": 1
     },
     "src/control/server-lifecycle.ts::method ControlServerLifecycle.startInternal": {
-      "lines": 142,
-      "cyclomatic": 18,
+      "lines": 140,
+      "cyclomatic": 17,
       "nesting": 2,
       "parameters": 0
     },
@@ -232,22 +232,16 @@
       "constructorDependencies": 1
     },
     "src/daemon/graph-host/context.ts::constructor LiveHiveHostContext": {
-      "lines": 72,
-      "cyclomatic": 13,
+      "lines": 62,
+      "cyclomatic": 12,
       "nesting": 1,
       "parameters": 1
     },
     "src/daemon/graph-host/lifecycle.ts::function loadGraphLocked": {
-      "lines": 174,
-      "cyclomatic": 28,
+      "lines": 173,
+      "cyclomatic": 25,
       "nesting": 3,
       "parameters": 4
-    },
-    "src/daemon/graph-host/lifecycle.ts::function releaseGraphResources": {
-      "lines": 62,
-      "cyclomatic": 14,
-      "nesting": 3,
-      "parameters": 5
     },
     "src/daemon/live-hive-catalog.ts::function parseEntry": {
       "lines": 31,
@@ -380,8 +374,8 @@
       "parameters": 2
     },
     "src/session/instantiate-foragers.ts::function instantiateForagers": {
-      "lines": 273,
-      "cyclomatic": 42,
+      "lines": 256,
+      "cyclomatic": 35,
       "nesting": 7,
       "parameters": 1
     },
@@ -510,7 +504,7 @@
       "nesting": 1,
       "parameters": 1
     },
-    "tests/control-server-graph.test.ts::arrow <anonymous@368>": {
+    "tests/control-server-graph.test.ts::arrow <anonymous@370>": {
       "lines": 97,
       "cyclomatic": 3,
       "nesting": 1,
@@ -612,22 +606,22 @@
       "nesting": 1,
       "parameters": 0
     },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@176>": {
+    "tests/graph-host-execution.test.ts::arrow <anonymous@110>": {
+      "lines": 84,
+      "cyclomatic": 4,
+      "nesting": 1,
+      "parameters": 1
+    },
+    "tests/graph-host-execution.test.ts::arrow <anonymous@195>": {
       "lines": 57,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@484>": {
+    "tests/graph-host-execution.test.ts::arrow <anonymous@458>": {
       "lines": 68,
       "cyclomatic": 1,
       "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-execution.test.ts::arrow <anonymous@91>": {
-      "lines": 84,
-      "cyclomatic": 4,
-      "nesting": 1,
       "parameters": 1
     },
     "tests/graph-host-lifecycle.test.ts::arrow <anonymous@107>": {
@@ -648,24 +642,6 @@
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@345>": {
-      "lines": 53,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@399>": {
-      "lines": 56,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-lifecycle.test.ts::arrow <anonymous@507>": {
-      "lines": 51,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
     "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@123>": {
       "lines": 62,
       "cyclomatic": 1,
@@ -673,9 +649,27 @@
       "parameters": 1
     },
     "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@186>": {
-      "lines": 62,
+      "lines": 60,
       "cyclomatic": 3,
       "nesting": 1,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@247>": {
+      "lines": 54,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@302>": {
+      "lines": 58,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 1
+    },
+    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@361>": {
+      "lines": 61,
+      "cyclomatic": 1,
+      "nesting": 0,
       "parameters": 1
     },
     "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@52>": {
@@ -684,32 +678,32 @@
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@211>": {
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@209>": {
       "lines": 57,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@282>": {
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@280>": {
       "lines": 59,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@342>": {
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@340>": {
       "lines": 95,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
-    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@438>": {
-      "lines": 59,
+    "tests/graph-host-persistence-save.test.ts::arrow <anonymous@436>": {
+      "lines": 57,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 1
     },
     "tests/graph-host-persistence-save.test.ts::arrow <anonymous@91>": {
-      "lines": 74,
+      "lines": 72,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
@@ -718,24 +712,6 @@
       "lines": 85,
       "cyclomatic": 1,
       "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-residency.test.ts::arrow <anonymous@263>": {
-      "lines": 53,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-residency.test.ts::arrow <anonymous@317>": {
-      "lines": 54,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-residency.test.ts::arrow <anonymous@69>": {
-      "lines": 87,
-      "cyclomatic": 2,
-      "nesting": 1,
       "parameters": 1
     },
     "tests/graph-host-scheduler.test.ts::arrow <anonymous@83>": {
@@ -894,6 +870,12 @@
       "nesting": 0,
       "parameters": 0
     },
+    "tests/runtime-queue.test.ts::arrow <anonymous@286>": {
+      "lines": 62,
+      "cyclomatic": 1,
+      "nesting": 0,
+      "parameters": 0
+    },
     "tests/runtime-routing.test.ts::arrow <anonymous@155>": {
       "lines": 68,
       "cyclomatic": 3,
@@ -983,42 +965,6 @@
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
-    },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@249>": {
-      "lines": 54,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@304>": {
-      "lines": 58,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/graph-host-persistence-recovery.test.ts::arrow <anonymous@363>": {
-      "lines": 62,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 1
-    },
-    "tests/runtime-queue.test.ts::arrow <anonymous@286>": {
-      "lines": 65,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue.test.ts::arrow <anonymous@352>": {
-      "lines": 67,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
-    },
-    "tests/runtime-queue.test.ts::arrow <anonymous@420>": {
-      "lines": 62,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
     }
   }
 }

@@ -18,7 +18,6 @@ import {
   parseComposition,
   PheromoneRuntime,
   serializeValue,
-  WorkerExecutionError,
   type CompositionDefinition,
   type NodeExecutor,
   type Value,
@@ -128,7 +127,7 @@ test('worker argv runs and stdout becomes the Value', async () => {
   );
 
   runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
 
   const after = calls.find((call) => call.nodeId === 'after');
   assert.ok(after !== undefined);
@@ -162,7 +161,7 @@ test('worker stdout is trimmed at the end and becomes the field-owned lastOutput
   );
 
   await runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
 
   const after = calls.find((call) => call.nodeId === 'after');
   assert.ok(after !== undefined);
@@ -207,7 +206,7 @@ test('two worker activations stay queued and never overlap', async () => {
 
   await runtime.admit('a', { message: '' });
   await runtime.admit('b', { message: '' });
-  await runtime.pump();
+  await runtime.settle();
 
   const waiting = runtime.snapshot();
   assert.equal(waiting.rest, false);
@@ -216,7 +215,7 @@ test('two worker activations stay queued and never overlap', async () => {
   assert.ok(log.entries.some((entry) => entry.event === 'pheromone.pending'));
 
   clock += 1000;
-  await runtime.pump();
+  await runtime.settle();
 
   const events = readFileSync(join(project, 'events.log'), 'utf8').trim().split('\n');
   assert.deepEqual(events, ['start', 'end', 'start', 'end']);
@@ -236,7 +235,7 @@ test('worker cwd defaults to the registered project directory', async () => {
   );
 
   await runtime.admit('start', { message: '' });
-  await runtime.pump();
+  await runtime.settle();
 
   const after = calls.find((call) => call.nodeId === 'after');
   assert.ok(after !== undefined);
@@ -272,7 +271,7 @@ test('shell metacharacters in argv are passed literally and not interpreted', as
   );
 
   await runtime.admit('start', { message: '' });
-  await runtime.pump();
+  await runtime.settle();
 
   const after = calls.find((call) => call.nodeId === 'after');
   assert.ok(after !== undefined);
@@ -298,13 +297,7 @@ test('a non-zero worker exit is one failed activation and is never retried', asy
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof WorkerExecutionError);
-    assert.equal(error.code, 'exit');
-    assert.equal(error.exitCode, 3);
-    assert.match(error.stderr, /stderr-body-marker/);
-    return true;
-  });
+  await runtime.settle();
 
   assert.equal(calls.some((call) => call.nodeId === 'after'), false);
   assert.equal(
@@ -318,6 +311,7 @@ test('a non-zero worker exit is one failed activation and is never retried', asy
   );
   assert.ok(failed !== undefined);
   assert.equal(failed.outcome, 'failed');
+  assert.match(failed.error ?? '', /exited with code 3/);
   assert.equal(failed.exitCode, 3);
   assert.equal(failed.stderrBytes, Buffer.byteLength('stderr-body-marker'));
   assert.equal(
@@ -358,12 +352,7 @@ test('timeout kills the worker process tree', async () => {
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof WorkerExecutionError);
-    assert.equal(error.code, 'timeout');
-    assert.match(error.message, /timed out after 3000 ms/);
-    return true;
-  });
+  await runtime.settle();
 
   const pids = JSON.parse(readFileSync(join(project, 'pids.json'), 'utf8')) as {
     parent: number;
@@ -373,6 +362,7 @@ test('timeout kills the worker process tree', async () => {
     (entry) => entry.event === 'node.failed' && entry.nodeId === 'work',
   );
   assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /timed out after 3000 ms/);
   assert.equal(failed.pid, pids.parent);
   assert.equal(await waitForGone(pids.parent), true, 'worker process was killed');
   assert.equal(await waitForGone(pids.child), true, 'worker grandchild was killed');
@@ -393,18 +383,13 @@ test('stdout over the 64 KiB cap fails and is not buffered', async () => {
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof WorkerExecutionError);
-    assert.equal(error.code, 'output-cap');
-    assert.match(error.message, /stdout cap/);
-    assert.ok(error.stdoutBytes > MAX_WORKER_OUTPUT_BYTES);
-    return true;
-  });
+  await runtime.settle();
 
   const failed = log.entries.find(
     (entry) => entry.event === 'node.failed' && entry.nodeId === 'work',
   );
   assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /stdout cap/);
   assert.ok((failed.stdoutBytes ?? 0) > MAX_WORKER_OUTPUT_BYTES);
   assert.equal(JSON.stringify(log.entries).includes('STDOUT-BODY-MARKER'), false);
 });
@@ -424,23 +409,19 @@ test('stderr over the 64 KiB cap fails and is not buffered', async () => {
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof WorkerExecutionError);
-    assert.equal(error.code, 'output-cap');
-    assert.match(error.message, /stderr cap/);
-    assert.ok(error.stderrBytes > MAX_WORKER_OUTPUT_BYTES);
-    return true;
-  });
+  await runtime.settle();
 
   const failed = log.entries.find(
     (entry) => entry.event === 'node.failed' && entry.nodeId === 'work',
   );
   assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /stderr cap/);
   assert.ok((failed.stderrBytes ?? 0) > MAX_WORKER_OUTPUT_BYTES);
   assert.equal(JSON.stringify(log.entries).includes('STDERR-BODY-MARKER'), false);
 });
 
 test('rejects an absolute worker cwd outside the project before spawning', async () => {
+  const log = createMemoryLog();
   const { executor } = recorder();
   const project = projectDir();
   const outside = projectDir();
@@ -452,20 +433,22 @@ test('rejects an absolute worker cwd outside the project before spawning', async
       executeForager: executor,
       projectDirectory: project,
       now: () => START,
+      onLog: log.sink,
     },
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof WorkerExecutionError);
-    assert.equal(error.code, 'cwd');
-    assert.match(error.message, /outside the project directory/);
-    return true;
-  });
+  await runtime.settle();
+  const failed = log.entries.find(
+    (entry) => entry.event === 'node.failed' && entry.nodeId === 'work',
+  );
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /outside the project directory/);
   assert.equal(existsSync(join(outside, 'probe.txt')), false);
 });
 
 test('rejects a worker cwd that escapes through a symlink', async (context) => {
+  const log = createMemoryLog();
   const { executor } = recorder();
   const project = projectDir();
   const outside = projectDir();
@@ -485,20 +468,22 @@ test('rejects a worker cwd that escapes through a symlink', async (context) => {
       executeForager: executor,
       projectDirectory: project,
       now: () => START,
+      onLog: log.sink,
     },
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof WorkerExecutionError);
-    assert.equal(error.code, 'cwd');
-    assert.match(error.message, /symlink/);
-    return true;
-  });
+  await runtime.settle();
+  const failed = log.entries.find(
+    (entry) => entry.event === 'node.failed' && entry.nodeId === 'work',
+  );
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /symlink/);
   assert.equal(existsSync(join(outside, 'probe.txt')), false);
 });
 
 test('a worker without a registered project directory fails before spawning', async () => {
+  const log = createMemoryLog();
   const { executor } = recorder();
   const marker = join(projectDir(), 'spawned.txt');
   const runtime = new PheromoneRuntime(
@@ -511,14 +496,17 @@ test('a worker without a registered project directory fails before spawning', as
     {
       executeForager: executor,
       now: () => START,
+      onLog: log.sink,
     },
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(
-    runtime.pump(),
-    /is a worker but no project directory is registered/,
+  await runtime.settle();
+  const failed = log.entries.find(
+    (entry) => entry.event === 'node.failed' && entry.nodeId === 'work',
   );
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /is a worker but no project directory is registered/);
   assert.equal(existsSync(marker), false);
 });
 
@@ -537,8 +525,13 @@ test('a worker failure on one spread branch leaves the sibling hover open', asyn
   );
 
   await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), /exited with code 1/);
+  await runtime.settle();
 
+  const failed = log.entries.find(
+    (entry) => entry.event === 'node.failed' && entry.nodeId === 'fail',
+  );
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /exited with code 1/);
   // The failure belongs to the failing activation only: the sibling user hover
   // is still open and no spread-level cleanup cancelled it.
   const snapshot = runtime.snapshot();
@@ -573,7 +566,7 @@ test('worker logs carry metadata but not stdout or stderr bodies', async () => {
   );
 
   await runtime.admit('start', { message: '' });
-  await runtime.pump();
+  await runtime.settle();
 
   const after = calls.find((call) => call.nodeId === 'after');
   assert.ok(after !== undefined);
@@ -604,12 +597,12 @@ test('worker is a trigger target in Stage 3C', async () => {
 
   assert.equal(runtime.snapshot().nodes['work']?.receptor.length, 1);
 
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(runtime.snapshot().nodes['work']?.receptor.length, 0);
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('an active worker on restore is stuck and never replayed', () => {
+test('a restored active worker waits for its result and is never replayed', () => {
   const definition = workerChain(nodeConfig('process.exit(0)'));
   const project = projectDir();
   const field = new PheromoneRuntime(definition, {
@@ -630,8 +623,9 @@ test('an active worker on restore is stuck and never replayed', () => {
     now: () => START,
   });
 
-  assert.deepEqual(report.stuckActive, ['work']);
-  assert.deepEqual(report.unknownActive, []);
-  assert.equal(runtime.snapshot().nodes['work']?.state['needsAttention'], true);
-  assert.equal(runtime.snapshot().nodes['work']?.active, undefined);
+  assert.deepEqual(report.resumedHovers, []);
+  // The same activation is restored as active; it waits for its own result and
+  // is not marked unknown/stuck and not replayed.
+  assert.equal(runtime.snapshot().nodes['work']?.active !== undefined, true);
+  assert.equal(runtime.snapshot().nodes['work']?.state['needsAttention'], undefined);
 });

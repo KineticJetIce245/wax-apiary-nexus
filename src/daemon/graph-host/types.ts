@@ -28,14 +28,6 @@ export interface LiveHiveHostOptions {
   readonly guardTimeoutMs?: number;
   /** Test seam for scheduler timers. */
   readonly schedulerTimers?: SchedulerTimers;
-  /**
-   * Allow an explicit unload or TTL sweep of a graph whose only non-Rest state
-   * is quiescent hover(s): at least one user or guard hover and no active,
-   * pending or queued Pheromone anywhere. Default false, preserving the M4a
-   * Rest-only behavior. With Honey the field (including the hover) is flushed
-   * before release, so a reload can still answer it.
-   */
-  readonly allowHoverUnload?: boolean;
   /** Residency clock; default `Date.now`. */
   readonly now?: () => number;
   /**
@@ -61,16 +53,15 @@ export interface LiveHiveHostOptions {
    * `fresh_once`; the instantiation layer rejects that mode without a store.
    */
   readonly bindingStore?: GraphBindingStore;
-  /** Max pump iterations for one trigger; default 50. */
-  readonly maxPumps?: number;
   /**
-   * Sleep seam for pacing waits (node `minIntervalMs` and gather deadlines).
+   * Sleep seam for per-Bee pacing timers (`node.minIntervalMs`).
    * Default setTimeout. A trigger never hot-spins while work is rate-limited.
    */
   readonly sleep?: (ms: number) => Promise<void>;
   /**
-   * Total pacing wait allowed for one trigger; default 30_000. Non-negative
-   * integer; 0 means no waiting (only the immediate pump rounds run).
+   * Host quiet-observation budget for `settle`, save, unload and dispatch
+   * release; default 30_000. Non-negative integer; 0 means no waiting. It is
+   * not an execution budget and never cancels or drops a value.
    */
   readonly maxWaitMs?: number;
   /**
@@ -130,7 +121,9 @@ export interface LiveHiveNodeStatus {
   readonly pending: boolean;
   readonly active: boolean;
   readonly hovered: boolean;
-  /** Assemble/batch group records; zero until M19d implements gather. */
+  /**
+   * Assemble/batch group records; zero until M19e implements gather.
+   */
   readonly gathers: number;
 }
 
@@ -141,13 +134,12 @@ export interface LiveHiveStatus {
   readonly hovered: boolean;
   readonly nodes: readonly LiveHiveNodeStatus[];
   /**
-   * What a Honey restore could not keep running, keyed by node id only. It
-   * never carries a prompt, output or Pheromone body.
+   * What a Honey restore resumed, keyed by node id only. A restored active is
+   * the same activation and waits for its own result; it is never reported as
+   * unknown or stuck.
    */
   readonly recovery?: {
     readonly resumedHovers: readonly string[];
-    readonly unknownActive: readonly string[];
-    readonly stuckActive: readonly string[];
   };
   readonly residency: {
     readonly state: 'loaded' | 'unloading';

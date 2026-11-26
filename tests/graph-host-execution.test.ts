@@ -72,6 +72,25 @@ class ThrowingTouchRegistry extends SessionRegistry {
   }
 }
 
+/** A parsed definition with the production 1000ms pacing on every Bee. */
+function pacedDefinition(
+  id: string,
+  nodes: Record<string, unknown>,
+  edges: readonly Record<string, unknown>[] = [],
+): CompositionDefinition {
+  const fast = fastDefinition(id, nodes, edges);
+  return {
+    ...fast,
+    nodes: new Map(
+      [...fast.nodes].map(([nodeId, node]) => [nodeId, { ...node, minIntervalMs: 1_000 }]),
+    ),
+  };
+}
+
+async function waitForRest(host: LiveHiveHost, graphId: string, label: string): Promise<void> {
+  await waitUntil(() => host.statusOf(graphId)?.rest === true, label);
+}
+
 function collectKeys(value: unknown, keys: string[] = []): string[] {
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -356,129 +375,84 @@ test('wake admission does not hold the live lease during pacing waits', async (t
   assert.equal(workspaceListenerCount(env.workspace), 0);
 });
 
-async function assertPacingBounds(
-  env: ReturnType<typeof makeEnv>,
-  zeroHost: LiveHiveHost,
-  shortHost: LiveHiveHost,
-  zeroWaits: readonly number[],
-  shortWaits: readonly number[],
-): Promise<void> {
-  const noWaitDefinition = pacedSpreadGatherDefinition('no-wait');
-  await zeroHost.loadGraph({
-    definition: noWaitDefinition,
-    bindings: allFresh(noWaitDefinition),
-    project: env.project,
-  });
-  await zeroHost.trigger('no-wait', 'start', text('seed'));
-  await waitUntil(
-    () => zeroHost.statusOf('no-wait') !== undefined && !zeroHost.statusOf('no-wait')!.rest,
-    'the no-wait driver to stop',
-  );
-  assert.deepEqual(zeroWaits, []);
-  assert.equal(zeroHost.statusOf('no-wait')?.rest, false);
-  assert.ok(zeroHost.statusOf('no-wait') !== undefined);
-  const shortDefinition = pacedSpreadGatherDefinition('short-wait');
-  await shortHost.loadGraph({
-    definition: shortDefinition,
-    bindings: allFresh(shortDefinition),
-    project: env.project,
-  });
-  await shortHost.trigger('short-wait', 'start', text('seed'));
-  await waitUntil(() => shortWaits.length === 1, 'the bounded pacing wait');
-  await waitUntil(
-    () =>
-      shortHost.statusOf('short-wait')?.nodes.some(
-        (node) => node.nodeId === 'gather' && node.pending,
-      ) === true,
-    'the gather to stay pending',
-  );
-  assert.deepEqual(shortWaits, [250]);
-  assert.equal(shortWaits.reduce((sum, wait) => sum + wait, 0), 250);
-  assert.equal(shortHost.statusOf('short-wait')?.rest, false);
-  const shortStatus = shortHost.statusOf('short-wait');
-  assert.ok(shortStatus !== undefined);
-  assert.equal(shortStatus.rest, false);
-  const gather = nodeStatus(shortStatus, 'gather');
-  assert.equal(gather.pending, true);
-  assert.equal(gather.gathers, 1);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-}
-
-test('maxWaitMs bounds pacing waits and leaves non-Rest graphs loaded', async (t) => {
+test('maxWaitMs bounds a save that is waiting for due pacing', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
-  const zeroWaits: number[] = [];
-  const zeroHost = new LiveHiveHost({
-    registry: env.registry,
-    now: clock.now,
-    maxWaitMs: 0,
-    sleep: async (ms) => {
-      zeroWaits.push(ms);
-      clock.advance(ms);
-    },
-  });
-  const shortWaits: number[] = [];
-  const shortHost = new LiveHiveHost({
-    registry: env.registry,
-    now: clock.now,
-    maxWaitMs: 250,
-    sleep: async (ms) => {
-      shortWaits.push(ms);
-      clock.advance(ms);
-    },
-  });
-  t.after(async () => {
-    await zeroHost.dispose();
-    await shortHost.dispose();
-    await env.workspace.stop();
-  });
-
-  await assertPacingBounds(env, zeroHost, shortHost, zeroWaits, shortWaits);
-});
-
-test('maxPumps exhaustion reports rest=false without pretending success or losing the graph', async (t) => {
-  const env = makeEnv();
-  const clock = new FakeClock(1_000);
+  const waits: number[] = [];
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
-    maxPumps: 1,
+    maxWaitMs: 5_000,
+    sleep: async (ms) => {
+      waits.push(ms);
+      clock.advance(ms);
+    },
   });
   t.after(async () => {
     await host.dispose();
     await env.workspace.stop();
   });
 
-  // This graph keeps the default 1000ms pacing: the gather must wait for its
-  // second activation, so one pump cannot reach Rest.
-  const definition = pacedSpreadGatherDefinition('paced');
-  await host.loadGraph({
-    definition,
-    bindings: allFresh(definition),
-    project: env.project,
+  const paced = pacedDefinition(
+    'paced-save',
+    { first: forager('first {{message}}'), second: forager('second {{message}}') },
+    [{ id: 'e', from: 'first', to: 'second' }],
+  );
+  await host.loadGraph({ definition: paced, bindings: allFresh(paced), project: env.project });
+
+  await host.trigger('paced-save', 'first', text('one'));
+  await waitForRest(host, 'paced-save', 'the first delivery to settle');
+  await host.trigger('paced-save', 'first', text('two'));
+
+  // Save observes the due timer inside its host wait bound; the activation runs
+  // and the field reaches Rest without any driver loop.
+  const status = await host.save('paced-save');
+  assert.equal(status.rest, true);
+  assert.deepEqual(waits, [1_000]);
+  assert.equal(clock.time, 2_000);
+});
+
+test('a paced graph keeps its second input pending without a host driver', async (t) => {
+  const env = makeEnv();
+  const host = new LiveHiveHost({
+    registry: env.registry,
+    now: new FakeClock(1_000).now,
+    maxWaitMs: 0,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
   });
 
-  await host.trigger('paced', 'start', text('seed'));
-  await waitUntil(
-    () => host.statusOf('paced')?.nodes.some((node) => node.nodeId === 'gather' && node.pending) === true,
-    'one maximum pump to leave the gather pending',
-  );
-  assert.equal(host.statusOf('paced')?.rest, false);
-  assert.equal(host.statusOf('paced')?.residency.refCount, 0);
+  const paced = pacedDefinition('paced', { only: forager('only {{message}}') });
+  await host.loadGraph({ definition: paced, bindings: allFresh(paced), project: env.project });
 
+  await host.trigger('paced', 'only', text('seed'));
+  await waitForRest(host, 'paced', 'the first delivery to settle');
+  await host.trigger('paced', 'only', text('again'));
+  await waitUntil(
+    () =>
+      host.statusOf('paced')?.nodes.some(
+        (node) => node.nodeId === 'only' && node.pending,
+      ) === true,
+    'the second input to stay pending',
+  );
   const status = host.statusOf('paced');
   assert.ok(status !== undefined);
   assert.equal(status.rest, false);
-  const gather = nodeStatus(status, 'gather');
-  assert.equal(gather.pending, true);
-  assert.equal(gather.receptor, 0);
-  assert.equal(gather.gathers, 1);
-
-  assert.equal(host.status().length, 1);
+  assert.equal(nodeStatus(status, 'only').receptor, 0);
   assert.deepEqual(env.adapter.closedNativeIds, []);
-  // The graph is still loaded and can accept another delivery.
-  await host.trigger('paced', 'start', text('again'));
-  assert.equal(host.statusOf('paced') !== undefined, true);
+
+  // The graph still accepts another delivery behind the pending one; there is
+  // no driver pass to exhaust.
+  await host.trigger('paced', 'only', text('third'));
+  await waitUntil(
+    () =>
+      host.statusOf('paced')?.nodes.some(
+        (node) => node.nodeId === 'only' && node.receptor === 1,
+      ) === true,
+    'the third input to queue behind the pending one',
+  );
 });
 
 test('answer resolves an open user hover and rejects invalid targets and tokens', async (t) => {
@@ -556,7 +530,6 @@ test('answer only binds the hover; the field completes in the background', async
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
-    maxPumps: 0,
   });
   t.after(async () => {
     await host.dispose();
@@ -576,10 +549,10 @@ test('answer only binds the hover; the field completes in the background', async
     bindings: allFresh(definition),
     project: env.project,
   });
-  // Park a hover without the host pump (host trigger honors maxPumps: 0).
+  // Park a hover without the host driver (the host waits on its own bound).
   const runtime = runtimeOf(host, 'answer-nonrest');
   await runtime.admit('ask', text('waiting'));
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(host.statusOf('answer-nonrest')?.hovered, true);
 
   // The answer call resolves once the hover is bound, not when the bee runs.

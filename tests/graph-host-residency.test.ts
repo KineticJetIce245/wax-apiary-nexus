@@ -2,289 +2,113 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 
-import type {
-  ApprovalDecision,
-  ApprovalOption,
-  ApprovalRequest,
-  HarnessAdapter,
-  HarnessCapabilities,
-  HarnessEvent,
-} from '../src/adapters/harness.js';
 import {
-  LiveHiveHostAnswerError,
   LiveHiveHost,
-  LiveHiveHostDisposedError,
-  LiveHiveHostLoadError,
-  LiveHiveHostNotFoundError,
-  type LiveHiveHostEvent,
-  type LiveHiveNodeStatus,
-  type LiveHiveStatus,
+  type LiveHiveHostOptions,
 } from '../src/daemon/graph-host.js';
-import type { GraphBindings } from '../src/graph/binding.js';
-import { GraphBindingStore } from '../src/graph/binding-store.js';
-import type { Project } from '../src/project/kernel.js';
+import { HoneyStore } from '../src/storage/honey.js';
 import {
-  parseComposition,
-  type CompositionDefinition,
-  type GuardDecision,
-  type GuardRequest,
-  type NodeDefinition,
-  type NodeId,
-  type PersistedField,
-  type PheromoneFieldSnapshot,
-  type Value,
-} from '../src/runtime/index.js';
-import type { AttachmentDraft } from '../src/shared/content.js';
-import {
-  BindingValidationError,
-} from '../src/session/instantiate-foragers.js';
-import { SessionRegistry } from '../src/session/session-registry.js';
-import { Workspace } from '../src/session/workspace.js';
-import {
-  FIXED_NOW,
   FakeClock,
   RecordingAdapter,
-  deferred,
   makeEnv,
   text,
-  forager,
   fastDefinition,
   allFresh,
-  promptsFor,
   nodeStatus,
   workspaceListenerCount,
-  runtimeOf,
-  hoverTokenOf,
-  isAnswerError,
-  userNode,
-  userAndForagerGraph,
   runnableForagerGraph,
   triggerRun,
   waitUntil,
+  userNode,
 } from './support/graph-host-fixtures.js';
 
-
-test('a user hover is not unloaded or swept until it reaches Rest', async (t) => {
-  const env = makeEnv();
-  const clock = new FakeClock(1_000);
-  const cleanupEvents: LiveHiveHostEvent[] = [];
-  const host = new LiveHiveHost({
-    registry: env.registry,
-    now: clock.now,
-    onEvent: (event) => cleanupEvents.push(event),
-  });
-  t.after(async () => {
-    await host.dispose();
-    await env.workspace.stop();
-  });
-
-  const definition = fastDefinition('hover', {
-    idle: forager('never {{message}}'),
-    ask: { kind: 'user', config: { modality: 'text', prompt: 'say something' } },
-  });
-  const bindings = allFresh(definition);
-  await host.loadGraph({
-    definition,
-    bindings,
-    project: env.project,
-    idleTtlMs: 100,
-  });
-  assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
-  const sessionId = env.registry.list()[0]?.sessionId;
-  assert.ok(sessionId !== undefined);
-  assert.equal(workspaceListenerCount(env.workspace), 1);
-
-  const result = await triggerRun(host, 'hover', 'ask', text('hello'));
-  assert.equal(result.rest, false);
-  assert.equal(result.hovered, true);
-  assert.equal(result.status.hovered, true);
-
-  const status = host.statusOf('hover');
-  assert.ok(status !== undefined);
-  assert.equal(status.rest, false);
-  assert.equal(status.hovered, true);
-  const ask = nodeStatus(status, 'ask');
-  assert.equal(ask.hovered, true);
-  assert.equal(ask.active, false);
-  assert.equal(ask.receptor, 0);
-  assert.equal(ask.pending, false);
-
-  const serialized = JSON.stringify(status);
-  for (const secret of ['hv_', 'hello', 'say something']) {
-    assert.equal(
-      serialized.includes(secret),
-      false,
-      `hover status leaked '${secret}'`,
-    );
-  }
-
-  // A non-Rest graph must not be unloaded or swept: no session close, no
-  // routing dispose and no cleanup event. The hover is still visible in status.
-  clock.advance(1_000);
-  assert.equal(await host.unload('hover'), false);
-  const report = await host.sweep();
-  assert.deepEqual(report.unloaded, []);
-  assert.deepEqual(report.skipped, [{ id: 'hover', reason: 'unsafe' }]);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-  assert.equal(env.registry.get(sessionId)?.sessionId, sessionId);
-  assert.equal(workspaceListenerCount(env.workspace), 1);
-  assert.deepEqual(cleanupEvents, []);
-  const retained = host.statusOf('hover');
-  assert.ok(retained !== undefined);
-  assert.equal(retained.rest, false);
-  assert.equal(nodeStatus(retained, 'ask').hovered, true);
-
-  // Resolve the hover through the live runtime (test-only introspection; the
-  // M4a host intentionally has no answer API yet). A pump refreshes Rest.
-  const runtime = runtimeOf(host, 'hover');
-  runtime.answerHover('ask', text('answered'));
-  await runtime.pump();
-  assert.equal(host.statusOf('hover')?.rest, true);
-  const answered = host.statusOf('hover');
-  assert.ok(answered !== undefined);
-  assert.equal(nodeStatus(answered, 'ask').hovered, false);
-
-  assert.equal(await host.unload('hover'), true);
-  assert.equal(host.statusOf('hover'), undefined);
-  // A normal unload retains the session and closes nothing.
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-  assert.equal(env.registry.get(sessionId)?.sessionId, sessionId);
-  assert.equal(workspaceListenerCount(env.workspace), 0);
-});
-
-test('allowHoverUnload unloads a quiescent hover and retains its fresh session', async (t) => {
-  const env = makeEnv();
-  const clock = new FakeClock(1_000);
-  const host = new LiveHiveHost({
-    registry: env.registry,
-    now: clock.now,
-    allowHoverUnload: true,
-  });
-  t.after(async () => {
-    await host.dispose();
-    await env.workspace.stop();
-  });
-
-  const definition = userAndForagerGraph('hover-unload');
-  const bindings = allFresh(definition);
-  await host.loadGraph({ definition, bindings, project: env.project });
-  assert.deepEqual(env.adapter.createdNativeIds, ['native-1']);
-  assert.equal(workspaceListenerCount(env.workspace), 1);
-
-  const triggered = await triggerRun(host, 'hover-unload', 'ask', text('waiting'));
-  assert.equal(triggered.rest, false);
-  assert.equal(triggered.hovered, true);
-  const ask = nodeStatus(triggered.status, 'ask');
-  assert.equal(ask.hovered, true);
-  assert.equal(ask.active, false);
-  assert.equal(ask.pending, false);
-  assert.equal(ask.receptor, 0);
-  assert.equal(nodeStatus(triggered.status, 'idle').receptor, 0);
-
-  assert.equal(await host.unload('hover-unload'), true);
-  assert.equal(host.statusOf('hover-unload'), undefined);
-  // A hover-only unload is still a normal release: the session is retained.
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-  assert.equal(env.registry.list().length, 1);
-  assert.equal(workspaceListenerCount(env.workspace), 0);
-
-  // A reload creates a fresh forager session; the hover itself is in-memory
-  // only here (no Honey), which is why this no-Honey case simply starts empty.
-  await host.loadGraph({ definition, bindings, project: env.project });
-  assert.deepEqual(env.adapter.createdNativeIds, ['native-1', 'native-2']);
-  assert.equal(env.registry.list().length, 2);
-  assert.equal(workspaceListenerCount(env.workspace), 1);
-  assert.equal(host.statusOf('hover-unload')?.rest, true);
-});
-
-test('allowHoverUnload still refuses a hover while another node has queued work', async (t) => {
-  const env = makeEnv();
-  const clock = new FakeClock(1_000);
-  const host = new LiveHiveHost({
-    registry: env.registry,
-    now: clock.now,
-    allowHoverUnload: true,
-  });
-  t.after(async () => {
-    await host.dispose();
-    await env.workspace.stop();
-  });
-
-  const definition = userAndForagerGraph('hover-queue');
-  await host.loadGraph({
-    definition,
-    bindings: allFresh(definition),
-    project: env.project,
-    idleTtlMs: 100,
-  });
-  const triggered = await triggerRun(host, 'hover-queue', 'ask', text('waiting'));
-  assert.equal(triggered.hovered, true);
-
-  // A queue entry that no host pump has drained yet. The field is therefore
-  // not quiescent even though the only active wait is a user hover.
-  await runtimeOf(host, 'hover-queue').admit('idle', text('queued'));
-  const queued = host.statusOf('hover-queue');
-  assert.ok(queued !== undefined);
-  assert.equal(nodeStatus(queued, 'idle').receptor, 1);
-  assert.equal(nodeStatus(queued, 'ask').hovered, true);
-
-  clock.advance(100);
-  assert.equal(await host.unload('hover-queue'), false);
-  const report = await host.sweep();
-  assert.deepEqual(report.unloaded, []);
-  assert.deepEqual(report.skipped, [{ id: 'hover-queue', reason: 'unsafe' }]);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-
-  // Draining the queue returns the field to hover-only, which is unloadable.
-  await runtimeOf(host, 'hover-queue').pump();
-  assert.equal(host.statusOf('hover-queue')?.rest, false);
-  assert.equal(await host.unload('hover-queue'), true);
-});
-
-async function assertSecondInputPending(host: LiveHiveHost): Promise<void> {
-  const first = await triggerRun(host, 'hover-pending', 'idle', text('one'));
-  assert.equal(first.rest, true);
-  await host.trigger('hover-pending', 'idle', text('two'));
-  await waitUntil(
-    () =>
-      host.statusOf('hover-pending')?.nodes.some(
-        (node) => node.nodeId === 'idle' && node.pending,
-      ) === true,
-    'the second input to stay pending',
-  );
-  const secondStatus = host.statusOf('hover-pending');
-  assert.ok(secondStatus !== undefined);
-  assert.equal(secondStatus.rest, false);
-  assert.equal(nodeStatus(secondStatus, 'idle').pending, true);
+function honeyStore(id: string): HoneyStore {
+  const root = mkdtempSync(join(tmpdir(), `wax-m19d-${id}-`));
+  return HoneyStore.forComposition(root, 'apiary', id);
 }
 
-test('allowHoverUnload still refuses a hover while a node has a pending Pheromone', async (t) => {
-  const env = makeEnv();
+interface HoneyHarness {
+  readonly env: ReturnType<typeof makeEnv>;
+  readonly clock: FakeClock;
+  readonly honey: HoneyStore;
+  readonly host: LiveHiveHost;
+}
+
+/** A host with a real Honey snapshot and a fake clock, cleaned up after `t`. */
+function honeyHost(
+  t: TestContext,
+  id: string,
+  options: Partial<LiveHiveHostOptions> = {},
+  adapter: RecordingAdapter = new RecordingAdapter(),
+): HoneyHarness {
+  const env = makeEnv(adapter);
   const clock = new FakeClock(1_000);
+  const honey = honeyStore(id);
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
-    allowHoverUnload: true,
-    maxWaitMs: 0,
+    honeyForGraph: () => honey,
+    ...options,
   });
   t.after(async () => {
+    adapter.releaseHeld();
     await host.dispose();
     await env.workspace.stop();
   });
+  return { env, clock, honey, host };
+}
 
-  // The default 1000ms minInterval leaves the second input pending: the pump
-  // discovers it is not due yet and must not activate it.
-  const definition = parseComposition({
-    schemaVersion: 1,
-    id: 'hover-pending',
-    nodes: {
-      idle: forager('idle {{message}}'),
-      ask: userNode(),
-    },
-    edges: [],
+test('idle unload snapshots a user hover; reload resumes and answers it', async (t) => {
+  const { env, clock, honey, host } = honeyHost(t, 'hover-idle');
+  const definition = fastDefinition('hover-idle', { ask: userNode() });
+  await host.loadGraph({
+    definition,
+    bindings: {},
+    project: env.project,
+    idleTtlMs: 100,
   });
+
+  const triggered = await triggerRun(host, 'hover-idle', 'ask', text('waiting'));
+  assert.equal(triggered.hovered, true);
+  assert.equal(workspaceListenerCount(env.workspace), 0);
+
+  // A user hover no longer keeps the field loaded: after the idle TTL the
+  // host snapshots it and releases the runtime. Only a pending Guard blocks.
+  clock.advance(100);
+  assert.deepEqual((await host.sweep()).unloaded, ['hover-idle']);
+  assert.equal(host.statusOf('hover-idle'), undefined);
+  const saved = honey.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.rest, false);
+  assert.equal(saved.nodes['ask']?.hover?.kind, 'user');
+  assert.equal(typeof saved.nodes['ask']?.hover?.token, 'string');
+
+  const reloaded = await host.loadGraph({
+    definition,
+    bindings: {},
+    project: env.project,
+    idleTtlMs: 100,
+  });
+  assert.equal(reloaded.rest, false);
+  assert.equal(reloaded.hovered, true);
+  assert.deepEqual(reloaded.recovery?.resumedHovers, ['ask']);
+
+  await host.answer('hover-idle', 'ask', text('answered'));
+  await waitUntil(
+    () => host.statusOf('hover-idle')?.rest === true,
+    'the answered field to settle',
+  );
+  const answered = host.statusOf('hover-idle');
+  assert.ok(answered !== undefined);
+  assert.equal(answered.hovered, false);
+  assert.equal(nodeStatus(answered, 'ask').hovered, false);
+});
+
+test('a change resets the idle clock that the sweep uses', async (t) => {
+  const { env, clock, host } = honeyHost(t, 'field-idle');
+  const definition = runnableForagerGraph('field-idle', 'run {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -292,35 +116,149 @@ test('allowHoverUnload still refuses a hover while a node has a pending Pheromon
     idleTtlMs: 100,
   });
 
-  await assertSecondInputPending(host);
+  clock.advance(60);
+  assert.equal((await triggerRun(host, 'field-idle', 'only', text('one'))).rest, true);
+  // The field's own mutation time renews the idle deadline; a read does not.
+  const changedAt = host.statusOf('field-idle')?.residency.lastAccessAt;
+  assert.equal(changedAt, 1_060);
+  clock.advance(60);
+  host.status();
+  assert.equal(host.statusOf('field-idle')?.residency.lastAccessAt, changedAt);
 
-  const triggered = await triggerRun(host, 'hover-pending', 'ask', text('waiting'));
-  assert.equal(triggered.hovered, true);
-  const parked = host.statusOf('hover-pending');
-  assert.ok(parked !== undefined);
-  assert.equal(nodeStatus(parked, 'idle').pending, true);
-  assert.equal(nodeStatus(parked, 'ask').hovered, true);
-
-  clock.advance(100);
-  assert.equal(await host.unload('hover-pending'), false);
   const report = await host.sweep();
   assert.deepEqual(report.unloaded, []);
-  assert.deepEqual(report.skipped, [{ id: 'hover-pending', reason: 'unsafe' }]);
+  assert.deepEqual(report.skipped, [{ id: 'field-idle', reason: 'not-expired' }]);
 
-  // Once the pending input is due and drains, the hover is unloadable.
-  clock.advance(1_000);
-  await runtimeOf(host, 'hover-pending').pump();
-  assert.equal(host.statusOf('hover-pending')?.rest, false);
-  assert.equal(await host.unload('hover-pending'), true);
+  clock.advance(40);
+  assert.deepEqual((await host.sweep()).unloaded, ['field-idle']);
+  assert.equal(host.statusOf('field-idle'), undefined);
 });
 
-test('allowHoverUnload still refuses a hover while another node is active', async (t) => {
+interface DetachedActive {
+  readonly harness: HoneyHarness;
+  readonly sessionId: string;
+  readonly saved: NonNullable<ReturnType<HoneyStore['load']>>;
+}
+
+/** Idle-unloads one active forager; returns the snapshot and retained session. */
+async function detachActiveForager(t: TestContext, id: string): Promise<DetachedActive> {
+  const harness = honeyHost(t, id, { maxWaitMs: 0 });
+  harness.env.adapter.holdSubmissions = true;
+  const definition = runnableForagerGraph(id, 'run {{message}}');
+  await harness.host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: harness.env.project,
+    idleTtlMs: 100,
+  });
+  const sessionId = harness.env.registry.list()[0]?.sessionId;
+  assert.ok(sessionId !== undefined);
+  await harness.host.trigger(id, 'only', text('hello'));
+  await harness.env.adapter.waitForSubmit(1);
+  await waitUntil(
+    () =>
+      harness.host
+        .statusOf(id)
+        ?.nodes.some((node) => node.nodeId === 'only' && node.active) === true,
+    'the only bee to become active',
+  );
+  harness.clock.advance(100);
+  assert.deepEqual((await harness.host.sweep()).unloaded, [id]);
+  const saved = harness.honey.load();
+  assert.ok(saved !== undefined);
+  return { harness, sessionId, saved };
+}
+
+test('idle unload detaches an active native execution and snapshots it', async (t) => {
+  const { harness, sessionId, saved } = await detachActiveForager(t, 'late-active');
+  const { env, host } = harness;
+  assert.equal(host.statusOf('late-active'), undefined);
+  // The field was released but the in-flight execution keeps its executor and
+  // session alive; no replacement session is created.
+  assert.equal(workspaceListenerCount(env.workspace), 1);
+  assert.equal(env.registry.get(sessionId)?.sessionId, sessionId);
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(saved.rest, false);
+  assert.equal(saved.nodes['only']?.active !== undefined, true);
+});
+
+test('the late native result reloads the field and completes the activation once', async (t) => {
+  const { harness } = await detachActiveForager(t, 'late-result');
+  const { env, host } = harness;
+  env.adapter.releaseHeld();
+  await waitUntil(
+    () => host.statusOf('late-result')?.rest === true,
+    'the late result to reload and complete the restored active',
+  );
+  const status = host.statusOf('late-result');
+  assert.ok(status !== undefined);
+  assert.equal(status.rest, true);
+  assert.equal(status.nodes.find((node) => node.nodeId === 'only')?.active, false);
+  // The Bee executed exactly once: the late result is the completion of the
+  // same activation, never a replay.
+  assert.deepEqual(env.adapter.allPrompts, ['run hello']);
+  assert.deepEqual(
+    host.outputsOf('late-result').get('only'),
+    { message: 'reply(native-1):run hello' },
+  );
+  assert.deepEqual(env.adapter.closedNativeIds, []);
+  assert.equal(env.registry.list().length, 1);
+  assert.equal(workspaceListenerCount(env.workspace), 1);
+  assert.equal(await host.unload('late-result'), true);
+  assert.equal(workspaceListenerCount(env.workspace), 0);
+});
+
+test('a pending Guard blocks idle unload and explicit unload', async (t) => {
+  const { env, clock, host } = honeyHost(
+    t,
+    'guard-idle',
+    {
+      guardTimeoutMs: 500,
+      onGuard: () => new Promise(() => undefined),
+      maxWaitMs: 0,
+    },
+    new RecordingAdapter({ askApproval: true }),
+  );
+  const definition = runnableForagerGraph('guard-idle', 'run {{message}}');
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+    idleTtlMs: 100,
+  });
+
+  await host.trigger('guard-idle', 'only', text('approval'));
+  await waitUntil(
+    () => host.statusOf('guard-idle')?.nodes.some((node) => node.nodeId === 'only' && node.hovered) === true,
+    'a pending guard hover',
+  );
+
+  clock.advance(100);
+  const report = await host.sweep();
+  assert.deepEqual(report.unloaded, []);
+  assert.deepEqual(report.skipped, [{ id: 'guard-idle', reason: 'unsafe' }]);
+  assert.equal(await host.unload('guard-idle'), false);
+  assert.notEqual(host.statusOf('guard-idle'), undefined);
+
+  // The guard times out by itself; a cancelled approval is never auto-allowed
+  // and the field becomes idle again.
+  await waitUntil(
+    () => host.statusOf('guard-idle')?.rest === true,
+    'the guard timeout to end the activation',
+  );
+  assert.equal(await host.unload('guard-idle'), true);
+});
+
+test('an explicit unload waits for the host bound and then snapshots the active field', async (t) => {
   const env = makeEnv();
+  env.adapter.holdSubmissions = true;
   const clock = new FakeClock(1_000);
+  const honey = honeyStore('bounded-unload');
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
-    allowHoverUnload: true,
+    honeyForGraph: () => honey,
+    maxWaitMs: 0,
   });
   t.after(async () => {
     env.adapter.releaseHeld();
@@ -328,43 +266,97 @@ test('allowHoverUnload still refuses a hover while another node is active', asyn
     await env.workspace.stop();
   });
 
-  const definition = userAndForagerGraph('hover-active');
+  const definition = runnableForagerGraph('bounded-unload', 'run {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
     project: env.project,
-    idleTtlMs: 100,
   });
-
-  // Drive the runtime directly so the active execution has no LiveHiveHost lease:
-  // the only thing that may keep this graph loaded is the `active` guard itself.
-  const runtime = runtimeOf(host, 'hover-active');
-  runtime.admit('ask', text('waiting'));
-  await runtime.pump();
-  assert.equal(host.statusOf('hover-active')?.hovered, true);
-
-  env.adapter.holdSubmissions = true;
-  runtime.admit('idle', text('hold'));
-  const pumping = runtime.pump();
+  await host.trigger('bounded-unload', 'only', text('work'));
   await env.adapter.waitForSubmit(1);
 
-  const during = host.statusOf('hover-active');
-  assert.ok(during !== undefined);
-  assert.equal(nodeStatus(during, 'idle').active, true);
-  assert.equal(nodeStatus(during, 'ask').hovered, true);
-  assert.equal(during.residency.refCount, 0);
-
-  clock.advance(100);
-  assert.equal(await host.unload('hover-active'), false);
-  const report = await host.sweep();
-  assert.deepEqual(report.unloaded, []);
-  assert.deepEqual(report.skipped, [{ id: 'hover-active', reason: 'unsafe' }]);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
-  assert.equal(host.statusOf('hover-active') !== undefined, true);
+  // maxWaitMs is a host observation bound, not an execution budget: the
+  // unload snapshots the active activation and releases the field.
+  assert.equal(await host.unload('bounded-unload'), true);
+  assert.equal(host.statusOf('bounded-unload'), undefined);
+  const saved = honey.load();
+  assert.ok(saved !== undefined);
+  assert.equal(saved.nodes['only']?.active !== undefined, true);
 
   env.adapter.releaseHeld();
-  await pumping;
-  // The execution is gone and only the hover remains: now it is unloadable.
-  assert.equal(await host.unload('hover-active'), true);
-  assert.deepEqual(env.adapter.closedNativeIds, []);
+  await waitUntil(
+    () => host.statusOf('bounded-unload')?.rest === true,
+    'the late result to finish the reloaded field',
+  );
+});
+
+test('load starts each restored receptor drain by itself', async (t) => {
+  const env = makeEnv();
+  const clock = new FakeClock(1_000);
+  const honey = honeyStore('restored-drain');
+  const host = new LiveHiveHost({
+    registry: env.registry,
+    now: clock.now,
+    honeyForGraph: () => honey,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = runnableForagerGraph('restored-drain', 'run {{message}}');
+  const saved = {
+    schemaVersion: 2 as const,
+    compositionId: definition.id,
+    graphRevision: definition.graphRevision,
+    rest: false,
+    nodes: {
+      only: {
+        receptor: [
+          { value: { message: 'queued' }, enqueuedAt: new Date(1_000).toISOString() },
+        ],
+      },
+    },
+  };
+  honey.save(saved);
+
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+  });
+  await waitUntil(
+    () => host.statusOf('restored-drain')?.rest === true,
+    'the restored receptor to drain without a host driver',
+  );
+  assert.deepEqual(env.adapter.allPrompts, ['run queued']);
+});
+
+test('a dispatch graph is released when its field reaches Rest', async (t) => {
+  const env = makeEnv();
+  const host = new LiveHiveHost({
+    registry: env.registry,
+    now: () => 1_000,
+  });
+  t.after(async () => {
+    await host.dispose();
+    await env.workspace.stop();
+  });
+
+  const definition = fastDefinition('ephemeral', {
+    only: { kind: 'forager', config: { connection: 'fake', prompt: '{{message}}' } },
+  });
+  await host.loadGraph({
+    definition,
+    bindings: allFresh(definition),
+    project: env.project,
+    idleTtlMs: 0,
+    ephemeral: true,
+  });
+  assert.equal(host.status().length, 0);
+  await host.trigger('ephemeral', 'only', text('go'));
+  await waitUntil(
+    () => host.statusOf('ephemeral') === undefined,
+    'the ephemeral graph to be released at Rest',
+  );
 });

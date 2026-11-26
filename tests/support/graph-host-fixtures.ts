@@ -302,8 +302,8 @@ export function forager(prompt: string): Record<string, unknown> {
 
 /**
  * Validates the graph with parseComposition, then rewrites node pacing to 0 so
- * one trigger can reach Rest without sleeping. LiveHiveHost must not sleep between
- * pumps; a production graph that is deliberately paced just stops at maxPumps.
+ * one trigger can reach Rest without sleeping. Production graphs keep their
+ * configured `minIntervalMs`; pacing is a per-Bee timer, not a host pump.
  */
 export function fastDefinition(
   id: string,
@@ -352,12 +352,14 @@ export function workspaceListenerCount(workspace: Workspace): number {
 /**
  * Test-only access to the live runtime. It is used only to inspect a hover
  * token or to park/queue work that no public host method can reach without
- * pumping; production behavior is exercised through the host itself.
+ * settling; production behavior is exercised through the host itself.
  */
 interface RuntimeTestAccess {
   answerHover(nodeId: string, value: Value, token?: string): void;
   admit(nodeId: string, value: Value): Promise<void>;
-  pump(): Promise<void>;
+  settle(maxWaitMs?: number): Promise<void>;
+  detach(): void;
+  lastChangeAt(): number;
   snapshot(): PheromoneFieldSnapshot;
 }
 

@@ -63,7 +63,7 @@ test('a second trigger waits for the first activation to finish', async () => {
 
   runtime.admit('start', text('first'));
   runtime.admit('start', text('second'));
-  await runtime.pump();
+  await runtime.settle();
 
   assert.equal(calls.length, 1);
   assert.equal(serializeValue(calls[0] as Value), 'first');
@@ -91,18 +91,18 @@ test('early input stays in pending and runs once the minimum interval elapses', 
 
   runtime.admit('start', text('first'));
   runtime.admit('start', text('second'));
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(calls.length, 1);
 
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(calls.length, 1, 'pending must not run before minInterval');
 
   clock += 999;
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(calls.length, 1, '999ms is still too early');
 
   clock += 1;
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(calls.length, 2);
   assert.equal(serializeValue(calls[1] as Value), 'second');
   assert.equal(runtime.snapshot().rest, true);
@@ -123,11 +123,11 @@ test('queued input is never dropped when the clock advances past several interva
   runtime.admit('start', text('b'));
   runtime.admit('start', text('c'));
 
-  await runtime.pump();
+  await runtime.settle();
   clock += 1000;
-  await runtime.pump();
+  await runtime.settle();
   clock += 1000;
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(
     calls.map((value) => serializeValue(value)),
@@ -155,7 +155,7 @@ test('the queue stays FIFO while the node is busy', async () => {
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('start', text('running'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await Promise.resolve();
 
   assert.ok(release !== undefined);
@@ -170,7 +170,7 @@ test('the queue stays FIFO while the node is busy', async () => {
   assert.equal(serializeValue(afterTrigger.receptor[0]?.value as Value), 'queued');
 
   release({ message: 'finished' });
-  await pumping;
+  await settling;
 
   assert.deepEqual(
     started.map((value) => serializeValue(value)),
@@ -205,7 +205,7 @@ test('queue depth is reported in the log', async () => {
     .map((entry) => entry.queueDepth);
   assert.deepEqual(depths, [1, 2, 3]);
 
-  await runtime.pump();
+  await runtime.settle();
   const pendingEntry = log.entries.find((entry) => entry.event === 'pheromone.pending');
   assert.ok(pendingEntry !== undefined);
   assert.equal(pendingEntry.queueDepth, 1);
@@ -221,7 +221,7 @@ test('rest flips back to false on a new trigger', async () => {
   const runtime = new PheromoneRuntime(singleNodeComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('start', text('a'));
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(runtime.snapshot().rest, true);
 
   runtime.admit('start', text('b'));
@@ -278,7 +278,7 @@ test('queueMax: 1 rejects a second trigger, keeps the first and logs the rejecti
     1,
   );
 
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(executed, ['first']);
   assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 0);
 });
@@ -296,21 +296,27 @@ test('an internal move to a full target is dropped and logged, not deferred', as
   const runtime = new PheromoneRuntime(
     queueCappedComposition(
       1,
-      { start: foragerNode(), sink: foragerNode() },
+      {
+        start: foragerNode(),
+        sink: { kind: 'user', config: { modality: 'text', prompt: '?' } },
+      },
       [{ id: 'e1', from: 'start', to: 'sink' }],
     ),
     { executeForager: executor, now: () => clock, onLog: log.sink },
   );
 
-  // Warm the sink so its next input stays pacing-held while the target is full.
-  runtime.admit('sink', text('warm'));
-  await runtime.pump();
-  assert.deepEqual(executed, [{ node: 'sink', value: 'warm' }]);
-  executed.length = 0;
-
+  // Park the sink on a hover so its receptor keeps one queued entry; with
+  // queueMax 1 the next internal move is refused while the target is full.
+  runtime.admit('sink', text('open'));
+  await runtime.settle();
   runtime.admit('sink', text('existing'));
+  await runtime.settle();
+  const parked = runtime.snapshot().nodes['sink'];
+  assert.equal(parked?.receptor.length, 1);
+  assert.equal(parked?.hover?.kind, 'user');
+
   runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
 
   // The source ran and its output was dropped at the full target: no deferral,
   // no retry, no failure.
@@ -318,8 +324,8 @@ test('an internal move to a full target is dropped and logged, not deferred', as
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['start']?.pending, undefined);
   assert.equal(snapshot.nodes['start']?.active, undefined);
-  assert.equal(serializeValue(snapshot.nodes['sink']?.pending?.value as Value), 'existing');
-  assert.equal(snapshot.nodes['sink']?.receptor.length, 0);
+  assert.equal(snapshot.nodes['sink']?.pending, undefined);
+  assert.equal(snapshot.nodes['sink']?.receptor.length, 1);
   assert.equal(
     log.entries.some((entry) => entry.event === 'node.failed'),
     false,
@@ -338,18 +344,16 @@ test('an internal move to a full target is dropped and logged, not deferred', as
   assert.equal(dropped.outcome, 'target-full:sink');
   assert.equal(dropped.queueDepth, 1);
   assert.equal(dropped.limit, 1);
-
-  // The held sink input still runs; the dropped output never reappears.
-  clock += 1000;
-  await runtime.pump();
-  assert.deepEqual(executed, [
-    { node: 'start', value: 'seed' },
-    { node: 'sink', value: 'existing' },
-  ]);
-  assert.equal(runtime.snapshot().rest, true);
 });
 
-test('a spread drops only the part whose target is full and keeps the rest', async () => {
+interface SpreadHarness {
+  readonly runtime: PheromoneRuntime;
+  readonly executed: { node: string; value: string }[];
+  readonly log: ReturnType<typeof createMemoryLog>;
+}
+
+/** A clone spread whose `left` target is full behind an open user hover. */
+async function spreadWithFullLeft(): Promise<SpreadHarness> {
   let clock = START;
   const log = createMemoryLog();
   const executed: { node: string; value: string }[] = [];
@@ -368,29 +372,40 @@ test('a spread drops only the part whose target is full and keeps the rest', asy
           kind: 'spread',
           config: { strategy: 'clone', targets: ['left', 'right'] },
         },
-        left: foragerNode(),
+        left: { kind: 'user', config: { modality: 'text', prompt: '?' } },
         right: foragerNode(),
       },
       [{ id: 'e1', from: 'start', to: 'fan' }],
     ),
     { executeForager: executor, now: () => clock, onLog: log.sink },
   );
-
+  // Keep one entry queued behind a hover on `left`: the spread's left part is
+  // refused while `right` still receives its copy.
+  runtime.admit('left', text('open'));
+  await runtime.settle();
   runtime.admit('left', text('existing-left'));
+  await runtime.settle();
   runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
+  return { runtime, executed, log };
+}
+
+test('a spread drops only the part whose target is full and keeps the rest', async () => {
+  const { runtime, executed, log } = await spreadWithFullLeft();
 
   // `left` was full, so its part was dropped; `right` still received the whole
   // copy. Partial fan-out is not a cancellation and never rolls back.
   assert.deepEqual(
     executed.map((call) => call.node),
-    ['start', 'left', 'right'],
+    ['start', 'right'],
   );
-  assert.equal(executed.find((call) => call.node === 'left')?.value, 'existing-left');
   assert.equal(executed.find((call) => call.node === 'right')?.value, 'out:seed');
+  const left = runtime.snapshot().nodes['left'];
+  assert.equal(left?.hover?.kind, 'user');
+  assert.equal(left?.receptor.length, 1);
   assert.equal(
     executed.filter((call) => call.node === 'left').length,
-    1,
+    0,
     'the dropped part is never retried and the existing input is not lost',
   );
 
@@ -414,10 +429,17 @@ test('a spread drops only the part whose target is full and keeps the rest', asy
   assert.equal(fan.active, undefined);
   assert.equal(fan.receptor.length, 0, 'the spread has no ordinary out-edge receptor');
   assert.equal(fan.lastOutput, undefined, 'a spread writes no last output');
-  assert.equal(runtime.snapshot().rest, true);
+  assert.equal(runtime.snapshot().rest, false, 'the parked user input keeps work');
 });
 
-test('a restored over-capacity queue is preserved and only new enqueues are rejected', async () => {
+interface RestoredQueueHarness {
+  readonly runtime: PheromoneRuntime;
+  readonly executed: string[];
+  readonly advance: () => void;
+}
+
+/** A restored field whose receptor already holds more entries than queueMax. */
+function restoredOverCapacity(): RestoredQueueHarness {
   let clock = START;
   const definition = queueCappedComposition(1, { start: foragerNode() });
   const executed: string[] = [];
@@ -431,7 +453,6 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
     value: { message: textValue },
     enqueuedAt: new Date(START).toISOString(),
   });
-  // A field written before the limit was enforced can hold more than queueMax.
   const { runtime } = PheromoneRuntime.restore(
     definition,
     {
@@ -441,12 +462,21 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
       rest: false,
       nodes: {
         start: {
-          receptor: [persistedValue('ph_one', 'one'), persistedValue('ph_two', 'two'), persistedValue('ph_three', 'three')],
+          receptor: [
+            persistedValue('ph_one', 'one'),
+            persistedValue('ph_two', 'two'),
+            persistedValue('ph_three', 'three'),
+          ],
         },
       },
     },
     { executeForager: executor, now: () => clock },
   );
+  return { runtime, executed, advance: () => { clock += 1_000; } };
+}
+
+test('a restored over-capacity queue is preserved and only new enqueues are rejected', async () => {
+  const { runtime, executed, advance } = restoredOverCapacity();
 
   assert.deepEqual(
     runtime.snapshot().nodes['start']?.receptor.map((pheromone) => serializeValue(pheromone.value)),
@@ -455,7 +485,7 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
   );
   await assert.rejects(runtime.admit('start', text('new')), ReceptorFullError);
 
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(executed, ['one']);
   assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
   await assert.rejects(
@@ -464,18 +494,9 @@ test('a restored over-capacity queue is preserved and only new enqueues are reje
     'the queue is still at the limit until it drains below it',
   );
 
-  clock += 1000;
-  await runtime.pump();
+  advance();
+  await runtime.settle();
   assert.deepEqual(executed, ['one', 'two']);
   assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 0);
-  runtime.admit('start', text('four'));
-  assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
-
-  clock += 1000;
-  await runtime.pump();
-  assert.deepEqual(executed, ['one', 'two', 'three']);
-  clock += 1000;
-  await runtime.pump();
-  assert.deepEqual(executed, ['one', 'two', 'three', 'four']);
-  assert.equal(runtime.snapshot().rest, true);
+  assert.equal(serializeValue(runtime.snapshot().nodes['start']?.pending?.value as Value), 'three');
 });

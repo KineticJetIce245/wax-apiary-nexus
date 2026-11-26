@@ -121,7 +121,7 @@ test('a resting bee omits the receptor; an awake bee snapshots active plus queue
   });
 
   await runtime.admit('a', text('first'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 1, 'the first activation');
   await runtime.admit('a', text('second'));
 
@@ -147,7 +147,7 @@ test('a resting bee omits the receptor; an awake bee snapshots active plus queue
   gated.release('first');
   await waitFor(() => gated.started.includes('second'), 'the second activation');
   gated.release('second');
-  await pumping;
+  await settling;
   assert.deepEqual(gated.started, ['first', 'second']);
   assert.equal(runtime.snapshot().rest, true);
   const restingField = runtime.exportField();
@@ -166,7 +166,7 @@ test('block policy admits FIFO waiters without holding the field lock', async ()
   });
 
   await runtime.admit('a', text('first'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 1, 'the first activation');
   await runtime.admit('a', text('second'));
   const third = runtime.admit('a', text('third'));
@@ -196,7 +196,7 @@ test('block policy admits FIFO waiters without holding the field lock', async ()
   gated.release('third');
   await waitFor(() => gated.started.includes('fourth'), 'the fourth activation');
   gated.release('fourth');
-  await pumping;
+  await settling;
 
   assert.deepEqual(gated.started, ['first', 'second', 'third', 'fourth']);
   assert.equal(runtime.snapshot().rest, true);
@@ -214,7 +214,7 @@ test('block timeout reports pending/limit/waitedMs and never enqueues the input'
   });
 
   await runtime.admit('a', text('first'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 1, 'the first activation');
   await runtime.admit('a', text('second'));
 
@@ -247,7 +247,7 @@ test('block timeout reports pending/limit/waitedMs and never enqueues the input'
   assert.equal(serializeValue(node?.receptor[0]?.value as Value), 'second');
 
   gated.release('first');
-  await pumping;
+  await settling;
   assert.deepEqual(gated.started, ['first'], 'the timed-out input is never retried');
   assert.equal(serializeValue(runtime.snapshot().nodes['a']?.pending?.value as Value), 'second');
   assert.equal(runtime.snapshot().nodes['a']?.receptor.length, 0);
@@ -264,7 +264,7 @@ test('block policy queues every later admission behind earlier waiters (no jump)
   });
 
   await runtime.admit('a', text('first'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 1, 'the first activation');
   await runtime.admit('a', text('second'));
   const third = runtime.admit('a', text('third'));
@@ -291,11 +291,11 @@ test('block policy queues every later admission behind earlier waiters (no jump)
   await jump;
   await waitFor(() => gated.started.includes('jump'), 'the last activation');
   gated.release('jump');
-  await pumping;
+  await settling;
   assert.deepEqual(gated.started, ['first', 'second', 'third', 'jump']);
 });
 
-/** A restored receptor must survive without replaying the persisted active input. */
+/** A restored active waits for its result; queued input drains after it. */
 async function assertRestoredReceptor(field: PersistedField): Promise<void> {
   const calls: string[] = [];
   const restored = PheromoneRuntime.restore(oneBeeComposition('mbx-snapshot', 4), field, {
@@ -309,17 +309,26 @@ async function assertRestoredReceptor(field: PersistedField): Promise<void> {
   });
   assert.deepEqual(restored.report, {
     resumedHovers: [],
-    unknownActive: ['a'],
-    stuckActive: [],
   });
   const node = restored.runtime.snapshot().nodes['a'];
-  assert.equal(node?.active, undefined, 'active is never replayed');
+  assert.equal(node?.active !== undefined, true, 'the active is restored as active');
   assert.equal(node?.receptor.length, 1, 'the receptor is restored');
   assert.equal(serializeValue(node?.receptor[0]?.value as Value), 'second');
-  assert.equal(node?.state['needsAttention'], true);
+  assert.equal(node?.state['needsAttention'], undefined);
   assert.deepEqual(calls, [], 'restore itself executes nothing');
 
-  await restored.runtime.pump();
+  // Until the late native result arrives, the Bee is occupied: the queued input
+  // waits in FIFO and is never activated ahead of the restored active.
+  await restored.runtime.settle();
+  assert.deepEqual(calls, []);
+
+  restored.runtime.applyRestoredResult('a', {
+    ok: true,
+    value: { message: 'late' },
+    outcome: 'ok',
+    startedAt: START + 60_000,
+  });
+  await restored.runtime.settle();
   assert.deepEqual(calls, ['second'], 'the restored receptor drains only queued input');
   assert.equal(restored.runtime.snapshot().rest, true);
 }

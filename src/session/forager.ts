@@ -96,6 +96,15 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     return this.lastProduced;
   }
 
+  /**
+   * True while a submitted native execution has not reached its terminal state.
+   * The host keeps such an executor alive across an idle unload so the late
+   * result can complete the restored active instead of being lost.
+   */
+  hasPendingExecution(): boolean {
+    return this.waiters.size > 0 || this.pendingSubmissions > 0;
+  }
+
   dispose(): void {
     if (this.disposed) {
       return;

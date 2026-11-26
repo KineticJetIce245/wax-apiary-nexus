@@ -262,6 +262,11 @@ export class HoneyStore {
     atomicWriteJson(this.paths.field, field);
   }
 
+  /** Whether a durable field snapshot exists for this composition. */
+  exists(): boolean {
+    return existsSync(this.paths.field);
+  }
+
   saveScheduler(state: SchedulerState): void {
     atomicWriteJson(this.paths.scheduler, state);
   }

@@ -3,6 +3,7 @@ import type { LiveHiveHost, LiveHiveStatus } from '../daemon/graph-host.js';
 import type { Project } from '../project/kernel.js';
 import type { Value } from '../runtime/index.js';
 import type { SessionRegistry } from '../session/session-registry.js';
+import type { HoneyStore } from '../storage/honey.js';
 import { DispatchService } from './dispatch-service.js';
 import type { HiveTemplate, LiveHive, SessionParams } from './types.js';
 import { LiveHiveReadService } from './live-hive-read.js';
@@ -23,6 +24,11 @@ export interface LiveHiveServiceOptions {
   readonly defaultProject?: Project;
   readonly dispatchService?: DispatchService;
   readonly defaultHarness?: string;
+  /**
+   * Durable snapshot lookup. Delivery lazy-load only resumes an unloaded
+   * LiveHive when both `live.json` and this snapshot exist.
+   */
+  readonly honeyForGraph?: (liveId: string) => HoneyStore;
 }
 
 export interface LiveHiveOperationResult {
@@ -145,11 +151,19 @@ export class LiveHiveService {
 
   /**
    * Deliver one Pheromone to a bee. The call only hands the input to the field
-   * and resolves; execution continues in the background. A session shared with
+   * and resolves; execution continues in the background. An unloaded LiveHive
+   * with `live.json` and a Honey snapshot is loaded first. A session shared with
    * other LiveHives is serialized by the harness adapter, not by this method.
    */
   async trigger(liveId: string, beeId: string, input: string): Promise<void> {
     this.repository.requireLiveId(liveId);
+    await ensureLoaded(
+      this.options.liveHiveHost,
+      this.repository,
+      this.options.honeyForGraph,
+      liveId,
+      (id) => this.load(id),
+    );
     await this.options.liveHiveHost.trigger(liveId, beeId, messageValue(input));
   }
 
@@ -160,6 +174,13 @@ export class LiveHiveService {
     token?: string,
   ): Promise<void> {
     this.repository.requireLiveId(liveId);
+    await ensureLoaded(
+      this.options.liveHiveHost,
+      this.repository,
+      this.options.honeyForGraph,
+      liveId,
+      (id) => this.load(id),
+    );
     await this.options.liveHiveHost.answer(liveId, beeId, messageValue(input), token);
   }
 
@@ -171,7 +192,7 @@ export class LiveHiveService {
       id,
     );
     const status = await this.options.liveHiveHost.save(id);
-    this.syncBindings(live);
+    syncBindings(this.options.liveHiveHost, this.repository, live);
     return status;
   }
 
@@ -179,7 +200,10 @@ export class LiveHiveService {
   async unload(liveId: string): Promise<boolean> {
     const id = this.repository.requireLiveId(liveId);
     const live = this.repository.cacheGet(id) ?? this.repository.tryReadLive(id);
-    const synced = live === undefined ? undefined : this.syncBindings(live);
+    const synced =
+      live === undefined
+        ? undefined
+        : syncBindings(this.options.liveHiveHost, this.repository, live);
     const unloaded = await this.options.liveHiveHost.unload(id);
     if (unloaded && synced !== undefined) {
       this.repository.saveLive(synced);
@@ -254,28 +278,59 @@ export class LiveHiveService {
     });
     // live.json is the binding truth: persist the sessions LiveHiveHost actually
     // created/attached for this topology.
-    this.syncBindings(live);
+    syncBindings(this.options.liveHiveHost, this.repository, live);
     return status;
   }
+}
 
-  /** Combine the loaded bee -> session mapping into live.json. */
-  private syncBindings(live: LiveHive): LiveHive {
-    const loaded = this.options.liveHiveHost.bindingsOf(live.liveId);
-    const bindings: Record<string, string> = {};
-    for (const [beeId, bee] of Object.entries(live.bees)) {
-      if (bee.kind !== 'forager') {
-        continue;
-      }
-      const sessionId = loaded.get(beeId) ?? live.bindings[beeId];
-      if (sessionId !== undefined) {
-        bindings[beeId] = sessionId;
-      }
-    }
-    const next = this.repository.parseLive({ ...live, bindings });
-    this.repository.saveLive(next);
-    this.repository.cacheSet(next);
-    return next;
+/** Delivery lazy-load for trigger/answer: live.json plus a Honey snapshot. */
+async function ensureLoaded(
+  host: LiveHiveHost,
+  repository: LiveHiveRepository,
+  honeyForGraph: ((liveId: string) => HoneyStore) | undefined,
+  liveId: string,
+  load: (id: string) => Promise<unknown>,
+): Promise<void> {
+  if (host.statusOf(liveId) !== undefined) {
+    return;
   }
+  if (repository.tryReadLive(liveId) === undefined) {
+    return;
+  }
+  if (honeyForGraph?.(liveId).exists() !== true) {
+    return;
+  }
+  try {
+    await load(liveId);
+  } catch (error) {
+    // A concurrent delivery may have loaded it first; only a still-unloaded id
+    // is a real lazy-load failure.
+    if (host.statusOf(liveId) === undefined) {
+      throw error;
+    }
+  }
+}
+
+function syncBindings(
+  host: LiveHiveHost,
+  repository: LiveHiveRepository,
+  live: LiveHive,
+): LiveHive {
+  const loaded = host.bindingsOf(live.liveId);
+  const bindings: Record<string, string> = {};
+  for (const [beeId, bee] of Object.entries(live.bees)) {
+    if (bee.kind !== 'forager') {
+      continue;
+    }
+    const sessionId = loaded.get(beeId) ?? live.bindings[beeId];
+    if (sessionId !== undefined) {
+      bindings[beeId] = sessionId;
+    }
+  }
+  const next = repository.parseLive({ ...live, bindings });
+  repository.saveLive(next);
+  repository.cacheSet(next);
+  return next;
 }
 
 function bindingsFor(live: LiveHive, defaults?: LiveHiveOverrides): GraphBindings {

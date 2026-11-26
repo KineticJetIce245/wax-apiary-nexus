@@ -77,7 +77,7 @@ test('the field keeps the admitted free JSON value and moves it by reference', a
   assert.ok(entry !== undefined);
   assert.deepEqual(entry.value, input);
 
-  await runtime.pump();
+  await runtime.settle();
   const output = runtime.snapshot().nodes['start']?.lastOutput;
   assert.deepEqual(output, input);
   assert.equal(runtime.snapshot().rest, true);
@@ -88,7 +88,7 @@ test('null is a normal field value; a structured wrapper is gone', async () => {
   const input: Value = { message: null, custom: { nested: null } };
   assertValue(input);
   await runtime.admit('start', input);
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, input);
 });
 
@@ -96,7 +96,7 @@ test('a value with a legacy kind field is ordinary data, not a tag', async () =>
   const runtime = passthrough();
   const input: Value = { kind: 'text', text: 'arbitrary data', message: 'kept' };
   await runtime.admit('start', input);
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, input);
 });
 

@@ -25,13 +25,11 @@ export class LiveHiveHostContext {
   readonly catalog: LiveHiveCatalog | undefined;
   readonly guardTimeoutMs: number | undefined;
   readonly schedulers: SchedulerService;
-  readonly allowHoverUnload: boolean;
   readonly now: () => number;
   readonly defaultIdleTtlMs: number;
   readonly honeyForGraph: ((graphId: string) => HoneyStore) | undefined;
   readonly restoreHoney: boolean;
   readonly bindingStore: LiveHiveHostOptions['bindingStore'];
-  readonly maxPumps: number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly maxWaitMs: number;
   readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
@@ -53,11 +51,6 @@ export class LiveHiveHostContext {
     this.registry = options.registry;
     this.catalog = options.catalog;
     this.guardTimeoutMs = positiveIntegerOption(options.guardTimeoutMs, 'guardTimeoutMs');
-    this.allowHoverUnload = readBooleanOption(
-      options.allowHoverUnload,
-      'allowHoverUnload',
-      false,
-    );
     this.now = options.now ?? (() => Date.now());
     this.honeyForGraph = options.honeyForGraph;
     this.restoreHoney = readBooleanOption(options.restoreHoney, 'restoreHoney', true);
@@ -66,8 +59,6 @@ export class LiveHiveHostContext {
       options.defaultIdleTtlMs ??
       (options.honeyForGraph === undefined ? 0 : DEFAULT_IDLE_TTL_MS);
     assertNonNegativeInteger(this.defaultIdleTtlMs, 'defaultIdleTtlMs');
-    this.maxPumps = options.maxPumps ?? 50;
-    assertNonNegativeInteger(this.maxPumps, 'maxPumps');
     this.sleep = options.sleep ?? defaultSleep;
     if (typeof this.sleep !== 'function') {
       throw new TypeError('sleep must be a function');
@@ -111,13 +102,10 @@ export class LiveHiveHostContext {
     this.graphs = new GraphRegistry<LiveGraph>({
       now: this.now,
       defaultIdleTtlMs: this.defaultIdleTtlMs,
-      // Rest-only by default. With `allowHoverUnload`, a field parked on
-      // hover(s) with no active/pending/queued work may be flushed and
-      // released; Honey makes that hover replayable after a reload.
-      isSafeToUnload: (_id, live) => {
-        const snapshot = live.runtime.snapshot();
-        return snapshot.rest || (this.allowHoverUnload && isQuiescentHover(snapshot));
-      },
+      // Idle unload is a snapshot: a user hover or an active activation may be
+      // released. A pending Guard blocks it, because an approval cannot be
+      // answered after its runtime is gone. Field changes renew the TTL.
+      isSafeToUnload: (_id, live) => !hasPendingGuard(live),
       onUnload: (id, live) => this.unloadHandler(id, live),
     });
   }
@@ -177,29 +165,17 @@ export function snapshotHovered(snapshot: PheromoneFieldSnapshot): boolean {
 }
 
 /**
- * A field may be flushed and released while parked on hover(s) only.
- *
- * At least one node hovers, and no node has active, pending or queued work. An
- * incomplete Gather join is allowed: the hover branch can still be waiting in
- * it, and Honey persists gathers together with the hover. A guard hover is
- * allowed too, even though in practice it coexists with its own active
- * execution and therefore is not quiescent.
+ * A pending Guard is the one hover that cannot be restored: its native request
+ * and waiter are gone after an unload. It blocks idle unload; a user hover does
+ * not, because it is persisted and answerable after a reload.
  */
-export function isQuiescentHover(snapshot: PheromoneFieldSnapshot): boolean {
-  let hovered = false;
-  for (const state of Object.values(snapshot.nodes)) {
-    if (
-      state.active !== undefined ||
-      state.pending !== undefined ||
-      state.receptor.length > 0
-    ) {
-      return false;
-    }
-    if (state.hover !== undefined) {
-      hovered = true;
+export function hasPendingGuard(live: LiveGraph): boolean {
+  for (const state of Object.values(live.runtime.snapshot().nodes)) {
+    if (state.hover?.kind === 'guard') {
+      return true;
     }
   }
-  return hovered;
+  return false;
 }
 
 export function defaultSleep(ms: number): Promise<void> {

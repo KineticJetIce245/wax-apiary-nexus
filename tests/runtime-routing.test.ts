@@ -133,23 +133,23 @@ function waitForExecutionSettled(workspace: Workspace, executionId: string): Pro
 }
 
 /**
- * Pumps until Rest. Each pump may activate a node once; advancing the injected
- * clock past `minIntervalMs` lets a paced node run again without a real sleep.
+ * Settles until Rest. Advancing the injected clock past `minIntervalMs` lets a
+ * paced node run on the next per-Bee wake without a real sleep.
  */
-async function pumpUntilRest(
+async function settleUntilRest(
   runtime: PheromoneRuntime,
   advanceClock: () => void,
-  maxPumps = 10,
+  attempts = 10,
 ): Promise<PheromoneFieldSnapshot> {
-  for (let pump = 1; pump <= maxPumps; pump += 1) {
-    await runtime.pump();
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await runtime.settle();
     const snapshot = runtime.snapshot();
     if (snapshot.rest) {
       return snapshot;
     }
     advanceClock();
   }
-  throw new Error(`field did not reach Rest after ${String(maxPumps)} pumps`);
+  throw new Error(`field did not reach Rest after ${String(attempts)} settle passes`);
 }
 
 test('spread routes each branch to its own session and the field reaches Rest', async (t) => {
@@ -194,7 +194,7 @@ test('spread routes each branch to its own session and the field reaches Rest', 
     now: () => clock,
   });
   runtime.admit('start', text('seed'));
-  const snapshot = await pumpUntilRest(runtime, () => {
+  const snapshot = await settleUntilRest(runtime, () => {
     clock += 1000;
   });
 

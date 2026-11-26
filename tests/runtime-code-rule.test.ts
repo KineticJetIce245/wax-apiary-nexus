@@ -32,7 +32,7 @@ async function branchOf(when: Record<string, unknown>, value: Value): Promise<st
   );
   const runtime = runtimeOf(definition, recorder().executor);
   await runtime.admit('check', value);
-  await runtime.pump();
+  await runtime.settle();
   const snapshot = runtime.snapshot();
   if (snapshot.nodes['yes']?.hover !== undefined) {
     return 'true';
@@ -116,17 +116,17 @@ test('a code rule receives a clone, so it cannot mutate the field value', () => 
   assert.deepEqual(value, { message: 'original' });
 });
 
-test('a throw, timeout or wrong result type is a typed rule error', async () => {
-  await assert.rejects(
-    branchOf({ code: "throw new Error('nope');" }, { message: 'x' }),
+test('a throw, timeout or wrong result type is a typed rule error', () => {
+  assert.throws(
+    () => matchesRule({ code: "throw new Error('nope');" }, { message: 'x' }, 'test'),
     (error: unknown) => error instanceof RuleExecutionError && /nope/.test(error.message),
   );
-  await assert.rejects(
-    branchOf({ code: 'return 1;' }, { message: 'x' }),
+  assert.throws(
+    () => matchesRule({ code: 'return 1;' }, { message: 'x' }, 'test'),
     (error: unknown) => error instanceof RuleExecutionError && /boolean/.test(error.message),
   );
-  await assert.rejects(
-    branchOf({ code: 'while (true) {}' }, { message: 'x' }),
+  assert.throws(
+    () => matchesRule({ code: 'while (true) {}' }, { message: 'x' }, 'test'),
     (error: unknown) => error instanceof RuleExecutionError && /timed out/.test(error.message),
   );
 });

@@ -524,19 +524,20 @@ side-effecting work; fail closed when state is uncertain.
 - **Aligned and implemented:** free JSON `Value`; `Pheromone` = `{ value }`;
   queue entries `{ value, enqueuedAt }`; Bee `reads`/`writes`/`fallback`/
   `filter` and `minIntervalMs`; condition `{ when }` rules; spread
-  `clone`/`cleave` by BeeId; field-owned per-Bee last output (memory only);
-  adapter session FIFO; ACP approval ownership; dispatch as an ephemeral graph
-  that is released at silent end and never returns output.
+  `clone`/`cleave` by BeeId; per-Bee self-driven drain (`wake`/`settle`,
+  per-Bee pacing, failure isolation); idle snapshot/unload; restored active
+  with late-result continuation; lazy-load on trigger/answer/native result;
+  field-owned per-Bee last output (memory only); adapter session FIFO; ACP
+  approval ownership; dispatch as an ephemeral graph that is released at silent
+  end and never returns output.
 - **Removed in the delivery-only closeout:** the execution tracker, per-request ids, run routes and
   records, per-trace limits, the old wake route, the mailbox name and its error
   codes, the dispatch timeout, and the synchronous answer wait. There are no
   aliases.
-- **Target, not implemented:** per-Bee self-driven drain (no field pump or
-  `maxPumps`); gather `assemble`/`batch` per-type queues, packages and tombstones
-  (currently a typed not-implemented placeholder); idle snapshot/unload with
-  restored active and late-result continuation; lazy-load on delivery; B-layer
-  `live.json`, HTTP/CLI input JSON and CONTRACT/README sync; real Codex+DSH
-  spread/gather evidence.
+- **Target, not implemented:** gather `assemble`/`batch` per-type queues,
+  packages and tombstones (currently a typed not-implemented placeholder);
+  B-layer `live.json`, HTTP/CLI input JSON and CONTRACT/README sync; real
+  Codex+DSH spread/gather evidence; independent conformance review.
 
 ## 7. Public names and API
 
@@ -573,21 +574,18 @@ The legacy graph control surface and its client commands were removed in an earl
 ## 8. Current implementation gap
 
 The delivery-only closeout is implemented; §6.1 records the aligned and removed
-surface. The M19 object model is delivered in slices (M19a–M19c): free JSON
+surface. The M19 object model is delivered in slices (M19a–M19d): free JSON
 `Value`, `{ value }` `Pheromone`, queue entries with `enqueuedAt`, Bee
-`reads`/`writes`/`fallback`/`filter`, and spread `clone`/`cleave`. Remaining:
+`reads`/`writes`/`fallback`/`filter`, spread `clone`/`cleave`, per-Bee drain and
+the resumable unload lifecycle. Remaining:
 
-- M19d: per-Bee self-driven drain and the idle snapshot / active resume /
-  late-result / lazy-load lifecycle (§4.2/§4.7–§4.9);
 - M19e: gather `assemble`/`batch` per-type queues, packages and tombstones
   (§4.13); gather is currently a typed not-implemented placeholder;
 - M19f: B-layer `live.json`, HTTP/CLI input JSON, CONTRACT/README sync;
 - M19g: real Codex+DSH spread/gather evidence;
 - M19h: independent conformance review.
 
-The current code still uses the field pump/`maxPumps` model and refuses to unload
-a non-Rest field; §9.6 records that temporary placeholder. There is no backcompat
-and no aliases.
+There is no backcompat and no aliases.
 
 One separate gap remains: the Honey directory layout (A23/C05): the code
 still uses `apiaries/<apiary>/compositions/<liveId>/honey/...`, while §5 specifies
@@ -599,9 +597,9 @@ do not silently move or delete old state.
 ## 9. Temporary design
 
 Status: **temporary, not final**. This section describes the current placeholder
-for target-full, the field pump/unload behavior and unimplemented paths until
-the replacement slices land. The final design is not defined (§4.14). Do not
-copy this section into final rules or treat it as a guarantee.
+for target-full and unimplemented paths until the replacement slices land. The
+final design is not defined (§4.14). Do not copy this section into final rules or
+treat it as a guarantee.
 
 ### 9.1 Scope
 
@@ -612,10 +610,8 @@ The temporary design applies to:
 - an input that matches no assemble type, matches multiple types, or arrives for
   a closed group;
 - a code-block rule that throws, times out or returns the wrong type;
-- the current field pump / `maxPumps` and the current unload/active behavior
-  (see §9.6); gather is a typed not-implemented placeholder;
 - a target path with no implementation yet (freeze, gather per-type queue
-  overflow).
+  overflow); gather is still a typed not-implemented placeholder.
 
 It does not change the final Value, Pheromone, spread, gather, read/write or
 persistence rules in §3/§4.12/§4.13/§5.
@@ -636,10 +632,9 @@ When one of the cases above occurs:
    design invents no timeout for it.
 5. There is no block, no backpressure wait, no freeze/resume, and no automatic
    retry.
-6. A failed or dropped input ends only that input; it never replays the
-   side-effecting work. In the current pump placeholder the pass stops and the
-   next delivery resumes; M19d's per-Bee drain continues with the next entry
-   (§9.6).
+6. A failed or dropped input ends only that input; the same Bee's drain
+   continues with its next receptor entry and other Bees are unaffected. It
+   never replays the side-effecting work.
 
 ### 9.3 Entry points and surfaces
 
@@ -667,34 +662,13 @@ When one of the cases above occurs:
 ### 9.5 Existing code vs temporary placeholder
 
 - Existing code (not final): `trigger`/`answer` receptor full -> 429; internal
-  moves drop + log; a failed activation ends the current field pump pass and the
-  next delivery resumes; gather is a typed not-implemented placeholder. M19d
-  replaces the pump with a per-Bee drain, continues a failed Bee with its next
-  entry, and adds the resumable unload lifecycle; M19e implements gather.
+  moves drop + log; a failed activation is dropped and the same Bee continues
+  with its next entry; gather is a typed not-implemented placeholder. M19e
+  implements gather.
 - The temporary placeholder for new target paths is error + drop as in §9.2.
 - The final design is not defined; do not infer it from either behavior.
 
-### 9.6 Temporary drain and unload placeholder
-
-Status: **temporary, not final**. This describes the current M19c code until
-M19d/M19e land; §4.2/§4.7–§4.9/§4.13/§6/§7 are the final design.
-
-- **Drain:** the field owns a field-wide pump (`pumpField`/`pump()`); the host
-  calls it per driver pass. `maxPumps` bounds those calls. A failed activation
-  ends the current pass; the next delivery resumes. Gather is a typed
-  not-implemented placeholder, so there is no `ready` or per-type queue yet.
-- **Unload:** `unload`/idle sweep only unload a Rest/safe field; an active
-  activation or an open user hover blocks it (hover needs the explicit
-  `allowHoverUnload`). On reload a restored active is marked unknown and is
-  never resumed.
-- **Delivery:** `trigger`/`answer` require a loaded LiveHive; there is no
-  lazy-load by id. A native result that outlives an unload is lost.
-- **Replacement:** M19d replaces this with per-Bee drain (`wake(bee)`/
-  `settle()`), no `maxPumps`, idle snapshot even with active/hover/open group
-  (guard blocks), restored active waiting for its result, late result
-  continuation, and lazy-load. M19e implements gather.
-
-### 9.7 Temporary test environment
+### 9.6 Temporary test environment
 
 DSH integration tests may temporarily override the ACP profile to
 `opencode-go` / `deepseek-v4.1-flash` and must restore it after the run. Use
@@ -702,9 +676,8 @@ DSH integration tests may temporarily override the ACP profile to
 restore (SHA256 in the integration notes). This is test setup, not a product
 contract.
 
-### 9.8 Replacement
+### 9.7 Replacement
 
-The freeze/recovery design replaces §9.2 when it lands. M19d replaces §9.6 with
-the final §4.2/§4.7–§4.9 drain and unload design; M19e implements gather. At
-that point those sections become historical, and §4.14 receives the final
-policy.
+The freeze/recovery design replaces §9.2 when it lands. M19e implements gather
+and then retires the gather placeholder described here. At that point this
+section becomes historical, and §4.14 receives the final policy.

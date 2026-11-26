@@ -1,5 +1,5 @@
-import type { GraphBindings } from '../../graph/binding.js';
-import { GraphAlreadyLoadedError, type LiveHiveId, type SweepReport } from '../../graph/registry.js';
+import type { LiveHiveId, SweepReport } from '../../graph/registry.js';
+import { GraphAlreadyLoadedError } from '../../graph/registry.js';
 import {
   instantiateForagers,
   type InstantiatedForagers,
@@ -7,15 +7,24 @@ import {
 import {
   PheromoneRuntime,
   type GuardRequest,
+  type LateActivationOutcome,
+  type NodeId,
   type PersistedField,
   type RecoveryReport,
+  type RuntimeOptions,
 } from '../../runtime/index.js';
 import type { SchedulerState } from '../scheduler.js';
 import { assertNonNegativeInteger, messageOf } from './context.js';
 import type { LiveHiveHostContext } from './context.js';
 import type { LiveHiveHostExecution } from './execution.js';
 import type { LiveHiveHostRead } from './read.js';
+import { handleRestTransition } from './rest.js';
 import type { SessionOwnership } from './session-ownership.js';
+import {
+  flushAndRelease,
+  lateResultHook,
+  releaseGraphResources,
+} from './unload.js';
 import {
   LiveHiveHostDisposedError,
   LiveHiveHostLoadError,
@@ -82,6 +91,10 @@ export class LiveHiveHostLifecycle {
       if (live === undefined) {
         throw new LiveHiveHostNotFoundError(graphId);
       }
+      // A quiet observation before the snapshot: a running drain (including a
+      // native execution) is awaited within the host wait bound. A timeout does
+      // not cancel the activation, so the saved field may still be active.
+      await live.runtime.settle(this.context.maxWaitMs);
       if (live.honey !== undefined) {
         await live.honey.save(live.runtime.exportField());
         const schedulerState = this.context.schedulers.exportState(graphId);
@@ -103,6 +116,12 @@ export class LiveHiveHostLifecycle {
     // must not queue behind a running trigger. tryRun still guarantees it can
     // never run concurrently with another mutating operation for this id.
     const outcome = await this.context.lock.tryRun(graphId, async () => {
+      // A quiet observation first: wait for a running drain (bounded by the
+      // host wait budget) so an unload does not race the last write-back.
+      const live = this.context.graphs.peek(graphId)?.value;
+      if (live !== undefined) {
+        await live.runtime.settle(this.context.maxWaitMs);
+      }
       // An ephemeral dispatch graph never entered the catalog, so its unload
       // must not create an entry. Read the flag while the entry still exists.
       const ephemeral = this.context.graphs.peek(graphId)?.value.ephemeral === true;
@@ -248,22 +267,21 @@ async function loadGraphLocked(
     // The LiveHive id is known only here, so the host stamps it onto every
     // guard request before the control surface can list it. The expiry hook
     // and the decision itself are unchanged.
-    const onGuard = context.onGuard;
-    const runtimeOptions = {
-      executeForager: instantiated.routing,
-      projectDirectory: options.project.directory,
-      now: context.now,
-      ...(onGuard === undefined
-        ? {}
-        : { onGuard: (request: GuardRequest) => onGuard({ ...request, liveId: graphId }) }),
-      ...(context.onGuardExpired === undefined
-        ? {}
-        : { onGuardExpired: context.onGuardExpired }),
-      ...(context.guardTimeoutMs === undefined
-        ? {}
-        : { guardTimeoutMs: context.guardTimeoutMs }),
-      ...runtimeLimitOptions(context),
-    };
+    const onLateResult = lateResultHook(
+      context,
+      options,
+      instantiated,
+      honey,
+      (reloadOptions) =>
+        loadGraphLocked(context, read, execution, reloadOptions).then(() => undefined),
+    );
+    const runtimeOptions = runtimeOptionsFor(
+      context,
+      graphId,
+      options,
+      instantiated,
+      onLateResult,
+    );
     let runtime: PheromoneRuntime;
     let recovery: RecoveryReport | undefined;
     if (persisted === undefined) {
@@ -360,10 +378,48 @@ async function loadGraphLocked(
   }
 }
 
+function runtimeOptionsFor(
+  context: LiveHiveHostContext,
+  graphId: LiveHiveId,
+  options: LoadGraphOptions,
+  instantiated: InstantiatedForagers,
+  onLateResult: (nodeId: NodeId, outcome: LateActivationOutcome) => void,
+): RuntimeOptions {
+  const onGuard = context.onGuard;
+  return {
+    executeForager: instantiated.routing,
+    projectDirectory: options.project.directory,
+    now: context.now,
+    sleep: context.sleep,
+    onChange: () => {
+      try {
+        // The field's own last-change clock is mirrored onto residency, so the
+        // idle TTL is measured from the last field mutation.
+        context.graphs.touch(graphId);
+      } catch {
+        // The graph is not registered yet (restore) or already unloading.
+      }
+    },
+    onRest: () => handleRestTransition(context, graphId),
+    onLateResult,
+    ...(onGuard === undefined
+      ? {}
+      : { onGuard: (request: GuardRequest) => onGuard({ ...request, liveId: graphId }) }),
+    ...(context.onGuardExpired === undefined
+      ? {}
+      : { onGuardExpired: context.onGuardExpired }),
+    ...(context.guardTimeoutMs === undefined
+      ? {}
+      : { guardTimeoutMs: context.guardTimeoutMs }),
+    ...runtimeLimitOptions(context),
+  };
+}
+
 async function disposeAll(context: LiveHiveHostContext): Promise<void> {
   for (const entry of context.graphs.list()) {
     try {
-      // Non-blocking: a busy graph stays loaded; an idle one unloads safely.
+      // Non-blocking: release the field (a running activation hands its result
+      // back to this host, which is already disposing, so it is dropped).
       await context.lock.tryRun(entry.id, async () => {
         const unloaded = await context.graphs.unload(entry.id);
         if (unloaded && !entry.value.ephemeral) {
@@ -379,101 +435,4 @@ async function disposeAll(context: LiveHiveHostContext): Promise<void> {
     }
   }
 }
-
-/**
- * Registry unload hook: a failed flush propagates and keeps the graph loaded;
- * a successful one stops scheduling and releases routing only.
- */
-async function flushAndRelease(
-  context: LiveHiveHostContext,
-  ownership: SessionOwnership,
-  graphId: LiveHiveId,
-  live: LiveGraph,
-): Promise<void> {
-  if (live.honey !== undefined) {
-    await live.honey.save(live.runtime.exportField());
-  }
-  // The flush succeeded (or there was none); no further scheduled occurrence
-  // may target a graph that is about to disappear, its waiting executions are
-  // settled by the adapter/session close path, and its explicit-session
-  // reservations become available to another graph.
-  context.schedulers.stop(graphId);
-  ownership.release(graphId);
-  await releaseGraphResources(context, graphId, live.instantiated, live.bindings, 'retain');
-}
-
-/**
- * Cleanup hook used by explicit unload, TTL sweep, dispose and load rollback.
- * It never rejects: GraphRegistry must be able to forget the graph even if a
- * close fails.
- *
- * `retain`: a normal unload/sweep/dispose. Only routing is disposed. No session
- * is closed and no `fresh_once` mapping is removed.
- * `rollback`: a load that never became visible. Every session this load created
- * is closed and the `fresh_once` mappings it created are removed. A reused
- * session is never closed or removed here.
- */
-async function releaseGraphResources(
-  context: LiveHiveHostContext,
-  graphId: LiveHiveId,
-  instantiated: InstantiatedForagers,
-  bindings: GraphBindings,
-  mode: 'retain' | 'rollback',
-): Promise<void> {
-  const sessionIds = mode === 'rollback' ? [...instantiated.createdSessionIds] : [];
-
-  try {
-    instantiated.dispose();
-  } catch (error) {
-    context.reportCleanupFailure({
-      type: 'graph.cleanup-failed',
-      graphId,
-      phase: 'routing',
-      error: messageOf(error),
-    });
-  }
-
-  if (mode === 'rollback' && context.bindingStore !== undefined) {
-    const created = new Set(instantiated.createdSessionIds);
-    for (const [nodeId, record] of instantiated.sessions) {
-      if (!created.has(record.sessionId)) {
-        continue;
-      }
-      const binding = bindings[nodeId];
-      if (
-        binding === undefined ||
-        binding.kind !== 'fresh' ||
-        (binding.mode ?? 'always') !== 'once'
-      ) {
-        continue;
-      }
-      try {
-        context.bindingStore.remove(graphId, nodeId);
-      } catch (error) {
-        context.reportCleanupFailure({
-          type: 'graph.cleanup-failed',
-          graphId,
-          phase: 'session',
-          sessionId: record.sessionId,
-          error: messageOf(error),
-        });
-      }
-    }
-  }
-
-  for (const sessionId of sessionIds) {
-    try {
-      await context.registry.close(sessionId);
-    } catch (error) {
-      context.reportCleanupFailure({
-        type: 'graph.cleanup-failed',
-        graphId,
-        phase: 'session',
-        sessionId,
-        error: messageOf(error),
-      });
-    }
-  }
-}
-
 

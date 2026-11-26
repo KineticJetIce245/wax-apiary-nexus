@@ -106,7 +106,7 @@ test('two different bees start and overlap before either activation finishes', a
   runtime.admit('a', text('a1'));
   runtime.admit('b', text('b1'));
 
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 2, 'both activations to start');
 
   // Both executors are entered and both are still held by the test: the two
@@ -126,7 +126,7 @@ test('two different bees start and overlap before either activation finishes', a
   );
 
   gated.release('b1');
-  await pumping;
+  await settling;
 
   assert.equal(runtime.snapshot().rest, true);
   assert.equal(internalsOf(runtime).drains.size, 0);
@@ -143,7 +143,7 @@ test('one bee stays FIFO with one active activation and no second drain', async 
   });
 
   runtime.admit('a', text('one'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 1, 'the first activation');
 
   assert.deepEqual(gated.started, ['one']);
@@ -167,7 +167,7 @@ test('one bee stays FIFO with one active activation and no second drain', async 
   assert.equal(internalsOf(runtime).drains.size, 1);
 
   gated.release('two');
-  await pumping;
+  await settling;
 
   assert.equal(runtime.snapshot().rest, true);
   assert.equal(internalsOf(runtime).drains.size, 0, 'no idle drain is left behind');
@@ -183,7 +183,7 @@ test('a wake either lands in the live mailbox or starts a fresh drain, never los
   });
 
   runtime.admit('a', text('first'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 1, 'the first activation');
 
   // Release and enqueue before the drain's continuation runs: the drain sees
@@ -194,7 +194,7 @@ test('a wake either lands in the live mailbox or starts a fresh drain, never los
 
   await waitFor(() => gated.started.length === 2, 'the appended wake to run');
   gated.release('second');
-  await pumping;
+  await settling;
   assert.deepEqual(gated.started, ['first', 'second']);
   assert.equal(runtime.snapshot().rest, true);
   assert.equal(mailboxOf(runtime, 'a'), undefined);
@@ -209,7 +209,7 @@ test('a wake that arrives after an empty mailbox rests starts a new drain', asyn
   });
 
   runtime.admit('a', text('first'));
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await waitFor(() => gated.started.length === 1, 'the first activation');
 
   gated.release('first');
@@ -225,7 +225,7 @@ test('a wake that arrives after an empty mailbox rests starts a new drain', asyn
 
   await waitFor(() => gated.started.length === 2, 'the restarted drain');
   gated.release('second');
-  await pumping;
+  await settling;
   assert.deepEqual(gated.started, ['first', 'second']);
   assert.equal(runtime.snapshot().rest, true);
   assert.equal(internalsOf(runtime).drains.size, 0);

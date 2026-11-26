@@ -4,7 +4,7 @@ import type { EngineContext } from './engine-context.js';
 import { emitAlong } from './emit.js';
 import type { GuardDecision, GuardRequest } from './executor.js';
 import { logHoverBlocked } from './runtime-log.js';
-import { queueDepth, stateOf } from './queue.js';
+import { markChanged, queueDepth, stateOf } from './queue.js';
 import { ReceptorFullError } from './receptor-overflow.js';
 import { cloneJson } from './value-paths.js';
 import type { HoverSpec, Pheromone, UserNode, Value } from './types.js';
@@ -35,6 +35,7 @@ export function openUserHover(
   };
   state.hover = hover;
   state.hoverPheromone = pheromone;
+  markChanged(ctx.queue);
   ctx.log({ event: 'hover.opened', nodeId: node.id, nodeKind: 'user' });
 }
 
@@ -57,6 +58,7 @@ export function completeHover(
   assertAnswerCapacity(ctx, node, outcome);
   delete state.hover;
   delete state.hoverPheromone;
+  markChanged(ctx.queue);
   ctx.log({ event: 'hover.resolved', nodeId: node.id, nodeKind: 'user', outcome });
   pheromone.value = value;
   state.lastOutput = cloneJson(value);
@@ -133,6 +135,7 @@ function openGuardHover(
       summary: request.summary,
     },
   };
+  markChanged(ctx.queue);
   ctx.log({
     event: 'guard.opened',
     nodeId: node.id,
@@ -190,6 +193,7 @@ async function waitForGuard(
     ctx.guardWaiters.delete(token);
     if (state.hover?.token === token) {
       delete state.hover;
+      markChanged(ctx.queue);
     }
   }
 }

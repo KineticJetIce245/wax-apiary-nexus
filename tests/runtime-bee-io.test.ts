@@ -8,8 +8,6 @@ import {
   parseComposition,
   PheromoneRuntime,
   renderPrompt,
-  ValueDropOverlapError,
-  ValuePathError,
   type BeeResult,
   type NodeExecutor,
   type RuntimeLogEntry,
@@ -143,13 +141,14 @@ test('reads resolve from the value and a static fallback patches only the input'
   const runtime = runtimeWith(definition, scriptedRun.executor);
 
   await runtime.admit('start', { message: 'hello' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(scriptedRun.inputs.map((call) => call.nodeId), ['start', 'next']);
   assert.deepEqual(scriptedRun.inputs[1]?.input, { message: 'reply' });
 });
 
-test('a missing declared read is a typed error unless fallback supplies it', async () => {
+test('a missing declared read drops the input unless fallback supplies it', async () => {
+  const log = createMemoryLog();
   const withoutFallback = fastDefinition('no-fallback', {
     start: {
       kind: 'forager',
@@ -157,14 +156,12 @@ test('a missing declared read is a typed error unless fallback supplies it', asy
       reads: ['meta.topic'],
     },
   });
-  const runtime = runtimeWith(withoutFallback, recorder().executor);
+  const runtime = runtimeWith(withoutFallback, recorder().executor, log.sink);
   await runtime.admit('start', text('hello'));
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof BeeIoError);
-    assert.equal(error.code, 'missing-read');
-    assert.match(error.message, /meta\.topic/);
-    return true;
-  });
+  await runtime.settle();
+  const failed = log.entries.find((entry) => entry.event === 'node.failed');
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /meta\.topic/);
   assert.equal(runtime.snapshot().nodes['start']?.active, undefined);
   assert.equal(runtime.snapshot().rest, true);
 
@@ -179,7 +176,7 @@ test('a missing declared read is a typed error unless fallback supplies it', asy
   const called = recorder();
   const fallbackRuntime = runtimeWith(withFallback, called.executor);
   await fallbackRuntime.admit('start', text('hello'));
-  await fallbackRuntime.pump();
+  await fallbackRuntime.settle();
   assert.deepEqual(called.calls[0]?.input, {
     message: 'hello',
     meta: { topic: { nested: true } },
@@ -196,10 +193,11 @@ test('a fallback may declare a prompt placeholder without a read list entry', as
   });
   const runtime = runtimeOf(definition, recorder().executor);
   await runtime.admit('start', text('hello'));
-  await runtime.pump();
+  await runtime.settle();
 });
 
 test('writes requires every declared path after filtering; null counts as present', async () => {
+  const log = createMemoryLog();
   const missing = fastDefinition('missing-write', {
     start: {
       kind: 'forager',
@@ -208,14 +206,13 @@ test('writes requires every declared path after filtering; null counts as presen
     },
   });
   const startRun = scripted(() => ({ message: 'ok' }));
-  const runtime = runtimeWith(missing, startRun.executor);
+  const runtime = runtimeWith(missing, startRun.executor, log.sink);
   await runtime.admit('start', text('seed'));
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof BeeIoError);
-    assert.equal(error.code, 'missing-write');
-    assert.match(error.message, /meta\.note/);
-    return true;
-  });
+  await runtime.settle();
+  const failed = log.entries.find((entry) => entry.event === 'node.failed');
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /meta\.note/);
+  assert.equal(runtime.snapshot().nodes['start']?.lastOutput, undefined);
 
   const nullPresent = fastDefinition('null-write', {
     start: {
@@ -229,7 +226,7 @@ test('writes requires every declared path after filtering; null counts as presen
     scripted(() => ({ message: 'ok', meta: { note: null } })).executor,
   );
   await nullRuntime.admit('start', text('seed'));
-  await nullRuntime.pump();
+  await nullRuntime.settle();
   assert.deepEqual(nullRuntime.snapshot().nodes['start']?.lastOutput, {
     message: 'ok',
     meta: { note: null },
@@ -245,7 +242,7 @@ test('writes requires every declared path after filtering; null counts as presen
   const extraRun = scripted(() => ({ other: true }));
   const extraRuntime = runtimeWith(emptyWrites, extraRun.executor);
   await extraRuntime.admit('start', text('seed'));
-  await extraRuntime.pump();
+  await extraRuntime.settle();
   assert.deepEqual(extraRuntime.snapshot().nodes['start']?.lastOutput, { other: true });
 });
 
@@ -266,7 +263,7 @@ test('writes is an assertion, not an allowlist: undeclared reply fields are merg
   const run = scripted(() => ({ message: 'ok', extra: { kept: 1 } }));
   const runtime = runtimeWith(definition, run.executor);
   await runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(run.inputs[1]?.input, {
     message: 'ok',
     extra: { kept: 1 },
@@ -296,7 +293,7 @@ test('filter applies allow then deny and logs only the removed paths', async () 
     log.sink,
   );
   await runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, {
     message: 'ok',
@@ -322,7 +319,7 @@ test('an allow filter drops ancestor containers that hold no allowed field', asy
     scripted(() => ({ message: 'ok', meta: { debug: 'x' }, scalar: 1 })).executor,
   );
   await runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, {
     message: 'ok',
   });
@@ -342,7 +339,7 @@ test('a deny-only filter removes a subtree and leaves the rest', async () => {
     scripted(() => ({ message: 'ok', meta: { topic: 't', debug: 'x' } })).executor,
   );
   await runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, {
     message: 'ok',
     meta: { topic: 't' },
@@ -350,6 +347,7 @@ test('a deny-only filter removes a subtree and leaves the rest', async () => {
 });
 
 test('filter runs before the writes check', async () => {
+  const log = createMemoryLog();
   const definition = fastDefinition('filter-writes', {
     start: {
       kind: 'forager',
@@ -361,13 +359,14 @@ test('filter runs before the writes check', async () => {
   const runtime = runtimeWith(
     definition,
     scripted(() => ({ message: 'ok', meta: { debug: 'x' } })).executor,
+    log.sink,
   );
   await runtime.admit('start', text('seed'));
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof BeeIoError);
-    assert.equal(error.code, 'missing-write');
-    return true;
-  });
+  await runtime.settle();
+  const failed = log.entries.find((entry) => entry.event === 'node.failed');
+  assert.ok(failed !== undefined);
+  assert.match(failed.error ?? '', /meta\.debug/);
+  assert.equal(runtime.snapshot().nodes['start']?.lastOutput, undefined);
 });
 
 test('an executor result may carry an independent drop applied after the merge', async () => {
@@ -391,7 +390,7 @@ test('an executor result may carry an independent drop applied after the merge',
   }));
   const runtime = runtimeWith(definition, run.executor, log.sink);
   await runtime.admit('start', { message: 'seed', meta: { keep: 1, debug: 'secret' } });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(run.inputs[1]?.input, {
     message: 'ok',
@@ -402,26 +401,36 @@ test('an executor result may carry an independent drop applied after the merge',
   assert.deepEqual(missing.paths, ['meta.missing']);
 });
 
-test('drop and value on the same path is a typed error, and an index drop is a config error', async () => {
+test('drop and value on the same path is a typed drop, and an index drop is a config drop', async () => {
+  const overlapLog = createMemoryLog();
   const overlap = fastDefinition('drop-overlap', {
     start: { kind: 'forager', config: { connection: 'c', prompt: 'p' }, writes: [] },
   });
   const overlapRuntime = runtimeWith(
     overlap,
     scripted(() => ({ value: { message: 'ok' }, drop: ['message'] })).executor,
+    overlapLog.sink,
   );
   await overlapRuntime.admit('start', text('seed'));
-  await assert.rejects(overlapRuntime.pump(), ValueDropOverlapError);
+  await overlapRuntime.settle();
+  const overlapFailed = overlapLog.entries.find((entry) => entry.event === 'node.failed');
+  assert.ok(overlapFailed !== undefined);
+  assert.match(overlapFailed.error ?? '', /same path 'message'/);
 
+  const indexLog = createMemoryLog();
   const index = fastDefinition('drop-index', {
     start: { kind: 'forager', config: { connection: 'c', prompt: 'p' }, writes: [] },
   });
   const indexRuntime = runtimeWith(
     index,
     scripted(() => ({ value: { message: 'ok' }, drop: ['items.0'] })).executor,
+    indexLog.sink,
   );
   await indexRuntime.admit('start', text('seed'));
-  await assert.rejects(indexRuntime.pump(), ValuePathError);
+  await indexRuntime.settle();
+  const indexFailed = indexLog.entries.find((entry) => entry.event === 'node.failed');
+  assert.ok(indexFailed !== undefined);
+  assert.match(indexFailed.error ?? '', /array indices/);
 });
 
 test('condition and counter never write lastOutput', async () => {
@@ -442,7 +451,7 @@ test('condition and counter never write lastOutput', async () => {
   );
   const conditionRuntime = runtimeOf(conditionDefinition, recorder().executor);
   await conditionRuntime.admit('check', { flag: true });
-  await conditionRuntime.pump();
+  await conditionRuntime.settle();
   assert.equal(conditionRuntime.snapshot().nodes['check']?.lastOutput, undefined);
   assert.ok(conditionRuntime.snapshot().nodes['yes']?.hover !== undefined);
 
@@ -459,7 +468,7 @@ test('condition and counter never write lastOutput', async () => {
   );
   const counterRuntime = runtimeOf(counterDefinition, recorder().executor);
   await counterRuntime.admit('count', { message: 'seed' });
-  await counterRuntime.pump();
+  await counterRuntime.settle();
   assert.equal(counterRuntime.snapshot().nodes['count']?.lastOutput, undefined);
 });
 
@@ -469,10 +478,10 @@ test('a user answer writes lastOutput and stays bound to the hovered value', asy
   });
   const runtime = runtimeOf(definition, recorder().executor);
   await runtime.admit('ask', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
   const answer: Value = { message: 'Ada', extra: { n: 1 } };
   runtime.answerHover('ask', answer);
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['ask']?.lastOutput, answer);
 });
 
@@ -536,7 +545,7 @@ test('forager filter and drop never leak into the produced lastOutput', async ()
       .executor,
   );
   await runtime.admit('start', text('seed'));
-  await runtime.pump();
+  await runtime.settle();
   assert.deepEqual(runtime.snapshot().nodes['start']?.lastOutput, {
     message: 'ok',
     meta: {},

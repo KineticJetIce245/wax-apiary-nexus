@@ -343,11 +343,10 @@ export interface PersistedField {
   nodes: Record<NodeId, PersistedNodeState>;
 }
 
-/** What a restore could not keep running, and why. */
+/**
+ * What a restore resumed. A restored active is the same activation: it waits
+ * for its own native result and is never replayed or marked unknown.
+ */
 export interface RecoveryReport {
   readonly resumedHovers: readonly NodeId[];
-  /** A forager was mid-execution when the process died; never replayed. */
-  readonly unknownActive: readonly NodeId[];
-  /** An active Pheromone on a node that cannot be resumed at all. */
-  readonly stuckActive: readonly NodeId[];
 }

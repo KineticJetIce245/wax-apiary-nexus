@@ -67,7 +67,7 @@ test('a user node parks the Pheromone in a hover instead of running', async () =
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   const snapshot = runtime.snapshot();
   const ask = snapshot.nodes['ask'];
@@ -87,12 +87,12 @@ test('answering a hover resumes the graph and reaches Rest', async () => {
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
   const token = runtime.snapshot().nodes['ask']?.hover?.token;
   assert.ok(token !== undefined);
 
   runtime.answerHover('ask', { message: 'yes' }, token);
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(calls.map((call) => call.nodeId), ['start', 'done']);
   assert.equal(runtime.snapshot().rest, true);
@@ -104,11 +104,11 @@ test('a user node without an outgoing edge is terminal', async () => {
   const runtime = new PheromoneRuntime(userOnlyComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('ask', { message: 'ignored' });
-  await runtime.pump();
+  await runtime.settle();
   assert.ok(runtime.snapshot().nodes['ask']?.hover !== undefined);
 
   runtime.answerHover('ask', { message: 'Ada' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.equal(runtime.snapshot().rest, true);
 });
@@ -131,7 +131,7 @@ test('an answer before the hover is rejected instead of being queued', async () 
   assert.equal(runtime.snapshot().nodes['ask']?.hover, undefined);
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   const ask = runtime.snapshot().nodes['ask'];
   assert.ok(ask !== undefined);
@@ -146,7 +146,7 @@ test('hover tokens and modalities are validated', async () => {
   const runtime = new PheromoneRuntime(askComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
   const token = runtime.snapshot().nodes['ask']?.hover?.token;
   assert.ok(token !== undefined);
 
@@ -164,11 +164,11 @@ test('yes-no accepts booleans and rejects text', async () => {
   });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.throws(() => runtime.answerHover('ask', { message: 'yes' }), /expects a boolean/);
   runtime.answerHover('ask', { boolean: true });
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(runtime.snapshot().rest, true);
 });
 
@@ -181,11 +181,11 @@ test('choice accepts only an offered label', async () => {
   );
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.throws(() => runtime.answerHover('ask', { choice: 'maybe' }), /does not offer choice/);
   runtime.answerHover('ask', { choice: 'approve' });
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(runtime.snapshot().rest, true);
 });
 
@@ -196,7 +196,7 @@ test('a hovering node does not activate queued Pheromones', async () => {
 
   runtime.admit('ask', { message: 'first' });
   runtime.admit('ask', { message: 'second' });
-  await runtime.pump();
+  await runtime.settle();
 
   const ask = runtime.snapshot().nodes['ask'];
   assert.ok(ask !== undefined);
@@ -205,7 +205,7 @@ test('a hovering node does not activate queued Pheromones', async () => {
 
   runtime.answerHover('ask', { message: 'answer' });
   clock += 1000;
-  await runtime.pump();
+  await runtime.settle();
 
   const second = runtime.snapshot().nodes['ask'];
   assert.ok(second !== undefined);
@@ -224,9 +224,9 @@ test('the log records hover open and resolve', async () => {
   });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
   runtime.answerHover('ask', { message: 'yes' });
-  await runtime.pump();
+  await runtime.settle();
 
   const events = log.entries.map((entry) => entry.event);
   assert.ok(events.includes('hover.opened'));

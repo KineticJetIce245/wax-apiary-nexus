@@ -50,9 +50,10 @@ function persistedNode(state: NodeState): PersistedNodeState {
 }
 
 /**
- * Applies a persisted field to the runtime states. Queue entries, pending and
- * user hovers resume; an active execution becomes unknown/stuck and is never
- * replayed. A schema or shape mismatch fails closed.
+ * Applies a persisted field to the runtime states. Queue entries, pending slots,
+ * user hovers and an active activation are all resumed; the active one waits for
+ * its own native result and is never replayed. A schema or shape mismatch fails
+ * closed.
  */
 export function applyPersistedField(
   definition: CompositionDefinition,
@@ -61,11 +62,10 @@ export function applyPersistedField(
   log: RuntimeLogFieldsSink,
 ): RecoveryReport {
   assertCompatible(definition, field);
-  const report: {
-    resumedHovers: NodeId[];
-    unknownActive: NodeId[];
-    stuckActive: NodeId[];
-  } = { resumedHovers: [], unknownActive: [], stuckActive: [] };
+  const report: { resumedHovers: NodeId[]; active: NodeId[] } = {
+    resumedHovers: [],
+    active: [],
+  };
   for (const [id, node] of definition.nodes) {
     const saved = field.nodes[id];
     if (saved === undefined) {
@@ -75,9 +75,9 @@ export function applyPersistedField(
   }
   log({
     event: 'runtime.restored',
-    outcome: `hovers=${String(report.resumedHovers.length)} unknown=${String(report.unknownActive.length)} stuck=${String(report.stuckActive.length)}`,
+    outcome: `hovers=${String(report.resumedHovers.length)} active=${String(report.active.length)}`,
   });
-  return report;
+  return { resumedHovers: report.resumedHovers };
 }
 
 function assertCompatible(
@@ -110,7 +110,7 @@ function restoreNode(
   node: NodeDefinition,
   state: NodeState,
   saved: PersistedNodeState,
-  report: { resumedHovers: NodeId[]; unknownActive: NodeId[]; stuckActive: NodeId[] },
+  report: { resumedHovers: NodeId[]; active: NodeId[] },
 ): void {
   if (saved.receptor !== undefined && saved.receptor.length > 0) {
     state.receptor = saved.receptor.map(cloneEntry);
@@ -132,7 +132,7 @@ function restoreHover(
   node: NodeDefinition,
   state: NodeState,
   saved: PersistedNodeState,
-  report: { resumedHovers: NodeId[]; stuckActive: NodeId[] },
+  report: { resumedHovers: NodeId[] },
 ): void {
   if (saved.hover === undefined) {
     return;
@@ -141,30 +141,22 @@ function restoreHover(
     state.hover = structuredClone(saved.hover);
     state.hoverPheromone = clonePheromone(saved.hoverPheromone);
     report.resumedHovers.push(node.id);
-    return;
   }
-  // A Guard cannot be answered after the native request is gone: it is
-  // cancelled, never resumed and never auto-allowed.
-  report.stuckActive.push(node.id);
-  state.state = { ...(state.state ?? {}), needsAttention: true };
+  // A Guard/approval hover cannot be resumed after its native request is gone;
+  // it is not replayed and is not auto-allowed. The field keeps no such hover.
 }
 
 function restoreActive(
   node: NodeDefinition,
   state: NodeState,
   saved: PersistedNodeState,
-  report: { unknownActive: NodeId[]; stuckActive: NodeId[] },
+  report: { active: NodeId[] },
 ): void {
   if (saved.active === undefined) {
     return;
   }
-  if (node.kind === 'forager') {
-    report.unknownActive.push(node.id);
-    state.state = { ...(state.state ?? {}), lastOutcome: 'unknown' };
-  } else {
-    report.stuckActive.push(node.id);
-  }
-  state.state = { ...(state.state ?? {}), needsAttention: true };
+  state.active = clonePheromone(saved.active);
+  report.active.push(node.id);
 }
 
 function stateOf(states: ReadonlyMap<NodeId, NodeState>, nodeId: NodeId): NodeState {

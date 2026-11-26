@@ -1,4 +1,4 @@
-import type { EngineContext } from './engine-context.js';
+import type { EngineContext, LateActivationOutcome } from './engine-context.js';
 import { matchesRule } from './definition-rules.js';
 import { emitAlong } from './emit.js';
 import { isBeeResult, type ExecutionContext } from './executor.js';
@@ -11,7 +11,12 @@ import {
   logFailed,
   logFiltered,
 } from './runtime-log.js';
-import { stagePending, stateOf } from './queue.js';
+import {
+  expireReceptorOfNode,
+  markChanged,
+  stagePending,
+  stateOf,
+} from './queue.js';
 import { workerLogFields } from './runtime-values.js';
 import { runSpread } from './spread.js';
 import { assertValue } from './runtime-input.js';
@@ -42,6 +47,13 @@ export interface Activation {
   readonly pheromone: Pheromone;
 }
 
+/** What one per-Bee drain step found: work, a pacing due instant, or quiet. */
+export type DrainStep =
+  | { readonly kind: 'activation'; readonly activation: Activation }
+  | { readonly kind: 'pacing'; readonly dueAt: number }
+  | { readonly kind: 'waiting' }
+  | { readonly kind: 'idle' };
+
 interface NodeResult {
   /** The reply to merge; undefined for condition/counter, which emit no value. */
   readonly value?: Value;
@@ -51,53 +63,57 @@ interface NodeResult {
   readonly log?: Partial<import('./log.js').RuntimeLogEntry>;
 }
 
-export function takeRunnable(ctx: EngineContext): Activation | null {
-  const now = ctx.now();
-  for (const node of ctx.definition.nodes.values()) {
-    if (ctx.drains.has(node.id)) {
-      continue;
-    }
-    const activation = takeForNode(ctx, node, now);
-    if (activation !== null) {
-      return activation;
-    }
-  }
-  return null;
-}
-
-export function takeNextForNode(ctx: EngineContext, nodeId: string): Activation | null {
-  const node = ctx.definition.nodes.get(nodeId);
-  return node === undefined ? null : takeForNode(ctx, node, ctx.now());
-}
-
 /**
- * Stages the receptor head as pending and, once pacing allows, hands it to one
- * activation. Nothing is reserved here: a full downstream receptor drops the
- * emitted value at the move (§9), it never holds the source input back.
+ * Takes the next step for one Bee's drain. The head of the receptor becomes
+ * `pending`; an activation is handed over only once `minIntervalMs` has passed
+ * since the previous activation. Nothing is reserved here: a full downstream
+ * receptor drops the emitted value at the move (§9), it never holds the source
+ * input back.
  */
-function takeForNode(
-  ctx: EngineContext,
-  node: NodeDefinition,
-  now: number,
-): Activation | null {
-  const state = stateOf(ctx.queue, node.id);
-  if (state.active !== undefined || state.hover !== undefined) {
-    return null;
+export function nextDrainStep(ctx: EngineContext, nodeId: string): DrainStep {
+  const node = ctx.definition.nodes.get(nodeId);
+  if (node === undefined) {
+    return { kind: 'idle' };
   }
-  const dueAt =
-    state.lastActivatedAt === undefined
-      ? Number.NEGATIVE_INFINITY
-      : Date.parse(state.lastActivatedAt) + node.minIntervalMs;
-  stagePending(ctx.queue, node, state, now < dueAt);
-  if (state.pending === undefined || now < dueAt) {
-    return null;
+  expireReceptorOfNode(ctx.queue, nodeId);
+  const state = stateOf(ctx.queue, nodeId);
+  if (state.active !== undefined || state.hover !== undefined) {
+    return { kind: 'waiting' };
+  }
+  const now = ctx.now();
+  const dueAt = nextDueAt(node, state);
+  if (state.pending === undefined) {
+    if ((state.receptor?.length ?? 0) === 0) {
+      return { kind: 'idle' };
+    }
+    stagePending(ctx.queue, node, state, now < dueAt);
+  }
+  if (state.pending === undefined) {
+    return { kind: 'idle' };
+  }
+  if (now < dueAt) {
+    return { kind: 'pacing', dueAt };
   }
   const pheromone = state.pending;
   delete state.pending;
-  return { node, pheromone };
+  markChanged(ctx.queue);
+  return { kind: 'activation', activation: { node, pheromone } };
 }
 
-/** Runs one activation to completion. */
+function nextDueAt(node: NodeDefinition, state: NodeState): number {
+  return state.lastActivatedAt === undefined
+    ? Number.NEGATIVE_INFINITY
+    : Date.parse(state.lastActivatedAt) + node.minIntervalMs;
+}
+
+/**
+ * Runs one activation to completion.
+ *
+ * A failed input is dropped and logged; the same Bee's drain then continues
+ * with its next entry and other Bees are unaffected (§9.2). The failure is
+ * never replayed. When the field was detached while a native execution was in
+ * flight, its result is handed back to the host instead of being written back.
+ */
 export async function activate(ctx: EngineContext, activation: Activation): Promise<void> {
   const { node, pheromone } = activation;
   const state = stateOf(ctx.queue, node.id);
@@ -107,16 +123,26 @@ export async function activate(ctx: EngineContext, activation: Activation): Prom
   }
   try {
     if (node.kind === 'spread') {
-      await controlActivation(ctx, node, startedAt, () =>
-        runSpread(ctx, node, pheromone),
-      );
+      runControl(ctx, node, () => runSpread(ctx, node, pheromone), startedAt);
       return;
     }
     if (node.kind === 'gather') {
-      await controlActivation(ctx, node, startedAt, () => runGather(node));
+      runControl(ctx, node, () => runGather(node), startedAt);
       return;
     }
-    await taskActivation(ctx, node, pheromone, state, startedAt);
+    const result = await runNode(ctx, node, pheromone, state);
+    if (ctx.detached) {
+      handOffResult(ctx, node, result, startedAt);
+      return;
+    }
+    finishActivation(ctx, node, pheromone, startedAt, result);
+  } catch (error) {
+    if (ctx.detached) {
+      handOffFailure(ctx, node, error, startedAt);
+    } else {
+      logFailed(ctx.log, node, startedAt, ctx.now(), error);
+      markChanged(ctx.queue);
+    }
   } finally {
     delete state.active;
   }
@@ -131,6 +157,7 @@ function beginActivation(
 ): number | null {
   state.lastActivatedAt = ctx.iso();
   ctx.resting = false;
+  markChanged(ctx.queue);
   logActivated(ctx.log, node, state.receptor?.length ?? 0);
   if (node.kind === 'user') {
     openUserHover(ctx, node, pheromone);
@@ -141,40 +168,23 @@ function beginActivation(
 }
 
 /**
- * Runs a control Bee. Spread emits its copies and returns an outcome; a typed
- * error (unknown target, missing cleave path, bad alignment) fails the one
- * activation and emits nothing, because parts are built before any emission.
+ * Runs one control Bee synchronously. A typed error (unknown target, missing
+ * cleave path, not-implemented gather) drops only this input; it is logged and
+ * the field keeps running.
  */
-async function controlActivation(
+function runControl(
   ctx: EngineContext,
   node: NodeDefinition,
-  startedAt: number,
   run: () => string,
-): Promise<void> {
+  startedAt: number,
+): void {
   try {
     const outcome = run();
     logCompleted(ctx.log, node, ctx.now() - startedAt, outcome);
+    markChanged(ctx.queue);
   } catch (error) {
     logFailed(ctx.log, node, startedAt, ctx.now(), error);
-    ctx.failure ??= error;
-    throw error;
-  }
-}
-
-async function taskActivation(
-  ctx: EngineContext,
-  node: NodeDefinition,
-  pheromone: Pheromone,
-  state: NodeState,
-  startedAt: number,
-): Promise<void> {
-  try {
-    const result = await runNode(ctx, node, pheromone, state);
-    finishActivation(ctx, node, pheromone, startedAt, result);
-  } catch (error) {
-    logFailed(ctx.log, node, startedAt, ctx.now(), error);
-    ctx.failure ??= error;
-    throw error;
+    markChanged(ctx.queue);
   }
 }
 
@@ -190,6 +200,7 @@ function finishActivation(
   if ((node.kind === 'forager' || node.kind === 'worker') && result.value !== undefined) {
     applyReply(ctx, node, pheromone, state, result);
   }
+  markChanged(ctx.queue);
   emitAlong(ctx, node, pheromone, result.branch);
 }
 
@@ -219,6 +230,92 @@ function applyReply(
   });
   pheromone.value = applied.value;
   state.lastOutput = cloneJson(filtered.value);
+}
+
+/** Hands one completed native result to the host after the field was released. */
+function handOffResult(
+  ctx: EngineContext,
+  node: NodeDefinition,
+  result: NodeResult,
+  startedAt: number,
+): void {
+  const handler = ctx.onLateResult;
+  if (handler === undefined || result.value === undefined) {
+    logFailed(
+      ctx.log,
+      node,
+      startedAt,
+      ctx.now(),
+      new Error(`late result for '${node.id}' has no destination field`),
+    );
+    markChanged(ctx.queue);
+    return;
+  }
+  handler(node.id, {
+    ok: true,
+    value: result.value,
+    outcome: result.outcome,
+    startedAt,
+    ...(result.drop === undefined ? {} : { drop: result.drop }),
+    ...(result.branch === undefined ? {} : { branch: result.branch }),
+  });
+}
+
+/** Hands one failed native result to the host after the field was released. */
+function handOffFailure(
+  ctx: EngineContext,
+  node: NodeDefinition,
+  error: unknown,
+  startedAt: number,
+): void {
+  const handler = ctx.onLateResult;
+  if (handler === undefined) {
+    logFailed(ctx.log, node, startedAt, ctx.now(), error);
+    markChanged(ctx.queue);
+    return;
+  }
+  handler(node.id, {
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+    startedAt,
+  });
+}
+
+/**
+ * Completes one restored active with the late result of its own native
+ * execution. It is the same activation: write-back and the outgoing move, never
+ * a second Bee execution.
+ */
+export function applyRestoredOutcome(
+  ctx: EngineContext,
+  nodeId: string,
+  outcome: LateActivationOutcome,
+): void {
+  const node = ctx.definition.nodes.get(nodeId);
+  if (node === undefined) {
+    throw new Error(`unknown node '${nodeId}'`);
+  }
+  const state = stateOf(ctx.queue, nodeId);
+  const pheromone = state.active;
+  if (pheromone === undefined) {
+    throw new Error(`node '${nodeId}' has no restored active activation`);
+  }
+  try {
+    if (!outcome.ok) {
+      logFailed(ctx.log, node, outcome.startedAt, ctx.now(), new Error(outcome.error));
+      markChanged(ctx.queue);
+      return;
+    }
+    const result: NodeResult = {
+      value: outcome.value,
+      outcome: outcome.outcome,
+      ...(outcome.drop === undefined ? {} : { drop: outcome.drop }),
+      ...(outcome.branch === undefined ? {} : { branch: outcome.branch }),
+    };
+    finishActivation(ctx, node, pheromone, outcome.startedAt, result);
+  } finally {
+    delete state.active;
+  }
 }
 
 async function runNode(

@@ -59,7 +59,7 @@ test('a guard request parks the node in a guard hover and waits for the decision
   });
 
   runtime.admit('start', { message: 'x' });
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await wait(20);
 
   const hover = runtime.snapshot().nodes['start']?.hover;
@@ -69,7 +69,7 @@ test('a guard request parks the node in a guard hover and waits for the decision
   assert.equal(runtime.snapshot().rest, false);
 
   runtime.settleGuard('start', 'r1', 'allow_once');
-  await pumping;
+  await settling;
 
   assert.deepEqual(decisions, ['allow_once']);
   assert.equal(runtime.snapshot().nodes['start']?.hover, undefined);
@@ -84,7 +84,7 @@ test('without a handler the guard is rejected, never allowed', async () => {
   });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(decisions, ['reject_once']);
 });
@@ -101,7 +101,7 @@ test('a guard that times out is cancelled and cannot be settled afterwards', asy
   });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(decisions, ['cancelled']);
   assert.ok(log.entries.some((entry) => entry.event === 'guard.timeout'));
@@ -126,7 +126,7 @@ test('a guard timeout notifies the broker so a late decision is expired', async 
   });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(decisions, ['cancelled']);
   assert.deepEqual(broker.list(), []);
@@ -146,7 +146,7 @@ test('a throwing expiry hook still cancels the guard', async () => {
   });
 
   runtime.admit('start', { message: 'x' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(decisions, ['cancelled']);
   assert.equal(runtime.snapshot().nodes['start']?.hover, undefined);
@@ -162,14 +162,14 @@ test('a decision for another request is rejected and does not disturb the open o
   });
 
   runtime.admit('start', { message: 'x' });
-  const pumping = runtime.pump();
+  const settling = runtime.settle();
   await wait(20);
 
   assert.throws(() => runtime.settleGuard('start', 'other', 'allow_once'), /no open guard/);
   assert.equal(runtime.snapshot().nodes['start']?.hover?.meta?.['requestId'], 'r1');
 
   runtime.settleGuard('start', 'r1', 'reject_once');
-  await pumping;
+  await settling;
   assert.deepEqual(decisions, ['reject_once']);
 });
 

@@ -23,7 +23,8 @@ export function outgoingEdge(
  * Pheromone.
  *
  * A full target is the temporary §9 behaviour: the moved value is dropped and
- * the drop is logged; the pump keeps running and nothing is retried.
+ * the drop is logged; the producing Bee's drain keeps running and nothing is
+ * retried.
  */
 export function emitAlong(
   ctx: EngineContext,

@@ -52,7 +52,7 @@ function runtimeFor(modality: Record<string, unknown>): Harness {
 
 async function openAsk(runtime: PheromoneRuntime): Promise<void> {
   await runtime.admit('ask', { message: '' });
-  await runtime.pump();
+  await runtime.settle();
   assert.ok(runtime.snapshot().nodes['ask']?.hover !== undefined);
 }
 
@@ -62,7 +62,7 @@ test('accepts a message answer and forwards the exact Value', async () => {
 
   const answer: Value = { message: 'hello', attachments: [] };
   runtime.answerHover('ask', answer);
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(calls, [answer]);
   assert.equal(runtime.snapshot().rest, true);
@@ -75,7 +75,7 @@ test('accepts an image attachment path without touching the filesystem', async (
   // The path deliberately does not exist: the runtime validates shape only.
   const answer: Value = { attachments: [{ path: '/wax-3c2-missing/photo.png', mediaType: 'image/png' }] };
   runtime.answerHover('ask', answer);
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(calls, [answer]);
   assert.equal(runtime.snapshot().rest, true);
@@ -87,7 +87,7 @@ test('accepts a file attachment path', async () => {
 
   const answer: Value = { attachments: [{ path: '/wax-3c2-missing/report.pdf' }] };
   runtime.answerHover('ask', answer);
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(calls, [answer]);
   assert.equal(runtime.snapshot().rest, true);
@@ -146,7 +146,7 @@ test('an image attachment is inferred from mediaType or extension', async () => 
   );
   const answer: Value = { attachments: [{ path: '/photo.png' }] };
   image.runtime.answerHover('ask', answer);
-  await image.runtime.pump();
+  await image.runtime.settle();
   assert.deepEqual(image.calls, [answer]);
 
   // The file modality accepts any local path; the kind is not a tag.
@@ -154,7 +154,7 @@ test('an image attachment is inferred from mediaType or extension', async () => 
   await openAsk(file.runtime);
   const fileAnswer: Value = { attachments: [{ path: '/photo.png' }] };
   file.runtime.answerHover('ask', fileAnswer);
-  await file.runtime.pump();
+  await file.runtime.settle();
   assert.deepEqual(file.calls, [fileAnswer]);
 });
 
@@ -170,7 +170,7 @@ test('a message answer needs a string message; attachments are optional', async 
     message: 'hello',
     attachments: [{ path: '/report.pdf' }],
   });
-  await runtime.pump();
+  await runtime.settle();
   assert.equal(runtime.snapshot().rest, true);
 });
 

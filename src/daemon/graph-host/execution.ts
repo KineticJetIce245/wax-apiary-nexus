@@ -6,7 +6,6 @@ import {
 } from '../../graph/registry.js';
 import type { NodeId, Value } from '../../runtime/index.js';
 import type { LiveHiveHostContext } from './context.js';
-import { startFieldDriver } from './driver.js';
 import {
   LiveHiveHostAnswerError,
   LiveHiveHostDisposedError,
@@ -19,8 +18,9 @@ import {
  *
  * Both operations hand work to the field and return no identity: a trigger
  * resolves once its Pheromone is enqueued, and an answer resolves once the open
- * hover is bound. Execution continues in the background; the field is the only
- * observable execution state (`inspect`, output, hovers, logs).
+ * hover is bound. Execution continues in the background on that Bee's own
+ * drain; the field is the only observable execution state (`inspect`, output,
+ * hovers, logs).
  */
 export class LiveHiveHostExecution {
   constructor(private readonly context: LiveHiveHostContext) {}
@@ -29,15 +29,13 @@ export class LiveHiveHostExecution {
    * Deliver one Pheromone to a bee. The live lock is deliberately not held
    * across admission: a `block` policy may wait for receptor capacity outside
    * every field lock. The graph lease keeps the live hive loaded for the whole
-   * wait. Once admitted, the background driver takes over.
+   * wait. Admission wakes the bee; no host driver follows.
    */
   trigger(graphId: LiveHiveId, nodeId: NodeId, value: Value): Promise<void> {
     if (this.context.disposed) {
       return Promise.reject(new LiveHiveHostDisposedError());
     }
-    return admitTrigger(this.context, graphId, nodeId, value).then(() => {
-      startFieldDriver(this.context, graphId);
-    });
+    return admitTrigger(this.context, graphId, nodeId, value);
   }
 
   /**

@@ -50,6 +50,15 @@ async function waitForReleased(host: RecordingGraphHost): Promise<void> {
   }
 }
 
+/** Wait for a delivery to reach the native adapter (its Bee's drain). */
+async function waitForPrompts(adapter: FakeAdapter, count: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (adapter.prompts.length < count) {
+    assert.ok(Date.now() < deadline, 'the dispatch prompt did not reach the adapter');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function setup(
   t: TestContext,
   adapterOptions: FakeAdapterOptions = {},
@@ -114,6 +123,7 @@ test('dispatch fresh creates one temporary session and accepts without output', 
   });
 
   assert.equal(result, undefined);
+  await waitForPrompts(harness.adapter, 1);
   assert.equal(harness.adapter.prompts.length, 1);
   assert.equal(harness.adapter.prompts[0], 'hello');
   const record = harness.registry.list()[0];
@@ -185,6 +195,7 @@ test('dispatch explicit session reuses it and uses its own harness metadata', as
   });
 
   assert.equal(harness.registry.list().length, 1);
+  await waitForPrompts(harness.adapter, 1);
   assert.equal(harness.adapter.prompts[0], 'continue');
   await waitForReleased(harness.liveHiveHost);
 });
@@ -246,6 +257,7 @@ test('dispatch can use a per-call project and never reads the model output', asy
     project: harness.project,
   });
   // An empty model output is not an error: dispatch does not return or inspect it.
+  await waitForPrompts(harness.adapter, 1);
   assert.equal(harness.adapter.prompts.length, 1);
   await waitForReleased(harness.liveHiveHost);
 });
@@ -257,6 +269,7 @@ test('dispatch resolves before a held execution ends and releases after silent e
     sessionParams: { harness: 'fake' },
   });
   assert.ok(Date.now() - started < 2_000);
+  await waitForPrompts(harness.adapter, 1);
   assert.equal(harness.adapter.prompts.length, 1);
   const graphId = harness.liveHiveHost.loadedIds[0];
   assert.ok(graphId !== undefined);
@@ -270,6 +283,7 @@ test('dispatch resolves before a held execution ends and releases after silent e
 test('a failed dispatch execution is accepted; the ephemeral graph is still released', async (t) => {
   const harness = setup(t, { terminal: 'failed', error: 'native failure' });
   await harness.service.dispatch('x', { sessionParams: { harness: 'fake' } });
+  await waitForPrompts(harness.adapter, 1);
   assert.equal(harness.adapter.prompts.length, 1);
   await waitForReleased(harness.liveHiveHost);
 });

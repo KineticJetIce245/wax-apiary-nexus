@@ -114,7 +114,7 @@ test('trigger -> forager -> terminal -> Rest', async () => {
   assert.equal(runtime.snapshot().rest, false);
   assert.equal(runtime.snapshot().nodes['start']?.receptor.length, 1);
 
-  await runtime.pump();
+  await runtime.settle();
 
   assert.equal(calls.length, 1);
   const first = calls[0];
@@ -135,7 +135,7 @@ test('a terminal node emits no new pheromone', async () => {
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('start', { message: '' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(queuedEntries(runtime.snapshot()), []);
 });
@@ -152,10 +152,10 @@ test('a declarative condition rule follows the true and false edges', async () =
   );
 
   runtime.admit('start', { message: 'yes please' });
-  await runtime.pump();
+  await runtime.settle();
   clock += 1000;
   runtime.admit('start', { message: 'nope' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(
     calls.map((call) => call.nodeId),
@@ -178,10 +178,10 @@ test('a boolean rule compares an ordinary Value field', async () => {
   );
 
   runtime.admit('check', { boolean: true });
-  await runtime.pump();
+  await runtime.settle();
   clock += 1000;
   runtime.admit('check', { boolean: false });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(
     calls.map((call) => call.nodeId),
@@ -203,10 +203,10 @@ test('a choice rule compares the selected choice', async () => {
   );
 
   runtime.admit('check', { choice: 'approve' });
-  await runtime.pump();
+  await runtime.settle();
   clock += 1000;
   runtime.admit('check', { choice: 'reject' });
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(
     calls.map((call) => call.nodeId),
@@ -220,9 +220,9 @@ test('counter increments until max and then takes the done edge', async () => {
   const runtime = new PheromoneRuntime(counterComposition(), { executeForager: executor, now: () => clock });
 
   runtime.admit('start', { message: '' });
-  await runtime.pump();
+  await runtime.settle();
   clock += 1000;
-  await runtime.pump();
+  await runtime.settle();
 
   assert.deepEqual(
     calls.map((call) => call.nodeId),
@@ -287,7 +287,7 @@ test('log carries node, pheromone and outcome fields', async () => {
   await runtime.admit('start', { message: 'log me' });
   const enqueuedAt = runtime.snapshot().nodes['start']?.receptor[0]?.enqueuedAt;
   assert.equal(typeof enqueuedAt, 'string');
-  await runtime.pump();
+  await runtime.settle();
 
   const events = log.entries.map((entry) => entry.event);
   assert.deepEqual(events, [
@@ -311,7 +311,7 @@ test('log carries node, pheromone and outcome fields', async () => {
   assert.equal(typeof completed.durationMs, 'number');
 });
 
-test('a failing executor logs node.failed and surfaces the error', async () => {
+test('a failing executor is logged and dropped without surfacing an error', async () => {
   const log = createMemoryLog();
   const executor: NodeExecutor = {
     async execute() {
@@ -325,7 +325,7 @@ test('a failing executor logs node.failed and surfaces the error', async () => {
   });
 
   runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), /boom/);
+  await runtime.settle();
 
   const failed = log.entries.find((entry) => entry.event === 'node.failed');
   assert.ok(failed !== undefined);
@@ -343,7 +343,7 @@ test('a failed activation leaves an empty field at Rest', async () => {
   const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
 
   runtime.admit('a', { message: '' });
-  await assert.rejects(runtime.pump(), /boom/);
+  await runtime.settle();
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['a']?.active, undefined);
@@ -351,27 +351,38 @@ test('a failed activation leaves an empty field at Rest', async () => {
   assert.equal(snapshot.rest, true);
 });
 
-test('a failure keeps queued pheromones and the field is not at Rest', async () => {
+test('a failure drops only its input and the same drain continues', async () => {
+  let attempts = 0;
   const executor: NodeExecutor = {
     async execute() {
+      attempts += 1;
       throw new Error('boom');
     },
   };
-  const runtime = new PheromoneRuntime(twoNodeComposition(), { executeForager: executor, now: () => START });
+  const base = twoNodeComposition();
+  const fast = {
+    ...base,
+    nodes: new Map(
+      [...base.nodes].map(([id, node]) => [id, { ...node, minIntervalMs: 0 }]),
+    ),
+  };
+  const runtime = new PheromoneRuntime(fast, { executeForager: executor, now: () => START });
 
   runtime.admit('a', { message: 'first' });
   runtime.admit('a', { message: 'second' });
-  await assert.rejects(runtime.pump(), /boom/);
+  await runtime.settle();
 
   const snapshot = runtime.snapshot();
   const node = snapshot.nodes['a'];
   assert.ok(node !== undefined);
-  assert.equal(node.receptor.length, 1);
-  assert.equal(queuedEntries(snapshot).length, 1);
-  assert.equal(snapshot.rest, false);
+  assert.equal(node.receptor.length, 0);
+  assert.deepEqual(queuedEntries(snapshot), []);
+  // The failed input is not replayed, but the next queued input still runs.
+  assert.equal(attempts, 2);
+  assert.equal(snapshot.rest, true);
 });
 
-test('a failure on one node leaves another node queued work runnable', async () => {
+test('a failure on one node leaves another node runnable', async () => {
   const calls: string[] = [];
   const executor: NodeExecutor = {
     async execute(node) {
@@ -386,12 +397,9 @@ test('a failure on one node leaves another node queued work runnable', async () 
 
   runtime.admit('a', { message: '' });
   runtime.admit('b', { message: '' });
-  await assert.rejects(runtime.pump(), /boom/);
+  await runtime.settle();
 
   assert.equal(runtime.snapshot().nodes['a']?.active, undefined);
-  assert.equal(runtime.snapshot().rest, false, 'node b is still queued');
-
-  await runtime.pump();
   assert.deepEqual(calls, ['b']);
   assert.equal(runtime.snapshot().rest, true);
 });
@@ -420,7 +428,7 @@ test('two deliveries create independent Pheromones with no identity', async () =
     assert.deepEqual(Object.keys(pheromone).sort(), ['enqueuedAt', 'value']);
   }
 
-  await runtime.pump();
+  await runtime.settle();
   // The node's pacing interval holds the second input until the clock advances.
   assert.equal(calls.length, 1);
   assert.equal(runtime.snapshot().nodes['start']?.pending !== undefined, true);
@@ -429,12 +437,12 @@ test('two deliveries create independent Pheromones with no identity', async () =
   assert.equal(serializeValue(call.input), '');
 });
 
-test('pump is idempotent when nothing is runnable', async () => {
+test('settle is idempotent when nothing is runnable', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(terminalComposition(), { executeForager: executor, now: () => START });
 
-  await runtime.pump();
-  await runtime.pump();
+  await runtime.settle();
+  await runtime.settle();
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, true);
   assert.deepEqual(queuedEntries(snapshot), []);
@@ -450,7 +458,7 @@ test('log entries are well formed for every event emitted', async () => {
   });
 
   runtime.admit('start', { message: 'go' });
-  await runtime.pump();
+  await runtime.settle();
 
   for (const entry of log.entries as RuntimeLogEntry[]) {
     assert.equal(typeof entry.at, 'string');

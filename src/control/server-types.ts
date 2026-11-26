@@ -34,12 +34,6 @@ export interface ControlServerOptions {
    */
   readonly bindingStore?: GraphBindingStore;
   /**
-   * Allow unload/sweep of a graph parked on quiescent hover(s) only. Default
-   * false; `waxd` enables it explicitly so a local daemon can reclaim a field
-   * that is waiting for an answer. Honey is flushed before release.
-   */
-  readonly allowHoverUnload?: boolean;
-  /**
    * Idle TTL for WAX sessions; default 0 (disabled). When positive, the server
    * periodically closes sessions that have not been used for this long and are
    * neither busy nor bound to a loaded graph.

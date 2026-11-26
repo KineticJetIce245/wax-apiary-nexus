@@ -164,6 +164,27 @@ reason, and a removal slice; no permanent exceptions. Enforcement is
 budgets. The local repair outline maps every existing violation to a target
 split.
 
+### 12. Concept Budget
+
+Every new concept — object, identity, registry, tracker, lifecycle, state
+machine, layer, or public field — must be justified against the concepts that
+already exist.
+
+Before adding one, answer in writing:
+
+- Which existing concept cannot represent this?
+- Who exclusively owns the new state?
+- When is it released, and who releases it?
+- Can it be derived from, or folded into, an existing owner?
+
+Do not add a parallel identity, a shadow registry/tracker, or a second lifecycle
+for work an existing owner already represents. Control-plane operations must not
+own execution state; their state ends at handoff.
+
+A new concept is an architecture change: update `ARCHITECTURE.md` and obtain
+owner approval before implementation. Passing tests, a new name, or a new file
+does not prove that a concept is necessary.
+
 ## Definition of Done
 
 A milestone is complete only when its stated acceptance criteria are demonstrated with reproducible evidence, including at least one real test (Rule 9) executed in this environment.
@@ -199,12 +220,15 @@ Keep reports concise:
 - What was verified?
 - What remains uncertain?
 - Was any new abstraction or dependency introduced? Why?
+- What new concept was introduced, and which existing concept could not cover it?
 
 ## Guiding Principle
 
 **Less is good.** Prefer fewer concepts, fewer layers, fewer states, and less code that does the same job.
 
 **A boring, understandable implementation that works is better than an elegant framework nobody needs.**
+
+The Concept Budget (Rule 12) is how this principle is enforced; it is not a matter of taste.
 
 # Sensitive Information and Git Tracking
 

@@ -1,6 +1,6 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**; the M18 closeout (2026-11-25) made the code conformant: the control plane is delivery-only (`trigger`/`answer`/`dispatch` answer 202 and own no execution state), ordinary beelines move the same Pheromone (§4.2), the field owns the per-Bee last output, mailbox was renamed to receptor, and the old execution-registry surface (tracker, per-request ids, run routes and records, per-trace budgets, the old wake route) was removed. The one remaining known gap is the Honey directory layout (A23/C05, §5/§8). §9 is the owner decision record and remains normative.
+Status: **target architecture**. The delivery-only closeout (2026-11-25) is implemented: the control plane is delivery-only, ordinary beelines move the same Pheromone, the field owns the per-Bee last output, and the old execution-registry surface is gone. The target object model (2026-11-26) changes `Value` to a free JSON object and `Pheromone` to `{ value }` (no id/at/lineage); spread/gather use BeeId and value fields. The code still implements the earlier model until these slices land; §4.11 is historical, and §4.12–§4.14 describe the target. The Honey directory layout (A23/C05, §5/§8) remains a separate known gap.
 
 ## 1. One sentence
 
@@ -25,15 +25,18 @@ The control plane has no execution registry. It validates a request, hands it to
 | Object | Meaning |
 | --- | --- |
 | `LiveHive` | First-class runtime object: `bees`, `beelines`, `beeId -> sessionId` bindings, `PheromoneField`, scheduler/log, lifecycle |
-| `Bee` | Execution slot and execution owner: `beeId`, kind, config, outgoing beelines, optional RoleLabel, sessionMode |
-| `Beeline` | Directed connection between bees: `beelineId`, `fromBee`, `toBee`, optional branch |
+| `Bee` | Execution slot and execution owner: `beeId`, kind, config (`reads`/`writes`/`fallback` in the target model), outgoing beelines, optional RoleLabel, sessionMode |
+| `Value` | Free JSON object carried by a Pheromone: `message` is universal, `attachments` is the file convention, other fields are arbitrary; no `kind`/`structured` wrapper |
+| `Spread` | Control Bee: `clone` or `cleave`; targets are BeeIds; no branchId/lineage |
+| `Gather` | Control Bee: one receptor, `assemble` per-type queues; no branchId/lineage |
+| `Beeline` | Directed connection between bees: `beelineId`, `fromBee`, `toBee`, optional condition outcome |
 | `BeeBinding` | `{ beeId, sessionId }` for bees that need a native session |
 | `Session` | Native session record: `sessionId`, harness, model, reasoning, params |
 | `HiveTemplate` | Optional saved graph + per-bee default session params; not required to create a LiveHive |
 | `Schedule` | Optional saved trigger on a LiveHive: target bee and `at`/`every`; not an execution identity |
 | `RoleLabel` | Comment/label on a bee; not an instance, not a route |
-| `Pheromone` | One message/value travelling through the graph; no run/wake/trace identity |
-| `PheromoneField` | The single owner of runtime state: pheromones, receptors, pending, active, hover, gathers/tombstones, outputs |
+| `Pheromone` | `{ value }` only; no id/at/lineage; the field's queue entry owns `enqueuedAt` |
+| `PheromoneField` | The single owner of runtime state: queue entries, pending, active, hover, assemble groups/tombstones, outputs |
 | `Dispatch` | A temporary Bee started for one prompt; it lives until the tool returns, then either flows to its next Bee or silently ends |
 
 There is no Agent object, no Revision/Definition object, no Actor object, and no control-plane Run/Wake/Trace object.
@@ -55,8 +58,8 @@ POST /lives/trigger
 ControlServer
   -> LiveHiveService
   -> validate live, bee, input
-  -> create one Pheromone P { id, value, at }
-  -> append P to the entry Bee's receptor
+  -> create one Pheromone P { value }
+  -> append a queue entry { value, enqueuedAt } to the entry Bee's receptor
   -> wake(entry Bee) as a signal
   -> 202 { ok: true }
         |
@@ -90,20 +93,21 @@ P is active at Bee A
   -> P becomes active at Bee B
 ```
 
-A normal beeline moves the Pheromone; it does not create a new one. The same
-`Pheromone.id` continues from Bee to Bee. Only two graph operations change the
-number of Pheromones:
+A normal beeline moves the same Pheromone object; it does not create a new one
+and assigns no id. The Bee's output replaces `value`. Only two graph operations
+change cardinality:
 
-- `spread`: one input Pheromone becomes one copy per branch;
-- `gather`: several branch Pheromones become one gatherd Pheromone.
+- `spread`: one value becomes N values (`clone` or `cleave`);
+- `gather`: N values become one assembled value.
 
 Those are cardinality changes, not the normal edge flow. An implementation that
-allocates a new Pheromone for every beeline or every Bee is nonconformant.
+allocates a new Pheromone for every beeline or every Bee is nonconformant; an
+implementation that adds ids or lineage to compensate is also nonconformant.
 
-A receptor stores Pheromone objects directly. `ligand` is not a layer in this
-architecture; only if a future storage representation cannot hold a Pheromone
-may an adapter-local ligand wrapper be used inside that representation, never as
-a control-plane concept.
+A receptor stores queue entries `{ value, enqueuedAt }`; the Pheromone itself is
+only `{ value }`. `ligand` is not a layer in this architecture; only if a future
+storage representation cannot hold a value may an adapter-local ligand wrapper be
+used inside that representation, never as a control-plane concept.
 
 Receptor drain:
 
@@ -197,10 +201,10 @@ the result is graph data, not an RPC return value.
 | Moved | producing Bee | the SAME Pheromone is placed in the next receptor; its value is replaced | consumed by the target Bee |
 | Terminal | field | no outgoing beeline; field output | live unload/replacement; not a per-run record |
 
-A Pheromone never carries a run/wake/trace id. Its only identity is the message
-`id` needed inside the field. A normal beeline preserves that id; `spread` creates
-branch copies and `gather` creates one gatherd Pheromone because the cardinality
-changes.
+A Pheromone has no message identity: no id, no run/wake/trace id, no lineage.
+A normal beeline moves the same object; `spread` creates new values and `gather`
+creates one new value because the cardinality changes. The field's queue entry,
+not the Pheromone, owns `enqueuedAt`.
 
 ### 4.6 Bee lifetime
 
@@ -210,9 +214,14 @@ changes.
 | Awake | receptor exists; drain active | field.json includes non-empty receptor |
 | Active | one active Pheromone | field.json active marker; on reload becomes unknown |
 | Hover | user Bee parked with token | field.json hover + hover Pheromone |
-| Rest | no active/pending/receptor/hover/join | field.json |
+| Rest | no active/pending/receptor/hover/open assemble group | field.json |
 
 A Bee is not created or destroyed per trigger. It is a loaded graph node. The temporary Bee from `dispatch` is the exception: it exists only for that dispatch and is released at silent end.
+
+In the target model, a Bee definition declares `reads`/`writes`/`fallback`; built-in
+kinds have defaults and an instance may override them. A missing read field is an
+error unless a fallback is configured. Plugin-defined Bee kinds are a later slice
+(§4.12).
 
 ### 4.7 Field lifetime
 
@@ -220,14 +229,14 @@ A Bee is not created or destroyed per trigger. It is a loaded graph node. The te
 load
   -> memory authoritative
   -> trigger/answer/dispatch deliveries
-  -> active/pending/receptor/hover/join
+  -> active/pending/receptor/hover/assemble
   -> field outputs
   -> save: snapshot to honey/field.json
   -> unload: write snapshot, release field/runtime, keep sessions
   -> load again: restore receptor/pending/hover; active becomes unknown, never replay
 ```
 
-`Rest` means no active/pending/receptor/hover/incomplete join remains. It is an observation of the field, not a delivery completion signal. A delivery has already ended at handoff, long before Rest.
+`Rest` means no active/pending/receptor/hover/incomplete assemble group remains. It is an observation of the field, not a delivery completion signal. A delivery has already ended at handoff, long before Rest.
 
 ### 4.8 Native session and prompt admission
 
@@ -252,9 +261,11 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 
 ### 4.9 Failure and release
 
-- A Bee execution failure clears `active`, logs the failure, and releases that Pheromone. It never replays the side-effecting work.
-- A receptor overflow rejection drops the new Pheromone before it enters the field. A block timeout drops only that waiting request.
-- Unload persists receptor/pending/hover/gathers and marks active as unknown; reload never replays active work.
+- A Bee execution failure clears `active`, logs the failure, and releases that value. It never replays the side-effecting work.
+- A receptor overflow rejection drops the new queue entry before it enters the field. A block timeout drops only that waiting request.
+- Unload persists receptor queue entries/pending/hover/assemble groups and marks active as unknown; reload never replays active work.
+- A spread emission checks target existence and part/target matching only; target acceptance is the target Bee's responsibility. After emission it keeps no tracking/cancel state; partial fan-out is possible.
+- A gather per-type queue full is a typed error for now; freeze/recovery is open (§4.14).
 - A process crash follows the same rule: Honey is the snapshot; active is unknown; no automatic retry.
 - A terminal Bee output stays in the field as an output until live unload/replacement. It is not a per-delivery record.
 - A temporary dispatch Bee is released at silent end; its field is ephemeral and not persisted as a LiveHive.
@@ -273,46 +284,70 @@ Consequences:
 - No control-plane run/request id, span or per-request status.
 - There is no run-history query route; there is nothing to query after delivery.
 - No run-record directory on disk.
-- The only observable execution state is the LiveHive/field: `inspect`, output, receptor/pending/active/hover/join and logs.
+- The only observable execution state is the LiveHive/field: `inspect`, output, receptor/pending/active/hover/open assemble group and logs.
 - If a caller wants a result, the result is an edge to another Bee, not a control-plane return value.
 - Output ownership is D2: the field keeps a memory-only last output per Bee
-  (`text` or file/attachment path). `unload` releases it; there is no durable
-  run-history store and no `runs/` directory.
+  (a `Value`; message/attachments/arbitrary fields). `unload` releases it; there
+  is no durable run-history store and no `runs/` directory.
 
-### 4.11 Pheromone identity is not a control handle
+### 4.11 No message identity
 
-> M19 draft (not implemented): the target model removes `Pheromone.id` entirely.
-> This section describes the M18 current behavior; it will be replaced by "no
-> message identity at all" when M19 lands. The M19 draft is in
-> `../docs/temp/M19-spread-gather-design.md`.
+The target model removes `Pheromone.id` entirely. A Pheromone is `{ value }`; the
+field moves that object by reference and keeps no id, no lineage, no registry,
+no cursor and no public handle. The earlier rule that a field-local id must not
+be used as a runId is historical; the stronger rule is that no message identity
+exists at all. See §4.12.
 
-`Pheromone.id` is a field-local message identity. It exists for internal
-correlation (logs, spread/gather lineage, join bookkeeping) and for tests. It is
-not a cursor, not a run handle, and not a public object.
+### 4.12 Value, Pheromone, and Bee I/O
 
-Allowed uses:
+The target model:
 
-- internal log correlation by the field;
-- spread/gather/join bookkeeping and lineage;
-- tests that inspect the field.
+- **Value** is a free JSON object. `message` is the universal text field;
+  `attachments` is the file convention (`{ path?, mediaType? }`); other fields
+  are arbitrary JSON. There is no `kind` tag and no `structured` wrapper.
+  `mediaType` is not an enum; a recommended list is documentation only.
+  Image/audio are inferred from the `mediaType` prefix, otherwise the attachment
+  is a file.
+- **Pheromone** is `{ value }`. It has no id, `at`, `spreadId`, `branchId` or
+  `lineage`. A normal beeline moves the same object; `spread` creates new values;
+  `gather` creates a new value. The field's queue entry
+  `{ value, enqueuedAt }` owns the TTL timestamp; `pending`/`active` need no time.
+- **Bee definition**: `reads`, optional `writes`, optional `fallback`. Built-in
+  kinds have defaults; an instance may override them. A read path resolves
+  against the value; a missing path is an error unless a fallback is set. A plugin
+  may define a new Bee kind later, using the same definition contract.
+- **Writes**: default is deep merge. Objects merge recursively; arrays replace;
+  scalars replace. A result may carry a separate `drop` list of paths; a value and
+  a drop on the same path is an error. `writes` is an optional whitelist; output
+  outside it is an error. A plain `null` remains a normal value.
+- **Paths**: simple dot paths (`message`, `attachments`, `meta.topic`), with pure
+  functions as an escape hatch; no JSONPath. Type matching supports both
+  path+expected value and a pure `typeOf` function.
 
-Forbidden uses:
+### 4.13 Spread and gather
 
-- any HTTP route, CLI command, or client method that accepts or returns a
-  pheromone id as a query key;
-- a registry, tracker, status object, wait/subscribe, callback, or retry policy
-  keyed by pheromone id;
-- a persisted record, `runs/` file, output lookup, or idempotency key keyed by
-  pheromone id;
-- treating the id as stable across LiveHives, restarts, or unloads;
-- using it to fetch a result, execution state, or lifecycle. Use `inspect`,
-  `output`, and the field state instead.
+- **Spread** is stateless fan-out. `clone` copies the whole value to every target
+  Bee; `cleave` splits it by fields/rules and maps the parts to target BeeIds.
+  Targets are BeeIds (a map or an ordered list; map preferred). The spread checks
+  only that the targets exist and that parts match targets; it does not reserve
+  or inspect target capacity. Whether a target accepts is the target Bee's
+  responsibility. After emission the spread forgets the copies: no tracking, no
+  cancellation, no rollback. Partial fan-out is possible; a gather that never
+  receives a missing part resolves it by its own timeout/failure policy.
+- **Gather** is a Bee with one receptor. It is the fan-in point; `pool` is not a
+  separate strategy because a Bee receptor is already fan-in. `assemble` uses one
+  input receptor plus internal per-type queues. A type has a matcher and a
+  `count`; a package is `type -> array` of the fields named by `reads` from each
+  collected input. With one read field the array holds scalars; with multiple
+  read fields each element is an object (final shape pending). Required types
+  wait. Groups are FIFO by default, or by a field/pure key; a missing key is an
+  error. A completed group emits one package; at most one package per pump.
+  Per-type queue full is a typed error for now; freeze/recovery is open (§4.14).
+  `batch` (time window) is not part of this target slice.
+- There is no spreadId/branchId/lineage and no message identity. Condition
+  true/false outcomes remain graph edge labels, separate from spread targets.
 
-A normal beeline moving the same id across Bees means one message moved, not one
-execution or run. `Pheromone.id` ends with the message (terminal, drop, a
-spread/gather cardinality change, or unload) and is not durable.
-
-### 4.12 Error handling and extreme recovery (M19 draft)
+### 4.14 Error handling and extreme recovery (open)
 
 Status: **draft, not implemented**. The owner is designing a freeze system; this
 section is intentionally incomplete. Current behavior remains §4.9. Do not treat
@@ -360,7 +395,9 @@ work; fail closed when state is uncertain.
 ```
 
 - `live.json` is keyed by `beeId` for `bees` and `bindings`; `beelines` are keyed by `beelineId`.
-- `honey/field.json` is the durable field snapshot, including awake receptors and active/pending/hover markers.
+- `honey/field.json` is the durable field snapshot: receptor queue entries
+  `{ value, enqueuedAt }`, active/pending/hover markers, and assemble
+  groups/tombstones. It contains no Pheromone id/lineage.
 - `sessions.json` is global; each session record carries its harness.
 - There is no `runs/` directory and no per-wake/per-run record.
 - The field's per-Bee last output is memory-only (D2); it is not written to
@@ -375,11 +412,13 @@ work; fail closed when state is uncertain.
 - `LiveHiveLock` covers mutating host operations per LiveHive; delivery is short and must not hold the lock across native execution. Different LiveHives may run in parallel.
 - Each Bee has one receptor and one active Pheromone; same-Bee work is FIFO/serial, different Bees may overlap. `queueMax` overflow is `reject` (429 `bee-receptor-full`) or `block` (429 `bee-receptor-block-timeout` after the configured wait); block waits outside the state lock.
 - One session has at most one active execution. Sharing a session across LiveHives is serialized by the WAX `DshAcpAdapter` FIFO; an explicit busy path may return `session-busy`, never a silent second execution.
-- WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of M17j.
+- WAX-originated prompts are low priority. The adapter does not preempt a running user turn; steering is a reserved future path, not part of this closeout.
 - Approval ownership is session-scoped: the ACP session owns its approval channel. There is no cross-process GUI handoff and no approval pass-through.
 - `SessionOwnership` is refcounted ownership bookkeeping, not a mutex: it records which loaded LiveHives hold an explicit session. It never blocks or rejects sharing; prompt serialization is the adapter FIFO (`DshAcpAdapter.SessionPromptQueue`).
 - Loop safety is graph-level and Bee-level: counter/condition nodes, `queueMax` and receptor overflow prevent unbounded handoff. There is no per-wake hop/duration budget, because there is no wake object to budget. A loop without a counter/condition is bounded by receptor overflow; every LiveHive must have a finite `queueMax` (D3).
-- `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets: they end only the current driver pass and never cancel or drop a Pheromone; a later delivery resumes. `queueTtlMs` is a per-receptor waiting TTL measured from the enqueue instant (`Pheromone.at`), not a message lifetime.
+- `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets: they end only the current driver pass and never cancel or drop a value; a later delivery resumes. `queueTtlMs` is a per-receptor waiting TTL measured from the queue entry's `enqueuedAt`, not a message lifetime.
+- A spread checks target existence and part/target matching only; target capacity and acceptance are the target Bee's concern. A spread is fire-and-forget and keeps no cancel/track state.
+- A gather's internal per-type queue full is a typed error for now; freeze/recovery is open (§4.14).
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ### 6.1 Implemented vs target
@@ -389,10 +428,14 @@ work; fail closed when state is uncertain.
   `bee-receptor-*`); field-owned per-Bee last output (D2, memory only); adapter
   session FIFO; ACP approval ownership; dispatch as an ephemeral graph that is
   released at silent end and never returns output.
-- **Removed in M18 closeout:** the execution tracker, per-request ids, run routes and
+- **Removed in the delivery-only closeout:** the execution tracker, per-request ids, run routes and
   records, per-trace limits, the old wake route, the mailbox name and its error
   codes, the dispatch timeout, and the synchronous answer wait. There are no
   aliases.
+- **Target, not implemented:** free JSON `Value`; `Pheromone` = `{ value }`
+  with queue-entry `enqueuedAt`; Bee `reads`/`writes`/`fallback`; spread
+  clone/cleave by BeeId; gather assemble per-type queues. The code still uses
+  the earlier tagged Value and id/lineage model; no aliases/backcompat.
 
 ## 7. Public names and API
 
@@ -420,7 +463,7 @@ The legacy graph control surface and its client commands were removed in M10c; t
 
 ## 8. Current implementation gap
 
-The M18 closeout is implemented: the control plane is delivery-only, ordinary
+The delivery-only closeout is implemented: the control plane is delivery-only, ordinary
 beelines move the same Pheromone (§4.2), the field owns the per-Bee last output
 (D2), delivery is `trigger`/`answer`/`dispatch` with `202 {ok:true}`, mailbox is
 receptor with `bee-receptor-*`, and the former execution-registry surface
@@ -428,18 +471,25 @@ receptor with `bee-receptor-*`, and the former execution-registry surface
 budgets, the old wake route and the synchronous answer wait) was removed with no
 aliases. §6.1 records the same split.
 
-The only remaining known gap is the Honey directory layout (A23/C05): the code
+The value-only target (§4.12–§4.14, D8) is **not implemented**: the code and
+CONTRACT still use the earlier tagged Value, Pheromone.id/at/lineage and
+branch-based spread/gather. This is the next implementation slice; it has no
+backcompat and no aliases.
+
+One separate gap remains: the Honey directory layout (A23/C05): the code
 still uses `apiaries/<apiary>/compositions/<liveId>/honey/...`, while §5 specifies
 `lives/<liveId>/honey/...`. That is a separate persistence-layout slice, not part
 of the delivery/field closeout. It needs an owner decision and a migration for
 existing state roots; until then do not treat the current path as the target and
 do not silently move or delete old state.
 
-## 9. Owner decision record for M18 closeout (2026-11-25)
+## 9. Owner decision record
 
-This section records the lead's architecture questions and the owner's answers.
-They are normative for the M18 closeout; code that contradicts them is
-nonconformant. The questions were asked before any code was changed.
+D1–D7 record the 2026-11-25 delivery-only closeout. D8 records the 2026-11-26
+value-only target. Where D8 conflicts with an earlier decision, D8 wins. The
+questions were asked before the corresponding code changed. D1–D7 are normative
+for the closeout; D8 is normative for the target; code that contradicts them is
+nonconformant.
 
 ### D1. `dispatch` accepts a delivery; it does not return the output
 
@@ -511,7 +561,7 @@ error codes become `receptor` / `bee-receptor-full` /
 `bee-receptor-block-timeout`. `queueMax` remains the composition config name and
 is documented as the receptor capacity (ARCHITECTURE §6). No aliases are kept.
 
-### D5. DSH real-integration provider for the M18 closeout
+### D5. DSH real-integration provider for the delivery-only closeout
 
 **Question (lead).** The DSH integration child is launched with `--profile acp`;
 that profile defaults to `deepseek-official`, so setting `OPENCODE_API_KEY` alone
@@ -533,6 +583,9 @@ contract.
 
 ### D6. Same-Pheromone movement and the per-Bee last-output cache
 
+> Same-object movement remains. The id part is historical: the target model
+> removes `Pheromone.id` (§4.11/§4.12).
+
 **Question (lead).** Does "a normal beeline moves the same Pheromone" mean the
 input envelope is reused at each Bee, and how is the per-Bee last output kept?
 The owner asked whether the Pheromone is discarded after each Bee, and whether
@@ -543,7 +596,7 @@ Pheromone as "used and discarded at each Bee". The answer is no: the current
 model keeps one envelope id along a normal beeline, and the per-Bee last output
 is a separate cache, not the Pheromone's value.
 
-**Owner answer.** Keep D2. A normal beeline moves the same `Pheromone` id; the
+**Owner answer.** Keep D2. A normal beeline moves the same Pheromone object; the
 Bee consumes its value and writes its returned value into the same envelope.
 The Bee additionally caches its own last completed output in
 `NodeState.lastOutput`: memory-only, overwritten by its next successful
@@ -555,12 +608,15 @@ the primary forms; no binary). "Used and discarded" happens only at a terminal
 Bee, a drop/failure, or a cardinality change (spread copies; gather consumes
 branches and emits one gatherd Pheromone).
 
-**Consequence.** No code change: the A1 same-Pheromone implementation and
-`tests/runtime-pheromone-identity.test.ts` remain valid. The last-output scope
+**Consequence.** Historical. The same-object movement remains; the id/A1 test is
+replaced by object/value checks. The last-output scope
 and the "same envelope, replaced value" semantics are documented in CONTRACT §6
 and ARCHITECTURE §3/§4.10.
 
 ### D7. `Pheromone.id` is not a RunId
+
+> **Historical.** The target model removes `Pheromone.id` entirely (§4.11/§4.12);
+> this rule applied to the earlier id-bearing model.
 
 **Question (lead).** If the Pheromone is retained/moved, is it a cursor-like
 object? The owner accepts reusing the same pheromone id across Bees, but
@@ -576,3 +632,39 @@ key or used to own execution state.
 persistence key, output/status lookup, wait, or idempotency key may use
 `Pheromone.id`. The public surface has no pheromone-id route; a guard test
 asserts that adding one fails.
+
+### D8. Value-only Pheromone and spread/gather (2026-11-26)
+
+**Owner decisions.** The target object model is:
+
+- `Pheromone` is `{ value }`. Remove `id`, `at`, `spreadId`, `branchId` and
+  `lineage`; the field's queue entry `{ value, enqueuedAt }` owns the TTL clock.
+  A normal beeline moves the same object; spread creates new values; gather
+  creates a new value. No message identity exists.
+- `Value` is a free JSON object. `message` is universal; `attachments` is
+  `{ path, mediaType }` (mediaType arbitrary, recommended list only); other
+  fields are arbitrary. No `kind`/`structured` wrapper.
+- A Bee definition declares `reads`, optional `writes`, optional `fallback`.
+  Built-in kinds have defaults; an instance may override them; a missing read
+  path errors unless a fallback is set. Plugin Bee kinds are a later slice.
+- Writes default to deep merge (objects recursively, arrays replace, scalars
+  replace). A separate `drop` list removes paths; value+drop on one path is an
+  error. `writes` is an optional whitelist; output outside it is an error.
+- Spread is stateless fan-out: `clone` or `cleave`; targets are BeeIds (map or
+  ordered list, map preferred). It checks target existence and part/target
+  matching only; target acceptance is the target Bee's responsibility. After
+  emission it keeps no tracking/cancel state; partial fan-out is possible.
+- Gather is a Bee with one receptor; `pool` is not a separate strategy. Assemble
+  uses one input receptor plus internal per-type queues. A type has a matcher and
+  a `count`; a package is `type -> array` of the fields named by `reads`. Groups
+  are FIFO by default, or by a field/pure key; a missing key errors. A completed
+  group emits one package; at most one per pump. `batch` is later.
+- Field paths are simple dot paths plus pure functions; no JSONPath. Type
+  matching supports path+expected value and pure `typeOf`. Attachments use
+  `{ path, mediaType }`.
+- Queue full is a typed error for now; the freeze system and extreme recovery are
+  open (§4.14). No backcompat for old tagged Value/id/lineage state.
+
+**Consequence.** §4.11 is historical for the id part; §4.12–§4.14 are the target
+model. The current code and contract still implement the earlier model until the
+target slices land. No aliases are kept.

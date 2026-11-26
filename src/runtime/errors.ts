@@ -47,6 +47,21 @@ export class SpreadEmitError extends Error {
   }
 }
 
+/**
+ * A gather input could not enter its group: no or several declared types
+ * matched, a declared read path is absent, a type queue is full, the group key
+ * is missing, or the keyed group is closed. The input is dropped and no package
+ * is emitted for it.
+ */
+export class GatherInputError extends Error {
+  readonly code = 'gather-input';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'GatherInputError';
+  }
+}
+
 /** A dot path is malformed or targets a forbidden key. */
 export class ValuePathError extends Error {
   readonly code = 'invalid-value-path';

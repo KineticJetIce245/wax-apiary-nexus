@@ -16,6 +16,7 @@ import type {
   Value,
 } from '../runtime/index.js';
 import { parseSchedulerState, type SchedulerState } from '../daemon/scheduler.js';
+import { parsePersistedGatherState } from './honey-gather.js';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HOVER_KINDS = ['user', 'forager', 'guard', 'timer'] as const;
@@ -25,6 +26,7 @@ const NODE_KEYS = [
   'active',
   'hover',
   'hoverPheromone',
+  'gather',
   'lastActivatedAt',
   'state',
 ] as const;
@@ -175,6 +177,16 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
   assertExactKeys(input, NODE_KEYS, path);
   const receptor = parseReceptor(input['receptor'], `${path}.receptor`);
   const state: PersistedNodeState = receptor === undefined ? {} : { receptor };
+  assignOptionalNodeFields(state, input, path);
+  return state;
+}
+
+/** Parses every optional node-state field; the shape was already key-checked. */
+function assignOptionalNodeFields(
+  state: PersistedNodeState,
+  input: Record<string, unknown>,
+  path: string,
+): void {
   if (input['pending'] !== undefined) {
     state.pending = parsePheromone(input['pending'], `${path}.pending`);
   }
@@ -190,6 +202,9 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
       `${path}.hoverPheromone`,
     );
   }
+  if (input['gather'] !== undefined) {
+    state.gather = parsePersistedGatherState(input['gather'], `${path}.gather`);
+  }
   if (input['lastActivatedAt'] !== undefined) {
     state.lastActivatedAt = nonEmptyString(input['lastActivatedAt'], `${path}.lastActivatedAt`);
   }
@@ -199,7 +214,6 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
     }
     state.state = structuredClone(input['state']);
   }
-  return state;
 }
 
 function parsePersistedField(input: unknown): PersistedField {

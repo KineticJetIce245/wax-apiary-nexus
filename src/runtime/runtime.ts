@@ -92,8 +92,9 @@ export { GuardDecisionError } from './hover.js';
  *
  * A normal Bee consumes one value and moves the same Pheromone object along its
  * beeline. A Spread creates one new value per target BeeId (clone or cleave); a
- * Gather assembles one package and its execution path is M19e. There is no
- * message identity, branch or join.
+ * Gather assembles one package from its per-type queues (assemble) or flushes an
+ * accumulated package on a signal (batch). There is no message identity, branch
+ * or join.
  *
  * Every enqueue wakes its Bee; each Bee drains its own receptor. The host
  * observes with `settle` and releases with `detach`; there is no field pump.
@@ -251,8 +252,12 @@ export class PheromoneRuntime {
     options: RuntimeOptions,
   ): { runtime: PheromoneRuntime; report: RecoveryReport } {
     const runtime = new PheromoneRuntime(definition, options);
-    const report = applyPersistedField(definition, runtime.engine.states, field, (entry) =>
-      runtime.log(entry),
+    const report = applyPersistedField(
+      definition,
+      runtime.engine.states,
+      field,
+      (entry) => runtime.log(entry),
+      runtime.engine.now,
     );
     const stateLock = runtime.engine.stateLock;
     stateLock.runSync(() => {

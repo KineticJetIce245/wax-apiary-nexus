@@ -1,6 +1,8 @@
 import { HoneyIncompatibleError, FieldRestoreError } from './errors.js';
 import type { RuntimeLogFieldsSink } from './log.js';
 import { cloneEntry, clonePheromone } from './field.js';
+import { cloneGatherState, isEmptyGatherState } from './gather-state.js';
+import { restoreGatherState } from './gather-restore.js';
 import type {
   CompositionDefinition,
   NodeDefinition,
@@ -32,6 +34,7 @@ export function exportField(
 
 function persistedNode(state: NodeState): PersistedNodeState {
   const receptor = state.receptor;
+  const gather = persistedGather(state);
   return {
     ...(receptor === undefined || receptor.length === 0
       ? {}
@@ -42,6 +45,7 @@ function persistedNode(state: NodeState): PersistedNodeState {
     ...(state.hoverPheromone === undefined
       ? {}
       : { hoverPheromone: clonePheromone(state.hoverPheromone) }),
+    ...(gather === undefined ? {} : { gather }),
     ...(state.lastActivatedAt === undefined
       ? {}
       : { lastActivatedAt: state.lastActivatedAt }),
@@ -49,17 +53,26 @@ function persistedNode(state: NodeState): PersistedNodeState {
   };
 }
 
+/** The durable gather record; an empty state is omitted from `field.json`. */
+function persistedGather(state: NodeState): PersistedNodeState['gather'] | undefined {
+  if (state.gather === undefined || isEmptyGatherState(state.gather)) {
+    return undefined;
+  }
+  return cloneGatherState(state.gather);
+}
+
 /**
  * Applies a persisted field to the runtime states. Queue entries, pending slots,
- * user hovers and an active activation are all resumed; the active one waits for
- * its own native result and is never replayed. A schema or shape mismatch fails
- * closed.
+ * user hovers, active activations and open gather groups/batch queues are all
+ * resumed; the active one waits for its own native result and is never replayed.
+ * A schema or shape mismatch fails closed.
  */
 export function applyPersistedField(
   definition: CompositionDefinition,
   states: ReadonlyMap<NodeId, NodeState>,
   field: PersistedField,
   log: RuntimeLogFieldsSink,
+  now: () => number,
 ): RecoveryReport {
   assertCompatible(definition, field);
   const report: { resumedHovers: NodeId[]; active: NodeId[] } = {
@@ -71,7 +84,7 @@ export function applyPersistedField(
     if (saved === undefined) {
       continue;
     }
-    restoreNode(node, stateOf(states, id), saved, report);
+    restoreNode(node, stateOf(states, id), saved, report, now());
   }
   log({
     event: 'runtime.restored',
@@ -111,6 +124,7 @@ function restoreNode(
   state: NodeState,
   saved: PersistedNodeState,
   report: { resumedHovers: NodeId[]; active: NodeId[] },
+  now: number,
 ): void {
   if (saved.receptor !== undefined && saved.receptor.length > 0) {
     state.receptor = saved.receptor.map(cloneEntry);
@@ -123,6 +137,9 @@ function restoreNode(
   }
   if (saved.state !== undefined) {
     state.state = structuredClone(saved.state);
+  }
+  if (saved.gather !== undefined) {
+    restoreGatherState(node, saved.gather, state, now);
   }
   restoreHover(node, state, saved, report);
   restoreActive(node, state, saved, report);
@@ -154,6 +171,13 @@ function restoreActive(
 ): void {
   if (saved.active === undefined) {
     return;
+  }
+  if (node.kind === 'gather') {
+    // Gather assembles synchronously and never waits for a native result, so a
+    // persisted active gather is corrupt field state: fail closed, never replay.
+    throw new FieldRestoreError(
+      `persisted gather '${node.id}' has an active input; gather activations are never replayed`,
+    );
   }
   state.active = clonePheromone(saved.active);
   report.active.push(node.id);

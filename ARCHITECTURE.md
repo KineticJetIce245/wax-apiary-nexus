@@ -431,26 +431,33 @@ The target model:
   separate strategy. `strategy` is `assemble` (default) or `batch`; both use one
   input receptor plus internal per-type queues.
   - `assemble`: `types` is a map `name -> { match, count, reads }`. `match` is a
-    rule; `count` is a positive integer; `reads` is a dot-path list. An input
-    matches exactly one type (zero matches: typed error + drop; multiple matches:
-    typed error, ambiguous). A group is FIFO by default or by `groupBy` (a dot
-    path or code-block key); a missing/empty key is an error. Every type is
+    rule; `count` is a positive integer and an exact per-type capacity (a group
+    never holds more than `count` entries of a type); `reads` is a dot-path list.
+    An input matches exactly one type (zero matches: typed error + drop; multiple
+    matches: typed error, ambiguous). A group is FIFO by default or by `groupBy`
+    (a dot path or code-block key); a missing/empty key is an error. Every type is
     required. When every type reaches its `count`, the group emits one package
-    `{ type: [entries] }` immediately. With one read field an entry is the scalar;
-    with multiple read fields it is a nested object keyed by the read paths (the
-    same dot-path language; a path such as `meta.score` produces `meta: { score }`).
-    A completed group keeps a tombstone (group key plus close time) so it cannot
-    be reopened; a late input for a closed group is a typed error and is dropped.
+    `{ type: [entries] }` immediately. A FIFO entry beyond a type's `count` starts
+    the next group; a keyed group rejects the extra entry before it closes. With
+    one read field an entry is the scalar; with multiple read fields it is a
+    nested object keyed by the read paths (the same dot-path language; a path such
+    as `meta.score` produces `meta: { score }`). A completed group keeps a
+    tombstone (group key plus close time) so it cannot be reopened; a late input
+    for a closed group is a typed error and is dropped.
   - `batch`: `types` declares only `match` and `reads` (no `count`/`groupBy`).
     Inputs accumulate until one matches `batch.signal` (a rule); the signal is
     checked before type matching. The matching input is consumed as the flush
     signal, is not part of the package, and triggers one package built from
-    everything accumulated; the queues then reset. Inputs that arrive before the
-    first signal keep accumulating. The signal may arrive from any edge,
-    including a trigger or schedule delivery to the gather; there is no origin
-    flag.
-  - Per-type queues are bounded by `typeQueueMax` (default 256). Overflow is a
-    typed error + drop of the incoming input (§9), never silent loss.
+    everything accumulated; the queues then reset. The package contains every
+    declared type, with an empty array for a type that accumulated nothing, so an
+    empty signal flush emits one package whose types are all empty. Inputs that
+    arrive before the first signal keep accumulating. The signal may arrive from
+    any edge, including a trigger or schedule delivery to the gather; there is no
+    origin flag.
+  - Per-type queues are bounded by `typeQueueMax` (default 256): for assemble it
+    is the total held for one type across every open group; each batch queue is
+    bounded separately. Overflow is a typed error + drop of the incoming input
+    (§9), never silent loss.
 - Groups, batch accumulators and tombstones are field state: persisted in
   `field.json` and restored. Tombstone retention is bounded (default 64
   tombstones / 1 hour; temporary until §4.14).

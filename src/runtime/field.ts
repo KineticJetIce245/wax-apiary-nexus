@@ -8,6 +8,7 @@ import type {
   QueueEntry,
 } from './types.js';
 import { cloneJson } from './value-paths.js';
+import { cloneGatherState, gatherBlocksRest } from './gather-state.js';
 
 export function createNodeState(): NodeState {
   // A resting bee has no receptor; the first enqueue creates one.
@@ -51,7 +52,8 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
       node.active !== undefined ||
       node.pending !== undefined ||
       node.hover !== undefined ||
-      receptorOf(node).length > 0
+      receptorOf(node).length > 0 ||
+      gatherBlocksRest(node.gather)
     ) {
       return false;
     }
@@ -82,6 +84,9 @@ export function snapshotField(
     }
     if (state.hoverPheromone !== undefined) {
       snapshot.hoverPheromone = clonePheromone(state.hoverPheromone);
+    }
+    if (state.gather !== undefined) {
+      snapshot.gather = cloneGatherState(state.gather);
     }
     if (state.lastActivatedAt !== undefined) {
       snapshot.lastActivatedAt = state.lastActivatedAt;

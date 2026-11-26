@@ -1,4 +1,5 @@
 import type { LiveHiveId, ResidencySnapshot } from '../../graph/registry.js';
+import { gatherRecordCount } from '../../runtime/gather-state.js';
 import type { NodeId, PheromoneFieldSnapshot, Value } from '../../runtime/index.js';
 import type { LiveHiveCatalogEntry } from '../live-hive-catalog.js';
 import { snapshotHovered } from './context.js';
@@ -116,8 +117,7 @@ export class LiveHiveHostRead {
         pending: state?.pending !== undefined,
         active: state?.active !== undefined,
         hovered: state?.hover !== undefined,
-        // Assemble/batch group state is M19e; the field has none yet.
-        gathers: 0,
+        gathers: gatherRecordCount(state?.gather),
       });
     }
 

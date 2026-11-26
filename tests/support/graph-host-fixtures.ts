@@ -407,9 +407,9 @@ export function runnableForagerGraph(id: string, prompt = 'run {{message}}'): Co
 }
 
 /**
- * A spread/gather graph that keeps the production 1000ms node pacing. The
- * spread config is the M19 clone form; gather execution and its status fields
- * are still M19d, so the pacing tests that use this fixture belong to M19d.
+ * A spread/gather graph that keeps the production 1000ms node pacing: the two
+ * branch outputs are the same group key, so the gather completes one package
+ * after the second branch activation and leaves its closed-group tombstone.
  */
 export function pacedSpreadGatherDefinition(id: string): CompositionDefinition {
   return parseComposition({
@@ -427,9 +427,22 @@ export function pacedSpreadGatherDefinition(id: string): CompositionDefinition {
         kind: 'gather',
         config: {
           strategy: 'assemble',
+          groupBy: { code: "return 'paced';" },
           types: {
-            a: { match: { path: 'role', equals: 'a' }, count: 1, reads: ['message'] },
-            b: { match: { path: 'role', equals: 'b' }, count: 1, reads: ['message'] },
+            a: {
+              match: {
+                code: "return typeof value.message === 'string' && value.message.includes('branch-a ');",
+              },
+              count: 1,
+              reads: ['message'],
+            },
+            b: {
+              match: {
+                code: "return typeof value.message === 'string' && value.message.includes('branch-b ');",
+              },
+              count: 1,
+              reads: ['message'],
+            },
           },
         },
       },

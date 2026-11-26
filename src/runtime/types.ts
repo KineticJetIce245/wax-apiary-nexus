@@ -197,6 +197,47 @@ export interface BatchGatherConfig {
 
 export type GatherConfig = AssembleGatherConfig | BatchGatherConfig;
 
+/** One open assemble group: accumulated entries per declared type. */
+export interface GatherGroup {
+  /** The group key; absent for the FIFO group when the config has no groupBy. */
+  key?: string;
+  /** Entries in arrival order, at most the type's `count` per queue. */
+  entries: Record<string, JsonValue[]>;
+}
+
+/** A closed keyed group; a later input for its key is a typed drop. */
+export interface GatherTombstone {
+  key: string;
+  closedAt: string;
+}
+
+/**
+ * Assemble/batch state owned by one gather bee. `groups` is FIFO by open order
+ * (one group without `groupBy`, one per key with it); `tombstones` records
+ * closed keyed groups; `batch` holds the accumulated entries of strategy
+ * `batch`. It is field state: snapshotted and persisted with the field.
+ */
+export interface GatherState {
+  strategy: 'assemble' | 'batch';
+  groups: GatherGroup[];
+  tombstones: GatherTombstone[];
+  batch?: Record<string, JsonValue[]>;
+}
+
+/** Read-only view of one open assemble group. */
+export interface GatherGroupView {
+  readonly key?: string;
+  readonly entries: Readonly<Record<string, readonly JsonValue[]>>;
+}
+
+/** Read-only view of one gather bee's assemble/batch state. */
+export interface GatherStateSnapshot {
+  readonly strategy: 'assemble' | 'batch';
+  readonly groups: readonly GatherGroupView[];
+  readonly tombstones: readonly GatherTombstone[];
+  readonly batch?: Readonly<Record<string, readonly JsonValue[]>>;
+}
+
 export interface SpreadNode extends NodeBase {
   kind: 'spread';
   config: SpreadConfig;
@@ -289,6 +330,8 @@ export interface NodeState {
   hover?: HoverSpec;
   /** The Pheromone parked behind `hover`; it is still part of the field. */
   hoverPheromone?: Pheromone;
+  /** Gather-only: open assemble groups, batch queues and closed-group tombstones. */
+  gather?: GatherState;
   state?: Record<string, unknown>;
   /**
    * The Value produced by this bee's last completed activation. It is an
@@ -306,6 +349,8 @@ export interface NodeStateSnapshot {
   hover?: HoverSpec;
   /** The Pheromone parked behind `hover`; field state, not persisted output. */
   hoverPheromone?: Pheromone;
+  /** Gather-only read-only state: open groups, batch queues, tombstones. */
+  gather?: GatherStateSnapshot;
   lastActivatedAt?: string;
   state: Readonly<Record<string, unknown>>;
   /** Field-owned last completed output; memory-only and never persisted. */
@@ -331,6 +376,8 @@ export interface PersistedNodeState {
   active?: Pheromone;
   hover?: HoverSpec;
   hoverPheromone?: Pheromone;
+  /** Gather-only durable state; validated against the gather config on restore. */
+  gather?: GatherStateSnapshot;
   lastActivatedAt?: string;
   state?: Record<string, unknown>;
 }

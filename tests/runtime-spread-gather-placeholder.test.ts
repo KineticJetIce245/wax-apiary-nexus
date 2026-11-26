@@ -4,10 +4,10 @@ import test from 'node:test';
 import { createMemoryLog, type GatherNode } from '../src/runtime/index.js';
 import { fastDefinition, recorder, runtimeOf } from './support/m19-runtime.js';
 
-// The M19c spread placeholder was replaced by real cases in
-// tests/runtime-spread.test.ts. Gather assemble/batch is still M19e.
-
-test('the M19 gather assemble config parses; its execution path is typed not-implemented', async () => {
+// The M19a gather placeholder is retired: M19e assembles a package instead of
+// failing with not-implemented. Assemble/batch semantics live in
+// tests/runtime-gather-*.test.ts.
+test('the M19 gather assemble config parses and executes instead of throwing not-implemented', async () => {
   const definition = fastDefinition('gather-placeholder', {
     gather: {
       kind: 'gather',
@@ -30,16 +30,18 @@ test('the M19 gather assemble config parses; its execution path is typed not-imp
   assert.equal(config.typeQueueMax, 256);
 
   const log = createMemoryLog();
-  const runtime = runtimeOf(definition, recorder().executor, { onLog: log.sink });
+  const executor = recorder();
+  const runtime = runtimeOf(definition, executor.executor, { onLog: log.sink });
   await runtime.admit('gather', { role: 'draft', message: 'x' });
   await runtime.settle();
-  // The placeholder input is dropped and logged; it is never executed as a
-  // package until M19e implements gather.
-  const failed = log.entries.find(
-    (entry) => entry.event === 'node.failed' && entry.nodeId === 'gather',
-  );
-  assert.ok(failed !== undefined);
-  assert.match(failed.error ?? '', /M19e/);
+
+  // One type with count 1 completes immediately; no task Bee runs.
+  assert.deepEqual(runtime.snapshot().nodes['gather']?.lastOutput, { draft: ['x'] });
   assert.equal(runtime.snapshot().nodes['gather']?.active, undefined);
   assert.equal(runtime.snapshot().rest, true);
+  assert.equal(executor.calls.length, 0);
+  assert.equal(
+    log.entries.some((entry) => entry.event === 'node.failed'),
+    false,
+  );
 });

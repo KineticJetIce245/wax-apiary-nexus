@@ -127,7 +127,7 @@ export async function activate(ctx: EngineContext, activation: Activation): Prom
       return;
     }
     if (node.kind === 'gather') {
-      runControl(ctx, node, () => runGather(node), startedAt);
+      runControl(ctx, node, () => runGather(ctx, node, pheromone), startedAt);
       return;
     }
     const result = await runNode(ctx, node, pheromone, state);
@@ -168,9 +168,9 @@ function beginActivation(
 }
 
 /**
- * Runs one control Bee synchronously. A typed error (unknown target, missing
- * cleave path, not-implemented gather) drops only this input; it is logged and
- * the field keeps running.
+ * Runs one control Bee synchronously. A typed error (unknown spread target,
+ * missing cleave path, rejected gather input) drops only this input; it is
+ * logged and the field keeps running.
  */
 function runControl(
   ctx: EngineContext,

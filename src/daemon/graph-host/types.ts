@@ -123,7 +123,8 @@ export interface LiveHiveNodeStatus {
   readonly active: boolean;
   readonly hovered: boolean;
   /**
-   * Assemble/batch group records; zero until M19e implements gather.
+   * Gather records: open assemble groups plus closed tombstones; a batch
+   * accumulator counts as one record while it holds input.
    */
   readonly gathers: number;
 }

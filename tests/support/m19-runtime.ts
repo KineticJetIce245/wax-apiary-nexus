@@ -6,6 +6,7 @@ import {
   type NodeExecutor,
   type Pheromone,
   type QueueEntry,
+  type RuntimeLogEntry,
   type RuntimeOptions,
   type Value,
 } from '../../src/runtime/index.js';
@@ -86,4 +87,41 @@ export function runtimeOf(
   overrides: Partial<RuntimeOptions> = {},
 ): PheromoneRuntime {
   return new PheromoneRuntime(definition, { executeForager: executor, ...overrides });
+}
+
+/**
+ * A gather-only definition. With `sink` the gather has one outgoing edge to a
+ * forager that records the package and accepts any value (`reads`/`writes`
+ * empty); without it the gather is terminal and its package is a field output.
+ */
+export function gatherDefinition(
+  id: string,
+  config: Record<string, unknown>,
+  options: { readonly sink?: boolean; readonly extraNodes?: Record<string, unknown> } = {},
+): CompositionDefinition {
+  const nodes: Record<string, unknown> = {
+    gather: { kind: 'gather', config },
+    ...(options.extraNodes ?? {}),
+  };
+  const edges: Record<string, unknown>[] = [];
+  if (options.sink === true) {
+    nodes['sink'] = {
+      kind: 'forager',
+      reads: [],
+      writes: [],
+      config: { connection: 'fake', prompt: 'sink' },
+    };
+    edges.push({ id: 'gather-sink', from: 'gather', to: 'sink' });
+  }
+  return fastDefinition(id, nodes, edges);
+}
+
+/** Failure messages logged for one Bee, in order. */
+export function failureMessages(
+  entries: readonly RuntimeLogEntry[],
+  nodeId: string,
+): string[] {
+  return entries
+    .filter((entry) => entry.event === 'node.failed' && entry.nodeId === nodeId)
+    .map((entry) => entry.error ?? '');
 }

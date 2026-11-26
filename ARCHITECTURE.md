@@ -598,9 +598,9 @@ do not silently move or delete old state.
 ## 9. Temporary design
 
 Status: **temporary, not final**. This section describes the current placeholder
-for target-full and unimplemented paths until the freeze/recovery design lands.
-The final design is not defined (§4.14). Do not copy this section into final
-rules or treat it as a guarantee.
+for target-full, the field pump/unload behavior and unimplemented paths until
+the replacement slices land. The final design is not defined (§4.14). Do not
+copy this section into final rules or treat it as a guarantee.
 
 ### 9.1 Scope
 
@@ -611,6 +611,8 @@ The temporary design applies to:
 - an input that matches no assemble type, matches multiple types, or arrives for
   a closed group;
 - a code-block rule that throws, times out or returns the wrong type;
+- the current field pump / `maxPumps` / gather `ready` and the current
+  unload/active behavior (see §9.6);
 - a target path with no implementation yet (freeze, per-type queue overflow).
 
 It does not change the final Value, Pheromone, spread, gather, read/write or
@@ -669,7 +671,28 @@ When one of the cases above occurs:
 - The temporary placeholder for new target paths is error + drop as in §9.2.
 - The final design is not defined; do not infer it from either behavior.
 
-### 9.6 Temporary test environment
+### 9.6 Temporary drain and unload placeholder
+
+Status: **temporary, not final**. This describes the M19d code until M19e
+lands; §4.2/§4.7–§4.9/§4.13/§6/§7 are the final design.
+
+- **Drain:** the field owns a field-wide pump (`pumpField`/`pump()`); the host
+  calls it per driver pass. `maxPumps` bounds those calls. A failed activation
+  ends the current pass; the next delivery resumes. A gather that completes a
+  group holds it in `ready` and emits at most one package per pump.
+- **Unload:** `unload`/idle sweep only unload a Rest/safe field; an active
+  activation or an open user hover blocks it (hover needs the explicit
+  `allowHoverUnload`). On reload a restored active is marked unknown and is
+  never resumed.
+- **Delivery:** `trigger`/`answer` require a loaded LiveHive; there is no
+  lazy-load by id. A native result that outlives an unload is lost.
+- **Replacement (M19e):** per-Bee drain with `wake(bee)`/`settle()`, no
+  `maxPumps`; immediate gather emission; idle snapshot unload even with
+  active/hover/open group (guard blocks); restored active waits for its result;
+  late result continues the same activation; trigger/answer/native result
+  lazy-load.
+
+### 9.7 Temporary test environment
 
 DSH integration tests may temporarily override the ACP profile to
 `opencode-go` / `deepseek-v4.1-flash` and must restore it after the run. Use
@@ -677,7 +700,8 @@ DSH integration tests may temporarily override the ACP profile to
 restore (SHA256 in the integration notes). This is test setup, not a product
 contract.
 
-### 9.7 Replacement
+### 9.8 Replacement
 
-The freeze/recovery design replaces §9.2 when it lands. At that point this whole
-section becomes historical, and §4.14 receives the final policy.
+The freeze/recovery design replaces §9.2 when it lands. M19e replaces §9.6 with
+the final §4.2/§4.7–§4.9 drain and unload design. At that point those sections
+become historical, and §4.14 receives the final policy.

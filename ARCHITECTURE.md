@@ -1,8 +1,16 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The delivery-only closeout (2026-11-25) is implemented: the control plane is delivery-only, ordinary beelines move the same Pheromone, the field owns the per-Bee last output, and the old execution-registry surface is gone. The target object model (2026-11-26) changes `Value` to a free JSON object and `Pheromone` to `{ value }` (no id/at/lineage); spread/gather use BeeId and value fields. The code still implements the earlier model until these slices land; §4.11
-states the target no-identity rule; §4.12–§4.13 are the target; §4.14 is not
-defined yet (see §9 Temporary design). The Honey directory layout (A23/C05, §5/§8) remains a separate known gap.
+Status: **target architecture**. The delivery-only closeout (2026-11-25) is
+implemented. The M19 target object model (owner decisions 2026-11-26) is:
+`Value` is a free JSON object; `Pheromone` is `{ value }` (no id/at/lineage);
+Bee definitions carry `reads`/`writes`/`fallback`/`filter`; write-back is deep
+merge with an independent `drop`; spread is `clone`/`cleave` by BeeId; gather is
+`assemble` (per-type queues, count, group key) or `batch` (a sentinel pheromone
+flushes the accumulated package); type matchers and group keys may be
+declarative rules or local code blocks. The code still implements the earlier
+model until these slices land. §4.11 states the no-identity rule; §4.12–§4.13
+are the target; §4.14 is not defined yet (see §9 Temporary design). The Honey
+directory layout (A23/C05, §5/§8) remains a separate known gap.
 
 ## 1. One sentence
 
@@ -27,10 +35,10 @@ The control plane has no execution registry. It validates a request, hands it to
 | Object | Meaning |
 | --- | --- |
 | `LiveHive` | First-class runtime object: `bees`, `beelines`, `beeId -> sessionId` bindings, `PheromoneField`, scheduler/log, lifecycle |
-| `Bee` | Execution slot and execution owner: `beeId`, kind, config (`reads`/`writes`/`fallback` in the target model), outgoing beelines, optional RoleLabel, sessionMode |
+| `Bee` | Execution slot and execution owner: `beeId`, kind, config, `reads`/`writes`/optional `fallback`/optional `filter`, outgoing beelines, optional RoleLabel, sessionMode |
 | `Value` | Free JSON object carried by a Pheromone: `message` is universal, `attachments` is the file convention, other fields are arbitrary; no `kind`/`structured` wrapper |
-| `Spread` | Control Bee: `clone` or `cleave`; targets are BeeIds; no branchId/lineage |
-| `Gather` | Control Bee: one receptor, `assemble` per-type queues; no branchId/lineage |
+| `Spread` | Control Bee: `clone` or `cleave`; targets are BeeIds; no branchId/lineage; emit-only, no last output |
+| `Gather` | Control Bee: one receptor; `assemble` per-type queues or `batch` sentinel flush; no branchId/lineage |
 | `Beeline` | Directed connection between bees: `beelineId`, `fromBee`, `toBee`, optional condition outcome |
 | `BeeBinding` | `{ beeId, sessionId }` for bees that need a native session |
 | `Session` | Native session record: `sessionId`, harness, model, reasoning, params |
@@ -67,6 +75,11 @@ ControlServer
         v
 trigger request ends; no id, record, callback or query remains
 ```
+
+`input` is either a string, packaged as `{ message: <string> }`, or a JSON object
+used as the Value as-is. Any loaded Bee may be the entry Bee; a control Bee
+applies its own rules to the delivered value. A `gather` input that matches no
+declared type is a typed error and is dropped (§9).
 
 The receptor append is the handoff point. If the receptor is full:
 
@@ -158,6 +171,12 @@ answer request ends; no run, no result, no handle
 chain. It updates the already-hovered Pheromone; the same Bee then continues,
 merges its output into its value per §4.12 and moves it along its beeline.
 
+A `user` Bee's modality stays a validation rule on the answer; it does not add a
+Value wrapper. The answer maps to ordinary Value fields: `text`/`message` ->
+`message` (plus `attachments` for `message`), `choice` -> `choice`, `yes-no` ->
+`boolean`, `image`/`file` -> `attachments: [{ path, mediaType? }]`. A JSON object
+answer is used as-is when no modality restricts it.
+
 If the downstream receptor cannot accept the answered value, the answer is
 refused with the receptor overflow error (`429 bee-receptor-full`, or the block
 timeout) before the hover is consumed; the hover remains open and answerable.
@@ -220,10 +239,12 @@ not the Pheromone, owns `enqueuedAt`.
 
 A Bee is not created or destroyed per trigger. It is a loaded graph node. The temporary Bee from `dispatch` is the exception: it exists only for that dispatch and is released at silent end.
 
-In the target model, a Bee definition declares `reads`/`writes`/`fallback`; built-in
-kinds have defaults and an instance may override them. A missing read field is an
-error unless a fallback is configured. Plugin-defined Bee kinds are a later slice
-(§4.12).
+In the target model, a Bee definition carries `reads`, `writes`, optional
+`fallback` and optional `filter`; built-in kinds have defaults and an instance
+may override them. `reads` must resolve (a missing path is an error unless
+`fallback` supplies it); `writes` lists the fields the reply must contain;
+`filter` removes unwanted reply fields before the write. Plugin-defined Bee
+kinds are a later slice (§4.12).
 
 ### 4.7 Field lifetime
 
@@ -289,10 +310,13 @@ Consequences:
 - The only observable execution state is the LiveHive/field: `inspect`, output, receptor/pending/active/hover/open assemble group and logs.
 - If a caller wants a result, the result is an edge to another Bee, not a control-plane return value.
 - Output ownership: the field keeps a memory-only last output per Bee
-  (a `Value`; message/attachments/arbitrary fields; no binary). It is overwritten
-  by the Bee's next successful activation, released on `unload`, and never
-  written to Honey. There is no durable run-history store and no `runs/`
-  directory; reliable viewing requires a downstream Bee to write a file.
+  (a `Value`; message/attachments/arbitrary fields; no binary). Only
+  output-producing Bees write it: forager, worker, user and a gather package
+  (`assemble` completion or `batch` flush). condition, counter and spread do not
+  write a last output. It is overwritten by the Bee's next successful activation,
+  released on `unload`, and never written to Honey. There is no durable
+  run-history store and no `runs/` directory; reliable viewing requires a
+  downstream Bee to write a file.
 
 ### 4.11 No message identity
 
@@ -302,59 +326,112 @@ no cursor and no public handle. The earlier rule that a field-local id must not
 be used as a runId is historical; the stronger rule is that no message identity
 exists at all. See §4.12.
 
-### 4.12 Value, Pheromone, and Bee I/O
+### 4.12 Value, Pheromone, Bee I/O, and write-back
 
 The target model:
 
 - **Value** is a free JSON object. `message` is the universal text field;
-  `attachments` is the file convention (`{ path: string; mediaType?: string }`);
-  other fields
-  are arbitrary JSON. There is no `kind` tag and no `structured` wrapper.
-  `mediaType` is not an enum; a recommended list is documentation only.
-  Image/audio are inferred from the `mediaType` prefix, otherwise the attachment
-  is a file.
+  `attachments` is the file convention (`{ path: string; mediaType?: string }`;
+  `path` is required, `mediaType` is optional and not an enum — image/audio are
+  inferred from its prefix, otherwise the attachment is a file); every other
+  field is arbitrary JSON. There is no `kind` tag and no `structured` wrapper.
+  A plain `null` is a normal value.
 - **Pheromone** is `{ value }`. It has no id, `at`, `spreadId`, `branchId` or
   `lineage`. A normal beeline moves the same object; `spread` creates new values;
   `gather` creates a new value. The field's queue entry
   `{ value, enqueuedAt }` owns the TTL timestamp; `pending`/`active` need no time.
-- **Bee definition**: `reads`, optional `writes`, optional `fallback`. Built-in
-  kinds have defaults; an instance may override them. A read path resolves
-  against the value; a missing path is an error unless a fallback is set. A plugin
-  may define a new Bee kind later, using the same definition contract.
-- **Writes**: default is deep merge. Objects merge recursively; arrays replace;
-  scalars replace. A result may carry a separate `drop` list of paths; a value and
-  a drop on the same path is an error. `writes` is an optional output
-  filter/allowlist: without it a Bee may return arbitrary fields; when configured,
-  output outside the filter is rejected with a typed error/log (never silently
-  trimmed). The filter form (path list vs pure predicate) is still open. A plain
-  `null` remains a normal value.
-- **Paths**: simple dot paths (`message`, `attachments`, `meta.topic`), with pure
-  functions as an escape hatch; no JSONPath. Type matching supports both
-  path+expected value and a pure `typeOf` function.
+- **Bee definition**: `reads`, `writes`, optional `fallback`, optional `filter`.
+  Built-in kinds have defaults; an instance may override them. A plugin may
+  define a new Bee kind later with the same contract.
+- **reads**: dot paths the Bee needs from the value. A missing path is an error
+  unless `fallback` maps that path to a static value.
+- **writes**: dot paths that must be present in the Bee's (filtered) reply. It is
+  an assertion about required output, not an allowlist. A missing declared path
+  is a typed error; `null` counts as present; an empty list requires nothing.
+- **Built-in defaults** (an instance may override any of them):
+
+  | kind | reads | writes | result |
+  | --- | --- | --- | --- |
+  | forager | `message` | `message` | model reply -> `message` (attachments from the reply) |
+  | worker | none | `message` | stdout -> `message`; non-zero exit is a failure |
+  | condition | none | none | no value; chooses a true/false edge |
+  | counter | none | none | no value; updates the counter |
+  | user | none | none | the answer is bound to the hovered value; no write-back |
+  | spread | none | none | explicit clone/cleave values |
+  | gather | none | none | explicit assemble/batch package |
+- **filter**: optional output gate applied to the raw reply before the `writes`
+  check. `allow` and `deny` are dot-path subtree lists and may coexist. When
+  `allow` is non-empty, only paths equal to or under an allow entry survive; then
+  every path equal to or under a `deny` entry is removed (deny wins on overlap).
+  Removed fields are recorded in a structured log (paths only, never bodies) and
+  are never written. With no filter the whole reply is eligible.
+- **Write-back**: after filter and `writes` check, the whole remaining reply is
+  merged into `value` (default deep merge). Objects merge recursively; arrays and
+  scalars replace; `null` replaces. A result may carry a separate `drop` list of
+  dot paths applied after the merge. A value and a drop on the same path is an
+  error; dropping a missing path is a logged no-op. Array elements are whole
+  values: a dot path may resolve through an array for reads, but `writes` and
+  `drop` address an array as a whole (`items`, not `items.0`); an index path in
+  `writes`/`drop` is a configuration error. `spread` and `gather` are control
+  Bees: they construct their output explicitly and do not use merge/write-back.
+- **Control input**: `trigger`/`answer`/`dispatch` accept `input` as a string
+  (packaged as `{ message: <string> }`) or as a JSON object used as the Value
+  as-is.
+- **Paths and rules**: simple dot paths (`message`, `attachments`, `meta.topic`);
+  no JSONPath. A rule (type matcher, batch signal, group key) is either
+  declarative or a code block:
+  - declarative: `{ path: "kind", equals: "review" }`, also `oneOf`, `exists`
+    and a type check;
+  - code block: `{ code: "return value.kind === 'review';" }`, a function body
+    executed with `value` and a frozen `helpers` (path access only) in a
+    `node:vm` context with a 100 ms timeout and no `process`/`require`/`console`.
+    A matcher returns boolean; a group key returns a non-empty string.
+  Code blocks are user-authored local code. Configuration is trusted; importing
+  a template from another party is the user's trust decision. `vm` is
+  best-effort isolation, not a security boundary. A syntax error is rejected at
+  parse time; a runtime throw/timeout/wrong result type is a typed error and the
+  input is dropped per §9.
 
 ### 4.13 Spread and gather
 
-- **Spread** is stateless fan-out. `clone` copies the whole value to every target
-  Bee; `cleave` splits it by fields/rules and maps the parts to target BeeIds.
-  Targets are BeeIds (a map or an ordered list; map preferred). The spread checks
-  only that the targets exist and that parts match targets; it does not reserve
-  or inspect target capacity. Whether a target accepts is the target Bee's
-  responsibility. After emission the spread forgets the copies: no tracking, no
-  cancellation, no rollback. Partial fan-out is possible; a gather that never
-  receives a missing part has no defined recovery yet — its timeout/failure
-  policy is open (§4.14 item 6).
+- **Spread** is stateless fan-out with two strategies:
+  - `clone` copies the whole value to every target. `targets` is an ordered list
+    of BeeIds or a map whose keys are BeeIds.
+  - `cleave` is field projection: `targets` is a map `BeeId -> [dot paths]` and
+    each emitted part contains only those paths; a missing path is an error.
+  Targets are BeeIds. The spread checks only that targets exist and that
+  parts/targets align; a missing target, a missing cleave path or a mismatch is a
+  typed error and emits nothing. It does not reserve or inspect target capacity;
+  acceptance is the target Bee's responsibility. After emission it keeps no
+  tracking, cancellation or rollback; partial fan-out is possible. A spread
+  produces no last output and does not write a value.
 - **Gather** is a Bee with one receptor. It is the fan-in point; `pool` is not a
-  separate strategy because a Bee receptor is already fan-in. `assemble` uses one
-  input receptor plus internal per-type queues. A type has a matcher and a
-  `count`; a package is `type -> array` of the fields named by `reads` from each
-  collected input. With one read field the array holds scalars; with multiple
-  read fields each element is an object keyed by the read fields. Required types
-  wait. Groups are FIFO by default, or by a field/pure key; a missing key is an
-  error. A completed group emits one package; at most one package per pump (a
-  host driver pass). A closed group keeps a tombstone: a marker that the group
-  completed or timed out and must not be reopened.
-  Target-full behavior is not defined in the final design; see §4.14 and §9
-  Temporary design. `batch` (time window) is not part of this target slice.
+  separate strategy. `strategy` is `assemble` (default) or `batch`; both use one
+  input receptor plus internal per-type queues.
+  - `assemble`: `types` is a map `name -> { match, count, reads }`. `match` is a
+    rule; `count` is a positive integer; `reads` is a dot-path list. An input
+    matches exactly one type (zero matches: typed error + drop; multiple matches:
+    typed error, ambiguous). A group is FIFO by default or by `groupBy` (a dot
+    path or code-block key); a missing/empty key is an error. Every type is
+    required. When every type reaches its `count`, the group emits one package
+    `{ type: [entries] }`, at most one package per pump. With one read field an
+    entry is the scalar; with multiple read fields it is an object keyed by the
+    read fields. A completed group keeps a tombstone (group key plus close time)
+    so it cannot be reopened; a late input for a closed group is a typed error
+    and is dropped.
+  - `batch`: `types` declares only `match` and `reads` (no `count`/`groupBy`).
+    Inputs accumulate until one matches `batch.signal` (a rule); the signal is
+    checked before type matching. The matching input is consumed as the flush
+    signal, is not part of the package, and triggers one package built from
+    everything accumulated; the queues then reset. Inputs that arrive before the
+    first signal keep accumulating. The signal may arrive from any edge,
+    including a trigger or schedule delivery to the gather; there is no origin
+    flag.
+  - Per-type queues are bounded by `typeQueueMax` (default 256). Overflow is a
+    typed error + drop of the incoming input (§9), never silent loss.
+- Groups, batch accumulators and tombstones are field state: persisted in
+  `field.json` and restored. Tombstone retention is bounded (default 64
+  tombstones / 1 hour; temporary until §4.14).
 - There is no spreadId/branchId/lineage and no message identity. Condition
   true/false outcomes remain graph edge labels, separate from spread targets.
 
@@ -394,8 +471,8 @@ side-effecting work; fail closed when state is uncertain.
 
 - `live.json` is keyed by `beeId` for `bees` and `bindings`; `beelines` are keyed by `beelineId`.
 - `honey/field.json` is the durable field snapshot: receptor queue entries
-  `{ value, enqueuedAt }`, active/pending/hover markers, and assemble
-  groups/tombstones. It contains no Pheromone id/lineage.
+  `{ value, enqueuedAt }`, active/pending/hover markers, and assemble/batch
+  per-type queues, groups and tombstones. It contains no Pheromone id/lineage.
 - `sessions.json` is global; each session record carries its harness.
 - There is no `runs/` directory and no per-wake/per-run record.
 - The field's per-Bee last output is memory-only; it is not written to
@@ -416,7 +493,7 @@ side-effecting work; fail closed when state is uncertain.
 - Loop safety is graph-level and Bee-level: counter/condition nodes, `queueMax` and receptor overflow prevent unbounded handoff. There is no per-wake hop/duration budget, because there is no wake object to budget. A loop without a counter/condition is bounded by receptor overflow; every LiveHive must have a finite `queueMax`.
 - `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets: they end only the current driver pass and never cancel or drop a value; a later delivery resumes. `queueTtlMs` is a per-receptor waiting TTL measured from the queue entry's `enqueuedAt`, not a message lifetime.
 - A spread checks target existence and part/target matching only; target capacity and acceptance are the target Bee's concern. A spread is fire-and-forget and keeps no cancel/track state.
-- Target-full behavior for internal moves/spreads and assemble queues is not defined in the final design; see §4.14 and §9 Temporary design.
+- Target-full behavior for internal moves/spreads and assemble/batch per-type queues is not defined in the final design; see §4.14 and §9 Temporary design. `typeQueueMax` bounds each per-type queue.
 - No automatic replay of side-effecting work; Guard never auto-allows.
 
 ### 6.1 Implemented vs target
@@ -431,9 +508,10 @@ side-effecting work; fail closed when state is uncertain.
   codes, the dispatch timeout, and the synchronous answer wait. There are no
   aliases.
 - **Target, not implemented:** free JSON `Value`; `Pheromone` = `{ value }`
-  with queue-entry `enqueuedAt`; Bee `reads`/`writes`/`fallback`; spread
-  clone/cleave by BeeId; gather assemble per-type queues. The code still uses
-  the earlier tagged Value and id/lineage model; no aliases/backcompat.
+  with queue-entry `enqueuedAt`; Bee `reads`/`writes`/`fallback`/`filter`;
+  spread `clone`/`cleave` by BeeId; gather `assemble`/`batch` per-type queues.
+  The code still uses the earlier tagged Value and id/lineage model; no
+  aliases/backcompat.
 
 ## 7. Public names and API
 
@@ -466,10 +544,11 @@ The legacy graph control surface and its client commands were removed in an earl
 ## 8. Current implementation gap
 
 The delivery-only closeout is implemented; §6.1 records the aligned and removed
-surface. The value-only target (§4.12–§4.14) is **not implemented**: the code and
+surface. The M19 target (§4.12–§4.14) is **not implemented**: the code and
 CONTRACT still use the earlier tagged Value, Pheromone.id/at/lineage and
 branch-based spread/gather. This is the next implementation slice; it has no
-backcompat and no aliases.
+backcompat and no aliases. `batch`, the `filter`/`writes` split and code-block
+rules are part of M19, not a later slice.
 
 One separate gap remains: the Honey directory layout (A23/C05): the code
 still uses `apiaries/<apiary>/compositions/<liveId>/honey/...`, while §5 specifies
@@ -490,7 +569,10 @@ rules or treat it as a guarantee.
 The temporary design applies to:
 
 - a target Bee receptor that is full during an internal move;
-- an assemble per-type queue that is full;
+- an assemble or batch per-type queue that is full (`typeQueueMax`);
+- an input that matches no assemble type, matches multiple types, or arrives for
+  a closed group;
+- a code-block rule that throws, times out or returns the wrong type;
 - a target path with no implementation yet (freeze, per-type queue overflow).
 
 It does not change the final Value, Pheromone, spread, gather, read/write or
@@ -507,9 +589,9 @@ When one of the cases above occurs:
    or held for a later freeze.
 3. `waxd` continues; other Bees and LiveHives are unaffected.
 4. For a spread, copies already emitted are not rolled back; the dropped branch
-   is lost and partial fan-out remains. For an assemble, the dropped input is not
-   retried; the group may remain incomplete and this temporary design invents no
-   timeout for it.
+   is lost and partial fan-out remains. For an assemble/batch gather, the dropped
+   input is not retried; the group/batch may remain incomplete and this temporary
+   design invents no timeout for it.
 5. There is no block, no backpressure wait, no freeze/resume, and no automatic
    retry.
 
@@ -520,8 +602,8 @@ When one of the cases above occurs:
   design does not change that HTTP behavior.
 - Internal move/spread: there is no HTTP response. The typed error is logged and
   that item/operation is dropped.
-- Assemble per-type queue: not implemented yet. Until it is, the placeholder is
-  error + drop; there is no HTTP surface.
+- Assemble/batch per-type queue and code-block rules: the typed error is logged
+  and the input is dropped; there is no HTTP surface.
 - `inspect`: no freeze state is added. A dropped item is gone; logs are the only
   record.
 

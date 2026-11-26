@@ -201,6 +201,24 @@ placeholders.
 - Current implementation details belong in the current-gap section, not in
   final-design sections.
 
+### 14. Owner-gated refactoring
+
+Do not refactor, restructure, rename, split, or perform a structural cleanup
+unless the owner explicitly requests it or approves it in writing. A verified
+slice is not permission to start the next structural change. If a refactor seems
+useful, propose it and wait; do not perform it while implementing another slice.
+
+### 15. Commit before acting on an objection
+
+When the owner raises an objection to a result, first freeze the current verified
+state with a commit (or an explicitly preserved branch when a commit is
+impossible), then discuss or change. Do not start refactoring, reverting, or
+"fixing" the working tree in the same step as an objection.
+
+A phase that has passed verification must be committed before the next phase
+starts. Never begin a new phase on an uncommitted working tree; an uncommitted
+"verified" state has no baseline and cannot be recovered reliably.
+
 ## Definition of Done
 
 A milestone is complete only when its stated acceptance criteria are demonstrated with reproducible evidence, including at least one real test (Rule 9) executed in this environment.

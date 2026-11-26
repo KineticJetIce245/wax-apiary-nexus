@@ -249,44 +249,42 @@ test('a pending Guard blocks idle unload and explicit unload', async (t) => {
   assert.equal(await host.unload('guard-idle'), true);
 });
 
-test('an explicit unload waits for the host bound and then snapshots the active field', async (t) => {
-  const env = makeEnv();
+test('explicit unload snapshots immediately and detaches the active execution', async (t) => {
+  const { env, honey, host } = honeyHost(t, 'immediate-unload');
   env.adapter.holdSubmissions = true;
-  const clock = new FakeClock(1_000);
-  const honey = honeyStore('bounded-unload');
-  const host = new LiveHiveHost({
-    registry: env.registry,
-    now: clock.now,
-    honeyForGraph: () => honey,
-    maxWaitMs: 0,
-  });
-  t.after(async () => {
-    env.adapter.releaseHeld();
-    await host.dispose();
-    await env.workspace.stop();
-  });
 
-  const definition = runnableForagerGraph('bounded-unload', 'run {{message}}');
+  const definition = runnableForagerGraph('immediate-unload', 'run {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
     project: env.project,
   });
-  await host.trigger('bounded-unload', 'only', text('work'));
+  await host.trigger('immediate-unload', 'only', text('work'));
   await env.adapter.waitForSubmit(1);
 
-  // maxWaitMs is a host observation bound, not an execution budget: the
-  // unload snapshots the active activation and releases the field.
-  assert.equal(await host.unload('bounded-unload'), true);
-  assert.equal(host.statusOf('bounded-unload'), undefined);
+  // The default maxWaitMs (30s) does not apply to unload: the active field is
+  // snapshotted and detached immediately instead of waiting for the native turn.
+  const startedAt = Date.now();
+  assert.equal(await host.unload('immediate-unload'), true);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(
+    elapsedMs < 1_000,
+    `explicit unload waited ${String(elapsedMs)}ms for the active execution`,
+  );
+  assert.equal(host.statusOf('immediate-unload'), undefined);
   const saved = honey.load();
   assert.ok(saved !== undefined);
   assert.equal(saved.nodes['only']?.active !== undefined, true);
 
+  // The detached activation still completes later and reloads the same field.
   env.adapter.releaseHeld();
   await waitUntil(
-    () => host.statusOf('bounded-unload')?.rest === true,
+    () => host.statusOf('immediate-unload')?.rest === true,
     'the late result to finish the reloaded field',
+  );
+  assert.deepEqual(
+    host.outputsOf('immediate-unload').get('only'),
+    { message: 'reply(native-1):run work' },
   );
 });
 

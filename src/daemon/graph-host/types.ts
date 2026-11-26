@@ -59,9 +59,10 @@ export interface LiveHiveHostOptions {
    */
   readonly sleep?: (ms: number) => Promise<void>;
   /**
-   * Host quiet-observation budget for `settle`, save, unload and dispatch
-   * release; default 30_000. Non-negative integer; 0 means no waiting. It is
-   * not an execution budget and never cancels or drops a value.
+   * Host quiet-observation budget for `settle`, save and dispatch release;
+   * default 30_000. Non-negative integer; 0 means no waiting. It is not an
+   * execution budget, never cancels or drops a value, and explicit unload does
+   * not wait on it (unload snapshots and detaches immediately).
    */
   readonly maxWaitMs?: number;
   /**

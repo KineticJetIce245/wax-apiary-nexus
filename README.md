@@ -88,12 +88,12 @@ There is no Agent object, no Revision/Definition object, and no Actor object.
 ## Known limits
 
 - B `schedules` have no `input` field; scheduled deliveries use the existing empty text input.
-- `unload` keeps the durable catalog and sessions; `inspect`/`output` do not refresh TTL. The per-Bee last output is memory-only and is released by `unload`.
+- `unload` keeps the durable catalog and sessions; it snapshots and releases immediately, and an active native execution is detached so its late result reloads the field. `inspect`/`output` do not refresh TTL. The per-Bee last output is memory-only and is released by `unload`.
 - `answer` can return 429 `bee-receptor-full` when the downstream receptor cannot accept the value; the hover is not consumed and remains answerable.
 - Per-live lock covers mutating operations; the multi-live sweep pass is not per-live locked (it relies on registry busy/refCount guards).
 - `--harness` validates/filters; it does not select a per-harness daemon.
 - Guard requests are not run records. A guarded delivery leaves the field active until the guard is decided; the guard decision is not part of any run history.
-- Public status and outputs do not expose the internal engine identity: a status is `rest`, `hovered`, `nodes`, optional `recovery`, and `residency`; outputs name the live as `liveId`. `graphId` and `graphRevision` never appear in HTTP or CLI output.
+- Public status and outputs do not expose the internal engine identity: a status is `rest`, `hovered`, `nodes`, optional `recovery`, and `residency`; outputs name the live as `liveId`. After M19d, `recovery` lists only resumed user-hover node ids; there are no unknown/stuck active markers. `graphId` and `graphRevision` never appear in HTTP or CLI output.
 - Honey layout is still `apiaries/<apiary>/compositions/<liveId>/honey/...`, while ARCHITECTURE §5 specifies `lives/<liveId>/honey/...`. That is the remaining A23/C05 persistence-layout gap; `live.json` already lives under `lives/<liveId>/`. Until it is migrated, the daemon neither creates nor reads a run-record directory.
 - Existing user state roots may still contain an old run-record directory from pre-M18 builds. The current code does not read it and does not delete it; removing it is an explicit owner action.
 - `fresh_once` mappings are schema v2 and require an exact `projectDirectory`; v1 mapping files are rejected, not migrated.

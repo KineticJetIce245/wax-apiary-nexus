@@ -110,18 +110,16 @@ export class LiveHiveHostLifecycle {
     });
   }
 
-  /** Explicit unload; refused while busy/pinned/unsafe or when the flush fails. */
+  /**
+   * Explicit unload. Refused while pinned, busy or unsafe (a pending Guard).
+   * The field is snapshotted immediately and a running activation is detached:
+   * its late result loads the field again and completes the restored active.
+   */
   async unload(graphId: LiveHiveId): Promise<boolean> {
-    // Explicit unload keeps its documented "refused while busy" behavior: it
-    // must not queue behind a running trigger. tryRun still guarantees it can
-    // never run concurrently with another mutating operation for this id.
+    // A mutating operation never overlaps another one for the same id. It does
+    // not queue behind a running native execution: admission already released
+    // the live lock, so unload can snapshot and detach immediately.
     const outcome = await this.context.lock.tryRun(graphId, async () => {
-      // A quiet observation first: wait for a running drain (bounded by the
-      // host wait budget) so an unload does not race the last write-back.
-      const live = this.context.graphs.peek(graphId)?.value;
-      if (live !== undefined) {
-        await live.runtime.settle(this.context.maxWaitMs);
-      }
       // An ephemeral dispatch graph never entered the catalog, so its unload
       // must not create an entry. Read the flag while the entry still exists.
       const ephemeral = this.context.graphs.peek(graphId)?.value.ephemeral === true;

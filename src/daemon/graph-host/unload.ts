@@ -95,9 +95,9 @@ export async function flushAndRelease(
   }
   // The flush succeeded (or there was none); no further scheduled occurrence
   // may target a graph that is about to disappear, and its explicit-session
-  // reservations become available to another graph. The released field stops
-  // its own timers and hands any in-flight native result back to the host,
-  // which loads the field again and completes the restored active.
+  // reservations become available to another graph. The snapshot is immediate:
+  // a running activation is detached and its late result loads the field again
+  // and completes the restored active. `maxWaitMs` does not apply here.
   const keepRouting = live.instantiated.hasPendingExecutions();
   live.runtime.detach();
   context.schedulers.stop(graphId);

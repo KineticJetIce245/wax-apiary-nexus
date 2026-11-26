@@ -279,7 +279,7 @@ load
 
 On `load`, every Bee with restored receptor/pending work starts its own drain. A restored active is the same activation: it waits for its native result; until that result arrives the Bee is occupied and later inputs wait in FIFO. Nothing is replayed; the late result is the completion of that activation.
 
-Unload is a memory-saving snapshot, not a terminal state. When the field has not changed for the configured idle TTL (default 30 min with Honey), the host may snapshot and release the runtime even with an active Bee, a hover, or an open assemble group. A pending guard blocks this idle unload. A later delivery or native result loads the field again and continues at the same point.
+Unload is a memory-saving snapshot, not a terminal state. When the field has not changed for the configured idle TTL (default 30 min with Honey), the host may snapshot and release the runtime even with an active Bee, a hover, or an open assemble group. A pending guard blocks this idle unload. A later delivery or native result loads the field again and continues at the same point. An explicit unload also snapshots and releases immediately: it does not wait for a running activation, and the active is handed to the late-result path. `save` may still observe running drains within the host wait bound before snapshotting.
 
 ### 4.8 Native session and prompt admission
 
@@ -656,6 +656,7 @@ When one of the cases above occurs:
   wants the work.
 - Logs are the observable record. There is no wait/subscribe/query for a dropped
   item, and no new identity is minted.
+- A restored active waits for its native result. If the daemon process restarts, that result is not reachable by the new process; the active stays until a later delivery or an operator decision. This is a temporary limitation, not a final recovery guarantee.
 - This temporary design does not define what happens to an assemble group left
   incomplete by a drop; that is part of the final error design (§4.14).
 

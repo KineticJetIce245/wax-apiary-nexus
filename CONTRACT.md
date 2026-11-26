@@ -2,6 +2,8 @@
 
 Status: **current contract** (M18 closeout, 2026-11-25). The delivery-only control plane is implemented: `trigger`/`answer` hand a Pheromone to the field and answer 202 with no id, `PheromoneField` owns execution state and the per-Bee last output, and `dispatch` accepts a delivery without returning the model output. There is no run tracker, run id, trace id, run store or `runs/` directory. The remaining known gap is the Honey directory layout (A23/C05), a separate persistence slice.
 
+**M19 note:** M19a–M19d implement a newer object model and the per-Bee drain/lifecycle; `ARCHITECTURE.md` is normative. The M19d-specific unload/restore changes are annotated in §6/§7; the full contract sync is M19f.
+
 ## 1. Scope
 
 This document defines:
@@ -109,14 +111,14 @@ Session = {
 - `field.json` is a snapshot, not an event log, and contains no run/trace record and no output cache.
 - The per-Bee last output is a memory-only `Value` owned by the field. It is written by output-producing Bees (forager, worker, user, gather) on a successful activation; condition/counter/spread have no single result value and do not write it. It is overwritten by the Bee's next successful activation, is not written to `field.json`, is not a run history, and is released on `unload`.
 - A loop is bounded by `counter`/`condition` and receptor overflow (`queueMax`); there is no per-trace hop or duration budget.
-- `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets; `queueTtlMs` is a per-receptor waiting TTL from the enqueue instant, not a message lifetime.
-- `load` restores receptors/pending/hover/incomplete gathers; restored active Pheromones are marked unknown/stuck and are not replayed.
+- `maxWaitMs` is a host wait bound for `settle`/save/dispatch, not an execution budget; `queueTtlMs` is a per-receptor waiting TTL from the enqueue instant, not a message lifetime. There is no `maxPumps`.
+- `load` restores receptors/pending/hover/incomplete gathers; restored active Pheromones are restored as active and wait for their native result. They are never replayed; a late result completes the same activation.
 
 ## 7. Save / load / unload
 
 - `load`: read `live.json` + Honey; memory becomes authoritative.
 - `save`: flush field/scheduler/log to Honey; overwrite `live.json`. It does not make the output cache durable.
-- `unload`: also overwrite `live.json`, then flush and release field/runtime; sessions remain in `SessionRegistry`. The field's last output is released.
+- `unload`: also overwrite `live.json`, then snapshot and release the field/runtime immediately; an active native execution is detached and its late result loads the field again. Sessions remain in `SessionRegistry`. The field's last output is released.
 - No revision comparison, no CAS, no lease.
 - Manual file copy is not a supported LiveHive copy; WAX does not guarantee consistency for copied files.
 

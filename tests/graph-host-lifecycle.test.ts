@@ -332,14 +332,13 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   assert.equal(env.registry.list().length, 2);
 });
 
-test('unload observes the running drain within its host wait bound', async (t) => {
+test('unload detaches a held activation immediately and never deadlocks', async (t) => {
   const env = makeEnv();
   env.adapter.holdSubmissions = true;
   const clock = new FakeClock(1_000);
   const host = new LiveHiveHost({
     registry: env.registry,
     now: clock.now,
-    maxWaitMs: 2_000,
   });
   t.after(async () => {
     env.adapter.releaseHeld();
@@ -355,17 +354,26 @@ test('unload observes the running drain within its host wait bound', async (t) =
 
   await host.trigger('busy', 'only', text('hold'));
   await env.adapter.waitForSubmit(1);
-  const unload = host.unload('busy');
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  const startedAt = Date.now();
+  assert.equal(await host.unload('busy'), true);
+  const elapsedMs = Date.now() - startedAt;
+  assert.ok(
+    elapsedMs < 1_000,
+    `unload waited ${String(elapsedMs)}ms for a held native execution`,
+  );
+  assert.equal(host.statusOf('busy'), undefined);
+  // Without Honey there is no field to reload; the executor is still retained
+  // until its result arrives so the detached runtime can be collected.
+  assert.equal(workspaceListenerCount(env.workspace), 1);
 
-  // The unload is settling the running drain, not refusing a busy graph.
-  assert.notEqual(host.statusOf('busy'), undefined);
   env.adapter.releaseHeld();
-  assert.equal(await unload, true);
+  await waitUntil(
+    () => workspaceListenerCount(env.workspace) === 0,
+    'the detached executor to release its subscription',
+  );
   assert.equal(host.statusOf('busy'), undefined);
   assert.deepEqual(env.adapter.closedNativeIds, []);
   assert.equal(env.registry.list().length, 1);
-  assert.equal(workspaceListenerCount(env.workspace), 0);
 });
 
 test('dispose snapshots and releases a field with an active execution', async (t) => {

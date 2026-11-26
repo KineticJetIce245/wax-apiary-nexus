@@ -77,6 +77,8 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   private readonly ownedExecutionIds = new Set<string>();
   /** How many `submit()` calls are awaited, the window in which the id is unknown. */
   private pendingSubmissions = 0;
+  /** Executor calls that have not returned yet, including the submit window. */
+  private activeExecutions = 0;
   private readonly unsubscribe: () => void;
   private lastProduced: Value | undefined;
   private activeContext: ExecutionContext | undefined;
@@ -102,7 +104,11 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
    * result can complete the restored active instead of being lost.
    */
   hasPendingExecution(): boolean {
-    return this.waiters.size > 0 || this.pendingSubmissions > 0;
+    return (
+      this.activeExecutions > 0 ||
+      this.waiters.size > 0 ||
+      this.pendingSubmissions > 0
+    );
   }
 
   dispose(): void {
@@ -117,24 +123,25 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
   async execute(node: ForagerNode, input: Value, context?: ExecutionContext): Promise<Value> {
     const { prompt, attachments } = renderForagerInput(node, input);
     this.activeContext = context;
-    const submitted = await this.submitPrompt(node, prompt, attachments);
-    let settled: Execution;
+    this.activeExecutions += 1;
     try {
-      settled = await this.waitForTerminal(submitted.id);
+      const submitted = await this.submitPrompt(node, prompt, attachments);
+      const settled = await this.waitForTerminal(submitted.id);
+      if (settled.state === 'completed') {
+        const output = completedValue(settled);
+        this.lastProduced = output;
+        return output;
+      }
+      if (settled.state === 'running') {
+        throw new ForagerExecutionError(node.id, 'unknown', 'execution did not settle');
+      }
+      throw new ForagerExecutionError(node.id, settled.state, settled.error ?? '', {
+        ...(settled.cancelReason === undefined ? {} : { cancelReason: settled.cancelReason }),
+      });
     } finally {
       this.activeContext = undefined;
+      this.activeExecutions -= 1;
     }
-    if (settled.state === 'completed') {
-      const output = completedValue(settled);
-      this.lastProduced = output;
-      return output;
-    }
-    if (settled.state === 'running') {
-      throw new ForagerExecutionError(node.id, 'unknown', 'execution did not settle');
-    }
-    throw new ForagerExecutionError(node.id, settled.state, settled.error ?? '', {
-      ...(settled.cancelReason === undefined ? {} : { cancelReason: settled.cancelReason }),
-    });
   }
 
   private async submitPrompt(

@@ -362,7 +362,6 @@ test('wake admission does not hold the live lease during pacing waits', async (t
   assert.equal(during.rest, false);
   // The admission lock is short: no lease is held while the native work paces.
   assert.equal(during.residency.refCount, 0);
-  assert.equal(await host.unload('paced-lease'), false);
   const report = await host.sweep();
   assert.deepEqual(report.skipped, [{ id: 'paced-lease', reason: 'disabled' }]);
   assert.deepEqual(env.adapter.closedNativeIds, []);
@@ -455,6 +454,7 @@ test('a paced graph keeps its second input pending without a host driver', async
   );
 });
 
+// An answer is bound to the currently open hover; a stale token is rejected.
 test('answer resolves an open user hover and rejects invalid targets and tokens', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);

@@ -123,7 +123,7 @@ interface Env {
   readonly project: Project;
 }
 
-function makeEnv(adapter: GatedAdapter, maxWaitMs?: number): Env {
+function makeEnv(adapter: GatedAdapter): Env {
   const workspace = new Workspace(adapter);
   const project: Project = {
     id: `project-${String(Date.now())}`,
@@ -133,10 +133,7 @@ function makeEnv(adapter: GatedAdapter, maxWaitMs?: number): Env {
     workspaces: new Map([['fake', workspace]]),
   });
   return {
-    host: new LiveHiveHost({
-      registry,
-      ...(maxWaitMs === undefined ? {} : { maxWaitMs }),
-    }),
+    host: new LiveHiveHost({ registry }),
     workspace,
     project,
   };
@@ -249,9 +246,9 @@ test('a failing locked trigger does not poison the next one', { timeout: 10_000 
   assert.deepEqual(adapter.prompts, ['a good']);
 });
 
-test('unload snapshots a held trigger after the host wait bound', { timeout: 10_000 }, async (t) => {
+test('unload snapshots a held trigger immediately without deadlocking', { timeout: 10_000 }, async (t) => {
   const adapter = new GatedAdapter();
-  const env = makeEnv(adapter, 0);
+  const env = makeEnv(adapter);
   t.after(async () => {
     adapter.releaseAll();
     await env.host.dispose();
@@ -271,10 +268,14 @@ test('unload snapshots a held trigger after the host wait bound', { timeout: 10_
     'the held activation to become active',
   );
 
-  // An explicit unload observes the running drain only up to `maxWaitMs`, then
-  // snapshots the active field and releases it; it does not deadlock on the
-  // held native execution.
+  // An explicit unload takes the immediate snapshot and detaches the active
+  // field; it does not wait on `maxWaitMs` or deadlock on the held native turn.
+  const startedAt = Date.now();
   assert.equal(await env.host.unload('live'), true);
+  assert.ok(
+    Date.now() - startedAt < 1_000,
+    'unload waited for the held native execution',
+  );
   assert.equal(env.host.statusOf('live'), undefined);
 
   adapter.releaseAll();

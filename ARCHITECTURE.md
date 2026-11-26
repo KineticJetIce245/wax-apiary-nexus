@@ -1,16 +1,16 @@
 # WAX Apiary neXus — Architecture
 
-Status: **target architecture**. The delivery-only closeout (2026-11-25) is
-implemented. The M19 target object model (owner decisions 2026-11-26) is:
-`Value` is a free JSON object; `Pheromone` is `{ value }` (no id/at/lineage);
-Bee definitions carry `reads`/`writes`/`fallback`/`filter`; write-back is deep
-merge with an independent `drop`; spread is `clone`/`cleave` by BeeId; gather is
-`assemble` (per-type queues, count, group key) or `batch` (a sentinel pheromone
-flushes the accumulated package); type matchers and group keys may be
-declarative rules or local code blocks. The code still implements the earlier
-model until these slices land. §4.11 states the no-identity rule; §4.12–§4.13
-are the target; §4.14 is not defined yet (see §9 Temporary design). The Honey
-directory layout (A23/C05, §5/§8) remains a separate known gap.
+Status: **target architecture**. This document states the final design. The M19
+object model (owner decisions 2026-11-26) is: `Value` is a free JSON object;
+`Pheromone` is `{ value }` (no id/at/lineage); Bee definitions carry
+`reads`/`writes`/`fallback`/`filter`; write-back is deep merge with an
+independent `drop`; spread is `clone`/`cleave` by BeeId; gather is `assemble`
+(per-type queues, count, group key) or `batch` (a sentinel pheromone flushes the
+accumulated package); type matchers and group keys may be declarative rules or
+local code blocks. §4.11 states the no-identity rule; §4.12–§4.13 are the target;
+§4.14 is not defined yet (see §9 Temporary design). The current implementation
+gap is §8. The Honey directory layout (A23/C05, §5/§8) remains a separate known
+gap.
 
 ## 1. One sentence
 
@@ -524,18 +524,19 @@ side-effecting work; fail closed when state is uncertain.
 - **Aligned and implemented:** free JSON `Value`; `Pheromone` = `{ value }`;
   queue entries `{ value, enqueuedAt }`; Bee `reads`/`writes`/`fallback`/
   `filter` and `minIntervalMs`; condition `{ when }` rules; spread
-  `clone`/`cleave` by BeeId; gather `assemble`/`batch` with per-type queues,
-  packages and tombstones; field-owned per-Bee last output (memory only);
+  `clone`/`cleave` by BeeId; field-owned per-Bee last output (memory only);
   adapter session FIFO; ACP approval ownership; dispatch as an ephemeral graph
   that is released at silent end and never returns output.
 - **Removed in the delivery-only closeout:** the execution tracker, per-request ids, run routes and
   records, per-trace limits, the old wake route, the mailbox name and its error
   codes, the dispatch timeout, and the synchronous answer wait. There are no
   aliases.
-- **Target, not implemented:** per-Bee self-driven drain (no field pump,
-  `maxPumps` or gather `ready`); idle snapshot/unload with restored active and
-  late-result continuation; lazy-load on delivery; B-layer `live.json`, HTTP/CLI
-  input JSON and CONTRACT/README sync; real Codex+DSH spread/gather evidence.
+- **Target, not implemented:** per-Bee self-driven drain (no field pump or
+  `maxPumps`); gather `assemble`/`batch` per-type queues, packages and tombstones
+  (currently a typed not-implemented placeholder); idle snapshot/unload with
+  restored active and late-result continuation; lazy-load on delivery; B-layer
+  `live.json`, HTTP/CLI input JSON and CONTRACT/README sync; real Codex+DSH
+  spread/gather evidence.
 
 ## 7. Public names and API
 
@@ -572,21 +573,21 @@ The legacy graph control surface and its client commands were removed in an earl
 ## 8. Current implementation gap
 
 The delivery-only closeout is implemented; §6.1 records the aligned and removed
-surface. The M19 object model is being delivered in slices (M19a–M19d): the code
-now has the free JSON `Value`, `{ value }` `Pheromone`, queue entries with
-`enqueuedAt`, Bee `reads`/`writes`/`fallback`/`filter`, spread `clone`/`cleave`,
-and gather `assemble`/`batch` with tombstones. The remaining implementation gaps
-are:
+surface. The M19 object model is delivered in slices (M19a–M19c): free JSON
+`Value`, `{ value }` `Pheromone`, queue entries with `enqueuedAt`, Bee
+`reads`/`writes`/`fallback`/`filter`, and spread `clone`/`cleave`. Remaining:
 
-- the per-Bee self-driven drain (§4.2): the current M19d code still has a field
-  pump, `maxPumps` and gather `ready`;
-- idle snapshot/unload, restored active, late-result continuation and lazy-load
-  on delivery (§4.7–§4.9);
-- B-layer `live.json` schema/validation/codec, HTTP/CLI input JSON, and
-  CONTRACT/README sync (§4.12/§7);
-- real Codex+DSH spread/gather evidence.
+- M19d: per-Bee self-driven drain and the idle snapshot / active resume /
+  late-result / lazy-load lifecycle (§4.2/§4.7–§4.9);
+- M19e: gather `assemble`/`batch` per-type queues, packages and tombstones
+  (§4.13); gather is currently a typed not-implemented placeholder;
+- M19f: B-layer `live.json`, HTTP/CLI input JSON, CONTRACT/README sync;
+- M19g: real Codex+DSH spread/gather evidence;
+- M19h: independent conformance review.
 
-There is no backcompat and no aliases.
+The current code still uses the field pump/`maxPumps` model and refuses to unload
+a non-Rest field; §9.6 records that temporary placeholder. There is no backcompat
+and no aliases.
 
 One separate gap remains: the Honey directory layout (A23/C05): the code
 still uses `apiaries/<apiary>/compositions/<liveId>/honey/...`, while §5 specifies
@@ -611,9 +612,10 @@ The temporary design applies to:
 - an input that matches no assemble type, matches multiple types, or arrives for
   a closed group;
 - a code-block rule that throws, times out or returns the wrong type;
-- the current field pump / `maxPumps` / gather `ready` and the current
-  unload/active behavior (see §9.6);
-- a target path with no implementation yet (freeze, per-type queue overflow).
+- the current field pump / `maxPumps` and the current unload/active behavior
+  (see §9.6); gather is a typed not-implemented placeholder;
+- a target path with no implementation yet (freeze, gather per-type queue
+  overflow).
 
 It does not change the final Value, Pheromone, spread, gather, read/write or
 persistence rules in §3/§4.12/§4.13/§5.
@@ -665,32 +667,31 @@ When one of the cases above occurs:
 
 - Existing code (not final): `trigger`/`answer` receptor full -> 429; internal
   moves drop + log; a failed activation ends the current field pump pass and the
-  next delivery resumes; gather uses `ready` and one package per pump. M19e
+  next delivery resumes; gather is a typed not-implemented placeholder. M19d
   replaces the pump with a per-Bee drain, continues a failed Bee with its next
-  entry, and emits a completed group immediately.
+  entry, and adds the resumable unload lifecycle; M19e implements gather.
 - The temporary placeholder for new target paths is error + drop as in §9.2.
 - The final design is not defined; do not infer it from either behavior.
 
 ### 9.6 Temporary drain and unload placeholder
 
-Status: **temporary, not final**. This describes the M19d code until M19e
-lands; §4.2/§4.7–§4.9/§4.13/§6/§7 are the final design.
+Status: **temporary, not final**. This describes the current M19c code until
+M19d/M19e land; §4.2/§4.7–§4.9/§4.13/§6/§7 are the final design.
 
 - **Drain:** the field owns a field-wide pump (`pumpField`/`pump()`); the host
   calls it per driver pass. `maxPumps` bounds those calls. A failed activation
-  ends the current pass; the next delivery resumes. A gather that completes a
-  group holds it in `ready` and emits at most one package per pump.
+  ends the current pass; the next delivery resumes. Gather is a typed
+  not-implemented placeholder, so there is no `ready` or per-type queue yet.
 - **Unload:** `unload`/idle sweep only unload a Rest/safe field; an active
   activation or an open user hover blocks it (hover needs the explicit
   `allowHoverUnload`). On reload a restored active is marked unknown and is
   never resumed.
 - **Delivery:** `trigger`/`answer` require a loaded LiveHive; there is no
   lazy-load by id. A native result that outlives an unload is lost.
-- **Replacement (M19e):** per-Bee drain with `wake(bee)`/`settle()`, no
-  `maxPumps`; immediate gather emission; idle snapshot unload even with
-  active/hover/open group (guard blocks); restored active waits for its result;
-  late result continues the same activation; trigger/answer/native result
-  lazy-load.
+- **Replacement:** M19d replaces this with per-Bee drain (`wake(bee)`/
+  `settle()`), no `maxPumps`, idle snapshot even with active/hover/open group
+  (guard blocks), restored active waiting for its result, late result
+  continuation, and lazy-load. M19e implements gather.
 
 ### 9.7 Temporary test environment
 
@@ -702,6 +703,7 @@ contract.
 
 ### 9.8 Replacement
 
-The freeze/recovery design replaces §9.2 when it lands. M19e replaces §9.6 with
-the final §4.2/§4.7–§4.9 drain and unload design. At that point those sections
-become historical, and §4.14 receives the final policy.
+The freeze/recovery design replaces §9.2 when it lands. M19d replaces §9.6 with
+the final §4.2/§4.7–§4.9 drain and unload design; M19e implements gather. At
+that point those sections become historical, and §4.14 receives the final
+policy.

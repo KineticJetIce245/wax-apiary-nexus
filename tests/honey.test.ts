@@ -57,56 +57,56 @@ function conditionComposition(): ReturnType<typeof parseComposition> {
   });
 }
 
-function forkMergeComposition(): ReturnType<typeof parseComposition> {
+function spreadGatherComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
-    id: 'fork-merge',
+    id: 'spread-gather',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'ask' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
-function optionalForkMergeComposition(): ReturnType<typeof parseComposition> {
+function optionalSpreadGatherComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
-    id: 'optional-fork-merge',
+    id: 'optional-spread-gather',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'ask' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      merge: { kind: 'merge', config: { required: ['a'], optional: ['b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a'], optional: ['b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
@@ -389,7 +389,7 @@ test('restore refuses a different graph revision or an unknown node', () => {
   );
 });
 
-test('honey persists and restores a pending merge join without replaying branches', async () => {
+test('honey persists and restores a pending gather join without replaying branches', async () => {
   let clock = START;
   const calls: string[] = [];
   const executor: NodeExecutor = {
@@ -398,7 +398,7 @@ test('honey persists and restores a pending merge join without replaying branche
       return input;
     },
   };
-  const definition = forkMergeComposition();
+  const definition = spreadGatherComposition();
   const runtime = new PheromoneRuntime(definition, {
     executeForager: executor,
     now: () => clock,
@@ -409,13 +409,13 @@ test('honey persists and restores a pending merge join without replaying branche
 
   const before = runtime.snapshot();
   assert.equal(before.rest, false);
-  const joins = before.nodes['merge']?.joins ?? {};
-  assert.equal(Object.keys(joins).length, 1);
+  const gathers = before.nodes['gather']?.gathers ?? {};
+  assert.equal(Object.keys(gathers).length, 1);
   const token = before.nodes['ask']?.hover?.token;
   assert.ok(token !== undefined);
   assert.deepEqual(calls, ['start']);
 
-  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'fork-merge');
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'spread-gather');
   const field = runtime.exportField();
   store.save(field);
   const loaded = store.load();
@@ -431,7 +431,7 @@ test('honey persists and restores a pending merge join without replaying branche
   assert.deepEqual(calls, ['start'], 'restoring a join does not replay the arrived branches');
   const restoredSnapshot = restored.snapshot();
   assert.equal(restoredSnapshot.rest, false);
-  assert.equal(Object.keys(restoredSnapshot.nodes['merge']?.joins ?? {}).length, 1);
+  assert.equal(Object.keys(restoredSnapshot.nodes['gather']?.gathers ?? {}).length, 1);
   assert.equal(restoredSnapshot.nodes['ask']?.hover?.token, token);
 
   restored.answerHover('ask', { kind: 'text', text: 'reply' }, token);
@@ -442,10 +442,10 @@ test('honey persists and restores a pending merge join without replaying branche
   assert.equal(restored.snapshot().rest, true);
   // The completed join is kept as a persisted tombstone for late optional
   // branches, so it survives the round-trip instead of disappearing.
-  const completedJoin = Object.values(restored.snapshot().nodes['merge']?.joins ?? {})[0];
-  assert.ok(completedJoin !== undefined);
-  assert.ok(completedJoin.completedAt !== undefined);
-  assert.deepEqual(completedJoin.arrived, []);
+  const completedGather = Object.values(restored.snapshot().nodes['gather']?.gathers ?? {})[0];
+  assert.ok(completedGather !== undefined);
+  assert.ok(completedGather.completedAt !== undefined);
+  assert.deepEqual(completedGather.arrived, []);
 });
 
 test('honey persists a completed join and drops a late optional after restart', async () => {
@@ -458,7 +458,7 @@ test('honey persists a completed join and drops a late optional after restart', 
       return input;
     },
   };
-  const definition = optionalForkMergeComposition();
+  const definition = optionalSpreadGatherComposition();
   const runtime = new PheromoneRuntime(definition, {
     executeForager: executor,
     now: () => clock,
@@ -469,20 +469,20 @@ test('honey persists a completed join and drops a late optional after restart', 
   assert.equal(calls.filter((nodeId) => nodeId === 'done').length, 1);
   const before = runtime.snapshot();
   assert.equal(before.rest, false, 'the optional branch still hovers');
-  const beforeJoin = Object.values(before.nodes['merge']?.joins ?? {})[0];
-  assert.ok(beforeJoin !== undefined);
-  assert.ok(beforeJoin.completedAt !== undefined);
-  assert.deepEqual(beforeJoin.arrived, []);
+  const beforeGather = Object.values(before.nodes['gather']?.gathers ?? {})[0];
+  assert.ok(beforeGather !== undefined);
+  assert.ok(beforeGather.completedAt !== undefined);
+  assert.deepEqual(beforeGather.arrived, []);
 
-  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'optional-fork-merge');
+  const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'optional-spread-gather');
   const field = runtime.exportField();
   store.save(field);
   const loaded = store.load();
   assert.ok(loaded !== undefined);
-  const persistedJoin = Object.values(loaded.nodes['merge']?.joins ?? {})[0];
-  assert.ok(persistedJoin !== undefined);
-  assert.equal(persistedJoin.completedAt, beforeJoin.completedAt);
-  assert.deepEqual(persistedJoin.arrived, []);
+  const persistedGather = Object.values(loaded.nodes['gather']?.gathers ?? {})[0];
+  assert.ok(persistedGather !== undefined);
+  assert.equal(persistedGather.completedAt, beforeGather.completedAt);
+  assert.deepEqual(persistedGather.arrived, []);
 
   const restored = PheromoneRuntime.restore(definition, loaded, {
     executeForager: executor,
@@ -501,10 +501,10 @@ test('honey persists a completed join and drops a late optional after restart', 
     'the restored completed join never emits a second time',
   );
   assert.equal(restored.runtime.snapshot().rest, true);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.optional-dropped'));
-  const afterJoin = Object.values(restored.runtime.snapshot().nodes['merge']?.joins ?? {})[0];
-  assert.ok(afterJoin !== undefined);
-  assert.ok(afterJoin.completedAt !== undefined);
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.optional-dropped'));
+  const afterGather = Object.values(restored.runtime.snapshot().nodes['gather']?.gathers ?? {})[0];
+  assert.ok(afterGather !== undefined);
+  assert.ok(afterGather.completedAt !== undefined);
 });
 
 test('a resting node may omit the mailbox key', () => {

@@ -1,11 +1,11 @@
 import type {
   CompositionDefinition,
-  JoinState,
-  JoinStateSnapshot,
+  GatherState,
+  GatherStateSnapshot,
   NodeId,
   NodeState,
   NodeStateSnapshot,
-  PersistedJoinState,
+  PersistedGatherState,
   Pheromone,
   PheromoneFieldSnapshot,
 } from './types.js';
@@ -43,13 +43,13 @@ export function restReceptorIfIdle(state: NodeState): void {
   delete state.receptor;
 }
 
-/** Drops one fork's queued siblings, keeping the receptor only for survivors. */
-export function dropForkFromReceptor(state: NodeState, forkId: string): void {
+/** Drops one spread's queued siblings, keeping the receptor only for survivors. */
+export function dropSpreadFromReceptor(state: NodeState, spreadId: string): void {
   const receptor = state.receptor;
-  if (receptor === undefined || !receptor.some((pheromone) => pheromone.forkId === forkId)) {
+  if (receptor === undefined || !receptor.some((pheromone) => pheromone.spreadId === spreadId)) {
     return;
   }
-  const kept = receptor.filter((pheromone) => pheromone.forkId !== forkId);
+  const kept = receptor.filter((pheromone) => pheromone.spreadId !== spreadId);
   if (kept.length === 0) {
     delete state.receptor;
   } else {
@@ -68,7 +68,7 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
       node.pending !== undefined ||
       node.hover !== undefined ||
       receptorOf(node).length > 0 ||
-      hasIncompleteJoin(node)
+      hasIncompleteGather(node)
     ) {
       return false;
     }
@@ -77,11 +77,11 @@ export function isFieldResting(nodes: Iterable<NodeState>): boolean {
 }
 
 /**
- * A closed join is a tombstone for late branches. Stage 5A closed joins with
+ * A closed join is a tombstone for late branches. Stage 5A closed gathers with
  * `completedAt`; Stage 5B closes a timed-out join with `timedOutAt`. Neither is
  * live work, so neither keeps the field out of Rest nor blocks an edit.
  */
-export function isJoinClosed(join: {
+export function isGatherClosed(join: {
   readonly completedAt?: string;
   readonly timedOutAt?: string;
 }): boolean {
@@ -92,12 +92,12 @@ export function isJoinClosed(join: {
  * A closed join is a tombstone for late branches, not live work: it never keeps
  * the field out of Rest.
  */
-function hasIncompleteJoin(node: NodeState): boolean {
-  if (node.joins === undefined) {
+function hasIncompleteGather(node: NodeState): boolean {
+  if (node.gathers === undefined) {
     return false;
   }
-  for (const join of node.joins.values()) {
-    if (!isJoinClosed(join)) {
+  for (const join of node.gathers.values()) {
+    if (!isGatherClosed(join)) {
       return true;
     }
   }
@@ -119,8 +119,8 @@ export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
     for (const queued of receptorOf(node)) {
       pheromones.push(clonePheromone(queued));
     }
-    if (node.joins !== undefined) {
-      for (const join of node.joins.values()) {
+    if (node.gathers !== undefined) {
+      for (const join of node.gathers.values()) {
         for (const arrived of join.arrived.values()) {
           pheromones.push(clonePheromone(arrived));
         }
@@ -130,13 +130,13 @@ export function collectPheromones(nodes: Iterable<NodeState>): Pheromone[] {
   return pheromones;
 }
 
-/** JSON shape of the open/closed joins a Merge keeps across a pause. */
-export function joinsToPersisted(
-  joins: ReadonlyMap<string, JoinState>,
-): Record<string, PersistedJoinState> {
+/** JSON shape of the open/closed gathers a Gather keeps across a pause. */
+export function gathersToPersisted(
+  gathers: ReadonlyMap<string, GatherState>,
+): Record<string, PersistedGatherState> {
   return Object.fromEntries(
-    [...joins].map(([forkId, join]) => [
-      forkId,
+    [...gathers].map(([spreadId, join]) => [
+      spreadId,
       {
         arrived: [...join.arrived.values()].map(clonePheromone),
         ...(join.lineage === undefined
@@ -171,13 +171,13 @@ export function snapshotField(
     if (state.hover !== undefined) {
       snapshot.hover = cloneValue(state.hover);
     }
-    if (state.joins !== undefined && state.joins.size > 0) {
-      const entries: [string, JoinStateSnapshot][] = [];
-      for (const [forkId, join] of state.joins) {
+    if (state.gathers !== undefined && state.gathers.size > 0) {
+      const entries: [string, GatherStateSnapshot][] = [];
+      for (const [spreadId, join] of state.gathers) {
         entries.push([
-          forkId,
+          spreadId,
           {
-            forkId,
+            spreadId,
             arrived: [...join.arrived.values()].map(clonePheromone),
             ...(join.lineage === undefined
               ? {}
@@ -188,7 +188,7 @@ export function snapshotField(
           },
         ]);
       }
-      snapshot.joins = Object.fromEntries(entries);
+      snapshot.gathers = Object.fromEntries(entries);
     }
     if (state.lastActivatedAt !== undefined) {
       snapshot.lastActivatedAt = state.lastActivatedAt;

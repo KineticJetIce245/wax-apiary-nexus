@@ -6,26 +6,26 @@ import { CompositionValidationError, parseComposition } from '../src/runtime/ind
 function validComposition(): Record<string, unknown> {
   return {
     schemaVersion: 1,
-    id: 'fork-merge',
+    id: 'spread-gather',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'make' },
           ],
         },
       },
       make: { kind: 'forager', config: { connection: 'codex', prompt: 'make' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'make', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'make', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   };
 }
@@ -40,117 +40,117 @@ function issuesOf(input: unknown): string[] {
   assert.fail('expected the composition to be rejected');
 }
 
-function forkOf(input: Record<string, unknown>): Record<string, unknown> {
+function spreadOf(input: Record<string, unknown>): Record<string, unknown> {
   const nodes = input['nodes'] as Record<string, Record<string, unknown>>;
-  const fork = nodes['fork'];
-  assert.ok(fork !== undefined);
-  return fork;
+  const spread = nodes['spread'];
+  assert.ok(spread !== undefined);
+  return spread;
 }
 
-function mergeOf(input: Record<string, unknown>): Record<string, unknown> {
+function gatherOf(input: Record<string, unknown>): Record<string, unknown> {
   const nodes = input['nodes'] as Record<string, Record<string, unknown>>;
-  const merge = nodes['merge'];
-  assert.ok(merge !== undefined);
-  return merge;
+  const gather = nodes['gather'];
+  assert.ok(gather !== undefined);
+  return gather;
 }
 
-test('parses fork and merge nodes and includes branch config in the graph revision', () => {
+test('parses spread and gather nodes and includes branch config in the graph revision', () => {
   const composition = parseComposition(validComposition());
-  const fork = composition.nodes.get('fork');
-  const merge = composition.nodes.get('merge');
-  assert.ok(fork !== undefined);
-  assert.ok(merge !== undefined);
-  assert.equal(fork.kind, 'fork');
-  if (fork.kind !== 'fork') {
-    assert.fail('expected a fork node');
+  const spread = composition.nodes.get('spread');
+  const gather = composition.nodes.get('gather');
+  assert.ok(spread !== undefined);
+  assert.ok(gather !== undefined);
+  assert.equal(spread.kind, 'spread');
+  if (spread.kind !== 'spread') {
+    assert.fail('expected a spread node');
   }
-  assert.deepEqual(fork.config.branches, [
-    { id: 'a', to: 'merge' },
+  assert.deepEqual(spread.config.branches, [
+    { id: 'a', to: 'gather' },
     { id: 'b', to: 'make' },
   ]);
-  assert.equal(merge.kind, 'merge');
-  if (merge.kind !== 'merge') {
-    assert.fail('expected a merge node');
+  assert.equal(gather.kind, 'gather');
+  if (gather.kind !== 'gather') {
+    assert.fail('expected a gather node');
   }
-  assert.deepEqual(merge.config.required, ['a', 'b']);
-  assert.equal(merge.config.combine, 'text');
+  assert.deepEqual(gather.config.required, ['a', 'b']);
+  assert.equal(gather.config.combine, 'text');
 
   const changed = structuredClone(validComposition());
-  const changedFork = forkOf(changed);
-  changedFork['config'] = { branches: [{ id: 'a', to: 'merge' }] };
+  const changedSpread = spreadOf(changed);
+  changedSpread['config'] = { branches: [{ id: 'a', to: 'gather' }] };
   assert.notEqual(composition.graphRevision, parseComposition(changed).graphRevision);
 });
 
-test('rejects a fork with empty, duplicate or unknown branches', () => {
+test('rejects a spread with empty, duplicate or unknown branches', () => {
   const empty = structuredClone(validComposition());
-  forkOf(empty)['config'] = { branches: [] };
+  spreadOf(empty)['config'] = { branches: [] };
   assert.ok(issuesOf(empty).some((issue) => issue.includes('branches: expected a non-empty array')));
 
   const duplicate = structuredClone(validComposition());
-  forkOf(duplicate)['config'] = {
+  spreadOf(duplicate)['config'] = {
     branches: [
-      { id: 'a', to: 'merge' },
+      { id: 'a', to: 'gather' },
       { id: 'a', to: 'make' },
     ],
   };
   assert.ok(issuesOf(duplicate).some((issue) => issue.includes("duplicate branch id 'a'")));
 
   const unknown = structuredClone(validComposition());
-  forkOf(unknown)['config'] = {
+  spreadOf(unknown)['config'] = {
     branches: [
-      { id: 'a', to: 'merge' },
+      { id: 'a', to: 'gather' },
       { id: 'b', to: 'ghost' },
     ],
   };
   assert.ok(issuesOf(unknown).some((issue) => issue.includes("unknown node 'ghost'")));
 });
 
-test('rejects a normal outgoing edge from a fork', () => {
+test('rejects a normal outgoing edge from a spread', () => {
   const input = validComposition();
-  (input['edges'] as unknown[]).push({ id: 'e4', from: 'fork', to: 'done' });
+  (input['edges'] as unknown[]).push({ id: 'e4', from: 'spread', to: 'done' });
 
   const issues = issuesOf(input);
-  assert.ok(issues.some((issue) => issue.includes('fork node uses branches and has no normal outgoing edge')));
+  assert.ok(issues.some((issue) => issue.includes('spread node uses branches and has no normal outgoing edge')));
 });
 
-test('rejects a merge with empty or duplicate required branches', () => {
+test('rejects a gather with empty or duplicate required branches', () => {
   const empty = structuredClone(validComposition());
-  mergeOf(empty)['config'] = { required: [], combine: 'text' };
+  gatherOf(empty)['config'] = { required: [], combine: 'text' };
   assert.ok(issuesOf(empty).some((issue) => issue.includes('required: expected a non-empty array')));
 
   const duplicate = structuredClone(validComposition());
-  mergeOf(duplicate)['config'] = { required: ['a', 'a'], combine: 'text' };
+  gatherOf(duplicate)['config'] = { required: ['a', 'a'], combine: 'text' };
   assert.ok(issuesOf(duplicate).some((issue) => issue.includes("duplicate required branch 'a'")));
 });
 
 test('parses optional branches, defaulting to none, and includes them in the revision', () => {
   const defaulted = parseComposition(validComposition());
-  const defaultedMerge = defaulted.nodes.get('merge');
-  assert.ok(defaultedMerge !== undefined);
-  if (defaultedMerge.kind !== 'merge') {
-    assert.fail('expected a merge node');
+  const defaultedGather = defaulted.nodes.get('gather');
+  assert.ok(defaultedGather !== undefined);
+  if (defaultedGather.kind !== 'gather') {
+    assert.fail('expected a gather node');
   }
-  assert.deepEqual(defaultedMerge.config.optional, []);
+  assert.deepEqual(defaultedGather.config.optional, []);
 
   const optionalInput = structuredClone(validComposition());
-  mergeOf(optionalInput)['config'] = {
+  gatherOf(optionalInput)['config'] = {
     required: ['a', 'b'],
     optional: ['c'],
     combine: 'text',
   };
   const optional = parseComposition(optionalInput);
-  const optionalMerge = optional.nodes.get('merge');
-  assert.ok(optionalMerge !== undefined);
-  if (optionalMerge.kind !== 'merge') {
-    assert.fail('expected a merge node');
+  const optionalGather = optional.nodes.get('gather');
+  assert.ok(optionalGather !== undefined);
+  if (optionalGather.kind !== 'gather') {
+    assert.fail('expected a gather node');
   }
-  assert.deepEqual(optionalMerge.config.optional, ['c']);
+  assert.deepEqual(optionalGather.config.optional, ['c']);
   assert.notEqual(optional.graphRevision, defaulted.graphRevision);
 });
 
 test('rejects duplicate, overlapping or malformed optional branches', () => {
   const duplicate = structuredClone(validComposition());
-  mergeOf(duplicate)['config'] = {
+  gatherOf(duplicate)['config'] = {
     required: ['a', 'b'],
     optional: ['c', 'c'],
     combine: 'text',
@@ -158,7 +158,7 @@ test('rejects duplicate, overlapping or malformed optional branches', () => {
   assert.ok(issuesOf(duplicate).some((issue) => issue.includes("duplicate optional branch 'c'")));
 
   const overlap = structuredClone(validComposition());
-  mergeOf(overlap)['config'] = {
+  gatherOf(overlap)['config'] = {
     required: ['a', 'b'],
     optional: ['a'],
     combine: 'text',
@@ -166,11 +166,11 @@ test('rejects duplicate, overlapping or malformed optional branches', () => {
   assert.ok(issuesOf(overlap).some((issue) => issue.includes("branch 'a' is already required")));
 
   const notArray = structuredClone(validComposition());
-  mergeOf(notArray)['config'] = { required: ['a', 'b'], optional: 'c', combine: 'text' };
+  gatherOf(notArray)['config'] = { required: ['a', 'b'], optional: 'c', combine: 'text' };
   assert.ok(issuesOf(notArray).some((issue) => issue.includes('optional: expected an array')));
 
   const emptyId = structuredClone(validComposition());
-  mergeOf(emptyId)['config'] = { required: ['a', 'b'], optional: [''], combine: 'text' };
+  gatherOf(emptyId)['config'] = { required: ['a', 'b'], optional: [''], combine: 'text' };
   assert.ok(issuesOf(emptyId).some((issue) => issue.includes('expected a non-empty branch id')));
 });
 
@@ -178,20 +178,20 @@ test('parses object and array combine, and rejects an unknown combine', () => {
   const revisions = new Set<string>();
   for (const combine of ['text', 'object', 'array'] as const) {
     const input = structuredClone(validComposition());
-    mergeOf(input)['config'] = { required: ['a', 'b'], combine };
+    gatherOf(input)['config'] = { required: ['a', 'b'], combine };
     const composition = parseComposition(input);
-    const merge = composition.nodes.get('merge');
-    assert.ok(merge !== undefined);
-    if (merge.kind !== 'merge') {
-      assert.fail('expected a merge node');
+    const gather = composition.nodes.get('gather');
+    assert.ok(gather !== undefined);
+    if (gather.kind !== 'gather') {
+      assert.fail('expected a gather node');
     }
-    assert.equal(merge.config.combine, combine);
+    assert.equal(gather.config.combine, combine);
     revisions.add(composition.graphRevision);
   }
   assert.equal(revisions.size, 3, 'combine is part of the graph revision');
 
   const invalid = structuredClone(validComposition());
-  mergeOf(invalid)['config'] = { required: ['a', 'b'], combine: 'json' };
+  gatherOf(invalid)['config'] = { required: ['a', 'b'], combine: 'json' };
   assert.ok(
     issuesOf(invalid).some((issue) =>
       issue.includes("combine: expected 'text', 'object' or 'array'"),
@@ -199,33 +199,33 @@ test('parses object and array combine, and rejects an unknown combine', () => {
   );
 });
 
-test('parses merge timeoutMs with the 600000 default and its 32-bit bound', () => {
+test('parses gather timeoutMs with the 600000 default and its 32-bit bound', () => {
   const defaulted = parseComposition(validComposition());
-  const defaultedMerge = defaulted.nodes.get('merge');
-  assert.ok(defaultedMerge !== undefined);
-  if (defaultedMerge.kind !== 'merge') {
-    assert.fail('expected a merge node');
+  const defaultedGather = defaulted.nodes.get('gather');
+  assert.ok(defaultedGather !== undefined);
+  if (defaultedGather.kind !== 'gather') {
+    assert.fail('expected a gather node');
   }
-  assert.equal(defaultedMerge.config.timeoutMs, 600_000);
+  assert.equal(defaultedGather.config.timeoutMs, 600_000);
 
   const explicitInput = structuredClone(validComposition());
-  mergeOf(explicitInput)['config'] = {
+  gatherOf(explicitInput)['config'] = {
     required: ['a', 'b'],
     combine: 'text',
     timeoutMs: 1500,
   };
   const explicit = parseComposition(explicitInput);
-  const explicitMerge = explicit.nodes.get('merge');
-  assert.ok(explicitMerge !== undefined);
-  if (explicitMerge.kind !== 'merge') {
-    assert.fail('expected a merge node');
+  const explicitGather = explicit.nodes.get('gather');
+  assert.ok(explicitGather !== undefined);
+  if (explicitGather.kind !== 'gather') {
+    assert.fail('expected a gather node');
   }
-  assert.equal(explicitMerge.config.timeoutMs, 1500);
+  assert.equal(explicitGather.config.timeoutMs, 1500);
   assert.notEqual(explicit.graphRevision, defaulted.graphRevision);
 
   for (const timeoutMs of [0, -1, 1.5, '1000', 2_147_483_648]) {
     const invalid = structuredClone(validComposition());
-    mergeOf(invalid)['config'] = { required: ['a', 'b'], combine: 'text', timeoutMs };
+    gatherOf(invalid)['config'] = { required: ['a', 'b'], combine: 'text', timeoutMs };
     assert.ok(
       issuesOf(invalid).some((issue) =>
         issue.includes('timeoutMs: expected a positive integer <= 2147483647'),
@@ -235,14 +235,14 @@ test('parses merge timeoutMs with the 600000 default and its 32-bit bound', () =
   }
 });
 
-test('rejects more than one merge outgoing edge and a when on a merge edge', () => {
+test('rejects more than one gather outgoing edge and a when on a gather edge', () => {
   const extra = validComposition();
-  (extra['edges'] as unknown[]).push({ id: 'e4', from: 'merge', to: 'start' });
-  assert.ok(issuesOf(extra).some((issue) => issue.includes('merge node has at most one outgoing edge')));
+  (extra['edges'] as unknown[]).push({ id: 'e4', from: 'gather', to: 'start' });
+  assert.ok(issuesOf(extra).some((issue) => issue.includes('gather node has at most one outgoing edge')));
 
   const when = validComposition();
-  (when['edges'] as unknown[]).push({ id: 'e4', from: 'merge', to: 'start', when: 'true' });
+  (when['edges'] as unknown[]).push({ id: 'e4', from: 'gather', to: 'start', when: 'true' });
   const issues = issuesOf(when);
   assert.ok(issues.some((issue) => issue.includes("'when' is only allowed")));
-  assert.ok(issues.some((issue) => issue.includes('merge node has at most one outgoing edge')));
+  assert.ok(issues.some((issue) => issue.includes('gather node has at most one outgoing edge')));
 });

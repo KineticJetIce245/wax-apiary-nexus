@@ -116,7 +116,7 @@ export class LiveHiveHostRead {
         pending: state?.pending !== undefined,
         active: state?.active !== undefined,
         hovered: state?.hover !== undefined,
-        joins: state?.joins === undefined ? 0 : Object.keys(state.joins).length,
+        gathers: state?.gathers === undefined ? 0 : Object.keys(state.gathers).length,
       });
     }
 

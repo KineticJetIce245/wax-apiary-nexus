@@ -124,7 +124,7 @@ export class LiveHiveService {
   ): Promise<LiveHiveOperationResult> {
     const template = this.repository.loadTemplate(templateId);
     const id = this.repository.requireLiveId(liveId);
-    const defaults = mergeDefaults(template, overrides);
+    const defaults = gatherDefaults(template, overrides);
     const live: LiveHive = {
       schemaVersion: 1,
       liveId: id,
@@ -198,7 +198,7 @@ export class LiveHiveService {
 
   /**
    * Explicit structural replacement: unload, write the new live, load again.
-   * There is no fork command and no revision/CAS.
+   * There is no LiveHive copy command and no revision/CAS.
    */
   async migrate(
     liveId: string,
@@ -258,7 +258,7 @@ export class LiveHiveService {
     return status;
   }
 
-  /** Merge the loaded bee -> session mapping into live.json. */
+  /** Combine the loaded bee -> session mapping into live.json. */
   private syncBindings(live: LiveHive): LiveHive {
     const loaded = this.options.liveHiveHost.bindingsOf(live.liveId);
     const bindings: Record<string, string> = {};
@@ -349,18 +349,18 @@ function resolveProject(
   );
 }
 
-function mergeDefaults(
+function gatherDefaults(
   template: HiveTemplate,
   overrides: LiveHiveOverrides,
 ): LiveHiveOverrides {
   if (typeof overrides !== 'object' || overrides === null) {
     throw new LiveHiveServiceError('invalid', 'overrides must be an object');
   }
-  const merged: Record<string, SessionParams> = {};
+  const gatherd: Record<string, SessionParams> = {};
   for (const beeId of Object.keys(template.hive.bees)) {
-    merged[beeId] = { ...(template.defaults[beeId] ?? {}), ...(overrides[beeId] ?? {}) };
+    gatherd[beeId] = { ...(template.defaults[beeId] ?? {}), ...(overrides[beeId] ?? {}) };
   }
-  return merged;
+  return gatherd;
 }
 
 function textValue(input: string): Value {

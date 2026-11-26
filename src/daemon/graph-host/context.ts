@@ -180,8 +180,8 @@ export function snapshotHovered(snapshot: PheromoneFieldSnapshot): boolean {
  * A field may be flushed and released while parked on hover(s) only.
  *
  * At least one node hovers, and no node has active, pending or queued work. An
- * incomplete Merge join is allowed: the hover branch can still be waiting in
- * it, and Honey persists joins together with the hover. A guard hover is
+ * incomplete Gather join is allowed: the hover branch can still be waiting in
+ * it, and Honey persists gathers together with the hover. A guard hover is
  * allowed too, even though in practice it coexists with its own active
  * execution and therefore is not quiescent.
  */

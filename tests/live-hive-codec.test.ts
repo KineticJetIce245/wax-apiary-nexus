@@ -10,7 +10,7 @@ import {
 import type { LiveHive } from '../src/b/types.js';
 import {
   conditionLiveHive,
-  forkLiveHive,
+  spreadLiveHive,
   simpleLiveHive,
 } from './support/b-object-fixtures.js';
 
@@ -54,30 +54,30 @@ test('LiveHive -> CompositionDefinition is deterministic and tracks config chang
   );
 });
 
-test('fork beelines become config branches, never normal edges', () => {
-  const composition = toCompositionDefinition(forkLiveHive());
+test('spread beelines become config branches, never normal edges', () => {
+  const composition = toCompositionDefinition(spreadLiveHive());
   assert.deepEqual(
     composition.edges.map((edge) => edge.id).sort(),
-    ['lm', 'rm', 'to-fork'],
+    ['lm', 'rm', 'to-spread'],
   );
-  const fork = composition.nodes.get('fork');
-  assert.ok(fork !== undefined && fork.kind === 'fork');
-  assert.deepEqual(fork.config.branches, [
+  const spread = composition.nodes.get('spread');
+  assert.ok(spread !== undefined && spread.kind === 'spread');
+  assert.deepEqual(spread.config.branches, [
     { id: 'a', to: 'left' },
     { id: 'b', to: 'right' },
   ]);
 });
 
-test('fork branches are derived from beeline branch labels when config omits them', () => {
-  const live = forkLiveHive();
-  const fork = live.bees['fork']!;
+test('spread branches are derived from beeline branch labels when config omits them', () => {
+  const live = spreadLiveHive();
+  const spread = live.bees['spread']!;
   const withoutConfig: LiveHive = {
     ...live,
-    bees: { ...live.bees, fork: { ...fork, config: {} } },
+    bees: { ...live.bees, spread: { ...spread, config: {} } },
   };
   const composition = toCompositionDefinition(withoutConfig);
-  const node = composition.nodes.get('fork');
-  assert.ok(node !== undefined && node.kind === 'fork');
+  const node = composition.nodes.get('spread');
+  assert.ok(node !== undefined && node.kind === 'spread');
   assert.deepEqual(node.config.branches, [
     { id: 'a', to: 'left' },
     { id: 'b', to: 'right' },
@@ -108,17 +108,17 @@ test('a condition beeline without a true/false branch is a codec error', () => {
   assert.throws(() => toCompositionDefinition(broken), LiveHiveCodecError);
 });
 
-test('a fork without branches is a codec error', () => {
-  const live = forkLiveHive();
-  const fork = live.bees['fork']!;
+test('a spread without branches is a codec error', () => {
+  const live = spreadLiveHive();
+  const spread = live.bees['spread']!;
   const noBranches: LiveHive = {
     ...live,
     bees: {
       ...live.bees,
-      fork: { ...fork, config: {}, outgoing: [] },
+      spread: { ...spread, config: {}, outgoing: [] },
     },
     beelines: Object.fromEntries(
-      Object.entries(live.beelines).filter(([, line]) => line.fromBee !== 'fork'),
+      Object.entries(live.beelines).filter(([, line]) => line.fromBee !== 'spread'),
     ),
   };
   assert.throws(() => toCompositionDefinition(noBranches), /needs at least one branch/);
@@ -167,7 +167,7 @@ test('B schedules map to and from composition triggers', () => {
 });
 
 test('codec does not mutate the LiveHive object', () => {
-  const live = forkLiveHive();
+  const live = spreadLiveHive();
   const before = JSON.stringify(live);
   toCompositionDefinition(live);
   toGraphBindings(live);

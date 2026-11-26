@@ -64,7 +64,7 @@ export interface LiveHiveHostOptions {
   /** Max pump iterations for one trigger; default 50. */
   readonly maxPumps?: number;
   /**
-   * Sleep seam for pacing waits (node `minIntervalMs` and merge deadlines).
+   * Sleep seam for pacing waits (node `minIntervalMs` and gather deadlines).
    * Default setTimeout. A trigger never hot-spins while work is rate-limited.
    */
   readonly sleep?: (ms: number) => Promise<void>;
@@ -130,8 +130,8 @@ export interface LiveHiveNodeStatus {
   readonly pending: boolean;
   readonly active: boolean;
   readonly hovered: boolean;
-  /** Join records, including closed tombstones (same as `wax inspect status`). */
-  readonly joins: number;
+  /** Gather records, including closed tombstones (same as `wax inspect status`). */
+  readonly gathers: number;
 }
 
 export interface LiveHiveStatus {

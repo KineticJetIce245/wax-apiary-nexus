@@ -191,7 +191,7 @@ test('LiveHiveService compose/instantiate uses template defaults and creates ses
   assert.equal(harness.host.statusOf('instantiated')?.rest, true);
 });
 
-test('LiveHiveService migrate replaces structure explicitly without fork semantics', async (t) => {
+test('LiveHiveService migrate replaces structure explicitly without LiveHive-copy semantics', async (t) => {
   const harness = setup(t);
   const live = await boundLive(harness);
   await harness.service.new(live);

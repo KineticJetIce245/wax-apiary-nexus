@@ -109,19 +109,19 @@ function linearGraph(): FuzzGraph {
   };
 }
 
-/** start -> fan (a, b required; c late/optional) -> merge -> done. */
-function forkMergeGraph(): FuzzGraph {
+/** start -> fan (a, b required; c late/optional) -> gather -> done. */
+function spreadGatherGraph(): FuzzGraph {
   return {
-    name: 'fork-merge',
+    name: 'spread-gather',
     entry: 'start',
     definition: parseComposition({
       schemaVersion: 1,
-      id: 'fuzz-fork-merge',
+      id: 'fuzz-spread-gather',
       defaults: { minIntervalMs: 1000, queueMax: 6, queueTtlMs: 30_000 },
       nodes: {
         start: foragerNode(),
         fan: {
-          kind: 'fork',
+          kind: 'spread',
           config: {
             branches: [
               { id: 'a', to: 'work-a' },
@@ -133,8 +133,8 @@ function forkMergeGraph(): FuzzGraph {
         'work-a': foragerNode(),
         'work-b': foragerNode(),
         'work-c': foragerNode(),
-        merge: {
-          kind: 'merge',
+        gather: {
+          kind: 'gather',
           config: {
             required: ['b', 'a'],
             optional: ['c'],
@@ -146,22 +146,22 @@ function forkMergeGraph(): FuzzGraph {
       },
       edges: [
         { id: 'e1', from: 'start', to: 'fan' },
-        { id: 'e2', from: 'work-a', to: 'merge' },
-        { id: 'e3', from: 'work-b', to: 'merge' },
-        { id: 'e4', from: 'work-c', to: 'merge' },
-        { id: 'e5', from: 'merge', to: 'done' },
+        { id: 'e2', from: 'work-a', to: 'gather' },
+        { id: 'e3', from: 'work-b', to: 'gather' },
+        { id: 'e4', from: 'work-c', to: 'gather' },
+        { id: 'e5', from: 'gather', to: 'done' },
       ],
     }),
   };
 }
 
 /**
- * start -> outer-fork
- *   o-left  -> mid-fork
- *              m-left -> inner-fork (i-a, i-b -> inner-merge) -> mid-merge
- *              m-right -> mid-merge
- *   o-right -> ask-outer -> outer-merge
- * inner-merge -> mid-merge -> outer-merge -> done
+ * start -> outer-spread
+ *   o-left  -> mid-spread
+ *              m-left -> inner-spread (i-a, i-b -> inner-gather) -> mid-gather
+ *              m-right -> mid-gather
+ *   o-right -> ask-outer -> outer-gather
+ * inner-gather -> mid-gather -> outer-gather -> done
  */
 function nestedHoverGraph(): FuzzGraph {
   return {
@@ -173,54 +173,54 @@ function nestedHoverGraph(): FuzzGraph {
       defaults: { minIntervalMs: 1000, queueMax: 8, queueTtlMs: 30_000 },
       nodes: {
         start: foragerNode(),
-        'outer-fork': {
-          kind: 'fork',
+        'outer-spread': {
+          kind: 'spread',
           config: {
             branches: [
-              { id: 'o-left', to: 'mid-fork' },
+              { id: 'o-left', to: 'mid-spread' },
               { id: 'o-right', to: 'ask-outer' },
             ],
           },
         },
-        'mid-fork': {
-          kind: 'fork',
+        'mid-spread': {
+          kind: 'spread',
           config: {
             branches: [
-              { id: 'm-left', to: 'inner-fork' },
-              { id: 'm-right', to: 'mid-merge' },
+              { id: 'm-left', to: 'inner-spread' },
+              { id: 'm-right', to: 'mid-gather' },
             ],
           },
         },
-        'inner-fork': {
-          kind: 'fork',
+        'inner-spread': {
+          kind: 'spread',
           config: {
             branches: [
-              { id: 'i-a', to: 'inner-merge' },
-              { id: 'i-b', to: 'inner-merge' },
+              { id: 'i-a', to: 'inner-gather' },
+              { id: 'i-b', to: 'inner-gather' },
             ],
           },
         },
-        'inner-merge': {
-          kind: 'merge',
+        'inner-gather': {
+          kind: 'gather',
           config: { required: ['i-a', 'i-b'], combine: 'text' },
         },
-        'mid-merge': {
-          kind: 'merge',
+        'mid-gather': {
+          kind: 'gather',
           config: { required: ['m-left', 'm-right'], combine: 'text' },
         },
-        'outer-merge': {
-          kind: 'merge',
+        'outer-gather': {
+          kind: 'gather',
           config: { required: ['o-left', 'o-right'], combine: 'text' },
         },
         'ask-outer': userNode(),
         done: foragerNode(),
       },
       edges: [
-        { id: 'e1', from: 'start', to: 'outer-fork' },
-        { id: 'e2', from: 'inner-merge', to: 'mid-merge' },
-        { id: 'e3', from: 'mid-merge', to: 'outer-merge' },
-        { id: 'e4', from: 'ask-outer', to: 'outer-merge' },
-        { id: 'e5', from: 'outer-merge', to: 'done' },
+        { id: 'e1', from: 'start', to: 'outer-spread' },
+        { id: 'e2', from: 'inner-gather', to: 'mid-gather' },
+        { id: 'e3', from: 'mid-gather', to: 'outer-gather' },
+        { id: 'e4', from: 'ask-outer', to: 'outer-gather' },
+        { id: 'e5', from: 'outer-gather', to: 'done' },
       ],
     }),
   };
@@ -258,7 +258,7 @@ function deriveRest(snapshot: PheromoneFieldSnapshot): boolean {
     ) {
       return false;
     }
-    for (const join of Object.values(node.joins ?? {})) {
+    for (const join of Object.values(node.gathers ?? {})) {
       if (join.completedAt === undefined && join.timedOutAt === undefined) {
         return false;
       }
@@ -272,8 +272,8 @@ interface FieldShape {
   readonly receptor: readonly string[];
   readonly pending: string | null;
   readonly hover: string | null;
-  readonly joins: readonly string[];
-  readonly openJoins: readonly string[];
+  readonly gathers: readonly string[];
+  readonly openGathers: readonly string[];
 }
 
 /** Compact per-node counts used to compare a field before and after restore. */
@@ -285,21 +285,21 @@ function describeField(field: PersistedField): FieldShape[] {
       if (node === undefined) {
         throw new Error(`describeField: missing node '${nodeId}'`);
       }
-      const joins = Object.entries(node.joins ?? {})
-        .map(([forkId, join]) => ({ forkId, join }))
-        .sort((left, right) => left.forkId.localeCompare(right.forkId));
+      const gathers = Object.entries(node.gathers ?? {})
+        .map(([spreadId, join]) => ({ spreadId, join }))
+        .sort((left, right) => left.spreadId.localeCompare(right.spreadId));
       return {
         node: nodeId,
         receptor: (node.receptor ?? []).map((pheromone) => pheromone.id),
         pending: node.pending?.id ?? null,
         hover: node.hover?.token ?? null,
-        joins: joins.map((entry) => entry.forkId),
-        openJoins: joins
+        gathers: gathers.map((entry) => entry.spreadId),
+        openGathers: gathers
           .filter(
             (entry) =>
               entry.join.completedAt === undefined && entry.join.timedOutAt === undefined,
           )
-          .map((entry) => entry.forkId),
+          .map((entry) => entry.spreadId),
       };
     });
 }
@@ -341,7 +341,7 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
   const calls: ExecutedCall[] = [];
   const seenCalls = new Map<string, ExecutedCall>();
   const acceptedRoots: string[] = [];
-  const closedJoins = new Set<string>();
+  const closedGathers = new Set<string>();
   let scannedLogEntries = 0;
 
   const where = (step: number): string => `graph=${graph.name} seed=${String(seed)} step=${String(step)}`;
@@ -402,29 +402,29 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
     }
   }
 
-  function checkClosedJoins(step: number, snapshot: PheromoneFieldSnapshot): void {
+  function checkClosedGathers(step: number, snapshot: PheromoneFieldSnapshot): void {
     for (const [nodeId, node] of Object.entries(snapshot.nodes)) {
-      for (const [forkId, join] of Object.entries(node.joins ?? {})) {
-        const key = `${nodeId}\u0000${forkId}`;
+      for (const [spreadId, join] of Object.entries(node.gathers ?? {})) {
+        const key = `${nodeId}\u0000${spreadId}`;
         const completed = join.completedAt !== undefined;
         const timedOut = join.timedOutAt !== undefined;
         if (!completed && !timedOut) {
           assert.ok(
-            !closedJoins.has(key),
-            `${where(step)}: closed join '${forkId}' on '${nodeId}' reopened`,
+            !closedGathers.has(key),
+            `${where(step)}: closed join '${spreadId}' on '${nodeId}' reopened`,
           );
           continue;
         }
         assert.ok(
           !(completed && timedOut),
-          `${where(step)}: join '${forkId}' on '${nodeId}' is both completed and timed out`,
+          `${where(step)}: join '${spreadId}' on '${nodeId}' is both completed and timed out`,
         );
         assert.equal(
           join.arrived.length,
           0,
-          `${where(step)}: closed join '${forkId}' on '${nodeId}' still holds arrived branches`,
+          `${where(step)}: closed join '${spreadId}' on '${nodeId}' still holds arrived branches`,
         );
-        closedJoins.add(key);
+        closedGathers.add(key);
       }
     }
   }
@@ -458,7 +458,7 @@ async function runSeed(graph: FuzzGraph, seed: number): Promise<void> {
     scanLog(step);
     const snapshot = runtime.snapshot();
     checkFifoAndCapacity(step, snapshot);
-    checkClosedJoins(step, snapshot);
+    checkClosedGathers(step, snapshot);
 
     const derived = deriveRest(snapshot);
     assert.equal(
@@ -672,14 +672,14 @@ test('seeded fuzz: linear start -> done keeps FIFO, queueMax, TTL, Rest and term
   }
 });
 
-test('seeded fuzz: fork/optional/timeout merge keeps joins closed and terminal unique', async () => {
-  const graph = forkMergeGraph();
+test('seeded fuzz: spread/optional/timeout gather keeps gathers closed and terminal unique', async () => {
+  const graph = spreadGatherGraph();
   for (const seed of SEEDS) {
     await runSeed(graph, seed);
   }
 });
 
-test('seeded fuzz: three-level nested fork/merge with user hover survives Honey restore', async () => {
+test('seeded fuzz: three-level nested spread/gather with user hover survives Honey restore', async () => {
   const graph = nestedHoverGraph();
   for (const seed of SEEDS) {
     await runSeed(graph, seed);

@@ -1,4 +1,4 @@
-import type { ForkBranch, ForkConfig, MergeCombine, MergeConfig } from './types.js';
+import type { SpreadBranch, SpreadConfig, CombineMode, GatherConfig } from './types.js';
 import {
   DEFAULT_MERGE_TIMEOUT_MS,
   MAX_MERGE_TIMEOUT_MS,
@@ -10,11 +10,11 @@ import {
   pushUnknownFields,
 } from './definition-primitives.js';
 
-export function parseForkConfig(
+export function parseSpreadConfig(
   config: Record<string, unknown>,
   path: string,
   issues: string[],
-): ForkConfig | null {
+): SpreadConfig | null {
   pushUnknownFields(config, ['branches'], path, issues);
 
   const rawBranches = config['branches'];
@@ -23,7 +23,7 @@ export function parseForkConfig(
     return null;
   }
 
-  const branches: ForkBranch[] = [];
+  const branches: SpreadBranch[] = [];
   const seen = new Set<string>();
   let valid = true;
 
@@ -64,11 +64,11 @@ export function parseForkConfig(
   return valid ? { branches } : null;
 }
 
-export function parseMergeConfig(
+export function parseGatherConfig(
   config: Record<string, unknown>,
   path: string,
   issues: string[],
-): MergeConfig | null {
+): GatherConfig | null {
   pushUnknownFields(config, ['required', 'optional', 'combine', 'timeoutMs'], path, issues);
 
   let valid = true;
@@ -119,7 +119,7 @@ export function parseMergeConfig(
   }
 
   // Stage 5C: `object` and `array` emit a structured Value; `text` is unchanged.
-  let combine: MergeCombine = 'text';
+  let combine: CombineMode = 'text';
   const rawCombine = config['combine'];
   if (rawCombine !== undefined) {
     if (rawCombine !== 'text' && rawCombine !== 'object' && rawCombine !== 'array') {
@@ -130,7 +130,7 @@ export function parseMergeConfig(
     }
   }
 
-  // Stage 5B: the deadline starts on the first branch arrival for a forkId, so
+  // Stage 5B: the deadline starts on the first branch arrival for a spreadId, so
   // the config value is a duration and the persisted join stores an absolute
   // instant. The 2^31-1 cap keeps the deadline inside a safe 32-bit timer range.
   let timeoutMs = DEFAULT_MERGE_TIMEOUT_MS;

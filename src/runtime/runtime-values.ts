@@ -4,7 +4,7 @@ import type {
   BranchTag,
   ConditionConfig,
   JsonValue,
-  MergeCombine,
+  CombineMode,
   Pheromone,
   Value,
 } from './types.js';
@@ -12,15 +12,15 @@ import { WorkerExecutionError, type WorkerResult } from './worker.js';
 
 /**
  * The full lineage of a Pheromone, outer-to-inner. A field restored from an
- * older Honey may carry only the flat forkId/branchId tags; those are one
+ * older Honey may carry only the flat spreadId/branchId tags; those are one
  * top-level tag and are promoted here.
  */
 export function currentLineage(pheromone: Pheromone): readonly BranchTag[] {
   if (pheromone.lineage !== undefined && pheromone.lineage.length > 0) {
     return pheromone.lineage;
   }
-  if (pheromone.forkId !== undefined && pheromone.branchId !== undefined) {
-    return [{ forkId: pheromone.forkId, branchId: pheromone.branchId }];
+  if (pheromone.spreadId !== undefined && pheromone.branchId !== undefined) {
+    return [{ spreadId: pheromone.spreadId, branchId: pheromone.branchId }];
   }
   return [];
 }
@@ -42,10 +42,10 @@ export function movePheromone(
   pheromone.value = structuredClone(value);
   const current = lineage === undefined ? undefined : currentTag(lineage);
   if (current === undefined) {
-    delete pheromone.forkId;
+    delete pheromone.spreadId;
     delete pheromone.branchId;
   } else {
-    pheromone.forkId = current.forkId;
+    pheromone.spreadId = current.spreadId;
     pheromone.branchId = current.branchId;
   }
   if (lineage === undefined || lineage.length === 0) {
@@ -63,7 +63,7 @@ export function sameLineage(left: readonly BranchTag[], right: readonly BranchTa
   for (let index = 0; index < left.length; index += 1) {
     const a = left[index];
     const b = right[index];
-    if (a?.forkId !== b?.forkId || a?.branchId !== b?.branchId) {
+    if (a?.spreadId !== b?.spreadId || a?.branchId !== b?.branchId) {
       return false;
     }
   }
@@ -71,7 +71,7 @@ export function sameLineage(left: readonly BranchTag[], right: readonly BranchTa
 }
 
 export function copyLineage(lineage: readonly BranchTag[]): BranchTag[] {
-  return lineage.map((tag) => ({ forkId: tag.forkId, branchId: tag.branchId }));
+  return lineage.map((tag) => ({ spreadId: tag.spreadId, branchId: tag.branchId }));
 }
 
 /**
@@ -90,7 +90,7 @@ export function normalizePheromone(pheromone: Pheromone): Pheromone {
     return normalized;
   }
   normalized.lineage = copyLineage(lineage);
-  normalized.forkId = tag.forkId;
+  normalized.spreadId = tag.spreadId;
   normalized.branchId = tag.branchId;
   return normalized;
 }
@@ -113,15 +113,15 @@ export function workerLogFields(
 }
 
 /**
- * Builds the single Merge output Value. `arrived` is already in required order
+ * Builds the single Gather output Value. `arrived` is already in required order
  * followed by the optional branches that arrived, in optional config order.
  *
  * `text` keeps the Stage 3A newline join. `object` keys by branchId and `array`
  * keeps only the branch Values, both wrapped in a `structured` Value so no
- * information is flattened. The Merge output still carries no fork/branch tags.
+ * information is flattened. The Gather output still carries no spread/branch tags.
  */
-export function combineMergeValues(
-  combine: MergeCombine,
+export function combineGatherValues(
+  combine: CombineMode,
   arrived: readonly Pheromone[],
 ): Value {
   if (combine === 'text') {
@@ -134,7 +134,7 @@ export function combineMergeValues(
     for (const pheromone of arrived) {
       const branchId = pheromone.branchId;
       if (branchId === undefined) {
-        throw new Error('merge branch is missing its branch id');
+        throw new Error('gather branch is missing its branch id');
       }
       entries.push([branchId, valueAsJson(pheromone.value)]);
     }
@@ -150,7 +150,7 @@ export function combineMergeValues(
 /**
  * A Value is a plain JSON object at runtime; the compiler cannot infer that
  * from the union, so this cast documents the JSON-safe relationship used by
- * `structured` Merge output.
+ * `structured` Gather output.
  */
 function valueAsJson(value: Value): JsonValue {
   return value as unknown as JsonValue;

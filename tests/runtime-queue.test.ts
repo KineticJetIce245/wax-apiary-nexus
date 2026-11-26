@@ -384,7 +384,7 @@ test('a full target pauses the upstream node, then resumes it without losing the
   );
 });
 
-test('a fork pauses before activation when a branch target is full and loses no branch', async () => {
+test('a spread pauses before activation when a branch target is full and loses no branch', async () => {
   let clock = START;
   const log = createMemoryLog();
   const executed: { node: string; value: string }[] = [];
@@ -415,7 +415,7 @@ test('a fork pauses before activation when a branch target is full and loses no 
       {
         start: foragerNode(),
         fan: {
-          kind: 'fork',
+          kind: 'spread',
           config: {
             branches: [
               { id: 'a', to: 'left' },
@@ -435,14 +435,14 @@ test('a fork pauses before activation when a branch target is full and loses no 
   runtime.admit('left', text('existing-left'));
   runtime.admit('start', text('seed'));
 
-  // No rejection: the fork waits until every branch target had room.
+  // No rejection: the spread waits until every branch target had room.
   await runtime.pump();
 
-  assert.ok(atBlock !== undefined, 'the fork activation was deferred once');
+  assert.ok(atBlock !== undefined, 'the spread activation was deferred once');
   assert.deepEqual(
     atBlock,
     { pending: 'out:seed', rightQueue: 0 },
-    'the fork input stays pending and no branch is emitted while one target is full',
+    'the spread input stays pending and no branch is emitted while one target is full',
   );
 
   const blocked = log.entries.find(
@@ -454,18 +454,18 @@ test('a fork pauses before activation when a branch target is full and loses no 
   assert.equal(
     log.entries.some((entry) => entry.event === 'pheromone.rejected'),
     false,
-    'the fork is not rejected after activation',
+    'the spread is not rejected after activation',
   );
   assert.equal(log.entries.some((entry) => entry.event === 'node.failed'), false);
 
-  // The fork resumed in the same pump once `left` drained its existing input.
+  // The spread resumed in the same pump once `left` drained its existing input.
   assert.deepEqual(executed, [
     { node: 'start', value: 'seed' },
     { node: 'left', value: 'existing-left' },
     { node: 'right', value: 'out:seed' },
   ]);
   const fanPending = runtime.snapshot().nodes['fan']?.pending;
-  assert.equal(fanPending, undefined, 'the fork input was consumed by its one activation');
+  assert.equal(fanPending, undefined, 'the spread input was consumed by its one activation');
 
   // The two `left` branches are spaced by minIntervalMs; drain both.
   clock += 1000;

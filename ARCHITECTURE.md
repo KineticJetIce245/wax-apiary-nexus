@@ -33,7 +33,7 @@ The control plane has no execution registry. It validates a request, hands it to
 | `Schedule` | Optional saved trigger on a LiveHive: target bee and `at`/`every`; not an execution identity |
 | `RoleLabel` | Comment/label on a bee; not an instance, not a route |
 | `Pheromone` | One message/value travelling through the graph; no run/wake/trace identity |
-| `PheromoneField` | The single owner of runtime state: pheromones, receptors, pending, active, hover, joins/tombstones, outputs |
+| `PheromoneField` | The single owner of runtime state: pheromones, receptors, pending, active, hover, gathers/tombstones, outputs |
 | `Dispatch` | A temporary Bee started for one prompt; it lives until the tool returns, then either flows to its next Bee or silently ends |
 
 There is no Agent object, no Revision/Definition object, no Actor object, and no control-plane Run/Wake/Trace object.
@@ -94,8 +94,8 @@ A normal beeline moves the Pheromone; it does not create a new one. The same
 `Pheromone.id` continues from Bee to Bee. Only two graph operations change the
 number of Pheromones:
 
-- `fork`: one input Pheromone becomes one copy per branch;
-- `merge`: several branch Pheromones become one merged Pheromone.
+- `spread`: one input Pheromone becomes one copy per branch;
+- `gather`: several branch Pheromones become one gatherd Pheromone.
 
 Those are cardinality changes, not the normal edge flow. An implementation that
 allocates a new Pheromone for every beeline or every Bee is nonconformant.
@@ -190,7 +190,7 @@ the result is graph data, not an RPC return value.
 
 | Phase | Owner | What happens | Released when |
 | --- | --- | --- | --- |
-| Created | `trigger`, `fork` or `merge` | external input is packaged, or cardinality changes | never by the control plane; it owns no reference |
+| Created | `trigger`, `spread` or `gather` | external input is packaged, or cardinality changes | never by the control plane; it owns no reference |
 | Receptor | Bee/field | waits in FIFO order | dequeued, dropped by overflow, or unloaded with snapshot |
 | Pending | Bee/field | pacing delay before activation | activated or expired |
 | Active | Bee/field | exactly one per Bee; executing | execution ends or is marked unknown on unload |
@@ -198,8 +198,8 @@ the result is graph data, not an RPC return value.
 | Terminal | field | no outgoing beeline; field output | live unload/replacement; not a per-run record |
 
 A Pheromone never carries a run/wake/trace id. Its only identity is the message
-`id` needed inside the field. A normal beeline preserves that id; `fork` creates
-branch copies and `merge` creates one merged Pheromone because the cardinality
+`id` needed inside the field. A normal beeline preserves that id; `spread` creates
+branch copies and `gather` creates one gatherd Pheromone because the cardinality
 changes.
 
 ### 4.6 Bee lifetime
@@ -254,7 +254,7 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 
 - A Bee execution failure clears `active`, logs the failure, and releases that Pheromone. It never replays the side-effecting work.
 - A receptor overflow rejection drops the new Pheromone before it enters the field. A block timeout drops only that waiting request.
-- Unload persists receptor/pending/hover/joins and marks active as unknown; reload never replays active work.
+- Unload persists receptor/pending/hover/gathers and marks active as unknown; reload never replays active work.
 - A process crash follows the same rule: Honey is the snapshot; active is unknown; no automatic retry.
 - A terminal Bee output stays in the field as an output until live unload/replacement. It is not a per-delivery record.
 - A temporary dispatch Bee is released at silent end; its field is ephemeral and not persisted as a LiveHive.
@@ -282,13 +282,13 @@ Consequences:
 ### 4.11 Pheromone identity is not a control handle
 
 `Pheromone.id` is a field-local message identity. It exists for internal
-correlation (logs, fork/merge lineage, join bookkeeping) and for tests. It is
+correlation (logs, spread/gather lineage, join bookkeeping) and for tests. It is
 not a cursor, not a run handle, and not a public object.
 
 Allowed uses:
 
 - internal log correlation by the field;
-- fork/merge/join bookkeeping and lineage;
+- spread/gather/join bookkeeping and lineage;
 - tests that inspect the field.
 
 Forbidden uses:
@@ -305,7 +305,7 @@ Forbidden uses:
 
 A normal beeline moving the same id across Bees means one message moved, not one
 execution or run. `Pheromone.id` ends with the message (terminal, drop, a
-fork/merge cardinality change, or unload) and is not durable.
+spread/gather cardinality change, or unload) and is not durable.
 
 ## 5. Persistence
 
@@ -512,11 +512,11 @@ The Bee additionally caches its own last completed output in
 `NodeState.lastOutput`: memory-only, overwritten by its next successful
 activation, released on `unload`, never written to `field.json`, and never a
 run history. The cache is written by output-producing Bees (forager, worker,
-user, merge); condition/counter/fork have no single result value and do not
+user, gather); condition/counter/spread have no single result value and do not
 write it. The cached `Value` is stored as-is (text and file/attachment paths are
 the primary forms; no binary). "Used and discarded" happens only at a terminal
-Bee, a drop/failure, or a cardinality change (fork copies; merge consumes
-branches and emits one merged Pheromone).
+Bee, a drop/failure, or a cardinality change (spread copies; gather consumes
+branches and emits one gatherd Pheromone).
 
 **Consequence.** No code change: the A1 same-Pheromone implementation and
 `tests/runtime-pheromone-identity.test.ts` remain valid. The last-output scope

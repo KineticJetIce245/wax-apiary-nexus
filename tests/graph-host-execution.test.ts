@@ -61,7 +61,7 @@ import {
   userNode,
   userAndForagerGraph,
   runnableForagerGraph,
-  pacedForkMergeDefinition,
+  pacedSpreadGatherDefinition,
   triggerRun,
   waitUntil,
 } from './support/graph-host-fixtures.js';
@@ -88,7 +88,7 @@ function collectKeys(value: unknown, keys: string[] = []): string[] {
   return keys;
 }
 
-test('a fork/merge graph runs to Rest and status never contains bodies or tokens', async (t) => {
+test('a spread/gather graph runs to Rest and status never contains bodies or tokens', async (t) => {
   const env = makeEnv();
   const clock = new FakeClock(1_000);
   const host = new LiveHiveHost({
@@ -104,8 +104,8 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
     'main',
     {
       start: forager('start {{input}}'),
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'branch-a' },
@@ -115,12 +115,12 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
       },
       'branch-a': forager('branch-a {{input}}'),
       'branch-b': forager('branch-b {{input}}'),
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
     },
     [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'branch-a', to: 'merge' },
-      { id: 'e3', from: 'branch-b', to: 'merge' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'branch-a', to: 'gather' },
+      { id: 'e3', from: 'branch-b', to: 'gather' },
     ],
   );
   const bindings = allFresh(definition);
@@ -165,8 +165,8 @@ test('a fork/merge graph runs to Rest and status never contains bodies or tokens
     assert.equal(node.active, false);
     assert.equal(node.hovered, false);
   }
-  // Closed merge tombstones are counted, matching `wax inspect status`.
-  assert.equal(nodeStatus(status, 'merge').joins, 1);
+  // Closed gather tombstones are counted, matching `wax inspect status`.
+  assert.equal(nodeStatus(status, 'gather').gathers, 1);
 
   const serialized = JSON.stringify(host.status());
   for (const secret of ['start seed', 'reply(', 'hv_', 'gd_']) {
@@ -296,7 +296,7 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
     await env.workspace.stop();
   });
 
-  const definition = pacedForkMergeDefinition('paced-rest');
+  const definition = pacedSpreadGatherDefinition('paced-rest');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -312,10 +312,10 @@ test('trigger waits out minInterval pacing and reaches Rest', async (t) => {
   const status = host.statusOf('paced-rest');
   assert.ok(status !== undefined);
   assert.equal(status.rest, true);
-  const merge = nodeStatus(status, 'merge');
-  assert.equal(merge.pending, false);
-  assert.equal(merge.receptor, 0);
-  assert.equal(merge.joins, 1);
+  const gather = nodeStatus(status, 'gather');
+  assert.equal(gather.pending, false);
+  assert.equal(gather.receptor, 0);
+  assert.equal(gather.gathers, 1);
   assert.deepEqual(env.adapter.closedNativeIds, []);
 });
 
@@ -340,7 +340,7 @@ test('wake admission does not hold the live lease during pacing waits', async (t
     await env.workspace.stop();
   });
 
-  const definition = pacedForkMergeDefinition('paced-lease');
+  const definition = pacedSpreadGatherDefinition('paced-lease');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -375,7 +375,7 @@ async function assertPacingBounds(
   zeroWaits: readonly number[],
   shortWaits: readonly number[],
 ): Promise<void> {
-  const noWaitDefinition = pacedForkMergeDefinition('no-wait');
+  const noWaitDefinition = pacedSpreadGatherDefinition('no-wait');
   await zeroHost.loadGraph({
     definition: noWaitDefinition,
     bindings: allFresh(noWaitDefinition),
@@ -389,7 +389,7 @@ async function assertPacingBounds(
   assert.deepEqual(zeroWaits, []);
   assert.equal(zeroHost.statusOf('no-wait')?.rest, false);
   assert.ok(zeroHost.statusOf('no-wait') !== undefined);
-  const shortDefinition = pacedForkMergeDefinition('short-wait');
+  const shortDefinition = pacedSpreadGatherDefinition('short-wait');
   await shortHost.loadGraph({
     definition: shortDefinition,
     bindings: allFresh(shortDefinition),
@@ -400,9 +400,9 @@ async function assertPacingBounds(
   await waitUntil(
     () =>
       shortHost.statusOf('short-wait')?.nodes.some(
-        (node) => node.nodeId === 'merge' && node.pending,
+        (node) => node.nodeId === 'gather' && node.pending,
       ) === true,
-    'the merge to stay pending',
+    'the gather to stay pending',
   );
   assert.deepEqual(shortWaits, [250]);
   assert.equal(shortWaits.reduce((sum, wait) => sum + wait, 0), 250);
@@ -410,9 +410,9 @@ async function assertPacingBounds(
   const shortStatus = shortHost.statusOf('short-wait');
   assert.ok(shortStatus !== undefined);
   assert.equal(shortStatus.rest, false);
-  const merge = nodeStatus(shortStatus, 'merge');
-  assert.equal(merge.pending, true);
-  assert.equal(merge.joins, 1);
+  const gather = nodeStatus(shortStatus, 'gather');
+  assert.equal(gather.pending, true);
+  assert.equal(gather.gathers, 1);
   assert.deepEqual(env.adapter.closedNativeIds, []);
 }
 
@@ -461,9 +461,9 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
     await env.workspace.stop();
   });
 
-  // This graph keeps the default 1000ms pacing: the merge must wait for its
+  // This graph keeps the default 1000ms pacing: the gather must wait for its
   // second activation, so one pump cannot reach Rest.
-  const definition = pacedForkMergeDefinition('paced');
+  const definition = pacedSpreadGatherDefinition('paced');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -472,8 +472,8 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
 
   await host.trigger('paced', 'start', text('seed'));
   await waitUntil(
-    () => host.statusOf('paced')?.nodes.some((node) => node.nodeId === 'merge' && node.pending) === true,
-    'one maximum pump to leave the merge pending',
+    () => host.statusOf('paced')?.nodes.some((node) => node.nodeId === 'gather' && node.pending) === true,
+    'one maximum pump to leave the gather pending',
   );
   assert.equal(host.statusOf('paced')?.rest, false);
   assert.equal(host.statusOf('paced')?.residency.refCount, 0);
@@ -481,10 +481,10 @@ test('maxPumps exhaustion reports rest=false without pretending success or losin
   const status = host.statusOf('paced');
   assert.ok(status !== undefined);
   assert.equal(status.rest, false);
-  const merge = nodeStatus(status, 'merge');
-  assert.equal(merge.pending, true);
-  assert.equal(merge.receptor, 0);
-  assert.equal(merge.joins, 1);
+  const gather = nodeStatus(status, 'gather');
+  assert.equal(gather.pending, true);
+  assert.equal(gather.receptor, 0);
+  assert.equal(gather.gathers, 1);
 
   assert.equal(host.status().length, 1);
   assert.deepEqual(env.adapter.closedNativeIds, []);

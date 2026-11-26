@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  COMPLETED_JOIN_TTL_MS,
+  COMPLETED_GATHER_TTL_MS,
   createMemoryLog,
-  MAX_COMPLETED_JOINS_PER_MERGE,
+  MAX_COMPLETED_GATHERS,
   parseComposition,
   PheromoneRuntime,
   serializeValue,
@@ -37,78 +37,78 @@ function recorder(output?: (nodeId: string, input: Value) => Value): Recorder {
 }
 
 function branchPheromone(
-  forkId: string,
+  spreadId: string,
   branchId: string,
   value: Value = text('x'),
 ): Pheromone {
   return {
-    id: `ph_${forkId}_${branchId}`,
-    forkId,
+    id: `ph_${spreadId}_${branchId}`,
+    spreadId,
     branchId,
     value,
     at: new Date(START).toISOString(),
   };
 }
 
-/** start -> fork (a->merge required, b->ask->merge optional); merge -> done */
+/** start -> spread (a->gather required, b->ask->gather optional); gather -> done */
 function lateOptionalComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
     id: 'optional-late',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'ask' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      merge: { kind: 'merge', config: { required: ['a'], optional: ['b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a'], optional: ['b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start -> fork (a->ask->merge required, b->merge optional); merge -> done */
+/** start -> spread (a->ask->gather required, b->gather optional); gather -> done */
 function optionalFirstComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
     id: 'optional-first',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'ask' },
-            { id: 'b', to: 'merge' },
+            { id: 'b', to: 'gather' },
           ],
         },
       },
-      merge: { kind: 'merge', config: { required: ['a'], optional: ['b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a'], optional: ['b'], combine: 'text' } },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'A?' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
 /**
- * start -> fork (o1,o2 -> merge optional; x,y -> merge required).
- * Merge config order is required [y,x] then optional [o2,o1], while arrival
+ * start -> spread (o1,o2 -> gather optional; x,y -> gather required).
+ * Gather config order is required [y,x] then optional [o2,o1], while arrival
  * order is o1,o2,x,y, so the test proves config order wins.
  */
 function combineOrderComposition(): ReturnType<typeof parseComposition> {
@@ -117,8 +117,8 @@ function combineOrderComposition(): ReturnType<typeof parseComposition> {
     id: 'optional-combine-order',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'o1', to: 'make-o1' },
@@ -132,110 +132,110 @@ function combineOrderComposition(): ReturnType<typeof parseComposition> {
       'make-o2': { kind: 'forager', config: { connection: 'codex', prompt: 'o2' } },
       'make-x': { kind: 'forager', config: { connection: 'codex', prompt: 'x' } },
       'make-y': { kind: 'forager', config: { connection: 'codex', prompt: 'y' } },
-      merge: {
-        kind: 'merge',
+      gather: {
+        kind: 'gather',
         config: { required: ['y', 'x'], optional: ['o2', 'o1'], combine: 'text' },
       },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'make-o1', to: 'merge' },
-      { id: 'e3', from: 'make-o2', to: 'merge' },
-      { id: 'e4', from: 'make-x', to: 'merge' },
-      { id: 'e5', from: 'make-y', to: 'merge' },
-      { id: 'e6', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'make-o1', to: 'gather' },
+      { id: 'e3', from: 'make-o2', to: 'gather' },
+      { id: 'e4', from: 'make-x', to: 'gather' },
+      { id: 'e5', from: 'make-y', to: 'gather' },
+      { id: 'e6', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start -> fork (a->merge required, b->boom optional); merge -> done */
+/** start -> spread (a->gather required, b->boom optional); gather -> done */
 function optionalFailureComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
     id: 'optional-failure',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'boom' },
           ],
         },
       },
       boom: { kind: 'forager', config: { connection: 'codex', prompt: 'boom' } },
-      merge: { kind: 'merge', config: { required: ['a'], optional: ['b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a'], optional: ['b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start -> fork (a,c -> merge required, b -> make-b -> merge optional); merge -> done */
+/** start -> spread (a,c -> gather required, b -> make-b -> gather optional); gather -> done */
 function optionalUnknownComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
     id: 'optional-unknown',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'make-b' },
-            { id: 'c', to: 'merge' },
+            { id: 'c', to: 'gather' },
           ],
         },
       },
       'make-b': { kind: 'forager', config: { connection: 'codex', prompt: 'b' } },
-      merge: {
-        kind: 'merge',
+      gather: {
+        kind: 'gather',
         config: { required: ['a', 'c'], optional: ['b'], combine: 'text' },
       },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'make-b', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'make-b', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start -> fork (a,b -> merge required); merge -> done. No optional branch. */
-function directMergeComposition(): ReturnType<typeof parseComposition> {
+/** start -> spread (a,b -> gather required); gather -> done. No optional branch. */
+function directGatherComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
-    id: 'direct-merge',
+    id: 'direct-gather',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
-            { id: 'b', to: 'merge' },
+            { id: 'a', to: 'gather' },
+            { id: 'b', to: 'gather' },
           ],
         },
       },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'gather', to: 'done' },
     ],
   });
 }
 
-function completedJoinOf(snapshot: ReturnType<PheromoneRuntime['snapshot']>) {
-  return Object.values(snapshot.nodes['merge']?.joins ?? {})[0];
+function completedGatherOf(snapshot: ReturnType<PheromoneRuntime['snapshot']>) {
+  return Object.values(snapshot.nodes['gather']?.gathers ?? {})[0];
 }
 
 test('required branches complete immediately without waiting for an optional one', async () => {
@@ -251,18 +251,18 @@ test('required branches complete immediately without waiting for an optional one
   await runtime.pump();
 
   const doneCalls = calls.filter((call) => call.nodeId === 'done');
-  assert.equal(doneCalls.length, 1, 'the merge emitted without the optional branch');
+  assert.equal(doneCalls.length, 1, 'the gather emitted without the optional branch');
   assert.equal(serializeValue(doneCalls[0]?.input as Value), 'seed');
   assert.ok(runtime.snapshot().nodes['ask']?.hover !== undefined, 'the optional branch still hovers');
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, false, 'the hover on the optional branch still exists');
-  const completed = completedJoinOf(snapshot);
+  const completed = completedGatherOf(snapshot);
   assert.ok(completed !== undefined);
   assert.ok(completed.completedAt !== undefined);
   assert.deepEqual(completed.arrived, []);
   assert.equal(
-    log.entries.filter((entry) => entry.event === 'merge.completed').length,
+    log.entries.filter((entry) => entry.event === 'gather.completed').length,
     1,
   );
 });
@@ -281,11 +281,11 @@ test('an optional branch that arrives first waits for required, then combines', 
   const waiting = runtime.snapshot();
   assert.equal(waiting.rest, false);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
-  const waitingJoin = Object.values(waiting.nodes['merge']?.joins ?? {})[0];
-  assert.ok(waitingJoin !== undefined);
-  assert.equal(waitingJoin.completedAt, undefined);
+  const waitingGather = Object.values(waiting.nodes['gather']?.gathers ?? {})[0];
+  assert.ok(waitingGather !== undefined);
+  assert.equal(waitingGather.completedAt, undefined);
   assert.deepEqual(
-    waitingJoin.arrived.map((pheromone) => pheromone.branchId),
+    waitingGather.arrived.map((pheromone) => pheromone.branchId),
     ['b'],
   );
 
@@ -299,7 +299,7 @@ test('an optional branch that arrives first waits for required, then combines', 
   assert.equal(doneCalls.length, 1);
   assert.equal(serializeValue(doneCalls[0]?.input as Value), 'A\nseed');
   assert.equal(runtime.snapshot().rest, true);
-  assert.ok(completedJoinOf(runtime.snapshot())?.completedAt !== undefined);
+  assert.ok(completedGatherOf(runtime.snapshot())?.completedAt !== undefined);
 });
 
 test('text combine uses required order, then arrived optional in optional config order', async () => {
@@ -362,13 +362,13 @@ test('an optional branch failure is logged and does not fail the required set', 
   assert.equal(doneCalls.length, 1);
   assert.equal(runtime.snapshot().rest, true);
   assert.ok(log.entries.some((entry) => entry.event === 'node.failed' && entry.nodeId === 'boom'));
-  const optionalFailure = log.entries.find((entry) => entry.event === 'merge.optional-failed');
+  const optionalFailure = log.entries.find((entry) => entry.event === 'gather.optional-failed');
   assert.ok(optionalFailure !== undefined);
-  assert.equal(optionalFailure.nodeId, 'merge');
+  assert.equal(optionalFailure.nodeId, 'gather');
   assert.equal(optionalFailure.branchId, 'b');
   assert.equal(optionalFailure.outcome, 'failed-branch');
   assert.equal(
-    log.entries.filter((entry) => entry.event === 'merge.failed').length,
+    log.entries.filter((entry) => entry.event === 'gather.failed').length,
     0,
     'an optional-only failure never fails the join',
   );
@@ -381,9 +381,9 @@ test('an unknown optional branch on restore is logged and does not fail the join
     executeForager: recorder().executor,
     now: () => START,
   }).exportField();
-  field.nodes['merge'] = {
+  field.nodes['gather'] = {
     receptor: [branchPheromone('fk_unknown_optional', 'c', text('C'))],
-    joins: {
+    gathers: {
       fk_unknown_optional: {
         arrived: [branchPheromone('fk_unknown_optional', 'a', text('A'))],
         deadlineAt: START + 3_600_000,
@@ -403,17 +403,17 @@ test('an unknown optional branch on restore is logged and does not fail the join
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, true);
-  const completed = completedJoinOf(snapshot);
+  const completed = completedGatherOf(snapshot);
   assert.ok(completed !== undefined, 'the required set still completed the join');
   assert.ok(completed.completedAt !== undefined);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.optional-failed'));
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.optional-failed'));
   assert.equal(
-    log.entries.filter((entry) => entry.event === 'merge.failed').length,
+    log.entries.filter((entry) => entry.event === 'gather.failed').length,
     0,
   );
-  // The restored queue still carried required branch c, so the merge completed.
+  // The restored queue still carried required branch c, so the gather completed.
   assert.equal(
-    log.entries.filter((entry) => entry.event === 'merge.completed').length,
+    log.entries.filter((entry) => entry.event === 'gather.completed').length,
     1,
   );
 });
@@ -431,7 +431,7 @@ test('a late optional branch is dropped and logged without reopening the join', 
   runtime.admit('start', text('seed'));
   await runtime.pump();
 
-  const completed = completedJoinOf(runtime.snapshot());
+  const completed = completedGatherOf(runtime.snapshot());
   assert.ok(completed?.completedAt !== undefined);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 1);
 
@@ -443,17 +443,17 @@ test('a late optional branch is dropped and logged without reopening the join', 
 
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 1, 'no second emit');
   assert.equal(
-    log.entries.filter((entry) => entry.event === 'merge.completed').length,
+    log.entries.filter((entry) => entry.event === 'gather.completed').length,
     1,
   );
-  const dropped = log.entries.find((entry) => entry.event === 'merge.optional-dropped');
+  const dropped = log.entries.find((entry) => entry.event === 'gather.optional-dropped');
   assert.ok(dropped !== undefined);
-  assert.equal(dropped.nodeId, 'merge');
-  assert.equal(dropped.forkId, completed.forkId);
+  assert.equal(dropped.nodeId, 'gather');
+  assert.equal(dropped.spreadId, completed.spreadId);
   assert.equal(dropped.branchId, 'b');
   assert.equal(dropped.outcome, 'late-optional');
   assert.equal(runtime.snapshot().rest, true);
-  const after = runtime.snapshot().nodes['merge']?.joins ?? {};
+  const after = runtime.snapshot().nodes['gather']?.gathers ?? {};
   assert.equal(Object.keys(after).length, 1);
   assert.ok(Object.values(after)[0]?.completedAt !== undefined);
 });
@@ -462,7 +462,7 @@ test('a late required branch is a protocol error and never emits a second time',
   let clock = START;
   const log = createMemoryLog();
   const { executor } = recorder();
-  const definition = directMergeComposition();
+  const definition = directGatherComposition();
   const runtime = new PheromoneRuntime(definition, {
     executeForager: executor,
     now: () => clock,
@@ -472,13 +472,13 @@ test('a late required branch is a protocol error and never emits a second time',
   await runtime.pump();
   clock += 1000;
   await runtime.pump();
-  const firstForkId = completedJoinOf(runtime.snapshot())?.forkId;
-  assert.ok(firstForkId !== undefined);
+  const firstSpreadId = completedGatherOf(runtime.snapshot())?.spreadId;
+  assert.ok(firstSpreadId !== undefined);
 
   const field = runtime.exportField();
-  const mergeState = field.nodes['merge'];
-  assert.ok(mergeState !== undefined);
-  (mergeState.receptor ??= []).push(branchPheromone(firstForkId, 'a', text('again')));
+  const gatherState = field.nodes['gather'];
+  assert.ok(gatherState !== undefined);
+  (gatherState.receptor ??= []).push(branchPheromone(firstSpreadId, 'a', text('again')));
 
   const calls: string[] = [];
   const restored = PheromoneRuntime.restore(definition, field, {
@@ -488,7 +488,7 @@ test('a late required branch is a protocol error and never emits a second time',
         return input;
       },
     },
-    // The merge is rate-limited after its completion; one interval later the
+    // The gather is rate-limited after its completion; one interval later the
     // queued late branch is due.
     now: () => clock + 1000,
     onLog: log.sink,
@@ -497,20 +497,20 @@ test('a late required branch is a protocol error and never emits a second time',
   await restored.runtime.pump();
 
   assert.deepEqual(calls, [], 'a late required branch has no second emit');
-  assert.equal(log.entries.filter((entry) => entry.event === 'merge.completed').length, 0);
+  assert.equal(log.entries.filter((entry) => entry.event === 'gather.completed').length, 0);
   const failure = log.entries.find(
-    (entry) => entry.event === 'merge.failed' && entry.outcome === 'late-required',
+    (entry) => entry.event === 'gather.failed' && entry.outcome === 'late-required',
   );
   assert.ok(failure !== undefined);
   assert.equal(failure.branchId, 'a');
-  assert.equal(failure.forkId, firstForkId);
+  assert.equal(failure.spreadId, firstSpreadId);
   assert.equal(restored.runtime.snapshot().rest, true);
-  assert.ok(completedJoinOf(restored.runtime.snapshot())?.completedAt !== undefined);
+  assert.ok(completedGatherOf(restored.runtime.snapshot())?.completedAt !== undefined);
 });
 
-test('completed joins are bounded by count, keeping the newest markers', async () => {
+test('completed gathers are bounded by count, keeping the newest markers', async () => {
   let clock = START;
-  const definition = directMergeComposition();
+  const definition = directGatherComposition();
   const runtime = new PheromoneRuntime(definition, {
     executeForager: recorder().executor,
     now: () => clock,
@@ -523,27 +523,27 @@ test('completed joins are bounded by count, keeping the newest markers', async (
       clock += 1000;
       await runtime.pump();
       guard += 1;
-      assert.ok(guard < 10, 'a merge cycle should settle quickly');
+      assert.ok(guard < 10, 'a gather cycle should settle quickly');
     }
   };
 
   await completeOne();
-  const oldestForkId = completedJoinOf(runtime.snapshot())?.forkId;
-  assert.ok(oldestForkId !== undefined);
-  const total = MAX_COMPLETED_JOINS_PER_MERGE + 2;
+  const oldestSpreadId = completedGatherOf(runtime.snapshot())?.spreadId;
+  assert.ok(oldestSpreadId !== undefined);
+  const total = MAX_COMPLETED_GATHERS + 2;
   for (let index = 1; index < total; index += 1) {
     await completeOne();
   }
 
-  const joins = runtime.snapshot().nodes['merge']?.joins ?? {};
-  assert.equal(Object.keys(joins).length, MAX_COMPLETED_JOINS_PER_MERGE);
-  assert.equal(joins[oldestForkId], undefined, 'the oldest marker was evicted');
-  assert.ok(completedJoinOf(runtime.snapshot())?.completedAt !== undefined);
+  const gathers = runtime.snapshot().nodes['gather']?.gathers ?? {};
+  assert.equal(Object.keys(gathers).length, MAX_COMPLETED_GATHERS);
+  assert.equal(gathers[oldestSpreadId], undefined, 'the oldest marker was evicted');
+  assert.ok(completedGatherOf(runtime.snapshot())?.completedAt !== undefined);
 });
 
-test('expired completed joins are pruned on the next merge activity', async () => {
+test('expired completed gathers are pruned on the next gather activity', async () => {
   let clock = START;
-  const definition = directMergeComposition();
+  const definition = directGatherComposition();
   const runtime = new PheromoneRuntime(definition, {
     executeForager: recorder().executor,
     now: () => clock,
@@ -555,33 +555,33 @@ test('expired completed joins are pruned on the next merge activity', async () =
       clock += 1000;
       await runtime.pump();
       guard += 1;
-      assert.ok(guard < 10, 'a merge cycle should settle quickly');
+      assert.ok(guard < 10, 'a gather cycle should settle quickly');
     }
   };
 
   runtime.admit('start', text('one'));
   await settle();
-  const staleForkId = completedJoinOf(runtime.snapshot())?.forkId;
-  assert.ok(staleForkId !== undefined);
+  const staleSpreadId = completedGatherOf(runtime.snapshot())?.spreadId;
+  assert.ok(staleSpreadId !== undefined);
 
-  clock += COMPLETED_JOIN_TTL_MS + 1000;
+  clock += COMPLETED_GATHER_TTL_MS + 1000;
   runtime.admit('start', text('two'));
   await settle();
 
-  const joins = runtime.snapshot().nodes['merge']?.joins ?? {};
-  assert.equal(joins[staleForkId], undefined);
-  assert.equal(Object.keys(joins).length, 1);
+  const gathers = runtime.snapshot().nodes['gather']?.gathers ?? {};
+  assert.equal(gathers[staleSpreadId], undefined);
+  assert.equal(Object.keys(gathers).length, 1);
 });
 
 test('restore prunes a completed marker that outlived its retention', () => {
-  const definition = directMergeComposition();
+  const definition = directGatherComposition();
   const field = new PheromoneRuntime(definition, {
     executeForager: recorder().executor,
     now: () => START,
   }).exportField();
-  field.nodes['merge'] = {
+  field.nodes['gather'] = {
     receptor: [],
-    joins: {
+    gathers: {
       fk_expired: {
         arrived: [],
         completedAt: new Date(START).toISOString(),
@@ -592,9 +592,9 @@ test('restore prunes a completed marker that outlived its retention', () => {
 
   const { runtime } = PheromoneRuntime.restore(definition, field, {
     executeForager: recorder().executor,
-    now: () => START + COMPLETED_JOIN_TTL_MS + 1000,
+    now: () => START + COMPLETED_GATHER_TTL_MS + 1000,
   });
 
-  assert.equal(runtime.snapshot().nodes['merge']?.joins, undefined);
+  assert.equal(runtime.snapshot().nodes['gather']?.gathers, undefined);
   assert.equal(runtime.snapshot().rest, true);
 });

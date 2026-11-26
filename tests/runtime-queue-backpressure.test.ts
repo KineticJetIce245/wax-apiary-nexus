@@ -149,21 +149,21 @@ test('a hover answer is refused before deletion when its target queue is full', 
 });
 
 // ---------------------------------------------------------------------------
-// Merge
+// Gather
 // ---------------------------------------------------------------------------
 
-function mergeComposition(): ReturnType<typeof parseComposition> {
+function gatherComposition(): ReturnType<typeof parseComposition> {
   return compose(
-    'queue-merge',
+    'queue-gather',
     1,
     {
-      merge: {
-        kind: 'merge',
+      gather: {
+        kind: 'gather',
         config: { required: ['a', 'b'], combine: 'text', timeoutMs: 600_000 },
       },
       sink: forager(),
     },
-    [{ id: 'e1', from: 'merge', to: 'sink' }],
+    [{ id: 'e1', from: 'gather', to: 'sink' }],
   );
 }
 
@@ -171,36 +171,36 @@ function plainPheromone(id: string, value: string): Pheromone {
   return { id, value: text(value), at: iso(START) };
 }
 
-function branchPheromone(forkId: string, branchId: string, value: string): Pheromone {
+function branchPheromone(spreadId: string, branchId: string, value: string): Pheromone {
   return {
     id: `ph_${branchId}`,
-    forkId,
+    spreadId,
     branchId,
-    lineage: [{ forkId, branchId }],
+    lineage: [{ spreadId, branchId }],
     value: text(value),
     at: iso(START),
   };
 }
 
-test('a complete merge join waits for downstream space without a tombstone or output loss', async () => {
+test('a complete gather join waits for downstream space without a tombstone or output loss', async () => {
   let clock = START;
-  const definition = mergeComposition();
+  const definition = gatherComposition();
   const { executor, calls } = recorder();
   const log = createMemoryLog();
-  const forkId = 'fk_restored';
+  const spreadId = 'fk_restored';
   const field: PersistedField = {
     schemaVersion: 1,
     compositionId: definition.id,
     graphRevision: definition.graphRevision,
     rest: false,
     nodes: {
-      merge: {
+      gather: {
         receptor: [],
-        joins: {
-          [forkId]: {
+        gathers: {
+          [spreadId]: {
             arrived: [
-              branchPheromone(forkId, 'a', 'A'),
-              branchPheromone(forkId, 'b', 'B'),
+              branchPheromone(spreadId, 'a', 'A'),
+              branchPheromone(spreadId, 'b', 'B'),
             ],
             // Already past: a complete join must not time out or wake the
             // caller at 0ms just because its old deadline elapsed.
@@ -226,7 +226,7 @@ test('a complete merge join waits for downstream space without a tombstone or ou
 
   // The join is complete but its downstream queue is full: keep both.
   const blocked = runtime.snapshot();
-  const join = Object.values(blocked.nodes['merge']?.joins ?? {})[0];
+  const join = Object.values(blocked.nodes['gather']?.gathers ?? {})[0];
   assert.ok(join !== undefined);
   assert.equal(join.arrived.length, 2, 'the arrived branches are preserved');
   assert.equal(join.completedAt, undefined, 'no completed tombstone is written');
@@ -234,7 +234,7 @@ test('a complete merge join waits for downstream space without a tombstone or ou
   assert.equal(blocked.nodes['sink']?.receptor.length, 1);
   assert.ok(blocked.nodes['sink']?.pending !== undefined);
   assert.equal(
-    log.entries.some((entry) => entry.event === 'merge.completed'),
+    log.entries.some((entry) => entry.event === 'gather.completed'),
     false,
   );
   assert.equal(
@@ -244,12 +244,12 @@ test('a complete merge join waits for downstream space without a tombstone or ou
     0,
     'nothing is emitted while the target is full',
   );
-  const mergeBlocked = log.entries.find(
-    (entry) => entry.event === 'merge.blocked' && entry.nodeId === 'merge',
+  const gatherBlocked = log.entries.find(
+    (entry) => entry.event === 'gather.blocked' && entry.nodeId === 'gather',
   );
-  assert.ok(mergeBlocked !== undefined);
-  assert.equal(mergeBlocked.outcome, 'queue-max:sink');
-  assert.equal(mergeBlocked.queueDepth, 1);
+  assert.ok(gatherBlocked !== undefined);
+  assert.equal(gatherBlocked.outcome, 'queue-max:sink');
+  assert.equal(gatherBlocked.queueDepth, 1);
   assert.equal(runtime.snapshot().rest, false);
   assert.equal(runtime.nextWakeAt(), START + QUEUE_RETRY_MS);
   assert.equal(log.entries.some((entry) => entry.event === 'node.failed'), false);
@@ -257,12 +257,12 @@ test('a complete merge join waits for downstream space without a tombstone or ou
   // Drain the target; the restored complete join settles exactly once.
   clock += 1000;
   await runtime.pump();
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.completed'));
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.completed'));
   const settled = runtime.snapshot();
-  const settledJoin = Object.values(settled.nodes['merge']?.joins ?? {})[0];
-  assert.ok(settledJoin !== undefined);
-  assert.ok(settledJoin.completedAt !== undefined);
-  assert.deepEqual(settledJoin.arrived, []);
+  const settledGather = Object.values(settled.nodes['gather']?.gathers ?? {})[0];
+  assert.ok(settledGather !== undefined);
+  assert.ok(settledGather.completedAt !== undefined);
+  assert.deepEqual(settledGather.arrived, []);
   assert.equal(settled.nodes['sink']?.receptor.length, 1);
   assert.equal(
     serializeValue(settled.nodes['sink']?.receptor[0]?.value as Value),
@@ -283,7 +283,7 @@ test('a complete merge join waits for downstream space without a tombstone or ou
   assert.equal(
     calls.filter((call) => call.value === 'A\nB').length,
     1,
-    'the merged output is delivered exactly once',
+    'the gatherd output is delivered exactly once',
   );
   assert.equal(runtime.snapshot().rest, true);
 });

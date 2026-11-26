@@ -319,13 +319,13 @@
       "publicMethods": 16,
       "constructorDependencies": 2
     },
-    "src/runtime/definition-flow-config.ts::function parseForkConfig": {
+    "src/runtime/definition-flow-config.ts::function parseSpreadConfig": {
       "lines": 53,
       "cyclomatic": 4,
       "nesting": 1,
       "parameters": 3
     },
-    "src/runtime/definition-flow-config.ts::function parseMergeConfig": {
+    "src/runtime/definition-flow-config.ts::function parseGatherConfig": {
       "lines": 88,
       "cyclomatic": 21,
       "nesting": 6,
@@ -408,7 +408,7 @@
       "nesting": 4,
       "parameters": 1
     },
-    "src/runtime/runtime.ts::method PheromoneRuntime.arriveAtMerge": {
+    "src/runtime/runtime.ts::method PheromoneRuntime.arriveAtGather": {
       "lines": 165,
       "cyclomatic": 26,
       "nesting": 2,
@@ -420,13 +420,13 @@
       "nesting": 1,
       "parameters": 0
     },
-    "src/runtime/runtime.ts::method PheromoneRuntime.failFork": {
+    "src/runtime/runtime.ts::method PheromoneRuntime.failSpread": {
       "lines": 51,
       "cyclomatic": 14,
       "nesting": 4,
       "parameters": 3
     },
-    "src/runtime/runtime.ts::method PheromoneRuntime.failMissingJoins": {
+    "src/runtime/runtime.ts::method PheromoneRuntime.failMissingGathers": {
       "lines": 42,
       "cyclomatic": 12,
       "nesting": 3,
@@ -444,7 +444,7 @@
       "nesting": 4,
       "parameters": 2
     },
-    "src/runtime/runtime.ts::method PheromoneRuntime.pruneJoinTombstones": {
+    "src/runtime/runtime.ts::method PheromoneRuntime.pruneGatherTombstones": {
       "lines": 37,
       "cyclomatic": 11,
       "nesting": 2,
@@ -462,7 +462,7 @@
       "nesting": 2,
       "parameters": 3
     },
-    "src/runtime/runtime.ts::method PheromoneRuntime.settleCompleteJoins": {
+    "src/runtime/runtime.ts::method PheromoneRuntime.settleCompleteGathers": {
       "lines": 66,
       "cyclomatic": 16,
       "nesting": 4,
@@ -545,7 +545,7 @@
       "nesting": 2,
       "parameters": 2
     },
-    "src/storage/honey.ts::function parseJoins": {
+    "src/storage/honey.ts::function parseGathers": {
       "lines": 127,
       "cyclomatic": 25,
       "nesting": 3,
@@ -1061,19 +1061,19 @@
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-fork-merge.test.ts::arrow <anonymous@235>": {
+    "tests/runtime-spread-gather.test.ts::arrow <anonymous@235>": {
       "lines": 53,
       "cyclomatic": 4,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-fork-merge.test.ts::arrow <anonymous@361>": {
+    "tests/runtime-spread-gather.test.ts::arrow <anonymous@361>": {
       "lines": 64,
       "cyclomatic": 4,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-fork-merge.test.ts::arrow <anonymous@426>": {
+    "tests/runtime-spread-gather.test.ts::arrow <anonymous@426>": {
       "lines": 53,
       "cyclomatic": 1,
       "nesting": 0,
@@ -1097,61 +1097,61 @@
       "nesting": 7,
       "parameters": 2
     },
-    "tests/runtime-merge-structured.test.ts::arrow <anonymous@219>": {
+    "tests/runtime-gather-structured.test.ts::arrow <anonymous@219>": {
       "lines": 67,
       "cyclomatic": 4,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@333>": {
+    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@333>": {
       "lines": 54,
       "cyclomatic": 2,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@388>": {
+    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@388>": {
       "lines": 61,
       "cyclomatic": 2,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@41>": {
+    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@41>": {
       "lines": 52,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@450>": {
+    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@450>": {
       "lines": 51,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-recovery.test.ts::arrow <anonymous@94>": {
+    "tests/runtime-nested-spread-gather-recovery.test.ts::arrow <anonymous@94>": {
       "lines": 238,
       "cyclomatic": 8,
       "nesting": 1,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@125>": {
+    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@125>": {
       "lines": 55,
       "cyclomatic": 2,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@224>": {
+    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@224>": {
       "lines": 82,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@307>": {
+    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@307>": {
       "lines": 54,
       "cyclomatic": 1,
       "nesting": 0,
       "parameters": 0
     },
-    "tests/runtime-nested-fork-merge-semantics.test.ts::arrow <anonymous@362>": {
+    "tests/runtime-nested-spread-gather-semantics.test.ts::arrow <anonymous@362>": {
       "lines": 53,
       "cyclomatic": 2,
       "nesting": 0,
@@ -1289,7 +1289,7 @@
       "nesting": 1,
       "parameters": 1
     },
-    "tests/support/runtime-nested-advanced.ts::function siblingInnerForksComposition": {
+    "tests/support/runtime-nested-advanced.ts::function siblingInnerSpreadsComposition": {
       "lines": 54,
       "cyclomatic": 1,
       "nesting": 0,

@@ -285,7 +285,7 @@ test('B answer binds a user hover', async (t) => {
 });
 
 /**
- * `seed` moves into a fork that fills `done`'s receptor to the configured
+ * `seed` moves into a spread that fills `done`'s receptor to the configured
  * capacity, while `ask` can only answer into the same `done`.
  */
 function answerOverflowLive(liveId: string): LiveHive {
@@ -307,7 +307,7 @@ function answerOverflowLive(liveId: string): LiveHive {
         config: { modality: 'text', prompt: 'seed' },
         outgoing: ['seed-fill'],
       },
-      fill: { kind: 'fork', config: { branches }, outgoing: [] },
+      fill: { kind: 'spread', config: { branches }, outgoing: [] },
       done: {
         kind: 'user',
         config: { modality: 'text', prompt: 'done' },
@@ -337,7 +337,7 @@ async function triggerAndHover(
   await waitForBee(url, token, liveId, beeId, (bee) => bee.hovered);
 }
 
-/** Answer the seed: the fork fills `done`'s receptor to capacity. */
+/** Answer the seed: the spread fills `done`'s receptor to capacity. */
 async function fillDoneReceptor(
   url: string,
   token: string,

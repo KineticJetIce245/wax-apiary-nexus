@@ -47,8 +47,8 @@ function routingDefinition(): ReturnType<typeof parseComposition> {
     id: 'runtime-routing',
     nodes: {
       start: foragerNode('start {{input}}'),
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'branch-a' },
@@ -58,14 +58,14 @@ function routingDefinition(): ReturnType<typeof parseComposition> {
       },
       'branch-a': foragerNode('branch-a {{input}}'),
       'branch-b': foragerNode('branch-b {{input}}'),
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: foragerNode('done {{input}}'),
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'branch-a', to: 'merge' },
-      { id: 'e3', from: 'branch-b', to: 'merge' },
-      { id: 'e4', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'branch-a', to: 'gather' },
+      { id: 'e3', from: 'branch-b', to: 'gather' },
+      { id: 'e4', from: 'gather', to: 'done' },
     ],
   });
 }
@@ -146,7 +146,7 @@ function waitForExecutionSettled(workspace: Workspace, executionId: string): Pro
 
 /**
  * Pumps until Rest. Each pump may activate a node once; advancing the injected
- * clock past `minIntervalMs` lets the same node (here: merge) run again without
+ * clock past `minIntervalMs` lets the same node (here: gather) run again without
  * a real sleep.
  */
 async function pumpUntilRest(
@@ -165,7 +165,7 @@ async function pumpUntilRest(
   throw new Error(`field did not reach Rest after ${String(maxPumps)} pumps`);
 }
 
-test('fork routes each branch to its own session through merge to Rest', async (t) => {
+test('spread routes each branch to its own session through gather to Rest', async (t) => {
   const adapter = new EchoAdapter();
   const workspace = new Workspace(adapter);
   t.after(() => workspace.stop());
@@ -235,7 +235,7 @@ test('fork routes each branch to its own session through merge to Rest', async (
   assert.equal(donePrompts.length, 1);
   const donePrompt = donePrompts[0] ?? '';
   assert.match(donePrompt, /^done /);
-  // The merge output carried the two branch results from their two sessions.
+  // The gather output carried the two branch results from their two sessions.
   assert.ok(donePrompt.includes(`reply(${records.branchA.nativeId}):branch-a `));
   assert.ok(donePrompt.includes(`reply(${records.branchB.nativeId}):branch-b `));
   assert.equal(

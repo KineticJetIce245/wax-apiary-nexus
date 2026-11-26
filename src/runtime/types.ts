@@ -2,7 +2,7 @@
  * Core value and graph types for the PheromoneField runtime.
  *
  * The full contract lives in CONTRACT.md; this module mirrors the implemented
- * parts: Value, Pheromone, NodeState, joins, and the composition definition.
+ * parts: Value, Pheromone, NodeState, gathers, and the composition definition.
  */
 
 export type NodeId = string;
@@ -28,8 +28,8 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 /**
- * A Value is what a Pheromone carries. Triggers, executors and Merge use the
- * same union. Stage 5C adds `structured` so an object/array Merge can preserve
+ * A Value is what a Pheromone carries. Triggers, executors and Gather use the
+ * same union. Stage 5C adds `structured` so an object/array Gather can preserve
  * structure instead of flattening every branch to text.
  */
 export type Value =
@@ -41,21 +41,21 @@ export type Value =
   | { kind: 'structured'; value: JsonValue };
 
 /**
- * One Fork branch a Pheromone belongs to. A nested Fork appends its tag to the
+ * One Spread branch a Pheromone belongs to. A nested Spread appends its tag to the
  * incoming lineage, so the array is ordered outer-to-inner and the last tag is
- * the current fork. Stage 5D adds the lineage; `forkId`/`branchId` stay on the
+ * the current spread. Stage 5D adds the lineage; `spreadId`/`branchId` stay on the
  * Pheromone for compatibility and always point at the last tag.
  */
 export interface BranchTag {
-  forkId: string;
+  spreadId: string;
   branchId: string;
 }
 
 export interface Pheromone {
   id: string;
-  forkId?: string;
+  spreadId?: string;
   branchId?: string;
-  /** Fork ancestry, outer-to-inner; absent for an untagged Pheromone. */
+  /** Spread ancestry, outer-to-inner; absent for an untagged Pheromone. */
   lineage?: readonly BranchTag[];
   value: Value;
   /**
@@ -163,20 +163,20 @@ export interface UserNode {
   minIntervalMs: number;
 }
 
-/** One labelled branch created by a Fork. Branch is not a node kind. */
-export interface ForkBranch {
+/** One labelled branch created by a Spread. Branch is not a node kind. */
+export interface SpreadBranch {
   id: string;
   to: NodeId;
 }
 
-export interface ForkConfig {
-  branches: readonly ForkBranch[];
+export interface SpreadConfig {
+  branches: readonly SpreadBranch[];
 }
 
-export interface ForkNode {
+export interface SpreadNode {
   id: NodeId;
-  kind: 'fork';
-  config: ForkConfig;
+  kind: 'spread';
+  config: SpreadConfig;
   minIntervalMs: number;
 }
 
@@ -184,22 +184,22 @@ export interface ForkNode {
  * Stage 5A adds optional branches to the Stage 3A text combine. `optional` is
  * best effort: the required set completes the join immediately and an optional
  * branch only contributes when it has already arrived. Stage 5B adds
- * `timeoutMs`, measured from the first branch arrival for one forkId. Stage 5C
+ * `timeoutMs`, measured from the first branch arrival for one spreadId. Stage 5C
  * adds `object` and `array`, which emit a `structured` Value instead of text.
  */
-export type MergeCombine = 'text' | 'object' | 'array';
+export type CombineMode = 'text' | 'object' | 'array';
 
-export interface MergeConfig {
+export interface GatherConfig {
   required: readonly string[];
   optional: readonly string[];
-  combine: MergeCombine;
+  combine: CombineMode;
   timeoutMs: number;
 }
 
-export interface MergeNode {
+export interface GatherNode {
   id: NodeId;
-  kind: 'merge';
-  config: MergeConfig;
+  kind: 'gather';
+  config: GatherConfig;
   minIntervalMs: number;
 }
 
@@ -209,8 +209,8 @@ export type NodeDefinition =
   | ConditionNode
   | CounterNode
   | UserNode
-  | ForkNode
-  | MergeNode;
+  | SpreadNode
+  | GatherNode;
 
 export type NodeKind = NodeDefinition['kind'];
 
@@ -274,22 +274,22 @@ export interface CompositionDefinition {
 }
 
 /**
- * Branch Pheromones a Merge has already received for one forkId. The branch id
+ * Branch Pheromones a Gather has already received for one spreadId. The branch id
  * is the map key; a second arrival for the same branch is a protocol error.
  *
  * Stage 5A keeps a completed join as a tombstone: `completedAt` is set and the
  * consumed `arrived` entries are cleared, so a late optional branch can still be
  * dropped rather than reopening the join. Stage 5B adds the same tombstone for a
  * deadline failure (`timedOutAt`). `deadlineAt` is an absolute epoch-ms time set
- * when the first branch of the fork arrives; it is cleared when the join closes.
+ * when the first branch of the spread arrives; it is cleared when the join closes.
  *
  * Stage 5D adds `lineage`: the parent lineage shared by every arrival, i.e. the
  * arrived Pheromones' lineage with their current (last) tag removed. A nested
- * Merge emits with this lineage restored; a top-level join has none.
+ * Gather emits with this lineage restored; a top-level join has none.
  */
-export interface JoinState {
-  forkId: string;
-  /** Parent lineage; absent when the joined fork is top-level. */
+export interface GatherState {
+  spreadId: string;
+  /** Parent lineage; absent when the joined spread is top-level. */
   lineage?: readonly BranchTag[];
   arrived: Map<string, Pheromone>;
   completedAt?: string;
@@ -297,8 +297,8 @@ export interface JoinState {
   timedOutAt?: string;
 }
 
-export interface JoinStateSnapshot {
-  forkId: string;
+export interface GatherStateSnapshot {
+  spreadId: string;
   lineage?: readonly BranchTag[];
   arrived: readonly Pheromone[];
   completedAt?: string;
@@ -328,8 +328,8 @@ export interface NodeState {
   /** The Pheromone parked behind `hover`; it is still part of the field. */
   hoverPheromone?: Pheromone;
   state?: Record<string, unknown>;
-  /** Merge-only: partially complete joins, keyed by forkId. */
-  joins?: Map<string, JoinState>;
+  /** Gather-only: partially complete gathers, keyed by spreadId. */
+  gathers?: Map<string, GatherState>;
   /**
    * The Value produced by this bee's last completed activation. It is an
    * in-memory cache owned by the field (D2): it is never persisted, carries no
@@ -346,7 +346,7 @@ export interface NodeStateSnapshot {
   hover?: HoverSpec;
   lastActivatedAt?: string;
   state: Readonly<Record<string, unknown>>;
-  joins?: Readonly<Record<string, JoinStateSnapshot>>;
+  gathers?: Readonly<Record<string, GatherStateSnapshot>>;
   /** Field-owned last completed output; memory-only and never persisted. */
   lastOutput?: Value;
 }
@@ -361,8 +361,8 @@ export interface PheromoneFieldSnapshot {
 }
 
 /** JSON shape of `honey/field.json`. */
-export interface PersistedJoinState {
-  /** Parent lineage restored by this join's Merge; absent at top level. */
+export interface PersistedGatherState {
+  /** Parent lineage restored by this join's Gather; absent at top level. */
   lineage?: BranchTag[];
   arrived: Pheromone[];
   /** Set on a completed tombstone; its `arrived` list is empty. */
@@ -387,8 +387,8 @@ export interface PersistedNodeState {
   hoverPheromone?: Pheromone;
   lastActivatedAt?: string;
   state?: Record<string, unknown>;
-  /** Merge-only: partial joins keyed by forkId. */
-  joins?: Record<string, PersistedJoinState>;
+  /** Gather-only: partial gathers keyed by spreadId. */
+  gathers?: Record<string, PersistedGatherState>;
 }
 
 export interface PersistedField {

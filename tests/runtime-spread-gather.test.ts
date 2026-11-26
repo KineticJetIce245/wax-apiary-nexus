@@ -38,28 +38,28 @@ function recorder(output?: (nodeId: string, input: Value) => Value): Recorder {
 }
 
 function branchPheromone(
-  forkId: string,
+  spreadId: string,
   branchId: string,
   value: Value = text('x'),
 ): Pheromone {
   return {
-    id: `ph_${forkId}_${branchId}`,
-    forkId,
+    id: `ph_${spreadId}_${branchId}`,
+    spreadId,
     branchId,
     value,
     at: new Date(START).toISOString(),
   };
 }
 
-/** start -> fork (a->merge, b->ask, c->ask-c) */
+/** start -> spread (a->gather, b->ask, c->ask-c) */
 function fanoutComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
     id: 'fanout',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'ask-a' },
@@ -72,47 +72,47 @@ function fanoutComposition(): ReturnType<typeof parseComposition> {
       'ask-b': { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
       'ask-c': { kind: 'user', config: { modality: 'text', prompt: 'C?' } },
     },
-    edges: [{ id: 'e1', from: 'start', to: 'fork' }],
+    edges: [{ id: 'e1', from: 'start', to: 'spread' }],
   });
 }
 
-/** start -> fork (a->merge, b->ask); ask -> merge; merge -> done */
-function humanMergeComposition(): ReturnType<typeof parseComposition> {
+/** start -> spread (a->gather, b->ask); ask -> gather; gather -> done */
+function humanGatherComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
-    id: 'human-merge',
+    id: 'human-gather',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'ask' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start -> fork (x->make-x, y->make-y); both -> merge (required y,x); merge -> done */
+/** start -> spread (x->make-x, y->make-y); both -> gather (required y,x); gather -> done */
 function combineOrderComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
     id: 'combine-order',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'x', to: 'make-x' },
@@ -122,19 +122,19 @@ function combineOrderComposition(): ReturnType<typeof parseComposition> {
       },
       'make-x': { kind: 'forager', config: { connection: 'codex', prompt: 'x' } },
       'make-y': { kind: 'forager', config: { connection: 'codex', prompt: 'y' } },
-      merge: { kind: 'merge', config: { required: ['y', 'x'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['y', 'x'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'make-x', to: 'merge' },
-      { id: 'e3', from: 'make-y', to: 'merge' },
-      { id: 'e4', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'make-x', to: 'gather' },
+      { id: 'e3', from: 'make-y', to: 'gather' },
+      { id: 'e4', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start1/start2 -> fork (a->merge, b->ask); ask -> merge; merge -> done */
+/** start1/start2 -> spread (a->gather, b->ask); ask -> gather; gather -> done */
 function interleavedComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
@@ -142,24 +142,24 @@ function interleavedComposition(): ReturnType<typeof parseComposition> {
     nodes: {
       start1: { kind: 'forager', config: { connection: 'codex', prompt: 'one' } },
       start2: { kind: 'forager', config: { connection: 'codex', prompt: 'two' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'ask' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start1', to: 'fork' },
-      { id: 'e2', from: 'start2', to: 'fork' },
-      { id: 'e3', from: 'ask', to: 'merge' },
-      { id: 'e4', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start1', to: 'spread' },
+      { id: 'e2', from: 'start2', to: 'spread' },
+      { id: 'e3', from: 'ask', to: 'gather' },
+      { id: 'e4', from: 'gather', to: 'done' },
     ],
   });
 }
@@ -171,28 +171,28 @@ function branchWorkComposition(): ReturnType<typeof parseComposition> {
     id: 'branch-work',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'make-b' },
           ],
         },
       },
       'make-b': { kind: 'forager', config: { connection: 'codex', prompt: 'b' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'make-b', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'make-b', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
-test('fork consumes one Pheromone and emits one tagged copy per branch', async () => {
+test('spread consumes one Pheromone and emits one tagged copy per branch', async () => {
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(fanoutComposition(), {
     executeForager: executor,
@@ -206,7 +206,7 @@ test('fork consumes one Pheromone and emits one tagged copy per branch', async (
   assert.deepEqual(
     calls.map((call) => call.nodeId),
     ['start'],
-    'only the source forager ran; the fork is a control step',
+    'only the source forager ran; the spread is a control step',
   );
   assert.equal(snapshot.pheromones.length, 3);
   assert.equal(snapshot.rest, false);
@@ -220,9 +220,9 @@ test('fork consumes one Pheromone and emits one tagged copy per branch', async (
   assert.ok(a !== undefined);
   assert.ok(b !== undefined);
   assert.ok(c !== undefined);
-  assert.match(a.forkId ?? '', /^fk_/);
-  assert.equal(a.forkId, b.forkId);
-  assert.equal(a.forkId, c.forkId);
+  assert.match(a.spreadId ?? '', /^fk_/);
+  assert.equal(a.spreadId, b.spreadId);
+  assert.equal(a.spreadId, c.spreadId);
   assert.deepEqual([a.value, b.value, c.value], [text('seed'), text('seed'), text('seed')]);
 
   runtime.answerHover('ask-a', text('A'));
@@ -232,11 +232,11 @@ test('fork consumes one Pheromone and emits one tagged copy per branch', async (
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('merge waits for every required branch and emits exactly once', async () => {
+test('gather waits for every required branch and emits exactly once', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
-  const runtime = new PheromoneRuntime(humanMergeComposition(), {
+  const runtime = new PheromoneRuntime(humanGatherComposition(), {
     executeForager: executor,
     now: () => clock,
     onLog: log.sink,
@@ -248,16 +248,16 @@ test('merge waits for every required branch and emits exactly once', async () =>
   const waiting = runtime.snapshot();
   assert.equal(waiting.rest, false);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
-  const mergeState = waiting.nodes['merge'];
-  assert.ok(mergeState !== undefined);
-  const joins = mergeState.joins ?? {};
-  const forkIds = Object.keys(joins);
-  assert.equal(forkIds.length, 1);
-  const join = joins[forkIds[0] ?? ''];
+  const gatherState = waiting.nodes['gather'];
+  assert.ok(gatherState !== undefined);
+  const gathers = gatherState.gathers ?? {};
+  const spreadIds = Object.keys(gathers);
+  assert.equal(spreadIds.length, 1);
+  const join = gathers[spreadIds[0] ?? ''];
   assert.ok(join !== undefined);
   assert.equal(join.arrived.length, 1);
   assert.equal(join.arrived[0]?.branchId, 'a');
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.waiting'));
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.waiting'));
 
   const token = waiting.nodes['ask']?.hover?.token;
   assert.ok(token !== undefined);
@@ -269,21 +269,21 @@ test('merge waits for every required branch and emits exactly once', async () =>
   assert.equal(finished.rest, true);
   assert.deepEqual(finished.pheromones, [], 'the required branches were consumed atomically');
   // Stage 5A keeps a completed tombstone so a late optional can be dropped.
-  const completedJoin = Object.values(finished.nodes['merge']?.joins ?? {})[0];
-  assert.ok(completedJoin !== undefined);
-  assert.ok(completedJoin.completedAt !== undefined);
-  assert.deepEqual(completedJoin.arrived, []);
+  const completedGather = Object.values(finished.nodes['gather']?.gathers ?? {})[0];
+  assert.ok(completedGather !== undefined);
+  assert.ok(completedGather.completedAt !== undefined);
+  assert.deepEqual(completedGather.arrived, []);
   const doneCalls = calls.filter((call) => call.nodeId === 'done');
   assert.equal(doneCalls.length, 1);
   assert.equal(serializeValue(doneCalls[0]?.input as Value), 'seed\nreply');
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.completed'));
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.completed'));
 
-  const mergeOutput = log.entries
+  const gatherOutput = log.entries
     .filter((entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'done')
     .at(-1);
-  assert.ok(mergeOutput !== undefined);
-  assert.equal(mergeOutput.forkId, undefined);
-  assert.equal(mergeOutput.branchId, undefined);
+  assert.ok(gatherOutput !== undefined);
+  assert.equal(gatherOutput.spreadId, undefined);
+  assert.equal(gatherOutput.branchId, undefined);
 });
 
 test('text combine follows the required order, not arrival order', async () => {
@@ -315,7 +315,7 @@ test('text combine follows the required order, not arrival order', async () => {
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('two forkIds interleave at one merge without mixing groups', async () => {
+test('two spreadIds interleave at one gather without mixing groups', async () => {
   let clock = START;
   const { executor, calls } = recorder();
   const runtime = new PheromoneRuntime(interleavedComposition(), {
@@ -330,11 +330,11 @@ test('two forkIds interleave at one merge without mixing groups', async () => {
   await runtime.pump();
 
   const waiting = runtime.snapshot();
-  const joins = waiting.nodes['merge']?.joins ?? {};
-  const forkIds = Object.keys(joins);
-  assert.equal(forkIds.length, 2, 'each forkId gets its own join');
-  const values = forkIds.map((forkId) => {
-    const join = joins[forkId];
+  const gathers = waiting.nodes['gather']?.gathers ?? {};
+  const spreadIds = Object.keys(gathers);
+  assert.equal(spreadIds.length, 2, 'each spreadId gets its own join');
+  const values = spreadIds.map((spreadId) => {
+    const join = gathers[spreadId];
     assert.ok(join !== undefined);
     assert.equal(join.arrived.length, 1);
     return serializeValue(join.arrived[0]?.value as Value);
@@ -358,7 +358,7 @@ test('two forkIds interleave at one merge without mixing groups', async () => {
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('a missing required branch waits for the merge deadline, then times out', async () => {
+test('a missing required branch waits for the gather deadline, then times out', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -367,22 +367,22 @@ test('a missing required branch waits for the merge deadline, then times out', a
     id: 'missing-branch',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'sink' },
           ],
         },
       },
       sink: { kind: 'forager', config: { connection: 'codex', prompt: 'sink' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'gather', to: 'done' },
     ],
   });
   const runtime = new PheromoneRuntime(definition, {
@@ -396,11 +396,11 @@ test('a missing required branch waits for the merge deadline, then times out', a
 
   const waiting = runtime.snapshot();
   assert.equal(waiting.rest, false, 'the join waits instead of failing early');
-  assert.equal(Object.keys(waiting.nodes['merge']?.joins ?? {}).length, 1);
+  assert.equal(Object.keys(waiting.nodes['gather']?.gathers ?? {}).length, 1);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
-  assert.equal(log.entries.filter((entry) => entry.event === 'merge.failed').length, 0);
-  const waitingJoin = Object.values(waiting.nodes['merge']?.joins ?? {})[0];
-  const deadline = waitingJoin?.deadlineAt;
+  assert.equal(log.entries.filter((entry) => entry.event === 'gather.failed').length, 0);
+  const waitingGather = Object.values(waiting.nodes['gather']?.gathers ?? {})[0];
+  const deadline = waitingGather?.deadlineAt;
   assert.ok(deadline !== undefined);
 
   clock = deadline - 1;
@@ -412,18 +412,18 @@ test('a missing required branch waits for the merge deadline, then times out', a
 
   const timedOut = runtime.snapshot();
   assert.equal(timedOut.rest, true);
-  const join = Object.values(timedOut.nodes['merge']?.joins ?? {})[0];
+  const join = Object.values(timedOut.nodes['gather']?.gathers ?? {})[0];
   assert.ok(join !== undefined);
   assert.ok(join.timedOutAt !== undefined);
   assert.deepEqual(join.arrived, []);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.timed-out'));
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.timed-out'));
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'timed-out');
 });
 
-test('a failed branch fails the merge, cancels siblings and is never replayed', async () => {
+test('a failed branch fails the gather, cancels siblings and is never replayed', async () => {
   const log = createMemoryLog();
   const calls: string[] = [];
   const executor: NodeExecutor = {
@@ -440,22 +440,22 @@ test('a failed branch fails the merge, cancels siblings and is never replayed', 
     id: 'failed-branch',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'boom' },
           ],
         },
       },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       boom: { kind: 'forager', config: { connection: 'codex', prompt: 'boom' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'gather', to: 'done' },
     ],
   });
   const runtime = new PheromoneRuntime(definition, {
@@ -468,11 +468,11 @@ test('a failed branch fails the merge, cancels siblings and is never replayed', 
   await assert.rejects(runtime.pump(), /branch exploded/);
 
   const snapshot = runtime.snapshot();
-  assert.equal(snapshot.nodes['merge']?.joins, undefined);
+  assert.equal(snapshot.nodes['gather']?.gathers, undefined);
   assert.equal(snapshot.rest, true);
   assert.deepEqual(calls, ['start', 'boom']);
   assert.equal(calls.filter((call) => call === 'done').length, 0);
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'failed-branch');
 });
@@ -484,9 +484,9 @@ test('an unknown active branch found on restore fails its join', () => {
     executeForager: recorder().executor,
     now: () => START,
   }).exportField();
-  field.nodes['merge'] = {
+  field.nodes['gather'] = {
     receptor: [],
-    joins: {
+    gathers: {
       fk_restore: {
         arrived: [branchPheromone('fk_restore', 'a')],
         deadlineAt: START + 3_600_000,
@@ -506,9 +506,9 @@ test('an unknown active branch found on restore fails its join', () => {
 
   assert.deepEqual(report.unknownActive, ['make-b']);
   const snapshot = runtime.snapshot();
-  assert.equal(snapshot.nodes['merge']?.joins, undefined);
+  assert.equal(snapshot.nodes['gather']?.gathers, undefined);
   assert.equal(snapshot.rest, true);
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'unknown-active');
 });
@@ -520,9 +520,9 @@ test('a duplicate branch arrival is rejected and fails the join', async () => {
     executeForager: recorder().executor,
     now: () => START,
   }).exportField();
-  field.nodes['merge'] = {
+  field.nodes['gather'] = {
     receptor: [branchPheromone('fk_duplicate', 'a')],
-    joins: {
+    gathers: {
       fk_duplicate: {
         arrived: [branchPheromone('fk_duplicate', 'a')],
         deadlineAt: START + 3_600_000,
@@ -539,9 +539,9 @@ test('a duplicate branch arrival is rejected and fails the join', async () => {
 
   await runtime.pump();
 
-  assert.equal(runtime.snapshot().nodes['merge']?.joins, undefined);
+  assert.equal(runtime.snapshot().nodes['gather']?.gathers, undefined);
   assert.equal(runtime.snapshot().rest, true);
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'duplicate-branch');
 });
@@ -552,9 +552,9 @@ test('Rest stays false while a restored join is incomplete', () => {
     executeForager: recorder().executor,
     now: () => START,
   }).exportField();
-  field.nodes['merge'] = {
+  field.nodes['gather'] = {
     receptor: [],
-    joins: {
+    gathers: {
       fk_wait: {
         arrived: [branchPheromone('fk_wait', 'a')],
         deadlineAt: START + 3_600_000,
@@ -569,7 +569,7 @@ test('Rest stays false while a restored join is incomplete', () => {
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, false);
-  assert.equal(Object.keys(snapshot.nodes['merge']?.joins ?? {}).length, 1);
+  assert.equal(Object.keys(snapshot.nodes['gather']?.gathers ?? {}).length, 1);
   assert.equal(snapshot.pheromones.length, 1);
 });
 
@@ -586,9 +586,9 @@ test('a restored complete join settles once without replaying its branches', asy
     executeForager: executor,
     now: () => START,
   }).exportField();
-  field.nodes['merge'] = {
+  field.nodes['gather'] = {
     receptor: [],
-    joins: {
+    gathers: {
       fk_complete: {
         arrived: [
           branchPheromone('fk_complete', 'a', text('A')),
@@ -611,7 +611,7 @@ test('a restored complete join settles once without replaying its branches', asy
   assert.equal(runtime.snapshot().pheromones.length, 0);
 });
 
-test('fork copies a non-text Value unchanged', async () => {
+test('spread copies a non-text Value unchanged', async () => {
   const { executor } = recorder();
   const runtime = new PheromoneRuntime(fanoutComposition(), {
     executeForager: executor,
@@ -629,25 +629,25 @@ test('fork copies a non-text Value unchanged', async () => {
   ]);
 });
 
-test('a merge without an outgoing edge is terminal', async () => {
+test('a gather without an outgoing edge is terminal', async () => {
   const { executor, calls } = recorder();
   const definition = parseComposition({
     schemaVersion: 1,
-    id: 'terminal-merge',
+    id: 'terminal-gather',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
-            { id: 'b', to: 'merge' },
+            { id: 'a', to: 'gather' },
+            { id: 'b', to: 'gather' },
           ],
         },
       },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
     },
-    edges: [{ id: 'e1', from: 'start', to: 'fork' }],
+    edges: [{ id: 'e1', from: 'start', to: 'spread' }],
   });
   let clock = START;
   const runtime = new PheromoneRuntime(definition, {
@@ -665,7 +665,7 @@ test('a merge without an outgoing edge is terminal', async () => {
   assert.deepEqual(runtime.snapshot().pheromones, []);
 });
 
-test('an unexpected branch arrival fails the merge and cancels siblings', async () => {
+test('an unexpected branch arrival fails the gather and cancels siblings', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -674,21 +674,21 @@ test('an unexpected branch arrival fails the merge and cancels siblings', async 
     id: 'unknown-branch',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
-            { id: 'b', to: 'merge' },
+            { id: 'a', to: 'gather' },
+            { id: 'b', to: 'gather' },
           ],
         },
       },
-      merge: { kind: 'merge', config: { required: ['a', 'c'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'c'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'gather', to: 'done' },
     ],
   });
   const runtime = new PheromoneRuntime(definition, {
@@ -702,10 +702,10 @@ test('an unexpected branch arrival fails the merge and cancels siblings', async 
   clock += 1000;
   await runtime.pump();
 
-  assert.equal(runtime.snapshot().nodes['merge']?.joins, undefined);
+  assert.equal(runtime.snapshot().nodes['gather']?.gathers, undefined);
   assert.equal(runtime.snapshot().rest, true);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'unknown-branch');
 });
@@ -725,8 +725,8 @@ test('a failed branch cancels a sibling waiting in a user hover', async () => {
     id: 'cancel-hover',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'boom' },
@@ -736,11 +736,11 @@ test('a failed branch cancels a sibling waiting in a user hover', async () => {
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
       boom: { kind: 'forager', config: { connection: 'codex', prompt: 'boom' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
     ],
   });
   const runtime = new PheromoneRuntime(definition, {

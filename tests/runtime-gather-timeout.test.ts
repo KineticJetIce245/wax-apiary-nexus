@@ -2,16 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  COMPLETED_JOIN_TTL_MS,
+  COMPLETED_GATHER_TTL_MS,
   createMemoryLog,
-  MAX_COMPLETED_JOINS_PER_MERGE,
+  MAX_COMPLETED_GATHERS,
   parseComposition,
   PheromoneRuntime,
   type CompositionDefinition,
-  type JoinStateSnapshot,
+  type GatherStateSnapshot,
   type NodeExecutor,
   type PersistedField,
-  type PersistedJoinState,
+  type PersistedGatherState,
   type Pheromone,
   type Value,
 } from '../src/runtime/index.js';
@@ -40,109 +40,109 @@ function recorder(): {
 }
 
 function branchPheromone(
-  forkId: string,
+  spreadId: string,
   branchId: string,
   value: Value = text('x'),
 ): Pheromone {
   return {
-    id: `ph_${forkId}_${branchId}`,
-    forkId,
+    id: `ph_${spreadId}_${branchId}`,
+    spreadId,
     branchId,
     value,
     at: new Date(START).toISOString(),
   };
 }
 
-/** start -> fork (a,b -> merge required); merge -> done. */
+/** start -> spread (a,b -> gather required); gather -> done. */
 function directComposition(timeoutMs: number = TIMEOUT): CompositionDefinition {
   return parseComposition({
     schemaVersion: 1,
     id: 'timeout-direct',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
-            { id: 'b', to: 'merge' },
+            { id: 'a', to: 'gather' },
+            { id: 'b', to: 'gather' },
           ],
         },
       },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text', timeoutMs } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text', timeoutMs } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start -> fork (a -> merge, b -> ask -> merge required); merge -> done. */
+/** start -> spread (a -> gather, b -> ask -> gather required); gather -> done. */
 function hoverRequiredComposition(timeoutMs: number = TIMEOUT): CompositionDefinition {
   return parseComposition({
     schemaVersion: 1,
     id: 'timeout-hover',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'ask' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      merge: {
-        kind: 'merge',
+      gather: {
+        kind: 'gather',
         config: { required: ['a', 'b'], combine: 'text', timeoutMs },
       },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
-/** start -> fork (a -> ask -> merge required; b -> merge optional); merge -> done. */
+/** start -> spread (a -> ask -> gather required; b -> gather optional); gather -> done. */
 function optionalFirstComposition(timeoutMs: number = TIMEOUT): CompositionDefinition {
   return parseComposition({
     schemaVersion: 1,
     id: 'timeout-optional-first',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'ask' },
-            { id: 'b', to: 'merge' },
+            { id: 'b', to: 'gather' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'A?' } },
-      merge: {
-        kind: 'merge',
+      gather: {
+        kind: 'gather',
         config: { required: ['a'], optional: ['b'], combine: 'text', timeoutMs },
       },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'gather', to: 'done' },
     ],
   });
 }
 
 /**
- * start -> fork (a -> merge, b -> merge optional); merge requires ['a', 'c']
+ * start -> spread (a -> gather, b -> gather optional); gather requires ['a', 'c']
  * (c has no edge, which is enough for the field fixture) and -> done.
  */
 function optionalLateComposition(timeoutMs: number = TIMEOUT): CompositionDefinition {
@@ -151,24 +151,24 @@ function optionalLateComposition(timeoutMs: number = TIMEOUT): CompositionDefini
     id: 'timeout-late-optional',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
-            { id: 'b', to: 'merge' },
+            { id: 'a', to: 'gather' },
+            { id: 'b', to: 'gather' },
           ],
         },
       },
-      merge: {
-        kind: 'merge',
+      gather: {
+        kind: 'gather',
         config: { required: ['a', 'c'], optional: ['b'], combine: 'text', timeoutMs },
       },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'gather', to: 'done' },
     ],
   });
 }
@@ -182,21 +182,21 @@ function emptyField(definition: CompositionDefinition): PersistedField {
   return field;
 }
 
-function withJoin(
+function withGather(
   definition: CompositionDefinition,
-  join: PersistedJoinState,
+  join: PersistedGatherState,
   receptor: Pheromone[] = [],
-  forkId = 'fk_one',
+  spreadId = 'fk_one',
 ): PersistedField {
   const field = emptyField(definition);
-  field.nodes['merge'] = { receptor, joins: { [forkId]: join } };
+  field.nodes['gather'] = { receptor, gathers: { [spreadId]: join } };
   return field;
 }
 
 function joinOf(
   snapshot: ReturnType<PheromoneRuntime['snapshot']>,
-): JoinStateSnapshot | undefined {
-  return Object.values(snapshot.nodes['merge']?.joins ?? {})[0];
+): GatherStateSnapshot | undefined {
+  return Object.values(snapshot.nodes['gather']?.gathers ?? {})[0];
 }
 
 test('required branches that arrive before the deadline emit and disable the timeout', async () => {
@@ -234,11 +234,11 @@ test('required branches that arrive before the deadline emit and disable the tim
   // The old deadline can no longer fire.
   clock = START + TIMEOUT * 10;
   await runtime.pump();
-  assert.equal(log.entries.filter((entry) => entry.event === 'merge.timed-out').length, 0);
+  assert.equal(log.entries.filter((entry) => entry.event === 'gather.timed-out').length, 0);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 1);
 });
 
-test('a deadline with required branches missing fails the fork, cancels siblings and emits nothing', async () => {
+test('a deadline with required branches missing fails the spread, cancels siblings and emits nothing', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -264,14 +264,14 @@ test('a deadline with required branches missing fails the fork, cancels siblings
   assert.equal(snapshot.rest, true);
   assert.equal(snapshot.nodes['ask']?.hover, undefined, 'the queued sibling hover was cancelled');
   assert.equal(snapshot.nodes['ask']?.receptor.length, 0);
-  assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0, 'no merge emit');
+  assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0, 'no gather emit');
   const join = joinOf(snapshot);
   assert.ok(join !== undefined);
   assert.ok(join.timedOutAt !== undefined);
   assert.equal(join.completedAt, undefined);
   assert.deepEqual(join.arrived, []);
-  assert.equal(log.entries.filter((entry) => entry.event === 'merge.timed-out').length, 1);
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  assert.equal(log.entries.filter((entry) => entry.event === 'gather.timed-out').length, 1);
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'timed-out');
   assert.ok(log.entries.some((entry) => entry.event === 'hover.cancelled'));
@@ -282,7 +282,7 @@ test('a quiet field with no in-flight branch waits for the deadline instead of f
   const log = createMemoryLog();
   const definition = directComposition();
   const deadline = START + TIMEOUT;
-  const field = withJoin(definition, {
+  const field = withGather(definition, {
     arrived: [branchPheromone('fk_one', 'a')],
     deadlineAt: deadline,
   });
@@ -297,7 +297,7 @@ test('a quiet field with no in-flight branch waits for the deadline instead of f
   assert.equal(runtime.nextWakeAt(), deadline);
   await runtime.pump();
   assert.equal(runtime.snapshot().rest, false, 'pump never fails a join before its deadline');
-  assert.equal(log.entries.filter((entry) => entry.event === 'merge.failed').length, 0);
+  assert.equal(log.entries.filter((entry) => entry.event === 'gather.failed').length, 0);
 
   clock = deadline - 1;
   await runtime.pump();
@@ -314,7 +314,7 @@ test('restore with an unexpired deadline continues and nextWakeAt stays correct'
   const log = createMemoryLog();
   const definition = directComposition();
   const deadline = START + TIMEOUT;
-  const field = withJoin(
+  const field = withGather(
     definition,
     { arrived: [branchPheromone('fk_one', 'a', text('A'))], deadlineAt: deadline },
     [branchPheromone('fk_one', 'b', text('B'))],
@@ -334,7 +334,7 @@ test('restore with an unexpired deadline continues and nextWakeAt stays correct'
 
   const doneCalls = calls.filter((call) => call.nodeId === 'done');
   assert.equal(doneCalls.length, 1);
-  assert.equal(log.entries.filter((entry) => entry.event === 'merge.timed-out').length, 0);
+  assert.equal(log.entries.filter((entry) => entry.event === 'gather.timed-out').length, 0);
   const join = joinOf(runtime.snapshot());
   assert.ok(join?.completedAt !== undefined);
   assert.equal(join.timedOutAt, undefined);
@@ -344,7 +344,7 @@ test('restore with an unexpired deadline continues and nextWakeAt stays correct'
 test('restore with an expired deadline times out immediately without emitting', () => {
   const log = createMemoryLog();
   const definition = directComposition();
-  const field = withJoin(definition, {
+  const field = withGather(definition, {
     arrived: [branchPheromone('fk_one', 'a')],
     deadlineAt: START - 1000,
   });
@@ -365,10 +365,10 @@ test('restore with an expired deadline times out immediately without emitting', 
   assert.equal(join.deadlineAt, undefined);
   assert.deepEqual(join.arrived, []);
   assert.deepEqual(calls, []);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.timed-out'));
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.timed-out'));
 
   const exported = runtime.exportField();
-  const persisted = Object.values(exported.nodes['merge']?.joins ?? {})[0];
+  const persisted = Object.values(exported.nodes['gather']?.gathers ?? {})[0];
   assert.ok(persisted !== undefined);
   assert.ok(persisted.timedOutAt !== undefined);
   assert.equal(persisted.deadlineAt, undefined);
@@ -378,12 +378,12 @@ test('restore with an expired deadline times out immediately without emitting', 
 test('a late required branch after a timeout is dropped without rejoining or a second emit', async () => {
   const log = createMemoryLog();
   const definition = directComposition();
-  const forkId = 'fk_late_required';
-  const expired = withJoin(
+  const spreadId = 'fk_late_required';
+  const expired = withGather(
     definition,
-    { arrived: [branchPheromone(forkId, 'a')], deadlineAt: START - 1000 },
+    { arrived: [branchPheromone(spreadId, 'a')], deadlineAt: START - 1000 },
     [],
-    forkId,
+    spreadId,
   );
   const { calls, executor } = recorder();
 
@@ -395,11 +395,11 @@ test('a late required branch after a timeout is dropped without rejoining or a s
     onLog: log.sink,
   }).runtime;
   const field = closed.exportField();
-  field.nodes['merge'] = {
-    receptor: [branchPheromone(forkId, 'b')],
-    ...(field.nodes['merge']?.joins === undefined
+  field.nodes['gather'] = {
+    receptor: [branchPheromone(spreadId, 'b')],
+    ...(field.nodes['gather']?.gathers === undefined
       ? {}
-      : { joins: field.nodes['merge']?.joins }),
+      : { gathers: field.nodes['gather']?.gathers }),
   };
 
   const { runtime } = PheromoneRuntime.restore(definition, field, {
@@ -415,22 +415,22 @@ test('a late required branch after a timeout is dropped without rejoining or a s
   assert.ok(join.timedOutAt !== undefined);
   assert.deepEqual(join.arrived, []);
   const late = log.entries.find(
-    (entry) => entry.event === 'merge.failed' && entry.outcome === 'late-required',
+    (entry) => entry.event === 'gather.failed' && entry.outcome === 'late-required',
   );
   assert.ok(late !== undefined);
-  assert.equal(late.forkId, forkId);
+  assert.equal(late.spreadId, spreadId);
   assert.equal(runtime.snapshot().rest, true);
 });
 
 test('a late optional branch after a timeout is dropped without reopening the join', async () => {
   const log = createMemoryLog();
   const definition = optionalLateComposition();
-  const forkId = 'fk_late_optional';
-  const expired = withJoin(
+  const spreadId = 'fk_late_optional';
+  const expired = withGather(
     definition,
-    { arrived: [branchPheromone(forkId, 'a')], deadlineAt: START - 1000 },
+    { arrived: [branchPheromone(spreadId, 'a')], deadlineAt: START - 1000 },
     [],
-    forkId,
+    spreadId,
   );
   const { calls, executor } = recorder();
 
@@ -440,11 +440,11 @@ test('a late optional branch after a timeout is dropped without reopening the jo
     onLog: log.sink,
   }).runtime;
   const field = closed.exportField();
-  field.nodes['merge'] = {
-    receptor: [branchPheromone(forkId, 'b')],
-    ...(field.nodes['merge']?.joins === undefined
+  field.nodes['gather'] = {
+    receptor: [branchPheromone(spreadId, 'b')],
+    ...(field.nodes['gather']?.gathers === undefined
       ? {}
-      : { joins: field.nodes['merge']?.joins }),
+      : { gathers: field.nodes['gather']?.gathers }),
   };
 
   const { runtime } = PheromoneRuntime.restore(definition, field, {
@@ -459,9 +459,9 @@ test('a late optional branch after a timeout is dropped without reopening the jo
   assert.ok(join !== undefined);
   assert.ok(join.timedOutAt !== undefined);
   assert.deepEqual(join.arrived, []);
-  const dropped = log.entries.find((entry) => entry.event === 'merge.optional-dropped');
+  const dropped = log.entries.find((entry) => entry.event === 'gather.optional-dropped');
   assert.ok(dropped !== undefined);
-  assert.equal(dropped.forkId, forkId);
+  assert.equal(dropped.spreadId, spreadId);
   assert.equal(runtime.snapshot().rest, true);
 });
 
@@ -480,10 +480,10 @@ test('an arrived optional branch never blocks the required timeout', async () =>
 
   const waiting = runtime.snapshot();
   assert.equal(waiting.rest, false);
-  const waitingJoin = joinOf(waiting);
-  assert.ok(waitingJoin !== undefined);
+  const waitingGather = joinOf(waiting);
+  assert.ok(waitingGather !== undefined);
   assert.deepEqual(
-    waitingJoin.arrived.map((pheromone) => pheromone.branchId),
+    waitingGather.arrived.map((pheromone) => pheromone.branchId),
     ['b'],
     'the optional branch arrived first',
   );
@@ -497,7 +497,7 @@ test('an arrived optional branch never blocks the required timeout', async () =>
   assert.ok(join !== undefined);
   assert.ok(join.timedOutAt !== undefined);
   assert.equal(runtime.snapshot().rest, true);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.timed-out'));
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.timed-out'));
 });
 
 test('a required branch that arrives after the deadline times out instead of emitting', async () => {
@@ -524,13 +524,13 @@ test('a required branch that arrives after the deadline times out instead of emi
   assert.ok(join !== undefined);
   assert.ok(join.timedOutAt !== undefined);
   assert.equal(join.completedAt, undefined);
-  assert.equal(log.entries.filter((entry) => entry.event === 'merge.timed-out').length, 1);
+  assert.equal(log.entries.filter((entry) => entry.event === 'gather.timed-out').length, 1);
   assert.equal(runtime.snapshot().rest, true);
 });
 
 test('a timed-out tombstone is not a Rest blocker or an active edit reference', () => {
   const definition = directComposition();
-  const field = withJoin(definition, {
+  const field = withGather(definition, {
     arrived: [],
     timedOutAt: new Date(START - 1000).toISOString(),
   });
@@ -548,14 +548,14 @@ test('a timed-out tombstone is not a Rest blocker or an active edit reference', 
 test('timed-out tombstones share the completed 1h/64 cleanup bound on restore', () => {
   const definition = directComposition();
   const field = emptyField(definition);
-  const joins: Record<string, PersistedJoinState> = {};
-  for (let index = 0; index < MAX_COMPLETED_JOINS_PER_MERGE + 2; index += 1) {
-    joins[`fk_${String(index)}`] = {
+  const gathers: Record<string, PersistedGatherState> = {};
+  for (let index = 0; index < MAX_COMPLETED_GATHERS + 2; index += 1) {
+    gathers[`fk_${String(index)}`] = {
       arrived: [],
       timedOutAt: new Date(START - index * 1000).toISOString(),
     };
   }
-  field.nodes['merge'] = { receptor: [], joins };
+  field.nodes['gather'] = { receptor: [], gathers };
   field.rest = true;
 
   const { runtime } = PheromoneRuntime.restore(definition, field, {
@@ -563,19 +563,19 @@ test('timed-out tombstones share the completed 1h/64 cleanup bound on restore', 
     now: () => START,
   });
 
-  const restored = runtime.snapshot().nodes['merge']?.joins ?? {};
-  assert.equal(Object.keys(restored).length, MAX_COMPLETED_JOINS_PER_MERGE);
+  const restored = runtime.snapshot().nodes['gather']?.gathers ?? {};
+  assert.equal(Object.keys(restored).length, MAX_COMPLETED_GATHERS);
   assert.equal(restored['fk_65'], undefined);
   assert.equal(restored['fk_64'], undefined);
   assert.ok(restored['fk_63'] !== undefined);
 
   // A marker older than the shared TTL is pruned as well.
-  field.nodes['merge'] = {
+  field.nodes['gather'] = {
     receptor: [],
-    joins: {
+    gathers: {
       fk_stale: {
         arrived: [],
-        timedOutAt: new Date(START - COMPLETED_JOIN_TTL_MS - 1000).toISOString(),
+        timedOutAt: new Date(START - COMPLETED_GATHER_TTL_MS - 1000).toISOString(),
       },
       fk_fresh: { arrived: [], timedOutAt: new Date(START).toISOString() },
     },
@@ -583,7 +583,7 @@ test('timed-out tombstones share the completed 1h/64 cleanup bound on restore', 
   const second = PheromoneRuntime.restore(definition, field, {
     executeForager: recorder().executor,
     now: () => START,
-  }).runtime.snapshot().nodes['merge']?.joins;
+  }).runtime.snapshot().nodes['gather']?.gathers;
   assert.equal(second?.['fk_stale'], undefined);
   assert.ok(second?.['fk_fresh'] !== undefined);
 });

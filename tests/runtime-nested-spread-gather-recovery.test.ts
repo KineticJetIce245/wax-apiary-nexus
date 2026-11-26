@@ -32,7 +32,7 @@ import {
   threeLevelHoverComposition,
 } from './support/runtime-nested-fixtures.js';
 import {
-  siblingInnerForksComposition,
+  siblingInnerSpreadsComposition,
   nestedOptionalComposition,
   nestedTimeoutComposition,
   nestedFailureComposition,
@@ -51,11 +51,11 @@ test('honey round-trips nested lineage and restores an incomplete inner join', a
   await runtime.pump();
 
   const before = runtime.snapshot();
-  const beforeJoin = joinAt(before, 'inner-merge');
-  assert.equal(beforeJoin.completedAt, undefined);
-  assert.equal(beforeJoin.lineage?.length, 1);
-  assert.equal(beforeJoin.lineage?.[0]?.branchId, 'left');
-  assert.equal(beforeJoin.arrived[0]?.lineage?.length, 2);
+  const beforeGather = joinAt(before, 'inner-gather');
+  assert.equal(beforeGather.completedAt, undefined);
+  assert.equal(beforeGather.lineage?.length, 1);
+  assert.equal(beforeGather.lineage?.[0]?.branchId, 'left');
+  assert.equal(beforeGather.arrived[0]?.lineage?.length, 2);
   const token = before.nodes['ask-inner']?.hover?.token;
   assert.ok(token !== undefined);
 
@@ -74,9 +74,9 @@ test('honey round-trips nested lineage and restores an incomplete inner join', a
   assert.deepEqual(report, { resumedHovers: ['ask-inner'], unknownActive: [], stuckActive: [] });
 
   const restoredSnapshot = restored.snapshot();
-  const restoredJoin = joinAt(restoredSnapshot, 'inner-merge');
-  assert.equal(restoredJoin.lineage?.[0]?.branchId, 'left');
-  assert.equal(restoredJoin.arrived[0]?.lineage?.length, 2);
+  const restoredGather = joinAt(restoredSnapshot, 'inner-gather');
+  assert.equal(restoredGather.lineage?.[0]?.branchId, 'left');
+  assert.equal(restoredGather.arrived[0]?.lineage?.length, 2);
   assert.equal(restoredSnapshot.nodes['ask-inner']?.hover?.token, token);
 
   restored.answerHover('ask-inner', text('reply'), token);
@@ -88,7 +88,7 @@ test('honey round-trips nested lineage and restores an incomplete inner join', a
     serializeValue(restoredRecorder.calls.find((call) => call.nodeId === 'done')?.input as Value),
     'seed\nreply\nseed',
   );
-  assert.equal(joinAt(restored.snapshot(), 'inner-merge').lineage?.[0]?.branchId, 'left');
+  assert.equal(joinAt(restored.snapshot(), 'inner-gather').lineage?.[0]?.branchId, 'left');
 });
 
 test('a real Honey restart mid-flight keeps a three-level join, hover, queue and pending', async () => {
@@ -100,10 +100,10 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
     now: () => clock,
   });
 
-  // Pass 1: descend all three forks and park ask-outer on its user hover.
+  // Pass 1: descend all three spreads and park ask-outer on its user hover.
   runtime.admit('start', text('seed'));
   await runtime.pump();
-  // Pass 2: finish the inner and mid joins, so the outer join holds only o-left.
+  // Pass 2: finish the inner and mid gathers, so the outer join holds only o-left.
   clock += 1000;
   await runtime.pump();
 
@@ -119,33 +119,33 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
   assert.equal(before.rest, false);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
 
-  const innerJoin = joinAt(before, 'inner-merge');
-  const midJoin = joinAt(before, 'mid-merge');
-  const outerJoin = joinAt(before, 'outer-merge');
-  assert.ok(innerJoin.completedAt !== undefined, 'the inner join is a completed tombstone');
-  assert.ok(midJoin.completedAt !== undefined, 'the mid join is a completed tombstone');
-  assert.equal(innerJoin.arrived.length, 0);
-  assert.equal(midJoin.arrived.length, 0);
+  const innerGather = joinAt(before, 'inner-gather');
+  const midGather = joinAt(before, 'mid-gather');
+  const outerGather = joinAt(before, 'outer-gather');
+  assert.ok(innerGather.completedAt !== undefined, 'the inner join is a completed tombstone');
+  assert.ok(midGather.completedAt !== undefined, 'the mid join is a completed tombstone');
+  assert.equal(innerGather.arrived.length, 0);
+  assert.equal(midGather.arrived.length, 0);
   assert.deepEqual(
-    innerJoin.lineage?.map((tag) => tag.branchId),
+    innerGather.lineage?.map((tag) => tag.branchId),
     ['o-left', 'm-left'],
     'the inner join remembers both enclosing tags',
   );
   assert.deepEqual(
-    midJoin.lineage?.map((tag) => tag.branchId),
+    midGather.lineage?.map((tag) => tag.branchId),
     ['o-left'],
     'the mid join remembers only the outer tag',
   );
-  assert.equal(outerJoin.completedAt, undefined, 'the outer join is still incomplete');
-  assert.equal(outerJoin.arrived.length, 1);
-  assert.equal(outerJoin.arrived[0]?.branchId, 'o-left');
+  assert.equal(outerGather.completedAt, undefined, 'the outer join is still incomplete');
+  assert.equal(outerGather.arrived.length, 1);
+  assert.equal(outerGather.arrived[0]?.branchId, 'o-left');
 
-  const outerForkId = outerJoin.arrived[0]?.forkId;
-  assert.ok(outerForkId !== undefined);
+  const outerSpreadId = outerGather.arrived[0]?.spreadId;
+  assert.ok(outerSpreadId !== undefined);
   const token = before.nodes['ask-outer']?.hover?.token;
   assert.ok(token !== undefined);
   const parked = before.pheromones.find(
-    (pheromone) => pheromone.forkId === outerForkId && pheromone.branchId === 'o-right',
+    (pheromone) => pheromone.spreadId === outerSpreadId && pheromone.branchId === 'o-right',
   );
   assert.ok(parked !== undefined, 'the hovered o-right branch is still in the field');
   assert.equal(before.nodes['ask-outer']?.hover?.pheromoneId, parked.id);
@@ -206,32 +206,32 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
   assert.equal(serializeValue(restoredQueueNode.receptor[0]?.value as Value), 'q3');
   assert.equal(serializeValue(restoredQueueNode.pending?.value as Value), 'q2');
 
-  const restoredInner = joinAt(restoredBefore, 'inner-merge');
-  const restoredMid = joinAt(restoredBefore, 'mid-merge');
-  const restoredOuter = joinAt(restoredBefore, 'outer-merge');
-  assert.equal(restoredInner.completedAt, innerJoin.completedAt);
-  assert.equal(restoredMid.completedAt, midJoin.completedAt);
-  assert.deepEqual(restoredInner.lineage, innerJoin.lineage);
-  assert.deepEqual(restoredMid.lineage, midJoin.lineage);
+  const restoredInner = joinAt(restoredBefore, 'inner-gather');
+  const restoredMid = joinAt(restoredBefore, 'mid-gather');
+  const restoredOuter = joinAt(restoredBefore, 'outer-gather');
+  assert.equal(restoredInner.completedAt, innerGather.completedAt);
+  assert.equal(restoredMid.completedAt, midGather.completedAt);
+  assert.deepEqual(restoredInner.lineage, innerGather.lineage);
+  assert.deepEqual(restoredMid.lineage, midGather.lineage);
   assert.equal(restoredOuter.completedAt, undefined);
   assert.equal(restoredOuter.arrived.length, 1);
-  assert.equal(restoredOuter.arrived[0]?.id, outerJoin.arrived[0]?.id);
+  assert.equal(restoredOuter.arrived[0]?.id, outerGather.arrived[0]?.id);
   assert.equal(restoredOuter.arrived[0]?.branchId, 'o-left');
-  // The same fork groups survive, not newly opened joins.
+  // The same spread groups survive, not newly opened gathers.
   assert.deepEqual(
-    Object.keys(restoredBefore.nodes['inner-merge']?.joins ?? {}),
-    Object.keys(before.nodes['inner-merge']?.joins ?? {}),
+    Object.keys(restoredBefore.nodes['inner-gather']?.gathers ?? {}),
+    Object.keys(before.nodes['inner-gather']?.gathers ?? {}),
   );
   assert.deepEqual(
-    Object.keys(restoredBefore.nodes['mid-merge']?.joins ?? {}),
-    Object.keys(before.nodes['mid-merge']?.joins ?? {}),
+    Object.keys(restoredBefore.nodes['mid-gather']?.gathers ?? {}),
+    Object.keys(before.nodes['mid-gather']?.gathers ?? {}),
   );
   assert.deepEqual(
-    Object.keys(restoredBefore.nodes['outer-merge']?.joins ?? {}),
-    Object.keys(before.nodes['outer-merge']?.joins ?? {}),
+    Object.keys(restoredBefore.nodes['outer-gather']?.gathers ?? {}),
+    Object.keys(before.nodes['outer-gather']?.gathers ?? {}),
   );
 
-  // Restoring is not replaying: a completed forager or merge must not run again.
+  // Restoring is not replaying: a completed forager or gather must not run again.
   assert.equal(restoredRecorder.calls.length, 0);
   await restored.pump();
   assert.equal(restoredRecorder.calls.length, 0, 'a quiet pump after restore re-runs nothing');
@@ -241,25 +241,25 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
     'no restored node is activated before new input arrives',
   );
   assert.equal(
-    restoredLog.entries.some((entry) => entry.event === 'merge.completed'),
+    restoredLog.entries.some((entry) => entry.event === 'gather.completed'),
     false,
-    'no completed merge is replayed before the answer',
+    'no completed gather is replayed before the answer',
   );
 
-  // Answer with the restored token, then let the outer Merge settle.
+  // Answer with the restored token, then let the outer Gather settle.
   restored.answerHover('ask-outer', text('reply'), token);
-  clock += 1000; // outer-merge has its own 1s minimum interval
+  clock += 1000; // outer-gather has its own 1s minimum interval
   await restored.pump();
 
   assert.deepEqual(restoredRecorder.calls.map((call) => call.nodeId), ['done']);
   assert.equal(
     serializeValue(restoredRecorder.calls[0]?.input as Value),
     'seed\nseed\nseed\nreply',
-    'the answer joins the three nested combine layers in order',
+    'the answer gathers the three nested combine layers in order',
   );
-  const outerCompleted = joinAt(restored.snapshot(), 'outer-merge');
+  const outerCompleted = joinAt(restored.snapshot(), 'outer-gather');
   assert.ok(outerCompleted.completedAt !== undefined);
-  assert.equal(outerCompleted.lineage, undefined, 'the top-level merge pops the outer tag');
+  assert.equal(outerCompleted.lineage, undefined, 'the top-level gather pops the outer tag');
   assert.equal(outerCompleted.arrived.length, 0);
   assert.equal(restored.snapshot().nodes['ask-outer']?.hover, undefined);
 
@@ -267,7 +267,7 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
     (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'done',
   );
   assert.equal(doneArrivals.length, 1);
-  assert.equal(doneArrivals[0]?.forkId, undefined);
+  assert.equal(doneArrivals[0]?.spreadId, undefined);
   assert.equal(doneArrivals[0]?.branchId, undefined);
   assert.equal(
     restoredLog.entries.filter((entry) => entry.event === 'hover.resolved').length,
@@ -275,17 +275,17 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
   );
   assert.equal(
     restoredLog.entries.filter(
-      (entry) => entry.event === 'merge.completed' && entry.nodeId === 'outer-merge',
+      (entry) => entry.event === 'gather.completed' && entry.nodeId === 'outer-gather',
     ).length,
     1,
   );
-  for (const mergeId of ['inner-merge', 'mid-merge']) {
+  for (const gatherId of ['inner-gather', 'mid-gather']) {
     assert.equal(
       restoredLog.entries.some(
-        (entry) => entry.event === 'node.activated' && entry.nodeId === mergeId,
+        (entry) => entry.event === 'node.activated' && entry.nodeId === gatherId,
       ),
       false,
-      `${mergeId} is not re-activated after restore`,
+      `${gatherId} is not re-activated after restore`,
     );
   }
 
@@ -322,12 +322,12 @@ test('a real Honey restart mid-flight keeps a three-level join, hover, queue and
     ).length,
     1,
   );
-  const finalInner = joinAt(restored.snapshot(), 'inner-merge');
-  const finalMid = joinAt(restored.snapshot(), 'mid-merge');
-  assert.equal(finalInner.completedAt, innerJoin.completedAt);
-  assert.equal(finalMid.completedAt, midJoin.completedAt);
-  assert.deepEqual(finalInner.lineage, innerJoin.lineage);
-  assert.deepEqual(finalMid.lineage, midJoin.lineage);
+  const finalInner = joinAt(restored.snapshot(), 'inner-gather');
+  const finalMid = joinAt(restored.snapshot(), 'mid-gather');
+  assert.equal(finalInner.completedAt, innerGather.completedAt);
+  assert.equal(finalMid.completedAt, midGather.completedAt);
+  assert.deepEqual(finalInner.lineage, innerGather.lineage);
+  assert.deepEqual(finalMid.lineage, midGather.lineage);
 });
 
 test('a restored completed nested tombstone still drops a late optional', async () => {
@@ -346,17 +346,17 @@ test('a restored completed nested tombstone still drops a late optional', async 
   clock += 1000;
   await runtime.pump();
 
-  const beforeJoin = joinAt(runtime.snapshot(), 'inner-merge');
-  assert.ok(beforeJoin.completedAt !== undefined);
-  assert.equal(beforeJoin.lineage?.[0]?.branchId, 'left');
+  const beforeGather = joinAt(runtime.snapshot(), 'inner-gather');
+  assert.ok(beforeGather.completedAt !== undefined);
+  assert.equal(beforeGather.lineage?.[0]?.branchId, 'left');
 
   const store = HoneyStore.forComposition(tempRoot(), 'apiary', 'nested-optional');
   store.save(runtime.exportField());
   const loaded = store.load();
   assert.ok(loaded !== undefined);
-  const persistedJoin = Object.values(loaded.nodes['inner-merge']?.joins ?? {})[0];
-  assert.ok(persistedJoin !== undefined);
-  assert.equal(persistedJoin.lineage?.[0]?.branchId, 'left');
+  const persistedGather = Object.values(loaded.nodes['inner-gather']?.gathers ?? {})[0];
+  assert.ok(persistedGather !== undefined);
+  assert.equal(persistedGather.lineage?.[0]?.branchId, 'left');
 
   const restoredRecorder = recorder();
   const { runtime: restored } = PheromoneRuntime.restore(definition, loaded, {
@@ -378,10 +378,10 @@ test('a restored completed nested tombstone still drops a late optional', async 
   await restored.pump();
 
   assert.equal(restoredRecorder.calls.filter((call) => call.nodeId === 'done').length, 1);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.optional-dropped'));
-  const afterJoin = joinAt(restored.snapshot(), 'inner-merge');
-  assert.ok(afterJoin.completedAt !== undefined);
-  assert.equal(afterJoin.lineage?.[0]?.branchId, 'left');
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.optional-dropped'));
+  const afterGather = joinAt(restored.snapshot(), 'inner-gather');
+  assert.ok(afterGather.completedAt !== undefined);
+  assert.equal(afterGather.lineage?.[0]?.branchId, 'left');
   assert.equal(restored.snapshot().rest, true);
 });
 
@@ -397,7 +397,7 @@ test('a restored timed-out nested tombstone blocks a late inner branch', async (
 
   runtime.admit('start', text('seed'));
   await runtime.pump();
-  const deadline = joinAt(runtime.snapshot(), 'inner-merge').deadlineAt;
+  const deadline = joinAt(runtime.snapshot(), 'inner-gather').deadlineAt;
   assert.ok(deadline !== undefined);
   clock = deadline;
   await runtime.pump();
@@ -407,27 +407,27 @@ test('a restored timed-out nested tombstone blocks a late inner branch', async (
   const loaded = store.load();
   assert.ok(loaded !== undefined);
 
-  const joins = loaded.nodes['inner-merge']?.joins ?? {};
-  const innerForkId = Object.keys(joins)[0];
-  assert.ok(innerForkId !== undefined);
-  const persistedJoin = joins[innerForkId];
-  assert.ok(persistedJoin !== undefined);
-  assert.ok(persistedJoin.timedOutAt !== undefined);
-  const outerTag = persistedJoin.lineage?.[0];
+  const gathers = loaded.nodes['inner-gather']?.gathers ?? {};
+  const innerSpreadId = Object.keys(gathers)[0];
+  assert.ok(innerSpreadId !== undefined);
+  const persistedGather = gathers[innerSpreadId];
+  assert.ok(persistedGather !== undefined);
+  assert.ok(persistedGather.timedOutAt !== undefined);
+  const outerTag = persistedGather.lineage?.[0];
   assert.ok(outerTag !== undefined);
 
   const late: Pheromone = {
     id: 'ph_late_optional',
-    forkId: innerForkId,
+    spreadId: innerSpreadId,
     branchId: 'i-opt',
     lineage: [
-      { forkId: outerTag.forkId, branchId: outerTag.branchId },
-      { forkId: innerForkId, branchId: 'i-opt' },
+      { spreadId: outerTag.spreadId, branchId: outerTag.branchId },
+      { spreadId: innerSpreadId, branchId: 'i-opt' },
     ],
     value: text('late'),
     at: new Date(clock).toISOString(),
   };
-  const innerNode = loaded.nodes['inner-merge'];
+  const innerNode = loaded.nodes['inner-gather'];
   assert.ok(innerNode !== undefined);
   appendQueued(innerNode, late);
 
@@ -440,10 +440,10 @@ test('a restored timed-out nested tombstone blocks a late inner branch', async (
   await restored.pump();
 
   assert.equal(restoredRecorder.calls.filter((call) => call.nodeId === 'done').length, 0);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.optional-dropped'));
-  const afterJoin = joinAt(restored.snapshot(), 'inner-merge');
-  assert.ok(afterJoin.timedOutAt !== undefined);
-  assert.equal(afterJoin.lineage?.[0]?.branchId, 'left');
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.optional-dropped'));
+  const afterGather = joinAt(restored.snapshot(), 'inner-gather');
+  assert.ok(afterGather.timedOutAt !== undefined);
+  assert.equal(afterGather.lineage?.[0]?.branchId, 'left');
   assert.equal(restored.snapshot().nodes['ask-outer']?.hover !== undefined, true);
 });
 
@@ -457,11 +457,11 @@ test('honey validates Pheromone lineage and join lineage', () => {
 
   const badPheromone: Pheromone = {
     id: 'ph_bad',
-    forkId: 'fk_outer',
+    spreadId: 'fk_outer',
     branchId: 'i-a',
     lineage: [
-      { forkId: 'fk_outer', branchId: 'left' },
-      { forkId: 'fk_other', branchId: 'i-a' },
+      { spreadId: 'fk_outer', branchId: 'left' },
+      { spreadId: 'fk_other', branchId: 'i-a' },
     ],
     value: text('x'),
     at: new Date(START).toISOString(),
@@ -472,30 +472,30 @@ test('honey validates Pheromone lineage and join lineage', () => {
 
   const validArrival: Pheromone = {
     id: 'ph_arrival',
-    forkId: 'fk_inner',
+    spreadId: 'fk_inner',
     branchId: 'i-a',
     lineage: [
-      { forkId: 'fk_outer', branchId: 'left' },
-      { forkId: 'fk_inner', branchId: 'i-a' },
+      { spreadId: 'fk_outer', branchId: 'left' },
+      { spreadId: 'fk_inner', branchId: 'i-a' },
     ],
     value: text('x'),
     at: new Date(START).toISOString(),
   };
-  const mismatchedJoin: PersistedField = new PheromoneRuntime(definition, {
+  const mismatchedGather: PersistedField = new PheromoneRuntime(definition, {
     executeForager: recorder().executor,
     now: () => START,
   }).exportField();
-  mismatchedJoin.nodes['inner-merge'] = {
+  mismatchedGather.nodes['inner-gather'] = {
     receptor: [],
-    joins: {
+    gathers: {
       fk_inner: {
         arrived: [validArrival],
-        lineage: [{ forkId: 'fk_wrong', branchId: 'left' }],
+        lineage: [{ spreadId: 'fk_wrong', branchId: 'left' }],
         deadlineAt: START + 1000,
       },
     },
   };
-  store.save(mismatchedJoin);
+  store.save(mismatchedGather);
   assert.throws(() => store.load(), /lineage: does not match its branch Pheromones/);
 });
 

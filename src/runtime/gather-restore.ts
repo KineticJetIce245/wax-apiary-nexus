@@ -7,13 +7,13 @@ import {
 } from './runtime-values.js';
 import type {
   BranchTag,
-  JoinState,
-  MergeNode,
-  PersistedJoinState,
+  GatherState,
+  GatherNode,
+  PersistedGatherState,
   Pheromone,
 } from './types.js';
 
-function restoreJoinLineage(input: unknown, path: string): BranchTag[] | undefined {
+function restoreGatherLineage(input: unknown, path: string): BranchTag[] | undefined {
   if (input === undefined) {
     return undefined;
   }
@@ -24,11 +24,11 @@ function restoreJoinLineage(input: unknown, path: string): BranchTag[] | undefin
     if (typeof entry !== 'object' || entry === null) {
       throw new FieldRestoreError(`${path} lineage[${String(index)}]: expected a branch tag`);
     }
-    const forkId = (entry as { forkId?: unknown }).forkId;
+    const spreadId = (entry as { spreadId?: unknown }).spreadId;
     const branchId = (entry as { branchId?: unknown }).branchId;
-    if (typeof forkId !== 'string' || forkId === '') {
+    if (typeof spreadId !== 'string' || spreadId === '') {
       throw new FieldRestoreError(
-        `${path} lineage[${String(index)}].forkId: expected a non-empty string`,
+        `${path} lineage[${String(index)}].spreadId: expected a non-empty string`,
       );
     }
     if (typeof branchId !== 'string' || branchId === '') {
@@ -36,56 +36,56 @@ function restoreJoinLineage(input: unknown, path: string): BranchTag[] | undefin
         `${path} lineage[${String(index)}].branchId: expected a non-empty string`,
       );
     }
-    return { forkId, branchId };
+    return { spreadId, branchId };
   });
 }
 
-/** Rebuilds persisted Merge joins and validates their lineage/tombstone shape. */
-export function restoreJoins(
-  node: MergeNode,
-  saved: Record<string, PersistedJoinState>,
-): Map<string, JoinState> {
-  const joins = new Map<string, JoinState>();
-  for (const [forkId, entry] of Object.entries(saved)) {
-    const joinPath = `persisted join '${forkId}' on node '${node.id}'`;
-    if (forkId === '') {
-      throw new FieldRestoreError(`persisted join on node '${node.id}' has an empty forkId`);
+/** Rebuilds persisted Gather gathers and validates their lineage/tombstone shape. */
+export function restoreGathers(
+  node: GatherNode,
+  saved: Record<string, PersistedGatherState>,
+): Map<string, GatherState> {
+  const gathers = new Map<string, GatherState>();
+  for (const [spreadId, entry] of Object.entries(saved)) {
+    const gatherPath = `persisted join '${spreadId}' on node '${node.id}'`;
+    if (spreadId === '') {
+      throw new FieldRestoreError(`persisted join on node '${node.id}' has an empty spreadId`);
     }
     if (!Array.isArray(entry.arrived)) {
-      throw new FieldRestoreError(`${joinPath} has no branch Pheromones`);
+      throw new FieldRestoreError(`${gatherPath} has no branch Pheromones`);
     }
     if (entry.completedAt !== undefined && entry.timedOutAt !== undefined) {
-      throw new FieldRestoreError(`${joinPath} is both completed and timed out`);
+      throw new FieldRestoreError(`${gatherPath} is both completed and timed out`);
     }
-    const parentLineage = restoreJoinLineage(entry.lineage, joinPath);
-    const closed = restoreClosedJoin(node, forkId, entry, parentLineage);
-    joins.set(forkId, closed ?? restoreArrivedJoin(node, forkId, entry, parentLineage));
+    const parentLineage = restoreGatherLineage(entry.lineage, gatherPath);
+    const closed = restoreClosedGather(node, spreadId, entry, parentLineage);
+    gathers.set(spreadId, closed ?? restoreArrivedGather(node, spreadId, entry, parentLineage));
   }
-  return joins;
+  return gathers;
 }
 
 /** Validates a completed/timed-out tombstone; `undefined` when still open. */
-function restoreClosedJoin(
-  node: MergeNode,
-  forkId: string,
-  entry: PersistedJoinState,
+function restoreClosedGather(
+  node: GatherNode,
+  spreadId: string,
+  entry: PersistedGatherState,
   parentLineage: BranchTag[] | undefined,
-): JoinState | undefined {
+): GatherState | undefined {
   const closedAt = entry.completedAt ?? entry.timedOutAt;
   if (closedAt === undefined) {
     return undefined;
   }
-  const joinPath = `persisted join '${forkId}' on node '${node.id}'`;
+  const gatherPath = `persisted join '${spreadId}' on node '${node.id}'`;
   if (typeof closedAt !== 'string' || !Number.isFinite(Date.parse(closedAt))) {
-    throw new FieldRestoreError(`${joinPath} has an invalid closed timestamp`);
+    throw new FieldRestoreError(`${gatherPath} has an invalid closed timestamp`);
   }
   if (entry.arrived.length > 0) {
     throw new FieldRestoreError(
-      `persisted closed join '${forkId}' on node '${node.id}' still holds branch Pheromones`,
+      `persisted closed join '${spreadId}' on node '${node.id}' still holds branch Pheromones`,
     );
   }
   return {
-    forkId,
+    spreadId,
     ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
     arrived: new Map<string, Pheromone>(),
     ...(entry.completedAt === undefined
@@ -95,30 +95,30 @@ function restoreClosedJoin(
 }
 
 /** Validates an open join's deadline and restores its arrived branches. */
-function restoreArrivedJoin(
-  node: MergeNode,
-  forkId: string,
-  entry: PersistedJoinState,
+function restoreArrivedGather(
+  node: GatherNode,
+  spreadId: string,
+  entry: PersistedGatherState,
   parentLineage: BranchTag[] | undefined,
-): JoinState {
-  const joinPath = `persisted join '${forkId}' on node '${node.id}'`;
+): GatherState {
+  const gatherPath = `persisted join '${spreadId}' on node '${node.id}'`;
   if (entry.arrived.length === 0) {
-    throw new FieldRestoreError(`${joinPath} has no branch Pheromones`);
+    throw new FieldRestoreError(`${gatherPath} has no branch Pheromones`);
   }
   if (entry.deadlineAt === undefined || !Number.isSafeInteger(entry.deadlineAt)) {
-    throw new FieldRestoreError(`${joinPath} has no valid deadlineAt`);
+    throw new FieldRestoreError(`${gatherPath} has no valid deadlineAt`);
   }
   const { arrived, effectiveParent } = restoreArrivedBranches(
     node,
-    forkId,
+    spreadId,
     entry.arrived,
     parentLineage,
   );
   if (parentLineage !== undefined && !sameLineage(parentLineage, effectiveParent)) {
-    throw new FieldRestoreError(`${joinPath} lineage does not match its branch Pheromones`);
+    throw new FieldRestoreError(`${gatherPath} lineage does not match its branch Pheromones`);
   }
   return {
-    forkId,
+    spreadId,
     ...(effectiveParent.length === 0 ? {} : { lineage: copyLineage(effectiveParent) }),
     arrived,
     deadlineAt: entry.deadlineAt,
@@ -127,8 +127,8 @@ function restoreArrivedJoin(
 
 /** Restores arrived branch Pheromones and the shared parent lineage. */
 function restoreArrivedBranches(
-  node: MergeNode,
-  forkId: string,
+  node: GatherNode,
+  spreadId: string,
   saved: readonly Pheromone[],
   parentLineage: BranchTag[] | undefined,
 ): { arrived: Map<string, Pheromone>; effectiveParent: BranchTag[] } {
@@ -136,13 +136,13 @@ function restoreArrivedBranches(
   let derivedParent: BranchTag[] | undefined;
   for (const pheromone of saved) {
     const normalized = normalizePheromone(pheromone);
-    const branchId = requireRestoredBranch(node, forkId, normalized, arrived);
+    const branchId = requireRestoredBranch(node, spreadId, normalized, arrived);
     const parent = copyLineage(currentLineage(normalized).slice(0, -1));
     if (derivedParent === undefined) {
       derivedParent = parent;
     } else if (!sameLineage(derivedParent, parent)) {
       throw new FieldRestoreError(
-        `persisted join '${forkId}' on node '${node.id}' mixes parent lineages`,
+        `persisted join '${spreadId}' on node '${node.id}' mixes parent lineages`,
       );
     }
     arrived.set(branchId, normalized);
@@ -150,7 +150,7 @@ function restoreArrivedBranches(
   const effectiveParent = derivedParent ?? [];
   if (parentLineage !== undefined && !sameLineage(parentLineage, effectiveParent)) {
     throw new FieldRestoreError(
-      `persisted join '${forkId}' on node '${node.id}' lineage mismatch`,
+      `persisted join '${spreadId}' on node '${node.id}' lineage mismatch`,
     );
   }
   return { arrived, effectiveParent };
@@ -158,20 +158,20 @@ function restoreArrivedBranches(
 
 /** Validates one persisted branch tag and returns it when it is not repeated. */
 function requireRestoredBranch(
-  node: MergeNode,
-  forkId: string,
+  node: GatherNode,
+  spreadId: string,
   pheromone: Pheromone,
   arrived: Map<string, Pheromone>,
 ): string {
-  if (pheromone.forkId !== forkId) {
+  if (pheromone.spreadId !== spreadId) {
     throw new FieldRestoreError(
-      `persisted join '${forkId}' on node '${node.id}' holds a Pheromone for '${String(pheromone.forkId)}'`,
+      `persisted join '${spreadId}' on node '${node.id}' holds a Pheromone for '${String(pheromone.spreadId)}'`,
     );
   }
   const branchId = pheromone.branchId;
   if (branchId === undefined) {
     throw new FieldRestoreError(
-      `persisted join '${forkId}' on node '${node.id}' holds an untagged Pheromone`,
+      `persisted join '${spreadId}' on node '${node.id}' holds an untagged Pheromone`,
     );
   }
   if (
@@ -179,12 +179,12 @@ function requireRestoredBranch(
     !node.config.optional.includes(branchId)
   ) {
     throw new FieldRestoreError(
-      `persisted join '${forkId}' on node '${node.id}' holds unknown branch '${branchId}'`,
+      `persisted join '${spreadId}' on node '${node.id}' holds unknown branch '${branchId}'`,
     );
   }
   if (arrived.has(branchId)) {
     throw new FieldRestoreError(
-      `persisted join '${forkId}' on node '${node.id}' repeats branch '${branchId}'`,
+      `persisted join '${spreadId}' on node '${node.id}' repeats branch '${branchId}'`,
     );
   }
   return branchId;

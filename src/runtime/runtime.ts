@@ -10,10 +10,10 @@ import {
 import {
   clonePheromone,
   createNodeState,
-  dropForkFromReceptor,
+  dropSpreadFromReceptor,
   isFieldResting,
-  isJoinClosed,
-  joinsToPersisted,
+  isGatherClosed,
+  gathersToPersisted,
   receptorOf,
   restReceptorIfIdle,
   setReceptor,
@@ -26,7 +26,7 @@ import {
   readReceptorOverflowOptions,
   type ReceptorOverflowPolicy,
 } from './receptor-overflow.js';
-import { restoreJoins } from './join-restore.js';
+import { restoreGathers } from './gather-restore.js';
 import { assertUserValue, assertValue } from './runtime-input.js';
 import { expireOverdueQueues } from './runtime-expiry.js';
 import {
@@ -35,11 +35,11 @@ import {
   logCompleted,
   logFailed,
   logHoverBlocked,
-  logMergeBlocked,
+  logGatherBlocked,
 } from './runtime-log.js';
 import type { RuntimeLogEntry, RuntimeLogSink } from './log.js';
 import {
-  combineMergeValues,
+  combineGatherValues,
   copyLineage,
   currentLineage,
   currentTag,
@@ -62,12 +62,12 @@ import type {
   ConditionConfig,
   EdgeDefinition,
   EdgeWhen,
-  ForkNode,
+  SpreadNode,
   HoverSpec,
-  JoinState,
+  GatherState,
   JsonValue,
-  MergeCombine,
-  MergeNode,
+  CombineMode,
+  GatherNode,
   NodeDefinition,
   NodeId,
   NodeState,
@@ -110,13 +110,13 @@ const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
 
 /**
  * How long a closed join is remembered so a late branch can still be dropped.
- * A marker older than this is forgotten when the merge next runs. Stage 5B
+ * A marker older than this is forgotten when the gather next runs. Stage 5B
  * reuses the bound for both completed and timed-out tombstones.
  */
-export const COMPLETED_JOIN_TTL_MS = 3_600_000;
+export const COMPLETED_GATHER_TTL_MS = 3_600_000;
 
-/** Hard cap on closed join markers per merge node; oldest are evicted. */
-export const MAX_COMPLETED_JOINS_PER_MERGE = 64;
+/** Hard cap on closed join markers per gather node; oldest are evicted. */
+export const MAX_COMPLETED_GATHERS = 64;
 
 /**
  * How long the CLI waits before pumping again when queue backpressure is the
@@ -188,7 +188,7 @@ function createPheromone(
     at,
     ...(current === undefined
       ? {}
-      : { forkId: current.forkId, branchId: current.branchId }),
+      : { spreadId: current.spreadId, branchId: current.branchId }),
     ...(lineage === undefined || lineage.length === 0
       ? {}
       : { lineage: copyLineage(lineage) }),
@@ -210,8 +210,8 @@ function guardDecisionPromise(handler: GuardDecisionHandler | undefined, request
  * PheromoneField runtime.
  *
  * A normal node consumes one Pheromone and emits at most one; a node without
- * an outgoing edge is terminal. A Fork consumes one and emits one tagged copy
- * per branch. A Merge groups branch Pheromones by forkId, consumes the required
+ * an outgoing edge is terminal. A Spread consumes one and emits one tagged copy
+ * per branch. A Gather groups branch Pheromones by spreadId, consumes the required
  * set atomically and emits one combined Pheromone. No cursor, no Run.
  */
 export class PheromoneRuntime {
@@ -362,7 +362,7 @@ export class PheromoneRuntime {
       nodeId: node.id,
       nodeKind: node.kind,
       pheromoneId: pheromone.id,
-      ...(pheromone.forkId === undefined ? {} : { forkId: pheromone.forkId }),
+      ...(pheromone.spreadId === undefined ? {} : { spreadId: pheromone.spreadId }),
       ...(pheromone.branchId === undefined ? {} : { branchId: pheromone.branchId }),
       queueDepth: receptor.length,
     });
@@ -396,7 +396,7 @@ export class PheromoneRuntime {
           }
           continue;
         }
-        // With no bee awake, settle restored joins and deadlines, then look
+        // With no bee awake, settle restored gathers and deadlines, then look
         // for the work that settlement may have produced.
         const progressed = this.stateLock.runSync(() => this.settleQuietState());
         if (progressed) {
@@ -496,30 +496,30 @@ export class PheromoneRuntime {
   }
 
   /**
-   * Settles restored/blocked joins and deadlines once no activation is running.
+   * Settles restored/blocked gathers and deadlines once no activation is running.
    * Returns true when it produced work the pump must drain before it can rest.
    */
   private settleQuietState(): boolean {
-    const settled = this.settleCompleteJoins();
+    const settled = this.settleCompleteGathers();
     if (settled === 'settled') {
       return true;
     }
     if (settled === 'blocked') {
       this.blockedByQueue = true;
     }
-    // A merge deadline that passed while the field was quiet fails its fork.
-    if (this.expireDueJoins()) {
+    // A gather deadline that passed while the field was quiet fails its spread.
+    if (this.expireDueGathers()) {
       return true;
     }
     // Quiet and still waiting for a branch that is nowhere in the field:
-    // that branch can never arrive, so the merge fails instead of leaving the
+    // that branch can never arrive, so the gather fails instead of leaving the
     // field permanently non-Rest.
-    this.failMissingJoins();
+    this.failMissingGathers();
     return false;
   }
 
   /**
-   * The earliest deadline of an incomplete Merge join, or undefined when none
+   * The earliest deadline of an incomplete Gather join, or undefined when none
    * is waiting. A caller that has no hover to service can sleep until this
    * instant and pump again; it is the runtime's only timed wake signal.
    *
@@ -530,15 +530,15 @@ export class PheromoneRuntime {
   nextWakeAt(): number | undefined {
     let next: number | undefined;
     for (const node of this.definition.nodes.values()) {
-      if (node.kind !== 'merge') {
+      if (node.kind !== 'gather') {
         continue;
       }
-      const joins = this.stateOf(node.id).joins;
-      if (joins === undefined) {
+      const gathers = this.stateOf(node.id).gathers;
+      if (gathers === undefined) {
         continue;
       }
-      for (const join of joins.values()) {
-        if (isJoinClosed(join) || join.deadlineAt === undefined) {
+      for (const join of gathers.values()) {
+        if (isGatherClosed(join) || join.deadlineAt === undefined) {
           continue;
         }
         // A complete join is only waiting for downstream queue space; its old
@@ -618,9 +618,9 @@ export class PheromoneRuntime {
           ? {}
           : { lastActivatedAt: state.lastActivatedAt }),
         ...(state.state === undefined ? {} : { state: structuredClone(state.state) }),
-        ...(state.joins === undefined || state.joins.size === 0
+        ...(state.gathers === undefined || state.gathers.size === 0
           ? {}
-          : { joins: joinsToPersisted(state.joins) }),
+          : { gathers: gathersToPersisted(state.gathers) }),
       };
     }
     return {
@@ -674,24 +674,24 @@ export class PheromoneRuntime {
     const unknownActive: NodeId[] = [];
     const stuckActive: NodeId[] = [];
     /**
-     * A branch whose process is gone can never reach its Merge. A required
-     * branch fails its fork; an optional-only branch is logged and dropped.
+     * A branch whose process is gone can never reach its Gather. A required
+     * branch fails its spread; an optional-only branch is logged and dropped.
      */
-    const failedBranches: { forkId: string; branchId?: string }[] = [];
+    const failedBranches: { spreadId: string; branchId?: string }[] = [];
     const seenFailedBranches = new Set<string>();
     const markFailedBranch = (pheromone: Pheromone): void => {
-      if (pheromone.forkId === undefined) {
+      if (pheromone.spreadId === undefined) {
         return;
       }
-      const key = `${pheromone.forkId}\u0000${pheromone.branchId ?? ''}`;
+      const key = `${pheromone.spreadId}\u0000${pheromone.branchId ?? ''}`;
       if (seenFailedBranches.has(key)) {
         return;
       }
       seenFailedBranches.add(key);
       failedBranches.push(
         pheromone.branchId === undefined
-          ? { forkId: pheromone.forkId }
-          : { forkId: pheromone.forkId, branchId: pheromone.branchId },
+          ? { spreadId: pheromone.spreadId }
+          : { spreadId: pheromone.spreadId, branchId: pheromone.branchId },
       );
     };
 
@@ -715,18 +715,18 @@ export class PheromoneRuntime {
       if (saved.state !== undefined) {
         state.state = structuredClone(saved.state);
       }
-      if (saved.joins !== undefined) {
-        if (node.kind !== 'merge') {
+      if (saved.gathers !== undefined) {
+        if (node.kind !== 'gather') {
           throw new FieldRestoreError(
-            `persisted field has merge joins on non-merge node '${id}'`,
+            `persisted field has gather gathers on non-gather node '${id}'`,
           );
         }
-        const joins = restoreJoins(node, saved.joins);
-        if (joins.size > 0) {
-          state.joins = joins;
+        const gathers = restoreGathers(node, saved.gathers);
+        if (gathers.size > 0) {
+          state.gathers = gathers;
           // Age out stale closed markers that outlived their retention while
           // the process was down.
-          this.pruneJoinTombstones(node);
+          this.pruneGatherTombstones(node);
         }
       }
 
@@ -762,12 +762,12 @@ export class PheromoneRuntime {
     }
 
     for (const failed of failedBranches) {
-      this.handleBranchFailure(failed.forkId, failed.branchId, 'unknown-active');
+      this.handleBranchFailure(failed.spreadId, failed.branchId, 'unknown-active');
     }
 
     // A deadline that passed while the process was down fails immediately on
     // restore: the join must never resume waiting past its absolute deadline.
-    this.expireDueJoins();
+    this.expireDueGathers();
 
     // Queues are restored exactly as persisted, then aged out here: an entry
     // that outlived `queueTtlMs` while the process was down is dropped (and
@@ -822,14 +822,14 @@ export class PheromoneRuntime {
     node: NodeDefinition,
     pheromone: Pheromone,
   ): readonly { readonly targetId: NodeId; readonly count: number }[] {
-    if (node.kind === 'fork') {
+    if (node.kind === 'spread') {
       return node.config.branches.map((branch) => ({ targetId: branch.to, count: 1 }));
     }
 
     if (
       node.kind === 'forager' ||
       node.kind === 'worker' ||
-      node.kind === 'merge'
+      node.kind === 'gather'
     ) {
       const edge = this.definition.edges.find((candidate) => candidate.from === node.id);
       return edge === undefined ? [] : [{ targetId: edge.to, count: 1 }];
@@ -963,8 +963,8 @@ export class PheromoneRuntime {
     }
   }
 
-  /** Reserves the single static output of a Merge, if it has one. */
-  private reserveMergeOutput(node: MergeNode): ReserveOutcome {
+  /** Reserves the single static output of a Gather, if it has one. */
+  private reserveGatherOutput(node: GatherNode): ReserveOutcome {
     const edge = this.definition.edges.find((candidate) => candidate.from === node.id);
     if (edge === undefined) {
       return { ok: true, reservation: { slots: new Map() } };
@@ -1081,7 +1081,7 @@ export class PheromoneRuntime {
         return;
       }
       try {
-        if (node.kind === 'fork' || node.kind === 'merge') {
+        if (node.kind === 'spread' || node.kind === 'gather') {
           this.stateLock.runSync(() =>
             this.finishSyncActivation(node, pheromone, reservation, state, startedAt),
           );
@@ -1133,7 +1133,7 @@ export class PheromoneRuntime {
     return startedAt;
   }
 
-  /** Fork/merge commit their whole output in one short synchronous batch. */
+  /** Spread/gather commit their whole output in one short synchronous batch. */
   private finishSyncActivation(
     node: NodeDefinition,
     pheromone: Pheromone,
@@ -1141,11 +1141,11 @@ export class PheromoneRuntime {
     state: NodeState,
     startedAt: number,
   ): void {
-    if (node.kind === 'fork') {
-      this.emitFork(node, pheromone, reservation);
-      logCompleted(this.log.bind(this), node, pheromone, this.now() - startedAt, 'forked');
-    } else if (node.kind === 'merge') {
-      const outcome = this.arriveAtMerge(node, pheromone, reservation);
+    if (node.kind === 'spread') {
+      this.emitSpread(node, pheromone, reservation);
+      logCompleted(this.log.bind(this), node, pheromone, this.now() - startedAt, 'spread');
+    } else if (node.kind === 'gather') {
+      const outcome = this.arriveAtGather(node, pheromone, reservation);
       logCompleted(this.log.bind(this), node, pheromone, this.now() - startedAt, outcome);
     } else {
       throw new Error(`node '${node.id}' is not a synchronous activation`);
@@ -1186,12 +1186,12 @@ export class PheromoneRuntime {
   ): 'optional' | 'required' {
     delete state.active;
     logFailed(this.log.bind(this), node, pheromone, startedAt, this.now(), error);
-    // A required branch that failed can never reach its Merge; cancel its
+    // A required branch that failed can never reach its Gather; cancel its
     // siblings so no join waits forever. An optional-only branch is logged and
     // dropped without failing the required set.
     const optionalOnly =
-      pheromone.forkId !== undefined &&
-      this.handleBranchFailure(pheromone.forkId, pheromone.branchId, 'failed-branch') ===
+      pheromone.spreadId !== undefined &&
+      this.handleBranchFailure(pheromone.spreadId, pheromone.branchId, 'failed-branch') ===
         'optional';
     return optionalOnly ? 'optional' : 'required';
   }
@@ -1439,7 +1439,7 @@ export class PheromoneRuntime {
     }
 
     // A branch keeps its full lineage through normal nodes so a downstream
-    // Merge can still group it and restore the enclosing tags on output.
+    // Gather can still group it and restore the enclosing tags on output.
     const lineage = currentLineage(pheromone);
     this.pushPheromone(
       edge.to, result.value, lineage.length === 0 ? undefined : lineage, reservation, pheromone,
@@ -1448,21 +1448,21 @@ export class PheromoneRuntime {
   }
 
   /**
-   * Fork consumes one Pheromone and emits one tagged copy per branch.
+   * Spread consumes one Pheromone and emits one tagged copy per branch.
    *
    * Every target was reserved and counted before activation (one slot per
    * branch, so a repeated target needs one slot per occurrence). If the plan
-   * could not reserve every branch the fork never ran at all, so no partially
-   * filled branch set is ever left behind and the fork input is preserved.
+   * could not reserve every branch the spread never ran at all, so no partially
+   * filled branch set is ever left behind and the spread input is preserved.
    */
-  private emitFork(
-    node: ForkNode,
+  private emitSpread(
+    node: SpreadNode,
     pheromone: Pheromone,
     reservation: OutputReservation,
   ): void {
-    const forkId = `fk_${randomUUID()}`;
-    // Stage 5D: a nested Fork appends its tag to the incoming lineage instead
-    // of overwriting the enclosing fork/branch tags.
+    const spreadId = `fk_${randomUUID()}`;
+    // Stage 5D: a nested Spread appends its tag to the incoming lineage instead
+    // of overwriting the enclosing spread/branch tags.
     const parentLineage = currentLineage(pheromone);
 
     for (const branch of node.config.branches) {
@@ -1476,7 +1476,7 @@ export class PheromoneRuntime {
       this.pushPheromone(
         branch.to,
         pheromone.value,
-        [...parentLineage, { forkId, branchId: branch.id }],
+        [...parentLineage, { spreadId, branchId: branch.id }],
         reservation,
       );
     }
@@ -1493,7 +1493,7 @@ export class PheromoneRuntime {
     if (targetNode === undefined) {
       throw new Error(`unknown edge target '${targetId}'`);
     }
-    // A normal beeline moves the consumed Pheromone; fork and merge copy.
+    // A normal beeline moves the consumed Pheromone; spread and gather copy.
     const emitted = reuse ?? createPheromone(value, this.iso(), lineage);
     if (reservation !== undefined) {
       // Reserved before the source was consumed, so the slot must be free.
@@ -1505,9 +1505,9 @@ export class PheromoneRuntime {
         targetNode,
         this.receptorDepth(targetState),
         emitted.id,
-        emitted.forkId === undefined || emitted.branchId === undefined
+        emitted.spreadId === undefined || emitted.branchId === undefined
           ? {}
-          : { forkId: emitted.forkId, branchId: emitted.branchId },
+          : { spreadId: emitted.spreadId, branchId: emitted.branchId },
       );
     }
     if (reuse !== undefined) movePheromone(reuse, value, lineage);
@@ -1523,7 +1523,7 @@ export class PheromoneRuntime {
     target: NodeDefinition,
     queueDepth: number,
     pheromoneId: string,
-    extra: { readonly forkId?: string; readonly branchId?: string } = {},
+    extra: { readonly spreadId?: string; readonly branchId?: string } = {},
   ): never {
     const queueMax = this.definition.defaults.queueMax;
     this.log({
@@ -1531,7 +1531,7 @@ export class PheromoneRuntime {
       nodeId: target.id,
       nodeKind: target.kind,
       pheromoneId,
-      ...(extra.forkId === undefined ? {} : { forkId: extra.forkId }),
+      ...(extra.spreadId === undefined ? {} : { spreadId: extra.spreadId }),
       ...(extra.branchId === undefined ? {} : { branchId: extra.branchId }),
       queueDepth,
       limit: queueMax,
@@ -1543,22 +1543,22 @@ export class PheromoneRuntime {
     });
   }
 
-  private arriveAtMerge(
-    node: MergeNode,
+  private arriveAtGather(
+    node: GatherNode,
     pheromone: Pheromone,
     reservation: OutputReservation,
   ): string {
-    // Stage 5D: the current fork is the last lineage tag. The parent lineage is
-    // shared by every branch of that fork and becomes the Merge output lineage.
+    // Stage 5D: the current spread is the last lineage tag. The parent lineage is
+    // shared by every branch of that spread and becomes the Gather output lineage.
     const lineage = currentLineage(pheromone);
     const current = currentTag(lineage);
-    const forkId = current?.forkId;
+    const spreadId = current?.spreadId;
     const branchId = current?.branchId;
-    if (forkId === undefined || branchId === undefined) {
+    if (spreadId === undefined || branchId === undefined) {
       this.log({
-        event: 'merge.failed',
+        event: 'gather.failed',
         nodeId: node.id,
-        nodeKind: 'merge',
+        nodeKind: 'gather',
         pheromoneId: pheromone.id,
         outcome: 'invalid-pheromone',
       });
@@ -1569,42 +1569,42 @@ export class PheromoneRuntime {
     const isRequired = node.config.required.includes(branchId);
     const isOptional = node.config.optional.includes(branchId);
     if (!isRequired && !isOptional) {
-      this.failFork(forkId, 'unknown-branch', node);
+      this.failSpread(spreadId, 'unknown-branch', node);
       return 'failed';
     }
 
     const state = this.stateOf(node.id);
     // Closed markers are read below; expire the old ones first.
-    this.pruneJoinTombstones(node);
+    this.pruneGatherTombstones(node);
 
-    let joins = state.joins;
-    if (joins === undefined) {
-      joins = new Map<string, JoinState>();
-      state.joins = joins;
+    let gathers = state.gathers;
+    if (gathers === undefined) {
+      gathers = new Map<string, GatherState>();
+      state.gathers = gathers;
     }
 
-    const existing = joins.get(forkId);
+    const existing = gathers.get(spreadId);
     if (
       existing !== undefined &&
-      !isJoinClosed(existing) &&
+      !isGatherClosed(existing) &&
       !this.requiredComplete(node, existing) &&
-      this.isJoinDue(existing)
+      this.isGatherDue(existing)
     ) {
       // The deadline had already passed before this branch could complete the
       // required set. The join times out instead of emitting; the arrival is
       // then dropped by the closed-tombstone check below.
-      this.timeOutJoin(node, forkId);
+      this.timeOutGather(node, spreadId);
     }
-    if (existing !== undefined && isJoinClosed(existing)) {
+    if (existing !== undefined && isGatherClosed(existing)) {
       if (isOptional) {
         // Stage 5A/5B: an optional branch that arrives after completion or
         // timeout is dropped; the closed join is never reopened.
         this.log({
-          event: 'merge.optional-dropped',
+          event: 'gather.optional-dropped',
           nodeId: node.id,
-          nodeKind: 'merge',
+          nodeKind: 'gather',
           pheromoneId: pheromone.id,
-          forkId,
+          spreadId,
           branchId,
           outcome: 'late-optional',
         });
@@ -1614,11 +1614,11 @@ export class PheromoneRuntime {
       // emitted (or timed out), so this is logged and dropped without a
       // second emit.
       this.log({
-        event: 'merge.failed',
+        event: 'gather.failed',
         nodeId: node.id,
-        nodeKind: 'merge',
+        nodeKind: 'gather',
         pheromoneId: pheromone.id,
-        forkId,
+        spreadId,
         branchId,
         outcome: 'late-required',
       });
@@ -1627,24 +1627,24 @@ export class PheromoneRuntime {
 
     let join = existing;
     if (join === undefined) {
-      // Stage 5B: the deadline starts on the first arrival for this forkId and
+      // Stage 5B: the deadline starts on the first arrival for this spreadId and
       // is stored as an absolute instant so it survives a restart unchanged.
       join = {
-        forkId,
+        spreadId,
         ...(parentLineage.length === 0 ? {} : { lineage: copyLineage(parentLineage) }),
         arrived: new Map<string, Pheromone>(),
         deadlineAt: this.now() + node.config.timeoutMs,
       };
-      joins.set(forkId, join);
+      gathers.set(spreadId, join);
     } else if (!sameLineage(join.lineage ?? [], parentLineage)) {
-      // Every branch of one joined fork must come from the same enclosing
+      // Every branch of one joined spread must come from the same enclosing
       // lineage. A mismatch is corruption, not a new join: fail only this
-      // fork and leave the enclosing lineage untouched.
-      this.failFork(forkId, 'lineage-mismatch', node);
+      // spread and leave the enclosing lineage untouched.
+      this.failSpread(spreadId, 'lineage-mismatch', node);
       return 'failed';
     }
     if (join.arrived.has(branchId)) {
-      this.failFork(forkId, 'duplicate-branch', node);
+      this.failSpread(spreadId, 'duplicate-branch', node);
       return 'failed';
     }
     join.arrived.set(branchId, normalizePheromone(pheromone));
@@ -1652,11 +1652,11 @@ export class PheromoneRuntime {
     const missing = node.config.required.filter((required) => !join.arrived.has(required));
     if (missing.length > 0) {
       this.log({
-        event: 'merge.waiting',
+        event: 'gather.waiting',
         nodeId: node.id,
-        nodeKind: 'merge',
+        nodeKind: 'gather',
         pheromoneId: pheromone.id,
-        forkId,
+        spreadId,
         branchId,
         outcome: 'waiting',
       });
@@ -1667,7 +1667,7 @@ export class PheromoneRuntime {
     for (const required of node.config.required) {
       const arrived = join.arrived.get(required);
       if (arrived === undefined) {
-        throw new Error(`merge '${node.id}' lost required branch '${required}'`);
+        throw new Error(`gather '${node.id}' lost required branch '${required}'`);
       }
       ordered.push(arrived);
     }
@@ -1682,17 +1682,17 @@ export class PheromoneRuntime {
 
     // The join is complete, but its output has nowhere to go yet. Keep the
     // joined branches and the open join exactly as they are: clearing them or
-    // writing the completed tombstone here would lose the merged output. A
+    // writing the completed tombstone here would lose the gatherd output. A
     // later pump settles the join once the downstream queue has room.
-    const mergeEdge = this.definition.edges.find((edge) => edge.from === node.id);
-    if (mergeEdge !== undefined && (reservation.slots.get(mergeEdge.to) ?? 0) === 0) {
+    const gatherEdge = this.definition.edges.find((edge) => edge.from === node.id);
+    if (gatherEdge !== undefined && (reservation.slots.get(gatherEdge.to) ?? 0) === 0) {
       this.log({
-        event: 'merge.blocked',
+        event: 'gather.blocked',
         nodeId: node.id,
-        nodeKind: 'merge',
+        nodeKind: 'gather',
         pheromoneId: pheromone.id,
-        forkId,
-        queueDepth: this.queueDepthOf(mergeEdge.to),
+        spreadId,
+        queueDepth: this.queueDepthOf(gatherEdge.to),
         outcome: 'queue-max',
       });
       return 'blocked';
@@ -1703,32 +1703,32 @@ export class PheromoneRuntime {
     join.arrived.clear();
     delete join.deadlineAt;
     join.completedAt = this.iso();
-    this.pruneJoinTombstones(node);
+    this.pruneGatherTombstones(node);
 
-    this.finishMerge(node, ordered, parentLineage, reservation);
-    return 'merged';
+    this.finishGather(node, ordered, parentLineage, reservation);
+    return 'gatherd';
   }
 
   /**
    * A restored (or previously blocked) join can already be complete; finish it
    * once without replaying the branches that produced it. The downstream queue
-   * is checked before the join is cleared, so a full target defers the merge
+   * is checked before the join is cleared, so a full target defers the gather
    * rather than losing the joined output.
    */
-  private settleCompleteJoins(): 'settled' | 'blocked' | 'none' {
+  private settleCompleteGathers(): 'settled' | 'blocked' | 'none' {
     let blockedAny = false;
     for (const node of this.definition.nodes.values()) {
-      if (node.kind !== 'merge') {
+      if (node.kind !== 'gather') {
         continue;
       }
       const state = this.stateOf(node.id);
-      const joins = state.joins;
-      if (joins === undefined) {
+      const gathers = state.gathers;
+      if (gathers === undefined) {
         continue;
       }
-      for (const forkId of [...joins.keys()]) {
-        const join = joins.get(forkId);
-        if (join === undefined || isJoinClosed(join)) {
+      for (const spreadId of [...gathers.keys()]) {
+        const join = gathers.get(spreadId);
+        if (join === undefined || isGatherClosed(join)) {
           continue;
         }
         const ordered: Pheromone[] = [];
@@ -1751,10 +1751,10 @@ export class PheromoneRuntime {
           }
         }
 
-        const reserved = this.reserveMergeOutput(node);
+        const reserved = this.reserveGatherOutput(node);
         if (!reserved.ok) {
           blockedAny = true;
-          logMergeBlocked(this.log.bind(this), this.reportedBlocks, node, forkId,
+          logGatherBlocked(this.log.bind(this), this.reportedBlocks, node, spreadId,
             reserved.target, reserved.queueDepth);
           continue;
         }
@@ -1763,10 +1763,10 @@ export class PheromoneRuntime {
           join.arrived.clear();
           delete join.deadlineAt;
           join.completedAt = this.iso();
-          this.pruneJoinTombstones(node);
+          this.pruneGatherTombstones(node);
           const first = ordered[0];
           if (first !== undefined) {
-            this.finishMerge(
+            this.finishGather(
               node,
               ordered,
               join.lineage ?? [],
@@ -1783,96 +1783,96 @@ export class PheromoneRuntime {
   }
 
   /** True when every required branch of this join has already arrived. */
-  private requiredComplete(node: MergeNode, join: JoinState): boolean {
+  private requiredComplete(node: GatherNode, join: GatherState): boolean {
     return node.config.required.every((required) => join.arrived.has(required));
   }
 
   /** True when an incomplete join's absolute deadline has been reached. */
-  private isJoinDue(join: JoinState): boolean {
+  private isGatherDue(join: GatherState): boolean {
     return join.deadlineAt !== undefined && this.now() >= join.deadlineAt;
   }
 
   /**
-   * Closes one incomplete join as timed out and fails its fork.
+   * Closes one incomplete join as timed out and fails its spread.
    *
-   * The tombstone is written before `failFork` so the fork keeps a reason not
+   * The tombstone is written before `failSpread` so the spread keeps a reason not
    * to reopen: a late branch is dropped instead of arming a new deadline, and
    * a second emit is impossible. Queue/pending/hover siblings are cancelled;
    * an active sibling cannot be cancelled and is left to finish.
    */
-  private timeOutJoin(node: MergeNode, forkId: string): void {
-    const join = this.stateOf(node.id).joins?.get(forkId);
-    if (join === undefined || isJoinClosed(join)) {
+  private timeOutGather(node: GatherNode, spreadId: string): void {
+    const join = this.stateOf(node.id).gathers?.get(spreadId);
+    if (join === undefined || isGatherClosed(join)) {
       return;
     }
-    this.closeJoinAsTimedOut(node, join);
-    this.failFork(forkId, 'timed-out', node);
+    this.closeGatherAsTimedOut(node, join);
+    this.failSpread(spreadId, 'timed-out', node);
   }
 
   /** Writes the timed-out tombstone shape for one incomplete join. */
-  private closeJoinAsTimedOut(node: MergeNode, join: JoinState): void {
+  private closeGatherAsTimedOut(node: GatherNode, join: GatherState): void {
     join.arrived.clear();
     delete join.deadlineAt;
     join.timedOutAt = this.iso();
-    this.pruneJoinTombstones(node);
+    this.pruneGatherTombstones(node);
     this.log({
-      event: 'merge.timed-out',
+      event: 'gather.timed-out',
       nodeId: node.id,
-      nodeKind: 'merge',
-      forkId: join.forkId,
+      nodeKind: 'gather',
+      spreadId: join.spreadId,
       outcome: 'timed-out',
     });
   }
 
   /**
    * Fails every incomplete join whose deadline has been reached. A join whose
-   * required set is already complete is left for `settleCompleteJoins`: the
+   * required set is already complete is left for `settleCompleteGathers`: the
    * branches had arrived, so there is nothing left to time out.
    */
-  private expireDueJoins(): boolean {
-    const dueForks = new Set<string>();
+  private expireDueGathers(): boolean {
+    const dueSpreads = new Set<string>();
     for (const node of this.definition.nodes.values()) {
-      if (node.kind !== 'merge') {
+      if (node.kind !== 'gather') {
         continue;
       }
-      const joins = this.stateOf(node.id).joins;
-      if (joins === undefined) {
+      const gathers = this.stateOf(node.id).gathers;
+      if (gathers === undefined) {
         continue;
       }
-      for (const [forkId, join] of joins) {
-        if (isJoinClosed(join) || !this.isJoinDue(join)) {
+      for (const [spreadId, join] of gathers) {
+        if (isGatherClosed(join) || !this.isGatherDue(join)) {
           continue;
         }
         if (this.requiredComplete(node, join)) {
           continue;
         }
-        this.closeJoinAsTimedOut(node, join);
-        dueForks.add(forkId);
+        this.closeGatherAsTimedOut(node, join);
+        dueSpreads.add(spreadId);
       }
     }
 
-    // Fail each fork once, after every affected merge has its tombstone, so a
-    // second join on another merge node is not removed before it is recorded.
-    for (const forkId of dueForks) {
-      this.failFork(forkId, 'timed-out');
+    // Fail each spread once, after every affected gather has its tombstone, so a
+    // second join on another gather node is not removed before it is recorded.
+    for (const spreadId of dueSpreads) {
+      this.failSpread(spreadId, 'timed-out');
     }
-    return dueForks.size > 0;
+    return dueSpreads.size > 0;
   }
 
-  /** Fail joins whose remaining required branches are nowhere in the field. */
-  private failMissingJoins(): void {
-    const waiting: { node: MergeNode; forkId: string }[] = [];
+  /** Fail gathers whose remaining required branches are nowhere in the field. */
+  private failMissingGathers(): void {
+    const waiting: { node: GatherNode; spreadId: string }[] = [];
     for (const node of this.definition.nodes.values()) {
-      if (node.kind !== 'merge') {
+      if (node.kind !== 'gather') {
         continue;
       }
       const state = this.stateOf(node.id);
-      if (state.joins === undefined) {
+      if (state.gathers === undefined) {
         continue;
       }
-      for (const [forkId, join] of state.joins) {
+      for (const [spreadId, join] of state.gathers) {
         // Closed tombstones are not waiting on anything.
-        if (isJoinClosed(join)) {
+        if (isGatherClosed(join)) {
           continue;
         }
         // A join whose required set already arrived is complete, not missing:
@@ -1887,54 +1887,54 @@ export class PheromoneRuntime {
         if (join.deadlineAt !== undefined && this.now() < join.deadlineAt) {
           continue;
         }
-        waiting.push({ node, forkId });
+        waiting.push({ node, spreadId });
       }
     }
 
-    for (const { node, forkId } of waiting) {
+    for (const { node, spreadId } of waiting) {
       const state = this.stateOf(node.id);
-      if (state.joins?.has(forkId) !== true) {
+      if (state.gathers?.has(spreadId) !== true) {
         continue;
       }
-      if (this.hasInFlight(forkId)) {
+      if (this.hasInFlight(spreadId)) {
         continue;
       }
-      this.failFork(forkId, 'missing-branch', node);
+      this.failSpread(spreadId, 'missing-branch', node);
     }
   }
 
-  private hasInFlight(forkId: string): boolean {
+  private hasInFlight(spreadId: string): boolean {
     for (const state of this.states.values()) {
-      if (state.pending?.forkId === forkId) {
+      if (state.pending?.spreadId === spreadId) {
         return true;
       }
-      if (state.active?.forkId === forkId) {
+      if (state.active?.spreadId === spreadId) {
         return true;
       }
-      if (state.hoverPheromone?.forkId === forkId) {
+      if (state.hoverPheromone?.spreadId === spreadId) {
         return true;
       }
-      if ((state.receptor ?? []).some((pheromone) => pheromone.forkId === forkId)) {
+      if ((state.receptor ?? []).some((pheromone) => pheromone.spreadId === spreadId)) {
         return true;
       }
     }
     return false;
   }
 
-  private finishMerge(
-    node: MergeNode,
+  private finishGather(
+    node: GatherNode,
     arrived: readonly Pheromone[],
     parentLineage: readonly BranchTag[],
     reservation: OutputReservation,
   ): void {
-    const value = combineMergeValues(node.config.combine, arrived);
+    const value = combineGatherValues(node.config.combine, arrived);
     const first = arrived[0];
     this.log({
-      event: 'merge.completed',
+      event: 'gather.completed',
       nodeId: node.id,
-      nodeKind: 'merge',
+      nodeKind: 'gather',
       ...(first === undefined ? {} : { pheromoneId: first.id }),
-      outcome: 'merged',
+      outcome: 'gatherd',
     });
     this.stateOf(node.id).lastOutput = structuredClone(value);
 
@@ -1944,8 +1944,8 @@ export class PheromoneRuntime {
     if (edge === undefined) {
       return;
     }
-    // Stage 5D: a top-level Merge emits no tags; a nested Merge restores the
-    // parent lineage so the enclosing Merge can still group its branch.
+    // Stage 5D: a top-level Gather emits no tags; a nested Gather restores the
+    // parent lineage so the enclosing Gather can still group its branch.
     this.pushPheromone(
       edge.to,
       value,
@@ -1955,24 +1955,24 @@ export class PheromoneRuntime {
   }
 
   /**
-   * A branch failure makes its fork unable to complete. Cancel siblings in
+   * A branch failure makes its spread unable to complete. Cancel siblings in
    * queues, pending slots and hovers, drop every incomplete join for that
-   * forkId, and log the affected merges. Closed tombstones are kept so a late
+   * spreadId, and log the affected gathers. Closed tombstones are kept so a late
    * branch can never reopen a join that already finished or timed out. Running
    * side effects are never cancelled or replayed.
    */
-  private failFork(forkId: string, reason: string, source?: NodeDefinition): void {
+  private failSpread(spreadId: string, reason: string, source?: NodeDefinition): void {
     const affected = new Set<NodeId>();
     for (const [id, state] of this.states) {
       const node = this.definition.nodes.get(id);
       if (node === undefined) {
         continue;
       }
-      dropForkFromReceptor(state, forkId);
-      if (state.pending?.forkId === forkId) {
+      dropSpreadFromReceptor(state, spreadId);
+      if (state.pending?.spreadId === spreadId) {
         delete state.pending;
       }
-      if (state.hoverPheromone?.forkId === forkId) {
+      if (state.hoverPheromone?.spreadId === spreadId) {
         const hover = state.hover;
         const pheromone = state.hoverPheromone;
         delete state.hover;
@@ -1985,16 +1985,16 @@ export class PheromoneRuntime {
           outcome: reason,
         });
       }
-      const joins = state.joins;
-      if (joins?.has(forkId) === true) {
-        const join = joins.get(forkId);
-        // A closed tombstone is the only record that this forkId already
+      const gathers = state.gathers;
+      if (gathers?.has(spreadId) === true) {
+        const join = gathers.get(spreadId);
+        // A closed tombstone is the only record that this spreadId already
         // emitted (or timed out). Keep it: deleting it would let a late active
         // sibling reopen the join and emit a second time.
-        if (join === undefined || !isJoinClosed(join)) {
-          joins.delete(forkId);
-          if (joins.size === 0) {
-            delete state.joins;
+        if (join === undefined || !isGatherClosed(join)) {
+          gathers.delete(spreadId);
+          if (gathers.size === 0) {
+            delete state.gathers;
           }
         }
         affected.add(id);
@@ -2003,45 +2003,45 @@ export class PheromoneRuntime {
 
     for (const id of affected) {
       const node = this.definition.nodes.get(id);
-      if (node?.kind === 'merge') {
-        this.logMergeFailed(node, forkId, reason);
+      if (node?.kind === 'gather') {
+        this.logGatherFailed(node, spreadId, reason);
       }
     }
-    if (source?.kind === 'merge' && !affected.has(source.id)) {
-      this.logMergeFailed(source, forkId, reason);
+    if (source?.kind === 'gather' && !affected.has(source.id)) {
+      this.logGatherFailed(source, spreadId, reason);
     }
     this.receptorOverflow?.notifyAll();
   }
 
-  private logMergeFailed(node: MergeNode, forkId: string, reason: string): void {    this.log({
-      event: 'merge.failed',
+  private logGatherFailed(node: GatherNode, spreadId: string, reason: string): void {    this.log({
+      event: 'gather.failed',
       nodeId: node.id,
-      nodeKind: 'merge',
-      forkId,
+      nodeKind: 'gather',
+      spreadId,
       outcome: reason,
     });
   }
 
   /**
    * A branch that can never arrive (a failed node, or unknown active work on
-   * restore) fails its fork unless every merge that names it treats it as
+   * restore) fails its spread unless every gather that names it treats it as
    * optional. An optional-only failure is logged and never fails the required
    * set.
    */
   private handleBranchFailure(
-    forkId: string,
+    spreadId: string,
     branchId: string | undefined,
     reason: string,
   ): 'required' | 'optional' {
     if (branchId !== undefined && !this.isRequiredBranch(branchId)) {
-      const optionalMerges = this.optionalMergesForBranch(branchId);
-      if (optionalMerges.length > 0) {
-        for (const node of optionalMerges) {
+      const optionalGathers = this.optionalGathersForBranch(branchId);
+      if (optionalGathers.length > 0) {
+        for (const node of optionalGathers) {
           this.log({
-            event: 'merge.optional-failed',
+            event: 'gather.optional-failed',
             nodeId: node.id,
-            nodeKind: 'merge',
-            forkId,
+            nodeKind: 'gather',
+            spreadId,
             branchId,
             outcome: reason,
           });
@@ -2050,47 +2050,47 @@ export class PheromoneRuntime {
       }
     }
 
-    this.failFork(forkId, reason);
+    this.failSpread(spreadId, reason);
     return 'required';
   }
 
   private isRequiredBranch(branchId: string): boolean {
     for (const node of this.definition.nodes.values()) {
-      if (node.kind === 'merge' && node.config.required.includes(branchId)) {
+      if (node.kind === 'gather' && node.config.required.includes(branchId)) {
         return true;
       }
     }
     return false;
   }
 
-  private optionalMergesForBranch(branchId: string): MergeNode[] {
-    const merges: MergeNode[] = [];
+  private optionalGathersForBranch(branchId: string): GatherNode[] {
+    const gathers: GatherNode[] = [];
     for (const node of this.definition.nodes.values()) {
-      if (node.kind === 'merge' && node.config.optional.includes(branchId)) {
-        merges.push(node);
+      if (node.kind === 'gather' && node.config.optional.includes(branchId)) {
+        gathers.push(node);
       }
     }
-    return merges;
+    return gathers;
   }
 
   /**
    * Bounds closed-join tombstones so they cannot grow forever: a marker older
-   * than COMPLETED_JOIN_TTL_MS is forgotten, and only the newest
-   * MAX_COMPLETED_JOINS_PER_MERGE markers are kept. Completed (5A) and
+   * than COMPLETED_GATHER_TTL_MS is forgotten, and only the newest
+   * MAX_COMPLETED_GATHERS markers are kept. Completed (5A) and
    * timed-out (5B) tombstones share the same bound. After that bound a branch
    * that is extremely late is no longer distinguishable from a fresh join.
    */
-  private pruneJoinTombstones(node: MergeNode): void {
+  private pruneGatherTombstones(node: GatherNode): void {
     const state = this.stateOf(node.id);
-    const joins = state.joins;
-    if (joins === undefined) {
+    const gathers = state.gathers;
+    if (gathers === undefined) {
       return;
     }
 
     const now = this.now();
-    const closed: { forkId: string; closedAt: string }[] = [];
-    for (const [forkId, join] of joins) {
-      if (!isJoinClosed(join)) {
+    const closed: { spreadId: string; closedAt: string }[] = [];
+    for (const [spreadId, join] of gathers) {
+      if (!isGatherClosed(join)) {
         continue;
       }
       const closedAt = join.completedAt ?? join.timedOutAt;
@@ -2098,23 +2098,23 @@ export class PheromoneRuntime {
         continue;
       }
       const at = Date.parse(closedAt);
-      if (!Number.isFinite(at) || now - at > COMPLETED_JOIN_TTL_MS) {
-        joins.delete(forkId);
+      if (!Number.isFinite(at) || now - at > COMPLETED_GATHER_TTL_MS) {
+        gathers.delete(spreadId);
       } else {
-        closed.push({ forkId, closedAt });
+        closed.push({ spreadId, closedAt });
       }
     }
 
-    const excess = closed.length - MAX_COMPLETED_JOINS_PER_MERGE;
+    const excess = closed.length - MAX_COMPLETED_GATHERS;
     if (excess > 0) {
       closed.sort((left, right) => left.closedAt.localeCompare(right.closedAt));
       for (const entry of closed.slice(0, excess)) {
-        joins.delete(entry.forkId);
+        gathers.delete(entry.spreadId);
       }
     }
 
-    if (joins.size === 0) {
-      delete state.joins;
+    if (gathers.size === 0) {
+      delete state.gathers;
     }
   }
 

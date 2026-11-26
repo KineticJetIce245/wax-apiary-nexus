@@ -97,33 +97,33 @@ function conditionWorkerComposition(config: Record<string, unknown>): Compositio
   });
 }
 
-/** start -> fork (a -> merge, b -> ask, c -> failing worker); merge requires a,c. */
-function forkWorkerFailureComposition(config: WorkerConfig): CompositionDefinition {
+/** start -> spread (a -> gather, b -> ask, c -> failing worker); gather requires a,c. */
+function spreadWorkerFailureComposition(config: WorkerConfig): CompositionDefinition {
   return parseComposition({
     schemaVersion: 1,
-    id: 'fork-worker-failure',
+    id: 'spread-worker-failure',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'a', to: 'merge' },
+            { id: 'a', to: 'gather' },
             { id: 'b', to: 'ask' },
             { id: 'c', to: 'fail' },
           ],
         },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
-      merge: { kind: 'merge', config: { required: ['a', 'c'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'c'], combine: 'text' } },
       fail: { kind: 'worker', config },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'ask', to: 'merge' },
-      { id: 'e3', from: 'fail', to: 'merge' },
-      { id: 'e4', from: 'merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'ask', to: 'gather' },
+      { id: 'e3', from: 'fail', to: 'gather' },
+      { id: 'e4', from: 'gather', to: 'done' },
     ],
   });
 }
@@ -617,12 +617,12 @@ test('a Condition worker timeout is a runtime failure, not a false branch', asyn
   assert.deepEqual(calls.map((call) => call.nodeId), ['start']);
 });
 
-test('a worker failure on a fork branch cancels siblings through fork semantics', async () => {
+test('a worker failure on a spread branch cancels siblings through spread semantics', async () => {
   const log = createMemoryLog();
   const { executor, calls } = recorder();
   const project = projectDir();
   const runtime = new PheromoneRuntime(
-    forkWorkerFailureComposition(nodeConfig('process.exit(1)')),
+    spreadWorkerFailureComposition(nodeConfig('process.exit(1)')),
     {
       executeForager: executor,
       projectDirectory: project,
@@ -637,11 +637,11 @@ test('a worker failure on a fork branch cancels siblings through fork semantics'
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.nodes['ask']?.hover, undefined);
   assert.equal(snapshot.nodes['ask']?.receptor.length, 0);
-  assert.equal(snapshot.nodes['merge']?.joins, undefined);
+  assert.equal(snapshot.nodes['gather']?.gathers, undefined);
   assert.equal(snapshot.rest, true);
   assert.deepEqual(calls.map((call) => call.nodeId), ['start']);
   assert.ok(log.entries.some((entry) => entry.event === 'hover.cancelled'));
-  const failed = log.entries.find((entry) => entry.event === 'merge.failed');
+  const failed = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failed !== undefined);
   assert.equal(failed.outcome, 'failed-branch');
 });

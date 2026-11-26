@@ -2,7 +2,7 @@ import type { RuntimeLogEntry } from './log.js';
 import type { RuntimeLogSink } from './runtime-expiry.js';
 import { workerLogFields } from './runtime-values.js';
 import type {
-  MergeNode,
+  GatherNode,
   NodeDefinition,
   NodeId,
   NodeState,
@@ -23,7 +23,7 @@ export function logActivated(
     nodeKind: node.kind,
     pheromoneId: pheromone.id,
     queueDepth: state.receptor?.length ?? 0,
-    ...(pheromone.forkId === undefined ? {} : { forkId: pheromone.forkId }),
+    ...(pheromone.spreadId === undefined ? {} : { spreadId: pheromone.spreadId }),
     ...(pheromone.branchId === undefined ? {} : { branchId: pheromone.branchId }),
   });
 }
@@ -117,24 +117,24 @@ export function logHoverBlocked(
   });
 }
 
-export function logMergeBlocked(
+export function logGatherBlocked(
   log: RuntimeLogSink,
   reported: Set<string>,
-  node: MergeNode,
-  forkId: string,
+  node: GatherNode,
+  spreadId: string,
   target: NodeId,
   queueDepth: number,
 ): void {
-  const key = `merge\0${node.id}\0${forkId}\0${target}`;
+  const key = `gather\0${node.id}\0${spreadId}\0${target}`;
   if (reported.has(key)) {
     return;
   }
   reported.add(key);
   log({
-    event: 'merge.blocked',
+    event: 'gather.blocked',
     nodeId: node.id,
-    nodeKind: 'merge',
-    forkId,
+    nodeKind: 'gather',
+    spreadId,
     queueDepth,
     outcome: `queue-max:${target}`,
   });

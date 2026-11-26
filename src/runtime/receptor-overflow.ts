@@ -161,7 +161,7 @@ export class ReceptorOverflow {
     this.host.transaction(() => this.dispatchLocked(nodeId));
   }
 
-  /** Re-check every bee after a bulk capacity change (expiry or fork failure). */
+  /** Re-check every bee after a bulk capacity change (expiry or spread failure). */
   notifyAll(): void {
     for (const nodeId of [...this.queues.keys()]) {
       this.notify(nodeId);

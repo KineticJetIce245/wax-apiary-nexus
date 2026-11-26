@@ -41,7 +41,7 @@ It does not define Harness Adapter wire protocols, a UI, remote/multi-tenant beh
 
 - `bees` and `bindings` use `beeId` as the key.
 - `beelines` use `beelineId` as the key and reference `fromBee`/`toBee`.
-- A control bee (condition/fork/merge/user) may have no binding.
+- A control bee (condition/spread/gather/user) may have no binding.
 - A bee with no outgoing beeline is terminal.
 - There is no revision field and no CAS. `save`/`unload` overwrite the file.
 
@@ -50,7 +50,7 @@ It does not define Harness Adapter wire protocols, a UI, remote/multi-tenant beh
 ```text
 Bee = {
   beeId,
-  kind,          // forager | worker | condition | fork | merge | user
+  kind,          // forager | worker | condition | spread | gather | user
   config,
   outgoing: [beelineId],
   roleLabel?,    // comment only
@@ -59,7 +59,7 @@ Bee = {
 ```
 
 - `beeId` is unique within a LiveHive.
-- `forager` requires a session; `worker` runs argv; `condition` selects beelines; `fork`/`merge` are field control; `user` waits on hover.
+- `forager` requires a session; `worker` runs argv; `condition` selects beelines; `spread`/`gather` are field control; `user` waits on hover.
 - `roleLabel` is a comment/label; it does not route and does not bind a session.
 - `sessionMode`:
   - `reuse`: a binding must exist;
@@ -73,12 +73,12 @@ Beeline = {
   beelineId,
   fromBee,
   toBee,
-  branch?    // fork/merge use, optional
+  branch?    // spread/gather use, optional
 }
 ```
 
 - `beelineId` is unique within a LiveHive.
-- Conditions choose outgoing beelines; fork/merge use `branch`.
+- Conditions choose outgoing beelines; spread/gather use `branch`.
 - A beeline is not runtime state; it does not hold a session.
 
 ## 5. Session
@@ -103,14 +103,14 @@ Session = {
 ## 6. `PheromoneField`
 
 - Holds pheromones, one receptor per Bee, pending, active, hover, join/tombstone, counters, and the per-Bee last output.
-- A Pheromone is one message/value travelling through the graph. A normal beeline moves the same Pheromone; only `fork` and `merge` change its cardinality. A Pheromone has a field-local `id` and carries no run/wake/trace identity.
+- A Pheromone is one message/value travelling through the graph. A normal beeline moves the same Pheromone; only `spread` and `gather` change its cardinality. A Pheromone has a field-local `id` and carries no run/wake/trace identity.
 - A receptor stores Pheromone objects directly and is FIFO. `pending` is a pacing slot for the head of a receptor; one Pheromone is active per Bee.
 - A Bee with no outgoing beeline is terminal; its Pheromone becomes a field output.
 - `field.json` is a snapshot, not an event log, and contains no run/trace record and no output cache.
-- The per-Bee last output is a memory-only `Value` owned by the field. It is written by output-producing Bees (forager, worker, user, merge) on a successful activation; condition/counter/fork have no single result value and do not write it. It is overwritten by the Bee's next successful activation, is not written to `field.json`, is not a run history, and is released on `unload`.
+- The per-Bee last output is a memory-only `Value` owned by the field. It is written by output-producing Bees (forager, worker, user, gather) on a successful activation; condition/counter/spread have no single result value and do not write it. It is overwritten by the Bee's next successful activation, is not written to `field.json`, is not a run history, and is released on `unload`.
 - A loop is bounded by `counter`/`condition` and receptor overflow (`queueMax`); there is no per-trace hop or duration budget.
 - `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets; `queueTtlMs` is a per-receptor waiting TTL from the enqueue instant, not a message lifetime.
-- `load` restores receptors/pending/hover/incomplete joins; restored active Pheromones are marked unknown/stuck and are not replayed.
+- `load` restores receptors/pending/hover/incomplete gathers; restored active Pheromones are marked unknown/stuck and are not replayed.
 
 ## 7. Save / load / unload
 
@@ -118,7 +118,7 @@ Session = {
 - `save`: flush field/scheduler/log to Honey; overwrite `live.json`. It does not make the output cache durable.
 - `unload`: also overwrite `live.json`, then flush and release field/runtime; sessions remain in `SessionRegistry`. The field's last output is released.
 - No revision comparison, no CAS, no lease.
-- Manual file copy is not a supported fork; WAX does not guarantee consistency for copied files.
+- Manual file copy is not a supported LiveHive copy; WAX does not guarantee consistency for copied files.
 
 ## 8. Control API
 
@@ -159,7 +159,7 @@ GET  /health
 - There is no run, wake or trace query route and no per-request status id. There is no per-trace `maxHops`/`maxDuration`; loop safety is the graph plus receptor overflow.
 - There is no queue-status route. Adapter admission is in memory only and has no public id; a restart forgets pending prompts and never replays them.
 - `GET /guards` and `POST /guard/decide` cover approvals owned by WAX/ACP sessions. ACP owns its session's entire approval channel; there is no unowned-approval or GUI pass-through. A future send-message ingress is separate and cannot decide approvals. A guard decision is single-use: deciding the same request again returns 409 `conflict` (or 409 `guard-expired` for an expired request).
-- No fork route. The legacy graph, wake, catalog, queue and run routes are not present and have no aliases.
+- No spread route. The legacy graph, wake, catalog, queue and run routes are not present and have no aliases.
 
 ## 9. CLI
 
@@ -187,9 +187,9 @@ wax session list|close|sweep
 5. Same LiveHive mutating operations are serialized; different LiveHives may run in parallel. Delivery is short and never holds the lock across native execution.
 6. `unload` keeps the catalog/sessions; `inspect`/`output` do not refresh TTL.
 7. Load makes memory authoritative; save/unload overwrite disk. The per-Bee output cache is memory-only and is released on unload.
-8. The control plane owns no execution state: no run tracker, run/trace id, per-request registry or shadow lifecycle. A delivery ends at handoff. `Dispatch` is an ephemeral graph, not a persistent LiveHive; there is no fork command.
+8. The control plane owns no execution state: no run tracker, run/trace id, per-request registry or shadow lifecycle. A delivery ends at handoff. `Dispatch` is an ephemeral graph, not a persistent LiveHive; there is no LiveHive copy command.
 9. No Agent/Revision/Definition/Actor objects.
 10. Logs never contain prompt/output/token bodies; output uses explicit routes.
 11. Never auto-allow Guard; ACP owns its session's approval channel with no GUI/pass-through; never replay side-effecting work. A restored active Pheromone is unknown and is not replayed.
 12. Every LiveHive has a finite `queueMax`; loop safety relies on counters/conditions and receptor overflow, not on a per-trace budget.
-13. `Pheromone.id` is a field-local message identity, not a run/execution handle. It may appear in internal logs and fork/merge/join bookkeeping, but no HTTP/CLI route, registry, tracker, persistence key, output/status lookup, wait, or idempotency key may use it. Reusing the same id across normal Bees means one message moved, not one run.
+13. `Pheromone.id` is a field-local message identity, not a run/execution handle. It may appear in internal logs and spread/gather/join bookkeeping, but no HTTP/CLI route, registry, tracker, persistence key, output/status lookup, wait, or idempotency key may use it. Reusing the same id across normal Bees means one message moved, not one run.

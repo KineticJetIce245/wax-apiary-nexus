@@ -19,13 +19,13 @@ export type RuntimeEvent =
   | 'guard.opened'
   | 'guard.resolved'
   | 'guard.timeout'
-  | 'merge.waiting'
-  | 'merge.blocked'
-  | 'merge.completed'
-  | 'merge.timed-out'
-  | 'merge.failed'
-  | 'merge.optional-failed'
-  | 'merge.optional-dropped'
+  | 'gather.waiting'
+  | 'gather.blocked'
+  | 'gather.completed'
+  | 'gather.timed-out'
+  | 'gather.failed'
+  | 'gather.optional-failed'
+  | 'gather.optional-dropped'
   | 'runtime.restored'
   | 'runtime.attention'
   | 'runtime.rest'
@@ -39,7 +39,7 @@ export interface RuntimeLogEntry {
   nodeId?: NodeId;
   nodeKind?: NodeKind;
   pheromoneId?: string;
-  forkId?: string;
+  spreadId?: string;
   branchId?: string;
   queueDepth?: number;
   /** Per-bee receptor capacity for a limit entry. */

@@ -34,18 +34,18 @@ export function simpleLiveHive(): LiveHive {
   };
 }
 
-export function forkLiveHive(): LiveHive {
+export function spreadLiveHive(): LiveHive {
   return {
     schemaVersion: 1,
-    liveId: 'fork-demo',
+    liveId: 'spread-demo',
     bees: {
       start: {
         kind: 'forager',
         config: { connection: 'codex', prompt: 'start {{input}}' },
-        outgoing: ['to-fork'],
+        outgoing: ['to-spread'],
       },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'left' },
@@ -64,18 +64,18 @@ export function forkLiveHive(): LiveHive {
         config: { connection: 'codex', prompt: 'right' },
         outgoing: ['rm'],
       },
-      merge: {
-        kind: 'merge',
+      gather: {
+        kind: 'gather',
         config: { required: ['a', 'b'], combine: 'text' },
         outgoing: [],
       },
     },
     beelines: {
-      'to-fork': { fromBee: 'start', toBee: 'fork' },
-      fa: { fromBee: 'fork', toBee: 'left', branch: 'a' },
-      fb: { fromBee: 'fork', toBee: 'right', branch: 'b' },
-      lm: { fromBee: 'left', toBee: 'merge' },
-      rm: { fromBee: 'right', toBee: 'merge' },
+      'to-spread': { fromBee: 'start', toBee: 'spread' },
+      fa: { fromBee: 'spread', toBee: 'left', branch: 'a' },
+      fb: { fromBee: 'spread', toBee: 'right', branch: 'b' },
+      lm: { fromBee: 'left', toBee: 'gather' },
+      rm: { fromBee: 'right', toBee: 'gather' },
     },
     bindings: { left: 'sl', right: 'sr' },
   };

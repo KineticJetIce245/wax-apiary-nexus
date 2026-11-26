@@ -405,17 +405,17 @@ export function runnableForagerGraph(id: string, prompt = 'run {{input}}'): Comp
 }
 
 /**
- * A fork/merge graph that keeps the production 1000ms node pacing. One pump
- * cannot reach Rest because the merge waits for its second activation.
+ * A spread/gather graph that keeps the production 1000ms node pacing. One pump
+ * cannot reach Rest because the gather waits for its second activation.
  */
-export function pacedForkMergeDefinition(id: string): CompositionDefinition {
+export function pacedSpreadGatherDefinition(id: string): CompositionDefinition {
   return parseComposition({
     schemaVersion: 1,
     id,
     nodes: {
       start: forager('start {{input}}'),
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'branch-a' },
@@ -425,12 +425,12 @@ export function pacedForkMergeDefinition(id: string): CompositionDefinition {
       },
       'branch-a': forager('branch-a {{input}}'),
       'branch-b': forager('branch-b {{input}}'),
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'fork' },
-      { id: 'e2', from: 'branch-a', to: 'merge' },
-      { id: 'e3', from: 'branch-b', to: 'merge' },
+      { id: 'e1', from: 'start', to: 'spread' },
+      { id: 'e2', from: 'branch-a', to: 'gather' },
+      { id: 'e3', from: 'branch-b', to: 'gather' },
     ],
   });
 }

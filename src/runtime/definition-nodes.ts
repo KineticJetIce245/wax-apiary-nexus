@@ -10,7 +10,7 @@ import {
   DEFAULT_QUEUE_MAX,
   DEFAULT_QUEUE_TTL_MS,
 } from './definition-constants.js';
-import { parseForkConfig, parseMergeConfig } from './definition-flow-config.js';
+import { parseSpreadConfig, parseGatherConfig } from './definition-flow-config.js';
 import {
   ID_PATTERN,
   WHEN_VALUES,
@@ -110,8 +110,8 @@ export function parseNodes(
       kind !== 'condition' &&
       kind !== 'counter' &&
       kind !== 'user' &&
-      kind !== 'fork' &&
-      kind !== 'merge'
+      kind !== 'spread' &&
+      kind !== 'gather'
     ) {
       issues.push(`${path}.kind: unknown node kind '${kind}'`);
       continue;
@@ -150,13 +150,13 @@ export function parseNodes(
       if (parsed !== null) {
         nodes.set(id, { id, kind, config: parsed, minIntervalMs });
       }
-    } else if (kind === 'fork') {
-      const parsed = parseForkConfig(config, configPath, issues);
+    } else if (kind === 'spread') {
+      const parsed = parseSpreadConfig(config, configPath, issues);
       if (parsed !== null) {
         nodes.set(id, { id, kind, config: parsed, minIntervalMs });
       }
-    } else if (kind === 'merge') {
-      const parsed = parseMergeConfig(config, configPath, issues);
+    } else if (kind === 'gather') {
+      const parsed = parseGatherConfig(config, configPath, issues);
       if (parsed !== null) {
         nodes.set(id, { id, kind, config: parsed, minIntervalMs });
       }
@@ -254,7 +254,7 @@ export function validateEdgeShape(
   for (const node of nodes.values()) {
     const outgoing = edges.filter((edge) => edge.from === node.id);
 
-    if (node.kind === 'fork') {
+    if (node.kind === 'spread') {
       node.config.branches.forEach((branch, index) => {
         if (!nodes.has(branch.to)) {
           issues.push(
@@ -263,19 +263,19 @@ export function validateEdgeShape(
         }
       });
       if (outgoing.length > 0) {
-        issues.push(`nodes.${node.id}: a fork node uses branches and has no normal outgoing edge`);
+        issues.push(`nodes.${node.id}: a spread node uses branches and has no normal outgoing edge`);
       }
       continue;
     }
 
-    if (node.kind === 'merge') {
+    if (node.kind === 'gather') {
       for (const edge of outgoing) {
         if (edge.when !== undefined) {
           issues.push(`edges.${edge.id}: 'when' is only allowed on condition and counter edges`);
         }
       }
       if (outgoing.length > 1) {
-        issues.push(`nodes.${node.id}: a merge node has at most one outgoing edge`);
+        issues.push(`nodes.${node.id}: a gather node has at most one outgoing edge`);
       }
       continue;
     }

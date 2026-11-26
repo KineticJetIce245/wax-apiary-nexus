@@ -20,7 +20,7 @@ waxd
 
 - **LiveHive is the first-class object.** A LiveHive has `bees`, `beelines`, `beeId -> sessionId` bindings, optional `schedules`, and a `PheromoneField`.
 - **Bee is the execution slot.** A bee has a kind, config, outgoing beelines, optional RoleLabel, and a session mode.
-- **Beeline is a connection.** Conditions choose outgoing beelines; fork/merge use branches.
+- **Beeline is a connection.** Conditions choose outgoing beelines; spread/gather use branches.
 - **`trigger` is delivery.** `trigger(liveId, beeId, input)` packages one Pheromone into the target bee's receptor and returns `202 {ok:true}`. There is no run id, no trace id and no result query; execution state is observed through `inspect`, output and logs. A session-bound prompt is admitted by the WAX `DshAcpAdapter`, not by a second WAX session queue.
 - **`answer` is delivery too.** It binds a value to an existing user hover and returns `202 {ok:true}`; the field continues, the HTTP request ends.
 - **`dispatch` is an ephemeral one-bee graph.** It delivers the prompt through the same admission/approval path, returns `202 {ok:true}`, and never returns the model output or a run handle (D1). The graph is released at silent end and is not persisted as a LiveHive.
@@ -31,7 +31,7 @@ waxd
 - **ACP owns approvals.** An ACP session is the sole owner of its approval channel; there is no unowned-approval pass-through and no GUI approval. ACP is automation-only: a GUI may list/resume a persisted session but cannot receive or answer its live approvals. A separate send-message ingress may be reserved, but it cannot decide approvals.
 - **Save and unload both write `live.json`.** Load makes memory authoritative; disk changes are ignored until the next save/unload.
 - **No Agent/Revision/Definition/Actor objects.** To see what a bee runs, look at `beeId -> sessionId -> session.harness/model/reasoning`.
-- **No `fork LiveHive` command.** Manually copying files is not prevented, but not supported.
+- **No LiveHive copy command.** Manually copying files is not prevented, but not supported.
 - `LiveHiveHost`, `LiveHiveStatus` and `LiveHiveId` remain internal engine names. They are not public WAX objects and are not exposed by the HTTP or CLI surface.
 - M17j is closed (2026-11-23): prompt admission lives in the WAX `DshAcpAdapter` (DSH source untouched); the legacy WAX `SessionExecutionQueue` and its `/queues` / `wax queue` surface were removed. M17j3a approval pass-through was superseded by ACP full approval ownership and has been reverted.
 - M18 closeout (2026-11-25): the control plane is delivery-only. The old wake command/route became `trigger`, the execution-registry surface (trackers, per-request ids, run routes and records, per-trace budgets) was removed, mailbox was renamed to receptor, and `dispatch`/`answer` answer 202 without execution state.

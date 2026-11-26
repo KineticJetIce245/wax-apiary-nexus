@@ -17,7 +17,7 @@
     "reviews": {
       "type": "parallel",
       "branches": ["review-a", "review-b"],
-      "next": "merge"
+      "next": "gather"
     },
     "review-a": {
       "participant": "reviewer",
@@ -27,7 +27,7 @@
       "participant": "planner",
       "prompt": "Review this plan for simplicity in two sentences.\nEnd your reply with exactly REVIEW-B-OK.\n\n{{plan}}"
     },
-    "merge": {
+    "gather": {
       "participant": "planner",
       "prompt": "Combine the two reviews into one short decision. Mention both review tokens if present, then end with exactly MERGED-OK.\n\nA: {{review-a}}\nB: {{review-b}}",
       "next": "done"

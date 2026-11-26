@@ -141,21 +141,21 @@ export class ConversationStore {
     const release = this.acquireLock();
     try {
       this.cleanupStaleTemps();
-      // Call the public load() (it may run user-provided hooks) and then merge
+      // Call the public load() (it may run user-provided hooks) and then combine
       // against a fresh read so a writer that slipped in during load() is not
       // lost.
       const snapshot = this.load().filter(
         (entry) => entry.conversationId !== record.conversationId,
       );
       snapshot.push(record);
-      const merged = new Map<string, ConversationRecord>();
+      const gatherd = new Map<string, ConversationRecord>();
       for (const entry of this.readUnlocked()) {
-        merged.set(entry.conversationId, entry);
+        gatherd.set(entry.conversationId, entry);
       }
       for (const entry of snapshot) {
-        merged.set(entry.conversationId, entry);
+        gatherd.set(entry.conversationId, entry);
       }
-      this.write([...merged.values()]);
+      this.write([...gatherd.values()]);
     } finally {
       release();
     }

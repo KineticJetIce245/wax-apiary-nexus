@@ -4,8 +4,8 @@ export const BEE_KINDS = [
   'forager',
   'worker',
   'condition',
-  'fork',
-  'merge',
+  'spread',
+  'gather',
   'user',
 ] as const;
 
@@ -37,7 +37,7 @@ export interface Bee {
 export interface Beeline {
   readonly fromBee: string;
   readonly toBee: string;
-  /** Fork branch label or condition outcome; optional for ordinary edges. */
+  /** Spread branch label or condition outcome; optional for ordinary edges. */
   readonly branch?: string;
 }
 

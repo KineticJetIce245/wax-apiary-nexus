@@ -32,13 +32,13 @@ import {
   threeLevelHoverComposition,
 } from './support/runtime-nested-fixtures.js';
 import {
-  siblingInnerForksComposition,
+  siblingInnerSpreadsComposition,
   nestedOptionalComposition,
   nestedTimeoutComposition,
   nestedFailureComposition,
 } from './support/runtime-nested-advanced.js';
 
-test('a single-level fork/merge still emits an untagged top-level output', async () => {
+test('a single-level spread/gather still emits an untagged top-level output', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -60,18 +60,18 @@ test('a single-level fork/merge still emits an untagged top-level output', async
     serializeValue(calls.find((call) => call.nodeId === 'done')?.input as Value),
     'seed\nseed',
   );
-  const join = joinAt(snapshot, 'merge');
+  const join = joinAt(snapshot, 'gather');
   assert.ok(join.completedAt !== undefined);
   assert.equal(join.lineage, undefined);
   const emitted = log.entries.find(
     (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'done',
   );
   assert.ok(emitted !== undefined);
-  assert.equal(emitted.forkId, undefined);
+  assert.equal(emitted.spreadId, undefined);
   assert.equal(emitted.branchId, undefined);
 });
 
-test('an inner merge restores the outer branch tag so the outer merge completes', async () => {
+test('an inner gather restores the outer branch tag so the outer gather completes', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -94,35 +94,35 @@ test('an inner merge restores the outer branch tag so the outer merge completes'
     'seed\nseed\nseed',
   );
 
-  const innerJoin = joinAt(snapshot, 'inner-merge');
-  const outerJoin = joinAt(snapshot, 'outer-merge');
-  assert.ok(innerJoin.completedAt !== undefined);
-  assert.ok(outerJoin.completedAt !== undefined);
-  assert.equal(innerJoin.lineage?.length, 1);
-  assert.equal(innerJoin.lineage?.[0]?.branchId, 'left');
-  const outerForkId = innerJoin.lineage?.[0]?.forkId;
-  assert.match(outerForkId ?? '', /^fk_/);
-  assert.equal(outerJoin.lineage, undefined, 'the top-level merge pops the last tag');
+  const innerGather = joinAt(snapshot, 'inner-gather');
+  const outerGather = joinAt(snapshot, 'outer-gather');
+  assert.ok(innerGather.completedAt !== undefined);
+  assert.ok(outerGather.completedAt !== undefined);
+  assert.equal(innerGather.lineage?.length, 1);
+  assert.equal(innerGather.lineage?.[0]?.branchId, 'left');
+  const outerSpreadId = innerGather.lineage?.[0]?.spreadId;
+  assert.match(outerSpreadId ?? '', /^fk_/);
+  assert.equal(outerGather.lineage, undefined, 'the top-level gather pops the last tag');
 
   const outerArrivals = log.entries.filter(
-    (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'outer-merge',
+    (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'outer-gather',
   );
   assert.equal(outerArrivals.length, 2);
   const restored = outerArrivals.find((entry) => entry.branchId === 'left');
   const direct = outerArrivals.find((entry) => entry.branchId === 'right');
   assert.ok(restored !== undefined);
   assert.ok(direct !== undefined);
-  assert.equal(restored.forkId, outerForkId, 'the inner merge output keeps the outer fork tag');
-  assert.equal(direct.forkId, outerForkId);
+  assert.equal(restored.spreadId, outerSpreadId, 'the inner gather output keeps the outer spread tag');
+  assert.equal(direct.spreadId, outerSpreadId);
   assert.equal(
     log.entries.find(
       (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'done',
-    )?.forkId,
+    )?.spreadId,
     undefined,
   );
 });
 
-test('three levels of nesting pop one lineage tag per merge', async () => {
+test('three levels of nesting pop one lineage tag per gather', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -144,41 +144,41 @@ test('three levels of nesting pop one lineage tag per merge', async () => {
     'seed\nseed\nseed\nseed',
   );
 
-  const innerJoin = joinAt(snapshot, 'inner-merge');
-  const midJoin = joinAt(snapshot, 'mid-merge');
-  const outerJoin = joinAt(snapshot, 'outer-merge');
-  assert.equal(innerJoin.lineage?.length, 2, 'inner parent is outer + mid');
-  assert.equal(innerJoin.lineage?.[0]?.branchId, 'o-left');
-  assert.equal(innerJoin.lineage?.[1]?.branchId, 'm-left');
-  assert.deepEqual(tagIds(midJoin.lineage), [tagIds(innerJoin.lineage?.slice(0, 1))[0] ?? '']);
-  assert.equal(midJoin.lineage?.length, 1, 'mid merge restores only the outer tag');
-  assert.equal(outerJoin.lineage, undefined, 'outer merge pops the last tag');
+  const innerGather = joinAt(snapshot, 'inner-gather');
+  const midGather = joinAt(snapshot, 'mid-gather');
+  const outerGather = joinAt(snapshot, 'outer-gather');
+  assert.equal(innerGather.lineage?.length, 2, 'inner parent is outer + mid');
+  assert.equal(innerGather.lineage?.[0]?.branchId, 'o-left');
+  assert.equal(innerGather.lineage?.[1]?.branchId, 'm-left');
+  assert.deepEqual(tagIds(midGather.lineage), [tagIds(innerGather.lineage?.slice(0, 1))[0] ?? '']);
+  assert.equal(midGather.lineage?.length, 1, 'mid gather restores only the outer tag');
+  assert.equal(outerGather.lineage, undefined, 'outer gather pops the last tag');
 
   const midArrival = log.entries.find(
     (entry) =>
       entry.event === 'pheromone.emitted' &&
-      entry.nodeId === 'mid-merge' &&
+      entry.nodeId === 'mid-gather' &&
       entry.branchId === 'm-left',
   );
-  assert.ok(midArrival !== undefined, 'the inner merge output carries the mid tag');
-  assert.equal(midArrival.forkId, innerJoin.lineage?.[1]?.forkId);
+  assert.ok(midArrival !== undefined, 'the inner gather output carries the mid tag');
+  assert.equal(midArrival.spreadId, innerGather.lineage?.[1]?.spreadId);
   const outerArrival = log.entries.find(
     (entry) =>
       entry.event === 'pheromone.emitted' &&
-      entry.nodeId === 'outer-merge' &&
+      entry.nodeId === 'outer-gather' &&
       entry.branchId === 'o-left',
   );
-  assert.ok(outerArrival !== undefined, 'the mid merge output still carries the outer tag');
-  assert.equal(outerArrival.forkId, midJoin.lineage?.[0]?.forkId);
+  assert.ok(outerArrival !== undefined, 'the mid gather output still carries the outer tag');
+  assert.equal(outerArrival.spreadId, midGather.lineage?.[0]?.spreadId);
   assert.equal(
     log.entries.find(
       (entry) => entry.event === 'pheromone.emitted' && entry.nodeId === 'done',
-    )?.forkId,
+    )?.spreadId,
     undefined,
   );
 });
 
-test('two outer branches with inner forks keep their groups separate', async () => {
+test('two outer branches with inner spreads keep their groups separate', async () => {
   let clock = START;
   const { executor, calls } = recorder((nodeId) => {
     switch (nodeId) {
@@ -194,7 +194,7 @@ test('two outer branches with inner forks keep their groups separate', async () 
         return text('unused');
     }
   });
-  const runtime = new PheromoneRuntime(siblingInnerForksComposition(), {
+  const runtime = new PheromoneRuntime(siblingInnerSpreadsComposition(), {
     executeForager: executor,
     now: () => clock,
   });
@@ -211,52 +211,52 @@ test('two outer branches with inner forks keep their groups separate', async () 
     'L-A\nL-B\nR-A\nR-B',
   );
 
-  const leftJoin = joinAt(snapshot, 'left-merge');
-  const rightJoin = joinAt(snapshot, 'right-merge');
-  const outerJoin = joinAt(snapshot, 'outer-merge');
-  assert.equal(leftJoin.forkId === rightJoin.forkId, false, 'each inner fork has its own id');
-  assert.equal(leftJoin.lineage?.[0]?.branchId, 'left');
-  assert.equal(rightJoin.lineage?.[0]?.branchId, 'right');
-  assert.equal(leftJoin.lineage?.[0]?.forkId, rightJoin.lineage?.[0]?.forkId);
-  assert.equal(outerJoin.lineage, undefined);
+  const leftGather = joinAt(snapshot, 'left-gather');
+  const rightGather = joinAt(snapshot, 'right-gather');
+  const outerGather = joinAt(snapshot, 'outer-gather');
+  assert.equal(leftGather.spreadId === rightGather.spreadId, false, 'each inner spread has its own id');
+  assert.equal(leftGather.lineage?.[0]?.branchId, 'left');
+  assert.equal(rightGather.lineage?.[0]?.branchId, 'right');
+  assert.equal(leftGather.lineage?.[0]?.spreadId, rightGather.lineage?.[0]?.spreadId);
+  assert.equal(outerGather.lineage, undefined);
 });
 
-test('normal nodes preserve lineage and an inner fork copies a structured Value', async () => {
+test('normal nodes preserve lineage and an inner spread copies a structured Value', async () => {
   const definition = parseComposition({
     schemaVersion: 1,
     id: 'nested-normal-node',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      'outer-fork': {
-        kind: 'fork',
+      'outer-spread': {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'left', to: 'mid' },
-            { id: 'right', to: 'outer-merge' },
+            { id: 'right', to: 'outer-gather' },
           ],
         },
       },
       mid: { kind: 'forager', config: { connection: 'codex', prompt: 'mid' } },
-      'inner-fork': {
-        kind: 'fork',
+      'inner-spread': {
+        kind: 'spread',
         config: {
           branches: [
-            { id: 'i-a', to: 'inner-merge' },
+            { id: 'i-a', to: 'inner-gather' },
             { id: 'i-b', to: 'ask-inner' },
           ],
         },
       },
       'ask-inner': { kind: 'user', config: { modality: 'text', prompt: 'inner?' } },
-      'inner-merge': { kind: 'merge', config: { required: ['i-a', 'i-b'], combine: 'text' } },
-      'outer-merge': { kind: 'merge', config: { required: ['left', 'right'], combine: 'text' } },
+      'inner-gather': { kind: 'gather', config: { required: ['i-a', 'i-b'], combine: 'text' } },
+      'outer-gather': { kind: 'gather', config: { required: ['left', 'right'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
     },
     edges: [
-      { id: 'e1', from: 'start', to: 'outer-fork' },
-      { id: 'e2', from: 'mid', to: 'inner-fork' },
-      { id: 'e3', from: 'ask-inner', to: 'inner-merge' },
-      { id: 'e4', from: 'inner-merge', to: 'outer-merge' },
-      { id: 'e5', from: 'outer-merge', to: 'done' },
+      { id: 'e1', from: 'start', to: 'outer-spread' },
+      { id: 'e2', from: 'mid', to: 'inner-spread' },
+      { id: 'e3', from: 'ask-inner', to: 'inner-gather' },
+      { id: 'e4', from: 'inner-gather', to: 'outer-gather' },
+      { id: 'e5', from: 'outer-gather', to: 'done' },
     ],
   });
   const { executor, calls } = recorder((nodeId, input) =>
@@ -270,21 +270,21 @@ test('normal nodes preserve lineage and an inner fork copies a structured Value'
 
   runtime.admit('start', text('seed'));
   await runtime.pump();
-  // The inner Merge can only activate once per minimum interval.
+  // The inner Gather can only activate once per minimum interval.
   clock += 1000;
   await runtime.pump();
 
   const snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, false);
-  const innerJoin = joinAt(snapshot, 'inner-merge');
-  assert.equal(innerJoin.arrived.length, 1);
-  const arrived = innerJoin.arrived[0];
+  const innerGather = joinAt(snapshot, 'inner-gather');
+  assert.equal(innerGather.arrived.length, 1);
+  const arrived = innerGather.arrived[0];
   assert.ok(arrived !== undefined);
   assert.deepEqual(arrived.value, { kind: 'structured', value: { n: 1 } });
   assert.equal(arrived.lineage?.length, 2);
   assert.equal(arrived.lineage?.[0]?.branchId, 'left');
   assert.equal(arrived.lineage?.[1]?.branchId, 'i-a');
-  assert.equal(arrived.forkId, arrived.lineage?.[1]?.forkId);
+  assert.equal(arrived.spreadId, arrived.lineage?.[1]?.spreadId);
 
   const hovered = snapshot.pheromones.find((pheromone) => pheromone.branchId === 'i-b');
   assert.ok(hovered !== undefined);
@@ -304,7 +304,7 @@ test('normal nodes preserve lineage and an inner fork copies a structured Value'
   );
 });
 
-test('inner optional branches complete the inner merge without changing outer semantics', async () => {
+test('inner optional branches complete the inner gather without changing outer semantics', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -316,19 +316,19 @@ test('inner optional branches complete the inner merge without changing outer se
 
   runtime.admit('start', text('seed'));
   await runtime.pump();
-  // The two required inner branches share the inner Merge's minimum interval.
+  // The two required inner branches share the inner Gather's minimum interval.
   clock += 1000;
   await runtime.pump();
 
   let snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, false);
-  const innerJoin = joinAt(snapshot, 'inner-merge');
-  const outerJoin = joinAt(snapshot, 'outer-merge');
-  assert.ok(innerJoin.completedAt !== undefined);
-  assert.equal(innerJoin.lineage?.[0]?.branchId, 'left');
-  assert.equal(outerJoin.completedAt, undefined);
-  assert.deepEqual(outerJoin.arrived.map((pheromone) => pheromone.branchId), ['left']);
-  assert.equal(outerJoin.lineage, undefined);
+  const innerGather = joinAt(snapshot, 'inner-gather');
+  const outerGather = joinAt(snapshot, 'outer-gather');
+  assert.ok(innerGather.completedAt !== undefined);
+  assert.equal(innerGather.lineage?.[0]?.branchId, 'left');
+  assert.equal(outerGather.completedAt, undefined);
+  assert.deepEqual(outerGather.arrived.map((pheromone) => pheromone.branchId), ['left']);
+  assert.equal(outerGather.lineage, undefined);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
 
   const outerToken = snapshot.nodes['ask-outer']?.hover?.token;
@@ -343,7 +343,7 @@ test('inner optional branches complete the inner merge without changing outer se
     serializeValue(calls.find((call) => call.nodeId === 'done')?.input as Value),
     'seed\nseed\nreply',
   );
-  assert.ok(joinAt(snapshot, 'outer-merge').completedAt !== undefined);
+  assert.ok(joinAt(snapshot, 'outer-gather').completedAt !== undefined);
   assert.equal(snapshot.rest, false, 'the optional inner hover still waits');
 
   const innerToken = snapshot.nodes['ask-inner']?.hover?.token;
@@ -354,12 +354,12 @@ test('inner optional branches complete the inner merge without changing outer se
 
   snapshot = runtime.snapshot();
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 1);
-  assert.ok(joinAt(snapshot, 'inner-merge').completedAt !== undefined);
-  assert.ok(log.entries.some((entry) => entry.event === 'merge.optional-dropped'));
+  assert.ok(joinAt(snapshot, 'inner-gather').completedAt !== undefined);
+  assert.ok(log.entries.some((entry) => entry.event === 'gather.optional-dropped'));
   assert.equal(snapshot.rest, true);
 });
 
-test('an inner timeout cancels only the inner fork and leaves the outer sibling', async () => {
+test('an inner timeout cancels only the inner spread and leaves the outer sibling', async () => {
   let clock = START;
   const log = createMemoryLog();
   const { executor, calls } = recorder();
@@ -374,20 +374,20 @@ test('an inner timeout cancels only the inner fork and leaves the outer sibling'
 
   let snapshot = runtime.snapshot();
   assert.equal(snapshot.rest, false);
-  const innerJoin = joinAt(snapshot, 'inner-merge');
-  const deadline = innerJoin.deadlineAt;
+  const innerGather = joinAt(snapshot, 'inner-gather');
+  const deadline = innerGather.deadlineAt;
   assert.ok(deadline !== undefined);
   const innerToken = snapshot.nodes['ask-inner']?.hover?.token;
   const outerToken = snapshot.nodes['ask-outer']?.hover?.token;
   assert.ok(innerToken !== undefined);
   assert.ok(outerToken !== undefined);
-  assert.equal(Object.keys(snapshot.nodes['outer-merge']?.joins ?? {}).length, 0);
+  assert.equal(Object.keys(snapshot.nodes['outer-gather']?.gathers ?? {}).length, 0);
 
   clock = deadline;
   await runtime.pump();
 
   snapshot = runtime.snapshot();
-  const timedOut = joinAt(snapshot, 'inner-merge');
+  const timedOut = joinAt(snapshot, 'inner-gather');
   assert.ok(timedOut.timedOutAt !== undefined);
   assert.equal(timedOut.lineage?.[0]?.branchId, 'left');
   assert.equal(snapshot.nodes['ask-inner']?.hover, undefined, 'the inner hover was cancelled');
@@ -398,22 +398,22 @@ test('an inner timeout cancels only the inner fork and leaves the outer sibling'
   );
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
   assert.equal(snapshot.rest, false);
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'timed-out');
-  assert.equal(failure.forkId, timedOut.forkId);
+  assert.equal(failure.spreadId, timedOut.spreadId);
 
   runtime.answerHover('ask-outer', text('reply'), outerToken);
   await runtime.pump();
 
   snapshot = runtime.snapshot();
-  const outerJoin = joinAt(snapshot, 'outer-merge');
-  assert.equal(outerJoin.lineage, undefined);
-  assert.deepEqual(outerJoin.arrived.map((pheromone) => pheromone.branchId), ['right']);
+  const outerGather = joinAt(snapshot, 'outer-gather');
+  assert.equal(outerGather.lineage, undefined);
+  assert.deepEqual(outerGather.arrived.map((pheromone) => pheromone.branchId), ['right']);
   assert.equal(calls.filter((call) => call.nodeId === 'done').length, 0);
 });
 
-test('an inner branch failure cancels only the inner fork and leaves the outer sibling', async () => {
+test('an inner branch failure cancels only the inner spread and leaves the outer sibling', async () => {
   const log = createMemoryLog();
   const executor: NodeExecutor = {
     async execute(node, input) {
@@ -435,31 +435,31 @@ test('an inner branch failure cancels only the inner fork and leaves the outer s
   await runtime.pump();
 
   const snapshot = runtime.snapshot();
-  assert.equal(snapshot.nodes['inner-merge']?.joins, undefined);
+  assert.equal(snapshot.nodes['inner-gather']?.gathers, undefined);
   const outerHover = snapshot.nodes['ask-outer']?.hover;
   assert.ok(outerHover !== undefined, 'the outer sibling hover survives');
   assert.equal(snapshot.rest, false);
 
-  const boomForkId = log.entries.find(
+  const boomSpreadId = log.entries.find(
     (entry) => entry.event === 'node.activated' && entry.nodeId === 'boom',
-  )?.forkId;
-  const outerForkId = log.entries.find(
+  )?.spreadId;
+  const outerSpreadId = log.entries.find(
     (entry) => entry.event === 'node.activated' && entry.nodeId === 'ask-outer',
-  )?.forkId;
-  assert.ok(boomForkId !== undefined);
-  assert.ok(outerForkId !== undefined);
-  assert.notEqual(boomForkId, outerForkId);
-  const failure = log.entries.find((entry) => entry.event === 'merge.failed');
+  )?.spreadId;
+  assert.ok(boomSpreadId !== undefined);
+  assert.ok(outerSpreadId !== undefined);
+  assert.notEqual(boomSpreadId, outerSpreadId);
+  const failure = log.entries.find((entry) => entry.event === 'gather.failed');
   assert.ok(failure !== undefined);
   assert.equal(failure.outcome, 'failed-branch');
-  assert.equal(failure.forkId, boomForkId);
+  assert.equal(failure.spreadId, boomSpreadId);
 
   runtime.answerHover('ask-outer', text('reply'), outerHover.token);
   await runtime.pump();
 
   const after = runtime.snapshot();
   assert.deepEqual(
-    joinAt(after, 'outer-merge').arrived.map((pheromone) => pheromone.branchId),
+    joinAt(after, 'outer-gather').arrived.map((pheromone) => pheromone.branchId),
     ['right'],
   );
 });

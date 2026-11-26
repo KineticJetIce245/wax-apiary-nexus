@@ -22,7 +22,7 @@ function isOlderThan(pheromone: Pheromone, now: number, ttlMs: number): boolean 
  * Drops input that has waited at a node longer than `defaults.queueTtlMs`.
  *
  * Only the two wait slots can age out: `state.receptor` and `state.pending`.
- * `active`, hovers, merge arrivals and answers are live or externally bound
+ * `active`, hovers, gather arrivals and answers are live or externally bound
  * work and are never removed by the TTL. An expired Pheromone is dropped
  * outright - not failed and not retried - and its slot is released.
  * Reservations held for someone else's in-flight output are untouched.

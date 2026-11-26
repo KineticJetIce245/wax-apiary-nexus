@@ -40,15 +40,15 @@ function chainComposition(): ReturnType<typeof parseComposition> {
   });
 }
 
-/** start -> fork (a -> ask-a, b -> ask-b): a cardinality change. */
-function forkComposition(): ReturnType<typeof parseComposition> {
+/** start -> spread (a -> ask-a, b -> ask-b): a cardinality change. */
+function spreadComposition(): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
-    id: 'identity-fork',
+    id: 'identity-spread',
     nodes: {
       start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'ask-a' },
@@ -59,7 +59,7 @@ function forkComposition(): ReturnType<typeof parseComposition> {
       'ask-a': { kind: 'user', config: { modality: 'text', prompt: 'A?' } },
       'ask-b': { kind: 'user', config: { modality: 'text', prompt: 'B?' } },
     },
-    edges: [{ id: 'e1', from: 'start', to: 'fork' }],
+    edges: [{ id: 'e1', from: 'start', to: 'spread' }],
   });
 }
 
@@ -146,14 +146,14 @@ test('a user hover resumes the same Pheromone id after the answer', async () => 
   assert.equal(hoverResolved?.pheromoneId, activated[0]?.pheromoneId);
 });
 
-test('fork still copies the Pheromone into one new id per branch', async () => {
+test('spread still copies the Pheromone into one new id per branch', async () => {
   const log = createMemoryLog();
   const executor: NodeExecutor = {
     async execute() {
       return text('branched');
     },
   };
-  const runtime = new PheromoneRuntime(forkComposition(), {
+  const runtime = new PheromoneRuntime(spreadComposition(), {
     executeForager: executor,
     now: () => START,
     onLog: log.sink,
@@ -171,15 +171,15 @@ test('fork still copies the Pheromone into one new id per branch', async () => {
   const emitted = log.entries.filter(
     (entry) => entry.event === 'pheromone.emitted' && branchTargets.has(entry.nodeId ?? ''),
   );
-  assert.equal(emitted.length, 2, 'one copy per fork branch');
+  assert.equal(emitted.length, 2, 'one copy per spread branch');
   const branchIds = emitted.map((entry) => entry.pheromoneId);
   assert.equal(typeof branchIds[0], 'string');
   assert.equal(typeof branchIds[1], 'string');
   assert.notEqual(branchIds[0], branchIds[1], 'each branch copy gets its own id');
-  assert.equal(emitted[0]?.forkId, emitted[1]?.forkId, 'both copies share the fork tag');
+  assert.equal(emitted[0]?.spreadId, emitted[1]?.spreadId, 'both copies share the spread tag');
   assert.notEqual(emitted[0]?.branchId, emitted[1]?.branchId, 'each copy carries its own branch');
   assert.ok(
     branchIds.every((id) => id !== input),
-    'fork is a cardinality change: no branch keeps the input id',
+    'spread is a cardinality change: no branch keeps the input id',
   );
 });

@@ -61,7 +61,7 @@ import {
   userNode,
   userAndForagerGraph,
   runnableForagerGraph,
-  pacedForkMergeDefinition,
+  pacedSpreadGatherDefinition,
   triggerRun,
   waitUntil,
 } from './support/graph-host-fixtures.js';
@@ -332,13 +332,13 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   assert.equal(env.registry.list().length, 2);
 });
 
-async function waitForMergePending(host: LiveHiveHost, graphId: string): Promise<void> {
+async function waitForGatherPending(host: LiveHiveHost, graphId: string): Promise<void> {
   await waitUntil(
     () =>
       host
         .statusOf(graphId)
-        ?.nodes.some((node) => node.nodeId === 'merge' && node.pending) === true,
-    `the maximum pump to leave ${graphId} merge pending`,
+        ?.nodes.some((node) => node.nodeId === 'gather' && node.pending) === true,
+    `the maximum pump to leave ${graphId} gather pending`,
   );
 }
 
@@ -409,7 +409,7 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
     await env.workspace.stop();
   });
 
-  const definition = pacedForkMergeDefinition('queued');
+  const definition = pacedSpreadGatherDefinition('queued');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -420,12 +420,12 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
   assert.equal(workspaceListenerCount(env.workspace), 3);
 
   await host.trigger('queued', 'start', text('seed'));
-  await waitForMergePending(host, 'queued');
+  await waitForGatherPending(host, 'queued');
   const loaded = host.statusOf('queued');
   assert.ok(loaded !== undefined);
   assert.equal(loaded.rest, false);
-  assert.equal(nodeStatus(loaded, 'merge').pending, true);
-  assert.equal(nodeStatus(loaded, 'merge').joins, 1);
+  assert.equal(nodeStatus(loaded, 'gather').pending, true);
+  assert.equal(nodeStatus(loaded, 'gather').gathers, 1);
 
   clock.advance(1_000);
   assert.equal(await host.unload('queued'), false);
@@ -440,8 +440,8 @@ test('a non-Rest field refuses unload, sweep and best-effort dispose', async (t)
   assert.ok(retained !== undefined);
   assert.equal(retained.rest, false);
   assert.equal(retained.residency.refCount, 0);
-  assert.equal(nodeStatus(retained, 'merge').pending, true);
-  assert.equal(nodeStatus(retained, 'merge').joins, 1);
+  assert.equal(nodeStatus(retained, 'gather').pending, true);
+  assert.equal(nodeStatus(retained, 'gather').gathers, 1);
 
   // dispose is best-effort: it must not bypass Rest-only safety. The non-Rest
   // graph is still visible to the caller, with its field and sessions intact.

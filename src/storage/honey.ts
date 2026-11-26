@@ -10,7 +10,7 @@ import type {
   BranchTag,
   HoverSpec,
   PersistedField,
-  PersistedJoinState,
+  PersistedGatherState,
   PersistedNodeState,
   Pheromone,
   Value,
@@ -58,20 +58,20 @@ function parseBranchTag(input: unknown, path: string): BranchTag {
   if (!isRecord(input)) {
     throw new Error(`${path}: expected a branch tag object`);
   }
-  const forkId = input['forkId'];
+  const spreadId = input['spreadId'];
   const branchId = input['branchId'];
-  if (typeof forkId !== 'string' || forkId === '') {
-    throw new Error(`${path}.forkId: expected a non-empty string`);
+  if (typeof spreadId !== 'string' || spreadId === '') {
+    throw new Error(`${path}.spreadId: expected a non-empty string`);
   }
   if (typeof branchId !== 'string' || branchId === '') {
     throw new Error(`${path}.branchId: expected a non-empty string`);
   }
-  return { forkId, branchId };
+  return { spreadId, branchId };
 }
 /**
  * A lineage is outer-to-inner. An empty array is rejected: an untagged
  * Pheromone omits `lineage` entirely, so there is only one representation for
- * "no enclosing fork".
+ * "no enclosing spread".
  */
 function parseLineage(input: unknown, path: string): BranchTag[] | undefined {
   if (input === undefined) {
@@ -89,7 +89,7 @@ function sameLineage(left: readonly BranchTag[], right: readonly BranchTag[]): b
   for (let index = 0; index < left.length; index += 1) {
     const a = left[index];
     const b = right[index];
-    if (a?.forkId !== b?.forkId || a?.branchId !== b?.branchId) {
+    if (a?.spreadId !== b?.spreadId || a?.branchId !== b?.branchId) {
       return false;
     }
   }
@@ -149,26 +149,26 @@ function parsePheromone(input: unknown, path: string): Pheromone {
   }
   assertValueShape(input['value'], `${path}.value`);
 
-  const rawForkId = input['forkId'];
+  const rawSpreadId = input['spreadId'];
   const rawBranchId = input['branchId'];
-  if (rawForkId !== undefined && (typeof rawForkId !== 'string' || rawForkId === '')) {
-    throw new Error(`${path}.forkId: expected a non-empty string`);
+  if (rawSpreadId !== undefined && (typeof rawSpreadId !== 'string' || rawSpreadId === '')) {
+    throw new Error(`${path}.spreadId: expected a non-empty string`);
   }
   if (rawBranchId !== undefined && (typeof rawBranchId !== 'string' || rawBranchId === '')) {
     throw new Error(`${path}.branchId: expected a non-empty string`);
   }
-  const flatForkId = rawForkId as string | undefined;
+  const flatSpreadId = rawSpreadId as string | undefined;
   const flatBranchId = rawBranchId as string | undefined;
 
   let lineage = parseLineage(input['lineage'], `${path}.lineage`);
   if (lineage === undefined) {
     // Stage 5D reads a pre-5D flat tag as a one-level lineage. The flat tag
     // remains the compatibility handle and still points at the last tag.
-    if (flatForkId !== undefined && flatBranchId !== undefined) {
-      lineage = [{ forkId: flatForkId, branchId: flatBranchId }];
-    } else if (flatForkId !== undefined || flatBranchId !== undefined) {
+    if (flatSpreadId !== undefined && flatBranchId !== undefined) {
+      lineage = [{ spreadId: flatSpreadId, branchId: flatBranchId }];
+    } else if (flatSpreadId !== undefined || flatBranchId !== undefined) {
       throw new Error(
-        `${path}: expected both forkId and branchId, or a lineage, for a tagged Pheromone`,
+        `${path}: expected both spreadId and branchId, or a lineage, for a tagged Pheromone`,
       );
     }
   } else {
@@ -176,9 +176,9 @@ function parsePheromone(input: unknown, path: string): Pheromone {
     if (current === undefined) {
       throw new Error(`${path}.lineage: expected at least one tag`);
     }
-    if (flatForkId !== undefined && flatForkId !== current.forkId) {
+    if (flatSpreadId !== undefined && flatSpreadId !== current.spreadId) {
       throw new Error(
-        `${path}.forkId: expected '${current.forkId}' to match the last lineage tag`,
+        `${path}.spreadId: expected '${current.spreadId}' to match the last lineage tag`,
       );
     }
     if (flatBranchId !== undefined && flatBranchId !== current.branchId) {
@@ -195,7 +195,7 @@ function parsePheromone(input: unknown, path: string): Pheromone {
     at,
     ...(current === undefined
       ? {}
-      : { forkId: current.forkId, branchId: current.branchId }),
+      : { spreadId: current.spreadId, branchId: current.branchId }),
     ...(lineage === undefined ? {} : { lineage }),
   };
 }
@@ -225,48 +225,48 @@ function parseHover(input: unknown, path: string): HoverSpec {
   };
 }
 
-function parseJoins(
+function parseGathers(
   input: unknown,
   path: string,
-): Record<string, PersistedJoinState> {
+): Record<string, PersistedGatherState> {
   if (!isRecord(input)) {
-    throw new Error(`${path}: expected an object keyed by forkId`);
+    throw new Error(`${path}: expected an object keyed by spreadId`);
   }
 
-  const entries: [string, PersistedJoinState][] = [];
-  for (const [forkId, raw] of Object.entries(input)) {
-    if (forkId === '') {
-      throw new Error(`${path}: join forkId must be non-empty`);
+  const entries: [string, PersistedGatherState][] = [];
+  for (const [spreadId, raw] of Object.entries(input)) {
+    if (spreadId === '') {
+      throw new Error(`${path}: join spreadId must be non-empty`);
     }
-    const joinPath = `${path}.${forkId}`;
+    const gatherPath = `${path}.${spreadId}`;
     if (!isRecord(raw)) {
-      throw new Error(`${joinPath}: expected an object`);
+      throw new Error(`${gatherPath}: expected an object`);
     }
     const rawArrived = raw['arrived'];
     if (!Array.isArray(rawArrived)) {
-      throw new Error(`${joinPath}: expected an arrived Pheromone array`);
+      throw new Error(`${gatherPath}: expected an arrived Pheromone array`);
     }
 
     const rawCompletedAt = raw['completedAt'];
     const rawTimedOutAt = raw['timedOutAt'];
-    const parentLineage = parseLineage(raw['lineage'], `${joinPath}.lineage`);
+    const parentLineage = parseLineage(raw['lineage'], `${gatherPath}.lineage`);
     if (rawCompletedAt !== undefined && rawTimedOutAt !== undefined) {
-      throw new Error(`${joinPath}: a join cannot be both completed and timed out`);
+      throw new Error(`${gatherPath}: a join cannot be both completed and timed out`);
     }
     if (rawCompletedAt !== undefined) {
-      // Stage 5A completed tombstone: it remembers the forkId but holds no
+      // Stage 5A completed tombstone: it remembers the spreadId but holds no
       // Pheromones, so a late branch can still be dropped on restore.
       if (
         typeof rawCompletedAt !== 'string' ||
         !Number.isFinite(Date.parse(rawCompletedAt))
       ) {
-        throw new Error(`${joinPath}.completedAt: expected an ISO timestamp`);
+        throw new Error(`${gatherPath}.completedAt: expected an ISO timestamp`);
       }
       if (rawArrived.length !== 0) {
-        throw new Error(`${joinPath}.arrived: a completed join holds no Pheromones`);
+        throw new Error(`${gatherPath}.arrived: a completed join holds no Pheromones`);
       }
       entries.push([
-        forkId,
+        spreadId,
         {
           arrived: [],
           ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
@@ -276,19 +276,19 @@ function parseJoins(
       continue;
     }
     if (rawTimedOutAt !== undefined) {
-      // Stage 5B timed-out tombstone: the fork failed, so a late branch is
+      // Stage 5B timed-out tombstone: the spread failed, so a late branch is
       // dropped instead of reopening the join.
       if (
         typeof rawTimedOutAt !== 'string' ||
         !Number.isFinite(Date.parse(rawTimedOutAt))
       ) {
-        throw new Error(`${joinPath}.timedOutAt: expected an ISO timestamp`);
+        throw new Error(`${gatherPath}.timedOutAt: expected an ISO timestamp`);
       }
       if (rawArrived.length !== 0) {
-        throw new Error(`${joinPath}.arrived: a timed-out join holds no Pheromones`);
+        throw new Error(`${gatherPath}.arrived: a timed-out join holds no Pheromones`);
       }
       entries.push([
-        forkId,
+        spreadId,
         {
           arrived: [],
           ...(parentLineage === undefined ? {} : { lineage: parentLineage }),
@@ -299,28 +299,28 @@ function parseJoins(
     }
 
     if (rawArrived.length === 0) {
-      throw new Error(`${joinPath}.arrived: expected at least one Pheromone`);
+      throw new Error(`${gatherPath}.arrived: expected at least one Pheromone`);
     }
     const rawDeadlineAt = raw['deadlineAt'];
     if (typeof rawDeadlineAt !== 'number' || !Number.isSafeInteger(rawDeadlineAt)) {
-      throw new Error(`${joinPath}.deadlineAt: expected an absolute epoch-ms deadline`);
+      throw new Error(`${gatherPath}.deadlineAt: expected an absolute epoch-ms deadline`);
     }
 
     const seen = new Set<string>();
     let derivedParent: BranchTag[] | undefined;
     const arrived = rawArrived.map((entry, index) => {
-      const pheromone = parsePheromone(entry as unknown, `${joinPath}.arrived[${String(index)}]`);
-      if (pheromone.forkId !== forkId) {
+      const pheromone = parsePheromone(entry as unknown, `${gatherPath}.arrived[${String(index)}]`);
+      if (pheromone.spreadId !== spreadId) {
         throw new Error(
-          `${joinPath}.arrived[${String(index)}].forkId: expected '${forkId}'`,
+          `${gatherPath}.arrived[${String(index)}].spreadId: expected '${spreadId}'`,
         );
       }
       if (pheromone.branchId === undefined || pheromone.branchId === '') {
-        throw new Error(`${joinPath}.arrived[${String(index)}].branchId: expected a branch id`);
+        throw new Error(`${gatherPath}.arrived[${String(index)}].branchId: expected a branch id`);
       }
       if (seen.has(pheromone.branchId)) {
         throw new Error(
-          `${joinPath}.arrived[${String(index)}].branchId: duplicate branch '${pheromone.branchId}'`,
+          `${gatherPath}.arrived[${String(index)}].branchId: duplicate branch '${pheromone.branchId}'`,
         );
       }
       seen.add(pheromone.branchId);
@@ -329,7 +329,7 @@ function parseJoins(
         derivedParent = parent;
       } else if (!sameLineage(derivedParent, parent)) {
         throw new Error(
-          `${joinPath}.arrived[${String(index)}]: branch lineages disagree on the parent`,
+          `${gatherPath}.arrived[${String(index)}]: branch lineages disagree on the parent`,
         );
       }
       return pheromone;
@@ -337,10 +337,10 @@ function parseJoins(
 
     const effectiveParent = derivedParent ?? [];
     if (parentLineage !== undefined && !sameLineage(parentLineage, effectiveParent)) {
-      throw new Error(`${joinPath}.lineage: does not match its branch Pheromones`);
+      throw new Error(`${gatherPath}.lineage: does not match its branch Pheromones`);
     }
     entries.push([
-      forkId,
+      spreadId,
       {
         arrived,
         ...(effectiveParent.length === 0
@@ -390,8 +390,8 @@ function parseNodeState(input: unknown, path: string): PersistedNodeState {
   if (isRecord(input['state'])) {
     state.state = structuredClone(input['state']);
   }
-  if (input['joins'] !== undefined) {
-    state.joins = parseJoins(input['joins'], `${path}.joins`);
+  if (input['gathers'] !== undefined) {
+    state.gathers = parseGathers(input['gathers'], `${path}.gathers`);
   }
   return state;
 }

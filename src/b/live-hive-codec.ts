@@ -18,8 +18,8 @@ export class LiveHiveCodecError extends Error {
 
 /**
  * Map a LiveHive to the runtime's CompositionDefinition. Beelines become
- * normal edges, except fork beelines: the runtime represents fork targets in
- * `config.branches`, and a fork node may not also have outgoing edges.
+ * normal edges, except spread beelines: the runtime represents spread targets in
+ * `config.branches`, and a spread node may not also have outgoing edges.
  */
 export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
   const parsed = parseLiveHive(live);
@@ -28,7 +28,7 @@ export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
   for (const [beeId, bee] of Object.entries(parsed.bees)) {
     nodes[beeId] = {
       kind: bee.kind,
-      config: forkConfig(parsed, beeId, bee),
+      config: spreadConfig(parsed, beeId, bee),
     };
   }
 
@@ -38,8 +38,8 @@ export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
     if (source === undefined) {
       throw new LiveHiveCodecError(`beeline '${beelineId}' has an unknown source bee`);
     }
-    if (source.kind === 'fork') {
-      // Fork branches live in the node config; a normal edge is invalid.
+    if (source.kind === 'spread') {
+      // Spread branches live in the node config; a normal edge is invalid.
       continue;
     }
     const edge: Record<string, unknown> = {
@@ -135,8 +135,8 @@ function importNode(
 ): Bee {
   const config: Record<string, unknown> = { ...node.config };
   const outgoing = importEdges(nodeId, edges, beelines);
-  if (node.kind === 'fork') {
-    appendForkBranches(nodeId, node.config.branches, beelines, outgoing);
+  if (node.kind === 'spread') {
+    appendSpreadBranches(nodeId, node.config.branches, beelines, outgoing);
   }
   const sessionMode = importBinding(nodeId, binding, config, sessionBindings);
   return {
@@ -170,14 +170,14 @@ function importEdges(
   return outgoing;
 }
 
-function appendForkBranches(
+function appendSpreadBranches(
   nodeId: string,
   branches: readonly { readonly id: string; readonly to: string }[],
   beelines: Record<string, Beeline>,
   outgoing: string[],
 ): void {
   for (const branch of branches) {
-    const beelineId = `fork:${nodeId}:${branch.id}`;
+    const beelineId = `spread:${nodeId}:${branch.id}`;
     if (Object.hasOwn(beelines, beelineId)) {
       throw new LiveHiveCodecError(`duplicate beeline id '${beelineId}'`);
     }
@@ -220,12 +220,12 @@ export function toGraphBindings(live: LiveHive): GraphBindings {
   return bindings;
 }
 
-function forkConfig(
+function spreadConfig(
   live: LiveHive,
   beeId: string,
   bee: Bee,
 ): Readonly<Record<string, unknown>> {
-  if (bee.kind !== 'fork') {
+  if (bee.kind !== 'spread') {
     return bee.config;
   }
   const existing = bee.config['branches'];
@@ -241,7 +241,7 @@ function forkConfig(
     return { id: line.branch ?? beelineId, to: line.toBee };
   });
   if (branches.length === 0) {
-    throw new LiveHiveCodecError(`fork bee '${beeId}' needs at least one branch`);
+    throw new LiveHiveCodecError(`spread bee '${beeId}' needs at least one branch`);
   }
   return { ...bee.config, branches };
 }

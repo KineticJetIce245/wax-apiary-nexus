@@ -107,7 +107,7 @@ A real test:
   a unit test with two fake records do not test cross-harness routing and do
   not count.
 - Exercises a realistic end-to-end case (for example load -> trigger ->
-  fork/merge -> Rest -> unload/reload), not just an internal function call.
+  spread/gather -> Rest -> unload/reload), not just an internal function call.
 - Uses an unknown-answer prompt (random constraint), never a fixed prompt whose
   answer is already known; it records the actual output and the constraints it
   satisfied.
@@ -141,7 +141,7 @@ pile. If an old file is restored for reference, keep it in `../docs/temp/` and
 mark it historical.
 
 Local docs: keep at most ten core files in `../docs/`; put each small goal in
-`../docs/temp/` and merge or remove it when done.
+`../docs/temp/` and collect or remove it when done.
 
 ### 11. Complexity and File Budgets
 

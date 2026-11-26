@@ -17,8 +17,8 @@ function composition(withCounter = false): ReturnType<typeof parseComposition> {
         kind: 'forager',
         config: { connection: 'codex', prompt: 'start' },
       },
-      fork: {
-        kind: 'fork',
+      spread: {
+        kind: 'spread',
         config: {
           branches: [
             { id: 'a', to: 'left' },
@@ -28,17 +28,17 @@ function composition(withCounter = false): ReturnType<typeof parseComposition> {
       },
       left: { kind: 'forager', config: { connection: 'codex', prompt: 'left' } },
       right: { kind: 'forager', config: { connection: 'dsh', prompt: 'right' } },
-      merge: { kind: 'merge', config: { required: ['a', 'b'], combine: 'text' } },
+      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
       ...(withCounter
         ? { count: { kind: 'counter', config: { max: 1, step: 1 } } }
         : {}),
     },
     edges: [
-      { id: 'start-fork', from: 'start', to: 'fork' },
-      { id: 'left-merge', from: 'left', to: 'merge' },
-      { id: 'right-merge', from: 'right', to: 'merge' },
-      { id: 'merge-done', from: 'merge', to: 'done' },
+      { id: 'start-spread', from: 'start', to: 'spread' },
+      { id: 'left-gather', from: 'left', to: 'gather' },
+      { id: 'right-gather', from: 'right', to: 'gather' },
+      { id: 'gather-done', from: 'gather', to: 'done' },
       ...(withCounter
         ? [
             { id: 'count-continue', from: 'count', to: 'done', when: 'continue' as const },
@@ -64,15 +64,15 @@ test('fromCompositionDefinition preserves node/edge ids and session bindings', (
   assert.equal(live.liveId, 'imported');
   assert.deepEqual(Object.keys(live.bees), [
     'start',
-    'fork',
+    'spread',
     'left',
     'right',
-    'merge',
+    'gather',
     'done',
   ]);
-  assert.deepEqual(live.bees['start']?.outgoing, ['start-fork']);
-  assert.equal(live.beelines['start-fork']?.fromBee, 'start');
-  assert.equal(live.beelines['start-fork']?.toBee, 'fork');
+  assert.deepEqual(live.bees['start']?.outgoing, ['start-spread']);
+  assert.equal(live.beelines['start-spread']?.fromBee, 'start');
+  assert.equal(live.beelines['start-spread']?.toBee, 'spread');
   assert.deepEqual(live.bindings, { start: 'session-one' });
 
   assert.equal(live.bees['left']?.sessionMode, 'fresh_once');
@@ -84,25 +84,25 @@ test('fromCompositionDefinition preserves node/edge ids and session bindings', (
   assert.equal(live.bees['right']?.config['connection'], 'dsh');
 });
 
-test('fork branches become labelled beelines without fabricating edges', () => {
+test('spread branches become labelled beelines without fabricating edges', () => {
   const live = fromCompositionDefinition(composition());
-  assert.deepEqual(live.bees['fork']?.outgoing, [
-    'fork:fork:a',
-    'fork:fork:b',
+  assert.deepEqual(live.bees['spread']?.outgoing, [
+    'spread:spread:a',
+    'spread:spread:b',
   ]);
-  assert.deepEqual(live.beelines['fork:fork:a'], {
-    fromBee: 'fork',
+  assert.deepEqual(live.beelines['spread:spread:a'], {
+    fromBee: 'spread',
     toBee: 'left',
     branch: 'a',
   });
-  assert.deepEqual(live.beelines['fork:fork:b'], {
-    fromBee: 'fork',
+  assert.deepEqual(live.beelines['spread:spread:b'], {
+    fromBee: 'spread',
     toBee: 'right',
     branch: 'b',
   });
-  assert.equal(live.beelines['start-fork']?.branch, undefined);
-  assert.equal(live.beelines['left-merge']?.toBee, 'merge');
-  assert.equal(live.beelines['merge-done']?.toBee, 'done');
+  assert.equal(live.beelines['start-spread']?.branch, undefined);
+  assert.equal(live.beelines['left-gather']?.toBee, 'gather');
+  assert.equal(live.beelines['gather-done']?.toBee, 'done');
 });
 
 test('importer copies composition triggers into schedules', () => {

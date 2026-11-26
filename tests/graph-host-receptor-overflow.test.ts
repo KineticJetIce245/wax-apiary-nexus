@@ -22,7 +22,7 @@ function cappedGraph(id: string, queueMax: number): CompositionDefinition {
     schemaVersion: 1,
     id,
     nodes: {
-      only: { kind: 'forager', config: { connection: 'fake', prompt: 'run {{input}}' } },
+      only: { kind: 'forager', config: { connection: 'fake', prompt: 'run {{message}}' } },
     },
     edges: [],
     defaults: { queueMax },

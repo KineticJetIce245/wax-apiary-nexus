@@ -55,8 +55,8 @@ test('resolves an existing session and a fresh session into two executors', asyn
   t.after(() => workspace.stop());
   const existing = await registry.create(project, { displayName: 'existing-session' });
   const definition = makeDefinition({
-    reuse: foragerNode('reuse {{input}}'),
-    fresh: foragerNode('fresh {{input}}'),
+    reuse: foragerNode('reuse {{message}}'),
+    fresh: foragerNode('fresh {{message}}'),
   });
   const bindings: GraphBindings = {
     reuse: { kind: 'session', sessionId: existing.sessionId },
@@ -344,7 +344,7 @@ test('dispose releases routing and refuses further forager work', async (t) => {
   const { adapter, workspace, registry, project } = makeHarness();
   t.after(() => workspace.stop());
   const existing = await registry.create(project);
-  const definition = makeDefinition({ reuse: foragerNode('reuse {{input}}') });
+  const definition = makeDefinition({ reuse: foragerNode('reuse {{message}}') });
   const instantiated = await instantiateForagers({
     definition,
     bindings: { reuse: { kind: 'session', sessionId: existing.sessionId } },
@@ -391,7 +391,7 @@ test('a hydrated session binding reattaches through ensureAttached and executes'
     now: () => FIXED_NOW,
     store,
   });
-  const definition = makeDefinition({ reuse: foragerNode('reuse {{input}}') });
+  const definition = makeDefinition({ reuse: foragerNode('reuse {{message}}') });
   const bindings: GraphBindings = {
     reuse: { kind: 'session', sessionId: existing.sessionId },
   };

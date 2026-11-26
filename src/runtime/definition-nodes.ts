@@ -2,8 +2,11 @@ import type {
   CompositionDefaults,
   EdgeDefinition,
   EdgeWhen,
+  FilterConfig,
+  JsonValue,
   NodeDefinition,
   NodeId,
+  NodeKind,
 } from './types.js';
 import {
   DEFAULT_MIN_INTERVAL_MS,
@@ -11,6 +14,7 @@ import {
   DEFAULT_QUEUE_TTL_MS,
 } from './definition-constants.js';
 import { parseSpreadConfig, parseGatherConfig } from './definition-flow-config.js';
+import { parseBeeIo, placeholderSources, type BeeIo } from './definition-io.js';
 import {
   ID_PATTERN,
   WHEN_VALUES,
@@ -88,87 +92,171 @@ export function parseNodes(
   }
 
   for (const [id, raw] of entries) {
-    const path = `nodes.${id}`;
-    if (!ID_PATTERN.test(id)) {
-      issues.push(`${path}: id must match ${ID_PATTERN.source}`);
-    }
-    if (!isRecord(raw)) {
-      issues.push(`${path}: expected an object`);
-      continue;
-    }
-
-    pushUnknownFields(raw, ['kind', 'config', 'minIntervalMs'], path, issues);
-
-    const kind = raw['kind'];
-    if (typeof kind !== 'string') {
-      issues.push(`${path}.kind: expected a string`);
-      continue;
-    }
-    if (
-      kind !== 'forager' &&
-      kind !== 'worker' &&
-      kind !== 'condition' &&
-      kind !== 'counter' &&
-      kind !== 'user' &&
-      kind !== 'spread' &&
-      kind !== 'gather'
-    ) {
-      issues.push(`${path}.kind: unknown node kind '${kind}'`);
-      continue;
-    }
-
-    const minIntervalMs = raw['minIntervalMs'] ?? defaults.minIntervalMs;
-    if (!isPositiveInteger(minIntervalMs) || minIntervalMs < 1000) {
-      issues.push(`${path}.minIntervalMs: expected an integer >= 1000`);
-      continue;
-    }
-
-    const config = raw['config'];
-    if (!isRecord(config)) {
-      issues.push(`${path}.config: expected an object`);
-      continue;
-    }
-
-    const configPath = `${path}.config`;
-    if (kind === 'forager') {
-      const parsed = parseForagerConfig(config, configPath, issues);
-      if (parsed !== null) {
-        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
-      }
-    } else if (kind === 'worker') {
-      const parsed = parseWorkerConfig(config, configPath, issues);
-      if (parsed !== null) {
-        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
-      }
-    } else if (kind === 'condition') {
-      const parsed = parseConditionConfig(config, configPath, issues);
-      if (parsed !== null) {
-        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
-      }
-    } else if (kind === 'counter') {
-      const parsed = parseCounterConfig(config, configPath, issues);
-      if (parsed !== null) {
-        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
-      }
-    } else if (kind === 'spread') {
-      const parsed = parseSpreadConfig(config, configPath, issues);
-      if (parsed !== null) {
-        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
-      }
-    } else if (kind === 'gather') {
-      const parsed = parseGatherConfig(config, configPath, issues);
-      if (parsed !== null) {
-        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
-      }
-    } else {
-      const parsed = parseUserConfig(config, configPath, issues);
-      if (parsed !== null) {
-        nodes.set(id, { id, kind, config: parsed, minIntervalMs });
-      }
+    const node = parseNode(id, raw, defaults, issues);
+    if (node !== null) {
+      nodes.set(id, node);
     }
   }
 
   return nodes;
+}
+
+interface NodeBaseParts {
+  readonly id: NodeId;
+  readonly minIntervalMs: number;
+  readonly reads: readonly string[];
+  readonly writes: readonly string[];
+  fallback?: Readonly<Record<string, JsonValue>>;
+  filter?: FilterConfig;
+}
+
+interface NodeHeader {
+  readonly kind: NodeKind;
+  readonly minIntervalMs: number;
+  readonly config: Record<string, unknown>;
+}
+
+function parseNode(
+  id: NodeId,
+  raw: unknown,
+  defaults: CompositionDefaults,
+  issues: string[],
+): NodeDefinition | null {
+  const path = `nodes.${id}`;
+  if (!ID_PATTERN.test(id)) {
+    issues.push(`${path}: id must match ${ID_PATTERN.source}`);
+  }
+  if (!isRecord(raw)) {
+    issues.push(`${path}: expected an object`);
+    return null;
+  }
+  pushUnknownFields(
+    raw,
+    ['kind', 'config', 'minIntervalMs', 'reads', 'writes', 'fallback', 'filter'],
+    path,
+    issues,
+  );
+  const header = parseNodeHeader(raw, path, defaults, issues);
+  if (header === null) {
+    return null;
+  }
+  const io = parseBeeIo(raw, header.kind, path, issues);
+  if (io === null) {
+    return null;
+  }
+  const base = nodeBaseParts(id, header.minIntervalMs, io);
+  const configPath = `${path}.config`;
+  if (isTaskKind(header.kind)) {
+    return parseTaskNode(
+      header.kind,
+      header.config,
+      configPath,
+      base,
+      issues,
+      placeholderSources(io),
+    );
+  }
+  return parseControlNode(header.kind, header.config, configPath, base, issues);
+}
+
+function parseNodeHeader(
+  raw: Record<string, unknown>,
+  path: string,
+  defaults: CompositionDefaults,
+  issues: string[],
+): NodeHeader | null {
+  const kind = raw['kind'];
+  if (typeof kind !== 'string' || !isNodeKind(kind)) {
+    issues.push(`${path}.kind: unknown node kind '${String(kind)}'`);
+    return null;
+  }
+  const minIntervalMs = raw['minIntervalMs'] ?? defaults.minIntervalMs;
+  if (!isPositiveInteger(minIntervalMs) || minIntervalMs < 1000) {
+    issues.push(`${path}.minIntervalMs: expected an integer >= 1000`);
+    return null;
+  }
+  const config = raw['config'];
+  if (!isRecord(config)) {
+    issues.push(`${path}.config: expected an object`);
+    return null;
+  }
+  return { kind, minIntervalMs, config };
+}
+
+function nodeBaseParts(
+  id: NodeId,
+  minIntervalMs: number,
+  io: BeeIo,
+): NodeBaseParts {
+  const base: NodeBaseParts = { id, minIntervalMs, reads: io.reads, writes: io.writes };
+  if (io.fallback !== undefined) {
+    base.fallback = io.fallback;
+  }
+  if (io.filter !== undefined) {
+    base.filter = io.filter;
+  }
+  return base;
+}
+
+function isTaskKind(
+  kind: NodeKind,
+): kind is 'forager' | 'worker' | 'condition' | 'counter' {
+  return kind === 'forager' || kind === 'worker' || kind === 'condition' || kind === 'counter';
+}
+
+function isNodeKind(kind: string): kind is NodeKind {
+  return (
+    kind === 'forager' ||
+    kind === 'worker' ||
+    kind === 'condition' ||
+    kind === 'counter' ||
+    kind === 'user' ||
+    kind === 'spread' ||
+    kind === 'gather'
+  );
+}
+
+function parseTaskNode(
+  kind: 'forager' | 'worker' | 'condition' | 'counter',
+  config: Record<string, unknown>,
+  configPath: string,
+  base: NodeBaseParts,
+  issues: string[],
+  placeholders: readonly string[],
+): NodeDefinition | null {
+  if (kind === 'forager') {
+    const parsed = parseForagerConfig(config, configPath, issues, placeholders);
+    return parsed === null ? null : { ...base, kind, config: parsed };
+  }
+  if (kind === 'worker') {
+    const parsed = parseWorkerConfig(config, configPath, issues);
+    return parsed === null ? null : { ...base, kind, config: parsed };
+  }
+  if (kind === 'condition') {
+    const parsed = parseConditionConfig(config, configPath, issues);
+    return parsed === null ? null : { ...base, kind, config: parsed };
+  }
+  const parsed = parseCounterConfig(config, configPath, issues);
+  return parsed === null ? null : { ...base, kind, config: parsed };
+}
+
+function parseControlNode(
+  kind: 'user' | 'spread' | 'gather',
+  config: Record<string, unknown>,
+  configPath: string,
+  base: NodeBaseParts,
+  issues: string[],
+): NodeDefinition | null {
+  if (kind === 'user') {
+    const parsed = parseUserConfig(config, configPath, issues);
+    return parsed === null ? null : { ...base, kind, config: parsed };
+  }
+  if (kind === 'spread') {
+    const parsed = parseSpreadConfig(config, configPath, issues);
+    return parsed === null ? null : { ...base, kind, config: parsed };
+  }
+  const parsed = parseGatherConfig(config, configPath, issues);
+  return parsed === null ? null : { ...base, kind, config: parsed };
 }
 
 export function parseEdges(

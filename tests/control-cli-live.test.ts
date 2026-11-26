@@ -121,7 +121,7 @@ test('wax live/template/dispatch use one daemon endpoint', async (t) => {
         ...live.bees['draft']!,
         config: {
           ...live.bees['draft']!.config,
-          prompt: 'draft migrated {{input}}',
+          prompt: 'draft migrated {{message}}',
         },
       },
     },

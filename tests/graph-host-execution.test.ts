@@ -103,7 +103,7 @@ test('a spread/gather graph runs to Rest and status never contains bodies or tok
   const definition = fastDefinition(
     'main',
     {
-      start: forager('start {{input}}'),
+      start: forager('start {{message}}'),
       spread: {
         kind: 'spread',
         config: {
@@ -113,8 +113,8 @@ test('a spread/gather graph runs to Rest and status never contains bodies or tok
           ],
         },
       },
-      'branch-a': forager('branch-a {{input}}'),
-      'branch-b': forager('branch-b {{input}}'),
+      'branch-a': forager('branch-a {{message}}'),
+      'branch-b': forager('branch-b {{message}}'),
       gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
     },
     [
@@ -197,8 +197,8 @@ test('two loaded graphs stay independent through trigger and unload', async (t) 
     await env.workspace.stop();
   });
 
-  const graphA = runnableForagerGraph('graph-a', 'A {{input}}');
-  const graphB = runnableForagerGraph('graph-b', 'B {{input}}');
+  const graphA = runnableForagerGraph('graph-a', 'A {{message}}');
+  const graphB = runnableForagerGraph('graph-b', 'B {{message}}');
   await host.loadGraph({ definition: graphA, bindings: allFresh(graphA), project: env.project });
   await host.loadGraph({ definition: graphB, bindings: allFresh(graphB), project: env.project });
 
@@ -255,7 +255,7 @@ test('an unknown trigger node rethrows the runtime error and releases the lease'
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('lease', 'run {{input}}');
+  const definition = runnableForagerGraph('lease', 'run {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -579,7 +579,7 @@ test('answer only binds the hover; the field completes in the background', async
     'answer-nonrest',
     {
       ask: userNode(),
-      idle: forager('idle {{input}}'),
+      idle: forager('idle {{message}}'),
     },
     [{ id: 'e', from: 'ask', to: 'idle' }],
   );
@@ -618,8 +618,8 @@ test('trigger refreshes the lastAccessAt of every bound session', async (t) => {
   });
 
   const definition = fastDefinition('touch-trigger', {
-    first: forager('first {{input}}'),
-    second: forager('second {{input}}'),
+    first: forager('first {{message}}'),
+    second: forager('second {{message}}'),
   });
   await host.loadGraph({ definition, bindings: allFresh(definition), project: env.project });
   const sessions = env.registry.list();
@@ -695,7 +695,7 @@ test('a failing touch does not change a trigger or answer result', async (t) => 
 
   const definition = fastDefinition(
     'touch-failure',
-    { ask: userNode(), run: forager('run {{input}}') },
+    { ask: userNode(), run: forager('run {{message}}') },
     [{ id: 'e', from: 'ask', to: 'run' }],
   );
   await host.loadGraph({ definition, bindings: allFresh(definition), project });

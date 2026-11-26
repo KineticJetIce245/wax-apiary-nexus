@@ -7,7 +7,7 @@ export function simpleLiveHive(): LiveHive {
     bees: {
       draft: {
         kind: 'forager',
-        config: { connection: 'codex', prompt: 'draft {{input}}' },
+        config: { connection: 'codex', prompt: 'draft {{message}}' },
         outgoing: ['l1'],
         roleLabel: 'planner',
         sessionMode: 'fresh_once',
@@ -41,7 +41,7 @@ export function spreadLiveHive(): LiveHive {
     bees: {
       start: {
         kind: 'forager',
-        config: { connection: 'codex', prompt: 'start {{input}}' },
+        config: { connection: 'codex', prompt: 'start {{message}}' },
         outgoing: ['to-spread'],
       },
       spread: {
@@ -93,7 +93,7 @@ export function conditionLiveHive(): LiveHive {
       },
       condition: {
         kind: 'condition',
-        config: { mode: 'boolean' },
+        config: { when: { path: 'boolean', equals: true } },
         outgoing: ['yes', 'no'],
       },
       done: {

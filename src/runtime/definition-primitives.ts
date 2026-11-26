@@ -1,4 +1,5 @@
 import type { EdgeWhen } from './types.js';
+import { isValidPath } from './value-paths.js';
 
 export const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -36,11 +37,31 @@ export function pushUnknownFields(
   }
 }
 
-export function pushUnknownPlaceholders(prompt: string, path: string, issues: string[]): void {
+/**
+ * Every `{{dot.path}}` placeholder must be a valid read path and must be
+ * declared in `reads` or in a `fallback` key; otherwise a prompt could read a
+ * path the Bee never declared (ARCHITECTURE.md §4.12).
+ */
+export function pushUnknownPlaceholders(
+  prompt: string,
+  path: string,
+  declared: readonly string[],
+  issues: string[],
+): void {
   for (const match of prompt.matchAll(/\{\{([^}]*)\}\}/g)) {
-    const name = match[1] ?? '';
-    if (name.trim() !== 'input') {
-      issues.push(`${path}: unsupported template placeholder '{{${name}}}' (only {{input}})`);
+    const name = (match[1] ?? '').trim();
+    if (name === '') {
+      issues.push(`${path}: empty template placeholder`);
+      continue;
+    }
+    if (!isValidPath(name, 'read')) {
+      issues.push(`${path}: template placeholder '{{${name}}}' is not a dot path`);
+      continue;
+    }
+    if (!declared.includes(name)) {
+      issues.push(
+        `${path}: template placeholder '{{${name}}}' must be declared in reads or fallback`,
+      );
     }
   }
 

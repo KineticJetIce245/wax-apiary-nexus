@@ -17,7 +17,7 @@ function guardComposition(): ReturnType<typeof parseComposition> {
     schemaVersion: 1,
     id: 'guard',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'run {{input}}' } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'run {{message}}' } },
     },
     edges: [],
   });

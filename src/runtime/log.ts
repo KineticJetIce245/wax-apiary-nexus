@@ -19,6 +19,7 @@ export type RuntimeEvent =
   | 'guard.opened'
   | 'guard.resolved'
   | 'guard.timeout'
+  | 'value.filtered'
   | 'value.drop-missing'
   | 'runtime.restored'
   | 'runtime.attention'

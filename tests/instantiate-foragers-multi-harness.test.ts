@@ -73,9 +73,9 @@ test('routes each forager binding to its own harness workspace', async (t) => {
   const codexSession = await registry.create(project, { harness: 'codex' });
 
   const definition = makeDefinition({
-    reuse: foragerNode('reuse {{input}}'),
-    fresh_dsh: foragerNode('fresh dsh {{input}}'),
-    fresh_codex: foragerNode('fresh codex {{input}}'),
+    reuse: foragerNode('reuse {{message}}'),
+    fresh_dsh: foragerNode('fresh dsh {{message}}'),
+    fresh_codex: foragerNode('fresh codex {{message}}'),
   });
   const bindings: GraphBindings = {
     reuse: { kind: 'session', sessionId: codexSession.sessionId },
@@ -147,7 +147,7 @@ test('fresh_once mapping is reused for an explicit harness', async (t) => {
     join(mkdtempSync(join(tmpdir(), 'wax-m9a-once-')), 'graph-bindings.json'),
     { now: () => FIXED_NOW },
   );
-  const definition = makeDefinition({ only: foragerNode('run {{input}}') });
+  const definition = makeDefinition({ only: foragerNode('run {{message}}') });
   const options = {
     definition,
     graphId: 'once-dsh',

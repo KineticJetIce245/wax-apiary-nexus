@@ -69,7 +69,7 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
   mkdirSync(dirname(corrupt.paths.field), { recursive: true });
   writeFileSync(corrupt.paths.field, '{not valid json', 'utf8');
 
-  const corruptDefinition = runnableForagerGraph('corrupt', 'corrupt {{input}}');
+  const corruptDefinition = runnableForagerGraph('corrupt', 'corrupt {{message}}');
   await assert.rejects(
     host.loadGraph({
       definition: corruptDefinition,
@@ -101,7 +101,7 @@ test('a corrupt or unsupported Honey field fails load before creating a session'
     }),
     'utf8',
   );
-  const oldDefinition = runnableForagerGraph('old-schema', 'old {{input}}');
+  const oldDefinition = runnableForagerGraph('old-schema', 'old {{message}}');
   await assert.rejects(
     host.loadGraph({
       definition: oldDefinition,
@@ -135,7 +135,7 @@ test('a revision mismatch fails restore, releases only the session it created an
     await env.workspace.stop();
   });
 
-  const firstDefinition = runnableForagerGraph('revision', 'old {{input}}');
+  const firstDefinition = runnableForagerGraph('revision', 'old {{message}}');
   await host.loadGraph({
     definition: firstDefinition,
     bindings: allFresh(firstDefinition),
@@ -149,7 +149,7 @@ test('a revision mismatch fails restore, releases only the session it created an
   const retainedSessionIds = env.registry.list().map((record) => record.sessionId);
   assert.equal(retainedSessionIds.length, 1);
 
-  const nextDefinition = runnableForagerGraph('revision', 'new {{input}}');
+  const nextDefinition = runnableForagerGraph('revision', 'new {{message}}');
   assert.notEqual(nextDefinition.graphRevision, firstDefinition.graphRevision);
   const createdBefore = env.adapter.createdNativeIds.length;
 
@@ -198,7 +198,7 @@ test('status exposes only recovery node ids, never a persisted body', async (t) 
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('recovery', 'secret {{input}}');
+  const definition = runnableForagerGraph('recovery', 'secret {{message}}');
   // A forager was mid-execution when the process stopped: restore must flag it
   // as unknown and never replay it.
   honey.save({
@@ -265,7 +265,7 @@ test('a failed restore closes created fresh_once sessions and removes their mapp
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('rollback-once', 'go {{input}}');
+  const definition = runnableForagerGraph('rollback-once', 'go {{message}}');
   // The field is valid JSON but belongs to another revision, so instantiation
   // succeeds and restore fails afterwards. That is the rollback window.
   honey.save({
@@ -320,7 +320,7 @@ test('a failed reload never closes a reused fresh_once session or removes its ma
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('keep-once', 'go {{input}}');
+  const definition = runnableForagerGraph('keep-once', 'go {{message}}');
   const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'once' } };
   await host.loadGraph({ definition, bindings, project: env.project });
   const session = env.registry.list()[0];

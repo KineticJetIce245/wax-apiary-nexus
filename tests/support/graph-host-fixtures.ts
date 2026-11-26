@@ -395,12 +395,12 @@ export function userNode(prompt = 'say something'): Record<string, unknown> {
 /** A user node plus a forager so unload has a fresh session to close. */
 export function userAndForagerGraph(id: string): CompositionDefinition {
   return fastDefinition(id, {
-    idle: forager('idle {{input}}'),
+    idle: forager('idle {{message}}'),
     ask: userNode(),
   });
 }
 
-export function runnableForagerGraph(id: string, prompt = 'run {{input}}'): CompositionDefinition {
+export function runnableForagerGraph(id: string, prompt = 'run {{message}}'): CompositionDefinition {
   return fastDefinition(id, { only: forager(prompt) });
 }
 
@@ -413,7 +413,7 @@ export function pacedSpreadGatherDefinition(id: string): CompositionDefinition {
     schemaVersion: 1,
     id,
     nodes: {
-      start: forager('start {{input}}'),
+      start: forager('start {{message}}'),
       spread: {
         kind: 'spread',
         config: {
@@ -423,8 +423,8 @@ export function pacedSpreadGatherDefinition(id: string): CompositionDefinition {
           ],
         },
       },
-      'branch-a': forager('branch-a {{input}}'),
-      'branch-b': forager('branch-b {{input}}'),
+      'branch-a': forager('branch-a {{message}}'),
+      'branch-b': forager('branch-b {{message}}'),
       gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
     },
     edges: [

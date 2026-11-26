@@ -21,7 +21,7 @@ function singleNodeComposition(): ReturnType<typeof parseComposition> {
     nodes: {
       start: {
         kind: 'forager',
-        config: { connection: 'codex', prompt: 'handle {{input}}' },
+        config: { connection: 'codex', prompt: 'handle {{message}}' },
         minIntervalMs: 1000,
       },
     },
@@ -44,7 +44,7 @@ function queueCappedComposition(
 }
 
 function foragerNode(): unknown {
-  return { kind: 'forager', config: { connection: 'codex', prompt: 'handle {{input}}' } };
+  return { kind: 'forager', config: { connection: 'codex', prompt: 'handle {{message}}' } };
 }
 
 function text(value: string): Value {

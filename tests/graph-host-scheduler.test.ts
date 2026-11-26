@@ -108,7 +108,7 @@ test('a loaded graph starts its Honey-backed scheduler and unload stops it', asy
     schemaVersion: 1,
     id: 'scheduled',
     nodes: {
-      only: { kind: 'forager', config: { connection: 'fake', prompt: 'tick {{input}}' } },
+      only: { kind: 'forager', config: { connection: 'fake', prompt: 'tick {{message}}' } },
     },
     edges: [],
     triggers: [{ id: 'tick', target: 'only', schedule: { kind: 'every', everyMs: 1_000 } }],

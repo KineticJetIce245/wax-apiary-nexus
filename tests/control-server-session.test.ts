@@ -85,7 +85,7 @@ test('session list exposes routing metadata and close refuses busy or bound sess
   await env.workspace.submit(busy.sessionId, 'hold');
   assert.equal(env.workspace.isConversationBusy(busy.sessionId), true);
 
-  const definition = foragerDefinition('sessions-graph', 'run {{input}}');
+  const definition = foragerDefinition('sessions-graph', 'run {{message}}');
   const loaded = await bLoad(info.url, token, {
     definition,
     bindings: { only: { kind: 'fresh' } },
@@ -238,7 +238,7 @@ test('an unloaded graph leaves its session listable and closable', async (t) => 
   });
   const { info, token } = running;
 
-  const definition = foragerDefinition('retained-session', 'run {{input}}');
+  const definition = foragerDefinition('retained-session', 'run {{message}}');
   const load = await bLoad(info.url, token, {
     definition,
     bindings: { only: { kind: 'fresh' } },
@@ -306,7 +306,7 @@ test('POST /sessions/sweep closes orphan idle sessions but never bound or busy o
   await env.workspace.submit(busy.sessionId, 'hold');
   const idle = await env.registry.create(env.project);
 
-  const definition = foragerDefinition('session-sweep-graph', 'run {{input}}');
+  const definition = foragerDefinition('session-sweep-graph', 'run {{message}}');
   const loaded = await bLoad(info.url, token, {
     definition,
     bindings: { only: { kind: 'fresh' } },

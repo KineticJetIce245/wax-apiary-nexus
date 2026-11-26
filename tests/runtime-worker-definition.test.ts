@@ -130,9 +130,9 @@ test('rejects malformed worker commands, args, cwd and timeout', () => {
   );
 });
 
-test('parses condition worker mode with the same worker defaults', () => {
+test('parses a condition when-rule and rejects malformed rules', () => {
   const composition = parseComposition(
-    conditionComposition({ mode: 'worker', command: process.execPath }),
+    conditionComposition({ when: { path: 'message', equals: 'go' } }),
   );
   const check = composition.nodes.get('check');
   assert.ok(check !== undefined);
@@ -140,26 +140,16 @@ test('parses condition worker mode with the same worker defaults', () => {
   if (check.kind !== 'condition') {
     assert.fail('expected a condition node');
   }
-  assert.deepEqual(check.config, {
-    mode: 'worker',
-    command: process.execPath,
-    args: [],
-    cwd: '.',
-    timeoutMs: 60_000,
-  });
-});
+  assert.deepEqual(check.config, { when: { path: 'message', equals: 'go' } });
 
-test('rejects a malformed condition worker config', () => {
-  const issues = issuesOf(conditionComposition({ mode: 'worker', command: '' }));
-  assert.ok(issues.some((issue) => issue.includes('command: expected a non-empty string')));
+  const legacy = issuesOf(conditionComposition({ mode: 'worker', command: 'node' }));
+  assert.ok(legacy.some((issue) => issue.includes("unknown field 'mode'")));
+  assert.ok(legacy.some((issue) => issue.includes('when: expected a rule object')));
 
-  const unknown = issuesOf(
-    conditionComposition({ mode: 'worker', command: 'node', shell: 'bash' }),
+  const ambiguous = issuesOf(
+    conditionComposition({ when: { path: 'message', equals: 'a', type: 'string' } }),
   );
-  assert.ok(unknown.some((issue) => issue.includes("unknown field 'shell'")));
-
-  const badMode = issuesOf(conditionComposition({ mode: 'process' }));
-  assert.ok(badMode.some((issue) => issue.includes("'text', 'boolean', 'choice' or 'worker'")));
+  assert.ok(ambiguous.some((issue) => issue.includes('exactly one of')));
 });
 
 test('worker nodes obey the normal-node edge shape', () => {

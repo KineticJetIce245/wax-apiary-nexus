@@ -29,7 +29,7 @@ function oneBeeComposition(id: string, queueMax: number): CompositionDefinition 
     schemaVersion: 1,
     id,
     nodes: {
-      a: { kind: 'forager', config: { connection: 'codex', prompt: 'run {{input}}' } },
+      a: { kind: 'forager', config: { connection: 'codex', prompt: 'run {{message}}' } },
     },
     edges: [],
     defaults: { queueMax },

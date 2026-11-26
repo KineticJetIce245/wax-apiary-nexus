@@ -1,4 +1,6 @@
-import type { ForagerNode, Value } from './types.js';
+import { BeeIoError } from './errors.js';
+import type { ForagerNode, JsonValue, Value } from './types.js';
+import { getPath } from './value-paths.js';
 
 export type GuardDecision = 'allow_once' | 'reject_once' | 'cancelled';
 
@@ -35,16 +37,51 @@ export interface ExecutionContext {
 }
 
 /**
+ * A Bee result: the reply value plus an independent `drop` list applied after
+ * write-back (ARCHITECTURE.md §4.12). A plain Value is the common case; the
+ * envelope is used only when there is a drop list (it may be empty).
+ */
+export interface BeeResult {
+  readonly value: Value;
+  readonly drop: readonly string[];
+}
+
+/**
  * The runtime never talks to a harness directly. A forager node delegates to an
  * injected executor, which is scripted in tests and wired to real adapters later.
  */
 export interface NodeExecutor {
-  execute(node: ForagerNode, input: Value, context?: ExecutionContext): Promise<Value>;
+  execute(
+    node: ForagerNode,
+    input: Value,
+    context?: ExecutionContext,
+  ): Promise<Value | BeeResult>;
 }
 
 /**
- * Serializes a Value to the text carried by `{{input}}`. `message` is the
- * universal text field; any other object is rendered as JSON.
+ * True when an executor returned the explicit value+drop result shape. Both
+ * keys are required, so an ordinary reply that happens to carry `value` is
+ * still a Value.
+ */
+export function isBeeResult(output: Value | BeeResult): output is BeeResult {
+  if (typeof output !== 'object' || output === null || Array.isArray(output)) {
+    return false;
+  }
+  const record = output as Record<string, unknown>;
+  return (
+    Object.hasOwn(record, 'value') &&
+    Object.hasOwn(record, 'drop') &&
+    Array.isArray(record['drop']) &&
+    (record['drop'] as unknown[]).every((entry) => typeof entry === 'string') &&
+    typeof record['value'] === 'object' &&
+    record['value'] !== null &&
+    !Array.isArray(record['value'])
+  );
+}
+
+/**
+ * Serializes a Value to text: `message` when it is a string, otherwise its JSON
+ * form. This is the single text projection for prompts and diagnostics.
  */
 export function serializeValue(value: Value): string {
   const message = value['message'];
@@ -59,6 +96,34 @@ export function serializeValue(value: Value): string {
   return JSON.stringify(value);
 }
 
-export function renderPrompt(template: string, input: Value): string {
-  return template.split('{{input}}').join(serializeValue(input));
+/**
+ * Renders a forager prompt. `{{dot.path}}` placeholders resolve against the
+ * activation input; the parser guarantees each is declared in `reads` or
+ * `fallback`. Strings render verbatim, other JSON renders as JSON.
+ */
+export function renderPrompt(template: string, value: Value): string {
+  return template.replace(/\{\{([^}]*)\}\}/g, (_match, rawName: string) => {
+    const path = rawName.trim();
+    const found = getPath(value, path);
+    if (!found.found) {
+      throw new BeeIoError(
+        'missing-read',
+        `prompt placeholder '{{${path}}}' is missing from the value`,
+      );
+    }
+    return formatTemplateValue(found.value as JsonValue);
+  });
+}
+
+function formatTemplateValue(value: JsonValue): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return JSON.stringify(value);
 }

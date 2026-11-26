@@ -6,6 +6,7 @@ import type {
   WorkerConfig,
 } from './types.js';
 import { DEFAULT_WORKER_TIMEOUT_MS } from './worker.js';
+import { parseRule } from './definition-rules.js';
 import {
   hasParentSegment,
   isNonEmptyString,
@@ -18,6 +19,7 @@ export function parseForagerConfig(
   config: Record<string, unknown>,
   path: string,
   issues: string[],
+  declaredPlaceholders: readonly string[],
 ): ForagerConfig | null {
   pushUnknownFields(config, ['connection', 'prompt'], path, issues);
 
@@ -30,7 +32,12 @@ export function parseForagerConfig(
     issues.push(`${path}.prompt: expected a non-empty string`);
     valid = false;
   } else {
-    pushUnknownPlaceholders(config['prompt'], `${path}.prompt`, issues);
+    pushUnknownPlaceholders(
+      config['prompt'],
+      `${path}.prompt`,
+      declaredPlaceholders,
+      issues,
+    );
   }
 
   if (!valid) {
@@ -46,15 +53,8 @@ export function parseWorkerConfig(
   config: Record<string, unknown>,
   path: string,
   issues: string[],
-  extraFields: readonly string[] = [],
 ): WorkerConfig | null {
-  // A Condition uses the same fields plus `mode`; a Worker node does not.
-  pushUnknownFields(
-    config,
-    [...extraFields, 'command', 'args', 'cwd', 'timeoutMs'],
-    path,
-    issues,
-  );
+  pushUnknownFields(config, ['command', 'args', 'cwd', 'timeoutMs'], path, issues);
 
   let valid = true;
   const command = config['command'];
@@ -131,49 +131,9 @@ export function parseConditionConfig(
   path: string,
   issues: string[],
 ): ConditionConfig | null {
-  const mode = config['mode'];
-  if (mode === 'text') {
-    pushUnknownFields(config, ['mode', 'contains', 'equals'], path, issues);
-    const hasContains = config['contains'] !== undefined;
-    const hasEquals = config['equals'] !== undefined;
-    if (hasContains === hasEquals) {
-      issues.push(`${path}: text mode needs exactly one of 'contains' or 'equals'`);
-      return null;
-    }
-    const field = hasContains ? 'contains' : 'equals';
-    if (!isNonEmptyString(config[field])) {
-      issues.push(`${path}.${field}: expected a non-empty string`);
-      return null;
-    }
-    return hasContains
-      ? { mode: 'text', contains: config['contains'] as string }
-      : { mode: 'text', equals: config['equals'] as string };
-  }
-
-  if (mode === 'boolean') {
-    pushUnknownFields(config, ['mode'], path, issues);
-    return { mode: 'boolean' };
-  }
-
-  if (mode === 'choice') {
-    pushUnknownFields(config, ['mode', 'choice'], path, issues);
-    if (!isNonEmptyString(config['choice'])) {
-      issues.push(`${path}.choice: expected a non-empty string`);
-      return null;
-    }
-    return { mode: 'choice', choice: config['choice'] as string };
-  }
-
-  if (mode === 'worker') {
-    const worker = parseWorkerConfig(config, path, issues, ['mode']);
-    if (worker === null) {
-      return null;
-    }
-    return { mode: 'worker', ...worker };
-  }
-
-  issues.push(`${path}.mode: expected 'text', 'boolean', 'choice' or 'worker'`);
-  return null;
+  pushUnknownFields(config, ['when'], path, issues);
+  const when = parseRule(config['when'], `${path}.when`, issues);
+  return when === null ? null : { when };
 }
 
 export function parseUserConfig(

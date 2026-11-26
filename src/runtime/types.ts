@@ -46,6 +46,10 @@ export interface QueueEntry extends Pheromone {
 
 export interface ForagerConfig {
   connection: string;
+  /**
+   * Template rendered per activation. Placeholders are `{{dot.path}}`; the
+   * parser rejects a placeholder that is not declared in `reads` or `fallback`.
+   */
   prompt: string;
 }
 
@@ -61,63 +65,60 @@ export interface WorkerConfig {
   timeoutMs: number;
 }
 
-export interface ConditionTextConfig {
-  mode: 'text';
-  contains?: string;
-  equals?: string;
+/** A condition evaluates one rule; the result selects the true/false edge. */
+export interface ConditionConfig {
+  when: Rule;
 }
-
-export interface ConditionBooleanConfig {
-  mode: 'boolean';
-}
-
-export interface ConditionChoiceConfig {
-  mode: 'choice';
-  choice: string;
-}
-
-/** Runs an argv worker and branches on its exit code; non-zero is `false`. */
-export interface ConditionWorkerConfig extends WorkerConfig {
-  mode: 'worker';
-}
-
-export type ConditionConfig =
-  | ConditionTextConfig
-  | ConditionBooleanConfig
-  | ConditionChoiceConfig
-  | ConditionWorkerConfig;
 
 export interface CounterConfig {
   max: number;
   step: number;
 }
 
-export interface ForagerNode {
+/** Optional output gate applied to a raw reply before the `writes` check. */
+export interface FilterConfig {
+  /** When non-empty, only paths equal to or under an allow entry survive. */
+  readonly allow: readonly string[];
+  /** Removed after allow; deny wins on overlap. */
+  readonly deny: readonly string[];
+}
+
+/**
+ * Bee I/O shared by every kind. Built-in kinds seed `reads`/`writes`; an
+ * instance may override either list. `fallback` supplies static values for
+ * missing paths and may also declare prompt placeholder sources.
+ */
+export interface NodeBase {
   id: NodeId;
+  minIntervalMs: number;
+  /** Dot paths this Bee needs from the value. */
+  readonly reads: readonly string[];
+  /** Dot paths that must be present in the filtered reply. */
+  readonly writes: readonly string[];
+  /** Static values for missing read paths. */
+  readonly fallback?: Readonly<Record<string, JsonValue>>;
+  /** Optional output gate applied before the writes check. */
+  readonly filter?: FilterConfig;
+}
+
+export interface ForagerNode extends NodeBase {
   kind: 'forager';
   config: ForagerConfig;
-  minIntervalMs: number;
 }
 
-export interface WorkerNode {
-  id: NodeId;
+export interface WorkerNode extends NodeBase {
   kind: 'worker';
   config: WorkerConfig;
-  minIntervalMs: number;
 }
 
-export interface ConditionNode {
-  id: NodeId;
+export interface ConditionNode extends NodeBase {
   kind: 'condition';
   config: ConditionConfig;
-  minIntervalMs: number;
 }
 
-export interface CounterNode {
-  id: NodeId;
+export interface CounterNode extends NodeBase {
   kind: 'counter';
   config: CounterConfig;
-  minIntervalMs: number;
 }
 
 /**
@@ -134,11 +135,9 @@ export interface UserConfig {
   choices?: readonly string[];
 }
 
-export interface UserNode {
-  id: NodeId;
+export interface UserNode extends NodeBase {
   kind: 'user';
   config: UserConfig;
-  minIntervalMs: number;
 }
 
 /**
@@ -198,18 +197,14 @@ export interface BatchGatherConfig {
 
 export type GatherConfig = AssembleGatherConfig | BatchGatherConfig;
 
-export interface SpreadNode {
-  id: NodeId;
+export interface SpreadNode extends NodeBase {
   kind: 'spread';
   config: SpreadConfig;
-  minIntervalMs: number;
 }
 
-export interface GatherNode {
-  id: NodeId;
+export interface GatherNode extends NodeBase {
   kind: 'gather';
   config: GatherConfig;
-  minIntervalMs: number;
 }
 
 export type NodeDefinition =

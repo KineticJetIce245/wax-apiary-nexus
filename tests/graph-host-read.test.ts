@@ -84,8 +84,8 @@ test('loadedSessionIds reports only sessions bound to currently loaded graphs', 
     displayName: 'unbound-session',
   });
   const definition = fastDefinition('ids', {
-    fresh: forager('fresh {{input}}'),
-    reuse: forager('reuse {{input}}'),
+    fresh: forager('fresh {{message}}'),
+    reuse: forager('reuse {{message}}'),
   });
   const bindings: GraphBindings = {
     fresh: { kind: 'fresh' },
@@ -167,8 +167,8 @@ test('outputsOf snapshots one graph without touching residency or taking a lease
   });
 
   const definition = fastDefinition('output-graph', {
-    zeta: forager('zeta {{input}}'),
-    alpha: forager('alpha {{input}}'),
+    zeta: forager('zeta {{message}}'),
+    alpha: forager('alpha {{message}}'),
   });
   await host.loadGraph({
     definition,

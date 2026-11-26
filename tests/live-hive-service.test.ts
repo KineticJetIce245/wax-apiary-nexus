@@ -201,7 +201,7 @@ test('LiveHiveService migrate replaces structure explicitly without LiveHive-cop
       ...live.bees,
       draft: {
         ...live.bees['draft']!,
-        config: { connection: 'fake', prompt: 'changed {{input}}' },
+        config: { connection: 'fake', prompt: 'changed {{message}}' },
       },
     },
   };

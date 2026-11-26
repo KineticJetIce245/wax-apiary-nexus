@@ -147,7 +147,7 @@ function definition(id: string): Record<string, unknown> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: 'run {{input}}' },
+        config: { connection: 'fake', prompt: 'run {{message}}' },
       },
     },
     edges: [],
@@ -309,7 +309,7 @@ async function assertSingleGuard(
   const sessions = env.registry.list();
   assert.equal(sessions.length, 1);
   assert.equal(guard['sessionId'], sessions[0]?.sessionId);
-  assert.equal(JSON.stringify(pending).includes('run {{input}}'), false);
+  assert.equal(JSON.stringify(pending).includes('run {{message}}'), false);
   return guard;
 }
 

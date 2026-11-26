@@ -1,9 +1,11 @@
-import type {
-  ExecutionContext,
-  ForagerNode,
-  NodeExecutor,
-  NodeId,
-  Value,
+import {
+  isBeeResult,
+  type BeeResult,
+  type ExecutionContext,
+  type ForagerNode,
+  type NodeExecutor,
+  type NodeId,
+  type Value,
 } from '../runtime/index.js';
 
 export interface RoutingForagerOptions {
@@ -72,7 +74,7 @@ export class RoutingForagerExecutor implements NodeExecutor {
     node: ForagerNode,
     input: Value,
     context?: ExecutionContext,
-  ): Promise<Value> {
+  ): Promise<Value | BeeResult> {
     if (this.disposed) {
       throw new RoutingExecutorDisposedError();
     }
@@ -87,7 +89,7 @@ export class RoutingForagerExecutor implements NodeExecutor {
     // A child failure propagates unchanged: routing adds neither retries nor
     // a second error type, so callers can tell which session failed and how.
     const output = await executor.execute(node, input, context);
-    this.lastProduced = output;
+    this.lastProduced = isBeeResult(output) ? output.value : output;
     return output;
   }
 

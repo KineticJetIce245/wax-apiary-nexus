@@ -30,7 +30,7 @@ export function writeManifestFixture(
   const project = options.project ?? env.project;
   const composition =
     options.composition ??
-    foragerDefinition(options.graphId ?? 'manifest-graph', 'manifest {{input}}');
+    foragerDefinition(options.graphId ?? 'manifest-graph', 'manifest {{message}}');
   const compositionPath = join(root, 'composition.json');
   writeFileSync(compositionPath, JSON.stringify(composition));
   const manifest: Record<string, unknown> = {
@@ -57,7 +57,7 @@ export function untriggerableComposition(id: string): Record<string, unknown> {
     schemaVersion: 1,
     id,
     nodes: {
-      cond: { kind: 'condition', config: { mode: 'boolean' } },
+      cond: { kind: 'condition', config: { when: { path: 'flag', equals: true } } },
     },
     edges: [
       { id: 'yes', from: 'cond', to: 'cond', when: 'true' },

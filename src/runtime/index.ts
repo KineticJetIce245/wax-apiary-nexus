@@ -1,29 +1,39 @@
 export { parseComposition, CompositionValidationError } from './definition.js';
 export { createMemoryLog } from './log.js';
 export {
+  BeeIoError,
   FieldRestoreError,
   HoneyIncompatibleError,
   NotImplementedError,
+  RuleExecutionError,
   ValueDropOverlapError,
   ValuePathError,
 } from './errors.js';
-export { renderPrompt, serializeValue } from './executor.js';
+export { isBeeResult, renderPrompt, serializeValue } from './executor.js';
+export { CODE_RULE_TIMEOUT_MS, assertCodeSyntax, runCodeRule } from './code-rule.js';
+export { evaluateGroupKey, matchesRule } from './definition-rules.js';
 export { assertJsonValue } from './json-value.js';
 export { assertValue, isAttachment, readAttachments, assertUserValue } from './runtime-input.js';
 export {
   applyDrop,
+  applyFilter,
   applyWriteBack,
   assertNoDropOverlap,
+  assertWrites,
   deepMerge,
   mergeInto,
+  resolveReads,
 } from './value-merge.js';
 export {
   deletePath,
   getPath,
   isSubtreePath,
   isValidPath,
+  jsonEquals,
+  jsonTypeOf,
   parsePath,
   setPath,
+  setReadPath,
 } from './value-paths.js';
 export {
   GuardDecisionError,
@@ -46,7 +56,13 @@ export {
   WorkerExecutionError,
   workerExitError,
 } from './worker.js';
-export type { ExecutionContext, GuardDecision, GuardRequest, NodeExecutor } from './executor.js';
+export type {
+  BeeResult,
+  ExecutionContext,
+  GuardDecision,
+  GuardRequest,
+  NodeExecutor,
+} from './executor.js';
 export type { RuntimeOptions } from './runtime.js';
 export type { WorkerCwdErrorCode, WorkerFailureCode, WorkerResult } from './worker.js';
 export type {
@@ -56,10 +72,10 @@ export type {
   CompositionDefaults,
   CompositionDefinition,
   ConditionConfig,
-  ConditionWorkerConfig,
   CounterConfig,
   EdgeDefinition,
   EdgeWhen,
+  FilterConfig,
   ForagerConfig,
   ForagerNode,
   GroupKey,
@@ -74,6 +90,7 @@ export type {
   GatherNode,
   HoverSpec,
   JsonValue,
+  NodeBase,
   NodeDefinition,
   NodeId,
   NodeKind,

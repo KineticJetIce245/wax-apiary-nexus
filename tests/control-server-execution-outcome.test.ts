@@ -36,7 +36,7 @@ for (const terminal of TERMINALS) {
     });
 
     const loaded = await bLoad(running.info.url, running.token, {
-      definition: foragerDefinition(liveId, `run ${PROMPT_SECRET} {{input}}`),
+      definition: foragerDefinition(liveId, `run ${PROMPT_SECRET} {{message}}`),
       bindings: { only: { kind: 'fresh' } },
       project: env.project,
     });
@@ -82,7 +82,7 @@ test('the workspace approval timer cancels the execution, not the delivery', asy
     await env.workspace.stop();
   });
   const loaded = await bLoad(running.info.url, running.token, {
-    definition: foragerDefinition(liveId, `run ${PROMPT_SECRET} {{input}}`),
+    definition: foragerDefinition(liveId, `run ${PROMPT_SECRET} {{message}}`),
     bindings: { only: { kind: 'fresh' } },
     project: env.project,
   });
@@ -131,7 +131,7 @@ test('an explicit workspace cancel settles the field without a run error', async
   });
 
   const loaded = await bLoad(running.info.url, running.token, {
-    definition: foragerDefinition(liveId, `run ${PROMPT_SECRET} {{input}}`),
+    definition: foragerDefinition(liveId, `run ${PROMPT_SECRET} {{message}}`),
     bindings: { only: { kind: 'fresh' } },
     project: env.project,
   });

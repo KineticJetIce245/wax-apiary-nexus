@@ -54,7 +54,7 @@ test('fresh_once creates once, stores the mapping and reuses it on a second inst
   const { adapter, workspace, registry, project } = makeHarness();
   t.after(() => workspace.stop());
   const bindingStore = makeBindingStore();
-  const definition = makeDefinition({ only: foragerNode('run {{input}}') });
+  const definition = makeDefinition({ only: foragerNode('run {{message}}') });
   const options = {
     definition,
     graphId: 'once-graph',
@@ -178,7 +178,7 @@ test('fresh_always and an absent mode both create a new session without writing 
   const { adapter, workspace, registry, project } = makeHarness();
   t.after(() => workspace.stop());
   const bindingStore = makeBindingStore();
-  const definition = makeDefinition({ only: foragerNode('run {{input}}') });
+  const definition = makeDefinition({ only: foragerNode('run {{message}}') });
 
   const first = await instantiateForagers({
     definition,

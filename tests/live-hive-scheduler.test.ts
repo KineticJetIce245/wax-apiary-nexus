@@ -81,7 +81,7 @@ function liveWith(schedules: LiveHive['schedules']): LiveHive {
     bees: {
       only: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: 'tick {{input}}' },
+        config: { connection: 'fake', prompt: 'tick {{message}}' },
         outgoing: [],
       },
     },

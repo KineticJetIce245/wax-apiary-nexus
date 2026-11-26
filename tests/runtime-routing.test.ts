@@ -46,7 +46,7 @@ function routingDefinition(): ReturnType<typeof parseComposition> {
     schemaVersion: 1,
     id: 'runtime-routing',
     nodes: {
-      start: foragerNode('start {{input}}'),
+      start: foragerNode('start {{message}}'),
       spread: {
         kind: 'spread',
         config: {
@@ -56,10 +56,10 @@ function routingDefinition(): ReturnType<typeof parseComposition> {
           ],
         },
       },
-      'branch-a': foragerNode('branch-a {{input}}'),
-      'branch-b': foragerNode('branch-b {{input}}'),
+      'branch-a': foragerNode('branch-a {{message}}'),
+      'branch-b': foragerNode('branch-b {{message}}'),
       gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
-      done: foragerNode('done {{input}}'),
+      done: foragerNode('done {{message}}'),
     },
     edges: [
       { id: 'e1', from: 'start', to: 'spread' },
@@ -273,8 +273,8 @@ test('a busy session stops instantiation before the graph runs', async (t) => {
     schemaVersion: 1,
     id: 'busy-routing',
     nodes: {
-      run: foragerNode('run {{input}}'),
-      extra: foragerNode('extra {{input}}'),
+      run: foragerNode('run {{message}}'),
+      extra: foragerNode('extra {{message}}'),
     },
     edges: [{ id: 'e1', from: 'run', to: 'extra' }],
   });

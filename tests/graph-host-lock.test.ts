@@ -144,8 +144,8 @@ function definition(id: string): CompositionDefinition {
     schemaVersion: 1,
     id,
     nodes: {
-      a: { kind: 'forager', config: { connection: 'fake', prompt: 'a {{input}}' } },
-      b: { kind: 'forager', config: { connection: 'fake', prompt: 'b {{input}}' } },
+      a: { kind: 'forager', config: { connection: 'fake', prompt: 'a {{message}}' } },
+      b: { kind: 'forager', config: { connection: 'fake', prompt: 'b {{message}}' } },
     },
     edges: [],
   });

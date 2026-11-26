@@ -186,7 +186,7 @@ export function allFresh(definition: CompositionDefinition): GraphBindings {
   return bindings;
 }
 
-export function runnableForagerGraph(id: string, prompt = 'run {{input}}'): CompositionDefinition {
+export function runnableForagerGraph(id: string, prompt = 'run {{message}}'): CompositionDefinition {
   return fastDefinition(id, { only: forager(prompt) });
 }
 
@@ -198,10 +198,10 @@ export function counterDefinition(id: string): CompositionDefinition {
   return fastDefinition(
     id,
     {
-      start: forager('start {{input}}'),
+      start: forager('start {{message}}'),
       count: { kind: 'counter', config: { max: 1, step: 1 } },
-      again: forager('again {{input}}'),
-      done: forager('done {{input}}'),
+      again: forager('again {{message}}'),
+      done: forager('done {{message}}'),
     },
     [
       { id: 'e1', from: 'start', to: 'count' },
@@ -273,7 +273,7 @@ export function userNode(prompt = 'say something'): Record<string, unknown> {
 /** A user hover plus a forager whose fresh session survives unload. */
 export function userAndForagerDefinition(id: string): CompositionDefinition {
   return fastDefinition(id, {
-    idle: forager('idle {{input}}'),
+    idle: forager('idle {{message}}'),
     ask: userNode(),
   });
 }

@@ -164,7 +164,7 @@ export function liveFor(liveId: string): LiveHive {
       nodes: {
         only: {
           kind: 'forager',
-          config: { connection: 'dsh', prompt: 'run {{input}}' },
+          config: { connection: 'dsh', prompt: 'run {{message}}' },
         },
       },
       edges: [],

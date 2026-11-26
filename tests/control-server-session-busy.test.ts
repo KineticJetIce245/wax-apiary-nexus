@@ -20,7 +20,7 @@ function definition(id: string): Record<string, unknown> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: `${PROMPT_SECRET} {{input}}` },
+        config: { connection: 'fake', prompt: `${PROMPT_SECRET} {{message}}` },
       },
     },
     edges: [],

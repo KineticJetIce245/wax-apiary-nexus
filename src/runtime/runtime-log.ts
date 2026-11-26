@@ -100,6 +100,23 @@ export function logHoverBlocked(
   });
 }
 
+/** Records paths removed by a Bee filter; paths only, never values. */
+export function logFiltered(
+  log: RuntimeLogFieldsSink,
+  node: NodeDefinition,
+  paths: readonly string[],
+): void {
+  if (paths.length === 0) {
+    return;
+  }
+  log({
+    event: 'value.filtered',
+    nodeId: node.id,
+    nodeKind: node.kind,
+    paths,
+  });
+}
+
 /** Records paths whose drop found nothing; paths only, never values. */
 export function logDropMissing(
   log: RuntimeLogFieldsSink,

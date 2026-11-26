@@ -190,7 +190,7 @@ test('invalid live objects and projects are rejected without creating sessions',
   assert.equal(env.adapter.displayNames.length, 0);
 
   const missingProjectDirectory = await bLoad(info.url, token, {
-    definition: foragerDefinition('bad-project', 'bad {{input}}'),
+    definition: foragerDefinition('bad-project', 'bad {{message}}'),
     bindings: { only: { kind: 'fresh' } },
     project: {
       id: 'missing-project',
@@ -261,7 +261,7 @@ test('unsupported media types, malformed JSON and unknown fields are rejected', 
   });
   assert.equal(unknownTriggerField.status, 400);
 
-  const definition = foragerDefinition('unknown-fields', 'run {{input}}');
+  const definition = foragerDefinition('unknown-fields', 'run {{message}}');
   const unknownProjectField = await postJson(info.url, token, '/lives', {
     live: liveFrom(definition, { only: { kind: 'fresh' } }),
     project: { ...env.project, extra: true },

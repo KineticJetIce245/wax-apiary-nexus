@@ -204,7 +204,7 @@ export function userForagerComposition(id: string): Record<string, unknown> {
     schemaVersion: 1,
     id,
     nodes: {
-      idle: { kind: 'forager', config: { connection: 'fake', prompt: 'idle {{input}}' } },
+      idle: { kind: 'forager', config: { connection: 'fake', prompt: 'idle {{message}}' } },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'say something' } },
     },
     edges: [],

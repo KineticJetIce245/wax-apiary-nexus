@@ -18,7 +18,11 @@ function answerComposition(
     id: 'answers',
     nodes: {
       ask: { kind: 'user', config: { prompt: 'Answer?', ...modality } },
-      done: { kind: 'forager', config: { connection: 'codex', prompt: 'finish {{input}}' } },
+      done: {
+        kind: 'forager',
+        config: { connection: 'codex', prompt: 'finish' },
+        reads: [],
+      },
     },
     edges: [{ id: 'e1', from: 'ask', to: 'done' }],
   });

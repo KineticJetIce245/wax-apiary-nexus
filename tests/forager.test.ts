@@ -12,12 +12,15 @@ import { parseComposition, type ForagerNode, type Value } from '../src/runtime/i
 import { Workspace } from '../src/session/workspace.js';
 import { FakeAdapter, type FakeAdapterOptions, type FakeTerminal } from './support/fake-adapter.js';
 
-function foragerNode(prompt = 'do {{input}}'): ForagerNode {
+function foragerNode(
+  prompt = 'do {{message}}',
+  options: Record<string, unknown> = {},
+): ForagerNode {
   const definition = parseComposition({
     schemaVersion: 1,
     id: 'bridge',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt }, ...options },
     },
     edges: [],
   });
@@ -66,7 +69,7 @@ test('completed execution returns the assistant text and renders the prompt', as
   assert.deepEqual(bridge.executor.lastOutput, { message: 'HELLO' });
 });
 
-test('renders a structured input as JSON and forwards no nested attachments', async (t) => {
+test('renders declared dot-path placeholders and forwards no nested attachments', async (t) => {
   const bridge = await setup({ output: 'SAW' });
   t.after(async () => {
     bridge.executor.dispose();
@@ -74,13 +77,18 @@ test('renders a structured input as JSON and forwards no nested attachments', as
   });
 
   const input: Value = {
-      branch: { message: 'A' },
+      message: 'outer',
       nested: { message: 'm', attachments: [{ path: '/tmp/notes.md' }] },
       n: 2,
     };
-  await bridge.executor.execute(foragerNode(), input);
+  await bridge.executor.execute(
+    foragerNode('do {{message}} / {{nested.message}}', {
+      reads: ['message', 'nested.message'],
+    }),
+    input,
+  );
 
-  assert.deepEqual(bridge.adapter.prompts, [`do ${JSON.stringify(input)}`]);
+  assert.deepEqual(bridge.adapter.prompts, ['do outer / m']);
   assert.deepEqual(bridge.adapter.submittedAttachments, [[]]);
 });
 
@@ -91,7 +99,10 @@ test('forwards an image attachment with an inferred mime type', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode(), { attachments: [{ path: 'C:/tmp/photo.PNG' }] });
+  await bridge.executor.execute(foragerNode(), {
+    message: '',
+    attachments: [{ path: 'C:/tmp/photo.PNG' }],
+  });
 
   assert.deepEqual(bridge.adapter.prompts, ['do ']);
   assert.deepEqual(bridge.adapter.submittedAttachments, [
@@ -144,8 +155,14 @@ test('uses a stable prompt when only attachments remain', async (t) => {
     await bridge.workspace.stop();
   });
 
-  await bridge.executor.execute(foragerNode('{{input}}'), { attachments: [{ path: '/tmp/photo.webp' }] });
-  await bridge.executor.execute(foragerNode('{{input}}'), { message: '   ', attachments: [{ path: '/tmp/report.pdf' }] });
+  await bridge.executor.execute(foragerNode('{{message}}'), {
+    message: '',
+    attachments: [{ path: '/tmp/photo.webp' }],
+  });
+  await bridge.executor.execute(foragerNode('{{message}}'), {
+    message: '   ',
+    attachments: [{ path: '/tmp/report.pdf' }],
+  });
 
   assert.deepEqual(bridge.adapter.prompts, ['See attached input.', 'See attached input.']);
   assert.deepEqual(
@@ -176,7 +193,10 @@ test('infers mimeType from a small extension map with an octet-stream fallback',
   ];
 
   for (const [extension] of cases) {
-    await bridge.executor.execute(foragerNode(), { attachments: [{ path: `/tmp/input${extension}` }] });
+    await bridge.executor.execute(foragerNode(), {
+      message: '',
+      attachments: [{ path: `/tmp/input${extension}` }],
+    });
   }
 
   assert.deepEqual(

@@ -41,7 +41,7 @@ function liveDefinition(liveId: string): Record<string, unknown> {
     schemaVersion: 1,
     id: liveId,
     nodes: {
-      only: { kind: 'forager', config: { connection: 'dsh', prompt: 'run {{input}}' } },
+      only: { kind: 'forager', config: { connection: 'dsh', prompt: 'run {{message}}' } },
     },
     edges: [],
   };

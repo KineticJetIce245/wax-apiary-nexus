@@ -127,7 +127,144 @@ export function deletePath(root: Value, path: string): boolean {
   return true;
 }
 
+/**
+ * Writes a read-mode path, creating arrays for numeric segments. Used to patch
+ * a static fallback into the activation input; the stored value is untouched.
+ */
+export function setReadPath(root: Value, path: string, value: JsonValue): void {
+  const segments = parsePath(path, 'read');
+  const leaf = segments[segments.length - 1] as string;
+  const parent = resolveReadParent(root, segments, path);
+  if (Array.isArray(parent)) {
+    assignArrayLeaf(parent, leaf, value, path);
+    return;
+  }
+  parent[leaf] = cloneJson(value);
+}
+
+function resolveReadParent(
+  root: Value,
+  segments: readonly string[],
+  path: string,
+): Value | JsonValue[] {
+  let current: Value | JsonValue[] = root;
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    current = stepRead(
+      current,
+      segments[index] as string,
+      segments[index + 1] as string,
+      path,
+    );
+  }
+  return current;
+}
+
+function stepRead(
+  current: Value | JsonValue[],
+  segment: string,
+  nextSegment: string,
+  path: string,
+): Value | JsonValue[] {
+  if (Array.isArray(current)) {
+    if (!INDEX.test(segment)) {
+      throw new ValuePathError(`invalid dot path '${path}': '${segment}' is not an array index`);
+    }
+    const index = Number(segment);
+    fillArrayHoles(current, index);
+    const existing = current[index];
+    if (typeof existing === 'object' && existing !== null) {
+      return existing as Value | JsonValue[];
+    }
+    const created: Value | JsonValue[] = INDEX.test(nextSegment) ? [] : {};
+    current[index] = created;
+    return created;
+  }
+  const existing = current[segment];
+  if (typeof existing === 'object' && existing !== null) {
+    return existing as Value | JsonValue[];
+  }
+  const created: Value | JsonValue[] = INDEX.test(nextSegment) ? [] : {};
+  current[segment] = created;
+  return created;
+}
+
+function assignArrayLeaf(
+  array: JsonValue[],
+  segment: string,
+  value: JsonValue,
+  path: string,
+): void {
+  if (!INDEX.test(segment)) {
+    throw new ValuePathError(`invalid dot path '${path}': '${segment}' is not an array index`);
+  }
+  const index = Number(segment);
+  fillArrayHoles(array, index);
+  array[index] = cloneJson(value);
+}
+
+function fillArrayHoles(array: JsonValue[], index: number): void {
+  for (let fill = array.length; fill < index; fill += 1) {
+    array[fill] = null;
+  }
+}
+
 /** Deep clone of JSON data; no functions/undefined can appear in a Value. */
 export function cloneJson<T extends JsonValue>(value: T): T {
   return structuredClone(value);
+}
+
+/** Deep JSON equality; object key order does not matter. */
+export function jsonEquals(left: JsonValue, right: JsonValue): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === null || right === null || typeof left !== typeof right) {
+    return false;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return jsonArraysEqual(left, right);
+  }
+  if (typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+  return jsonObjectsEqual(left, right);
+}
+
+function jsonArraysEqual(left: JsonValue, right: JsonValue): boolean {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+  return left.every((entry, index) => jsonEquals(entry, right[index] as JsonValue));
+}
+
+function jsonObjectsEqual(
+  left: { [key: string]: JsonValue },
+  right: { [key: string]: JsonValue },
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  return leftKeys.every(
+    (key) =>
+      Object.hasOwn(right, key) &&
+      jsonEquals(left[key] as JsonValue, right[key] as JsonValue),
+  );
+}
+
+/** The JSON type name used by a declarative `type` rule. */
+export function jsonTypeOf(
+  value: JsonValue,
+): 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+  if (typeof value === 'object') {
+    return 'object';
+  }
+  return typeof value as 'string' | 'number' | 'boolean';
 }

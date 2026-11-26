@@ -1,5 +1,8 @@
-import type { JsonType, JsonValue, Rule } from './types.js';
-import { isValidPath } from './value-paths.js';
+import { assertCodeSyntax, runCodeRule } from './code-rule.js';
+import { RuleExecutionError } from './errors.js';
+import { assertJsonValue } from './json-value.js';
+import type { GroupKey, JsonType, JsonValue, Rule, Value } from './types.js';
+import { getPath, isValidPath, jsonEquals, jsonTypeOf } from './value-paths.js';
 import { isRecord, pushUnknownFields } from './definition-primitives.js';
 
 const JSON_TYPES: readonly JsonType[] = [
@@ -12,8 +15,8 @@ const JSON_TYPES: readonly JsonType[] = [
 ];
 
 /**
- * Parses a declarative or code-block rule. M19b executes rules; this slice
- * only validates the shape so a saved graph cannot smuggle an unknown operator.
+ * Parses a declarative or code-block rule. Code blocks are syntax-checked here
+ * so a saved graph cannot carry a rule that only fails at activation.
  */
 export function parseRule(raw: unknown, path: string, issues: string[]): Rule | null {
   if (!isRecord(raw)) {
@@ -25,9 +28,62 @@ export function parseRule(raw: unknown, path: string, issues: string[]): Rule | 
       issues.push(`${path}: expected { code: <non-empty string> }`);
       return null;
     }
-    return { code: raw['code'] };
+    const before = issues.length;
+    assertCodeSyntax(raw['code'], `${path}.code`, issues);
+    return issues.length === before ? { code: raw['code'] } : null;
   }
   return parseDeclarativeRule(raw, path, issues);
+}
+
+/**
+ * Evaluates a rule against a Value. A code block must return a boolean; any
+ * throw, timeout or wrong result type is a typed error and the caller drops the
+ * input per the temporary error design (ARCHITECTURE.md §9).
+ */
+export function matchesRule(rule: Rule, value: Value, label: string): boolean {
+  if ('code' in rule) {
+    const result = runCodeRule(rule.code, value, label);
+    if (typeof result !== 'boolean') {
+      throw new RuleExecutionError(`${label} code block must return a boolean`);
+    }
+    return result;
+  }
+  const found = getPath(value, rule.path);
+  if (!found.found) {
+    return false;
+  }
+  if ('exists' in rule) {
+    return true;
+  }
+  if ('equals' in rule) {
+    return jsonEquals(found.value as JsonValue, rule.equals);
+  }
+  if ('oneOf' in rule) {
+    return rule.oneOf.some((expected) => jsonEquals(found.value as JsonValue, expected));
+  }
+  return jsonTypeOf(found.value as JsonValue) === rule.type;
+}
+
+/**
+ * Extracts a group key (dot path or code block) as a non-empty string. A
+ * missing or empty key is a typed rule error; M19d turns that into a drop.
+ */
+export function evaluateGroupKey(key: GroupKey, value: Value, label: string): string {
+  if (typeof key === 'string') {
+    const found = getPath(value, key);
+    if (!found.found) {
+      throw new RuleExecutionError(`${label} group key '${key}' is missing`);
+    }
+    if (typeof found.value !== 'string' || found.value.trim() === '') {
+      throw new RuleExecutionError(`${label} group key '${key}' must be a non-empty string`);
+    }
+    return found.value;
+  }
+  const result = runCodeRule(key.code, value, `${label} group key`);
+  if (typeof result !== 'string' || result.trim() === '') {
+    throw new RuleExecutionError(`${label} code group key must return a non-empty string`);
+  }
+  return result;
 }
 
 function parseDeclarativeRule(
@@ -49,7 +105,7 @@ function parseDeclarativeRule(
   }
   switch (operators[0]) {
     case 'equals':
-      return { path: rawPath, equals: raw['equals'] as JsonValue };
+      return parseEquals(rawPath, raw['equals'], path, issues);
     case 'oneOf':
       return parseOneOf(rawPath, raw['oneOf'], path, issues);
     case 'exists':
@@ -61,6 +117,18 @@ function parseDeclarativeRule(
   }
 }
 
+function parseEquals(
+  path: string,
+  raw: unknown,
+  rulePath: string,
+  issues: string[],
+): Rule | null {
+  if (!isJson(raw, `${rulePath}.equals`, issues)) {
+    return null;
+  }
+  return { path, equals: raw as JsonValue };
+}
+
 function parseOneOf(
   path: string,
   raw: unknown,
@@ -68,10 +136,25 @@ function parseOneOf(
   issues: string[],
 ): Rule | null {
   if (!Array.isArray(raw) || raw.length === 0) {
-    issues.push(`${rulePath}.oneOf: expected a non-empty array`);
+    issues.push(`${rulePath}.oneOf: expected a non-empty array of JSON values`);
     return null;
   }
+  for (const [index, entry] of raw.entries()) {
+    if (!isJson(entry, `${rulePath}.oneOf[${String(index)}]`, issues)) {
+      return null;
+    }
+  }
   return { path, oneOf: raw as JsonValue[] };
+}
+
+function isJson(value: unknown, path: string, issues: string[]): boolean {
+  try {
+    assertJsonValue(value, path);
+    return true;
+  } catch (error) {
+    issues.push(error instanceof Error ? error.message : String(error));
+    return false;
+  }
 }
 
 function parseExists(

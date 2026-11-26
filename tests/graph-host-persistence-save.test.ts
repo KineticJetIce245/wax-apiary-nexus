@@ -64,7 +64,7 @@ test('trigger flushes the field to Honey and reports persisted', async (t) => {
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('flush', 'run {{input}}');
+  const definition = runnableForagerGraph('flush', 'run {{message}}');
   const loaded = await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -178,7 +178,7 @@ test('unload retains fresh sessions and reload creates replacements', async (t) 
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('fresh', 'go {{input}}');
+  const definition = runnableForagerGraph('fresh', 'go {{message}}');
   const bindings = allFresh(definition);
   await host.loadGraph({ definition, bindings, project: env.project });
   const first = env.registry.list()[0];
@@ -224,7 +224,7 @@ test('a failed flush blocks unload and keeps sessions and routing open', async (
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('blocked', 'keep {{input}}');
+  const definition = runnableForagerGraph('blocked', 'keep {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -297,7 +297,7 @@ test('a failed trigger flush is reported without replaying the trigger', async (
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('trigger-fail', 'run {{input}}');
+  const definition = runnableForagerGraph('trigger-fail', 'run {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -369,7 +369,7 @@ test('idle TTL defaults to 0 without Honey and 30 minutes with it', async (t) =>
   });
 
   // No Honey: TTL 0 disables automatic eviction, matching M4a.
-  const plainDefinition = runnableForagerGraph('plain-ttl', 'plain {{input}}');
+  const plainDefinition = runnableForagerGraph('plain-ttl', 'plain {{message}}');
   await plainHost.loadGraph({
     definition: plainDefinition,
     bindings: allFresh(plainDefinition),
@@ -386,7 +386,7 @@ test('idle TTL defaults to 0 without Honey and 30 minutes with it', async (t) =>
   assert.notEqual(plainHost.statusOf('plain-ttl'), undefined);
 
   // Honey: default 30 minutes from the last access.
-  const defaultDefinition = runnableForagerGraph('default-ttl', 'default {{input}}');
+  const defaultDefinition = runnableForagerGraph('default-ttl', 'default {{message}}');
   const loadedAt = clock.time;
   await honeyHost.loadGraph({
     definition: defaultDefinition,
@@ -410,7 +410,7 @@ test('idle TTL defaults to 0 without Honey and 30 minutes with it', async (t) =>
   assert.equal(honeyHost.statusOf('default-ttl'), undefined);
 
   // A per-load TTL still overrides the Honey default.
-  const shortDefinition = runnableForagerGraph('short-ttl', 'short {{input}}');
+  const shortDefinition = runnableForagerGraph('short-ttl', 'short {{message}}');
   await honeyHost.loadGraph({
     definition: shortDefinition,
     bindings: allFresh(shortDefinition),
@@ -423,7 +423,7 @@ test('idle TTL defaults to 0 without Honey and 30 minutes with it', async (t) =>
   assert.deepEqual(report.unloaded, ['short-ttl']);
 
   // An explicit defaultIdleTtlMs still overrides the 30-minute Honey default.
-  const overrideDefinition = runnableForagerGraph('override-ttl', 'override {{input}}');
+  const overrideDefinition = runnableForagerGraph('override-ttl', 'override {{message}}');
   await overrideHost.loadGraph({
     definition: overrideDefinition,
     bindings: allFresh(overrideDefinition),
@@ -508,7 +508,7 @@ test('LiveHiveHost.save flushes Honey without unloading and keeps memory on fail
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('save-only', 'run {{input}}');
+  const definition = runnableForagerGraph('save-only', 'run {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),

@@ -81,7 +81,7 @@ function definition(id: string): Record<string, unknown> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: 'run {{input}}' },
+        config: { connection: 'fake', prompt: 'run {{message}}' },
       },
     },
     edges: [],

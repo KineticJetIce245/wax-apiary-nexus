@@ -48,7 +48,7 @@ test('listSessions and closeSession round-trip and report bound/busy state', asy
   const daemon = await startDaemon(t, { output: OUTPUT_MARKER });
   assert.deepEqual(await daemon.client.listSessions(), []);
 
-  const definition = foragerDefinition('session-client', `run {{input}} ${PROMPT_MARKER}`);
+  const definition = foragerDefinition('session-client', `run {{message}} ${PROMPT_MARKER}`);
   const token = readFileSync(daemon.info.tokenPath, 'utf8').trim();
   assert.equal(
     (await bLoad(daemon.info.url, token, {

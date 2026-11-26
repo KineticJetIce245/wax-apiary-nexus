@@ -1,5 +1,7 @@
 /** B object layer: bees, beelines and the two persisted documents. */
 
+import type { FilterConfig, JsonValue } from '../runtime/index.js';
+
 export const BEE_KINDS = [
   'forager',
   'worker',
@@ -26,6 +28,14 @@ export interface SessionParams {
 export interface Bee {
   readonly kind: BeeKind;
   readonly config: Readonly<Record<string, unknown>>;
+  /** Dot paths the Bee needs from the delivered value. */
+  readonly reads?: readonly string[];
+  /** Dot paths that must be present in the filtered reply. */
+  readonly writes?: readonly string[];
+  /** Static values for missing read paths. */
+  readonly fallback?: Readonly<Record<string, JsonValue>>;
+  /** Optional output gate applied before the writes check. */
+  readonly filter?: FilterConfig;
   /** Beeline ids whose `fromBee` is this bee. */
   readonly outgoing: readonly string[];
   /** Human-readable only; it never participates in routing or binding. */

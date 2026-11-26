@@ -11,7 +11,7 @@ function minimal(overrides: Record<string, unknown> = {}): Record<string, unknow
     schemaVersion: 1,
     id: 'demo',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'do {{input}}' } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'do {{message}}' } },
     },
     edges: [],
     ...overrides,
@@ -101,7 +101,7 @@ test('rejects unknown template placeholders in a forager prompt', () => {
       nodes: {
         start: {
           kind: 'forager',
-          config: { connection: 'codex', prompt: 'do {{input}} and {{task}}' },
+          config: { connection: 'codex', prompt: 'do {{message}} and {{task}}' },
         },
       },
     }),
@@ -146,7 +146,7 @@ test('rejects a condition without exactly one true edge and one false edge', () 
   const issues = issuesOf(
     minimal({
       nodes: {
-        check: { kind: 'condition', config: { mode: 'text', contains: 'ok' } },
+        check: { kind: 'condition', config: { when: { path: 'message', equals: 'ok' } } },
         yes: { kind: 'forager', config: { connection: 'c', prompt: 'p' } },
       },
       edges: [{ id: 'e1', from: 'check', to: 'yes', when: 'true' }],
@@ -192,11 +192,11 @@ test('rejects a non-array triggers value, empty node sets and bad schema version
   assert.ok(issuesOf(minimal({ schemaVersion: 2 })).some((issue) => issue.includes('schemaVersion')));
 });
 
-test('rejects text conditions that set neither or both of contains and equals', () => {
-  const neither = issuesOf(
+function conditionIssues(config: Record<string, unknown>): string[] {
+  return issuesOf(
     minimal({
       nodes: {
-        check: { kind: 'condition', config: { mode: 'text' } },
+        check: { kind: 'condition', config },
         yes: { kind: 'forager', config: { connection: 'c', prompt: 'p' } },
         no: { kind: 'forager', config: { connection: 'c', prompt: 'p' } },
       },
@@ -206,20 +206,48 @@ test('rejects text conditions that set neither or both of contains and equals', 
       ],
     }),
   );
-  const both = issuesOf(
-    minimal({
-      nodes: {
-        check: { kind: 'condition', config: { mode: 'text', contains: 'a', equals: 'b' } },
-        yes: { kind: 'forager', config: { connection: 'c', prompt: 'p' } },
-        no: { kind: 'forager', config: { connection: 'c', prompt: 'p' } },
-      },
-      edges: [
-        { id: 'e1', from: 'check', to: 'yes', when: 'true' },
-        { id: 'e2', from: 'check', to: 'no', when: 'false' },
-      ],
-    }),
-  );
+}
+
+test('rejects a condition rule with no operator or more than one operator', () => {
+  const neither = conditionIssues({ when: { path: 'message' } });
+  const both = conditionIssues({ when: { path: 'message', equals: 'a', oneOf: ['b'] } });
 
   assert.ok(neither.some((issue) => issue.includes('exactly one of')));
   assert.ok(both.some((issue) => issue.includes('exactly one of')));
+});
+
+test('rejects the removed condition modes and a malformed code rule', () => {
+  const legacy = conditionIssues({ mode: 'text', contains: 'ok' });
+  assert.ok(legacy.some((issue) => issue.includes("unknown field 'mode'")));
+  assert.ok(legacy.some((issue) => issue.includes('when: expected a rule object')));
+
+  const syntax = conditionIssues({ when: { code: 'return (' } });
+  assert.ok(syntax.some((issue) => issue.includes('syntax error')));
+});
+
+test('parses all declarative condition operators and a code block', () => {
+  for (const when of [
+    { path: 'message', equals: 'ok' },
+    { path: 'kind', oneOf: ['a', 'b'] },
+    { path: 'message', exists: true },
+    { path: 'count', type: 'number' },
+    { code: 'return value.count > 1;' },
+  ]) {
+    const composition = parseComposition(
+      minimal({
+        nodes: {
+          check: { kind: 'condition', config: { when } },
+          yes: { kind: 'forager', config: { connection: 'c', prompt: 'p' } },
+          no: { kind: 'forager', config: { connection: 'c', prompt: 'p' } },
+        },
+        edges: [
+          { id: 'e1', from: 'check', to: 'yes', when: 'true' },
+          { id: 'e2', from: 'check', to: 'no', when: 'false' },
+        ],
+      }),
+    );
+    const node = composition.nodes.get('check');
+    assert.ok(node !== undefined && node.kind === 'condition');
+    assert.deepEqual(node.config.when, when);
+  }
 });

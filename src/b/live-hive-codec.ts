@@ -26,15 +26,52 @@ export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
   const nodes: Record<string, Record<string, unknown>> = {};
 
   for (const [beeId, bee] of Object.entries(parsed.bees)) {
-    nodes[beeId] = {
-      kind: bee.kind,
-      config: spreadConfig(parsed, beeId, bee),
-    };
+    nodes[beeId] = nodeRecord(parsed, beeId, bee);
   }
 
+  return parseComposition({
+    schemaVersion: 1,
+    id: parsed.liveId,
+    nodes,
+    edges: edgeRecords(parsed),
+    triggers: (parsed.schedules ?? []).map((schedule) => ({
+      id: schedule.scheduleId,
+      target: schedule.targetBee,
+      schedule: schedule.at !== undefined
+        ? { kind: 'at', at: schedule.at }
+        : { kind: 'every', everyMs: schedule.everyMs as number },
+    })),
+  });
+}
+
+function nodeRecord(
+  live: LiveHive,
+  beeId: string,
+  bee: Bee,
+): Record<string, unknown> {
+  const record: Record<string, unknown> = {
+    kind: bee.kind,
+    config: spreadConfig(live, beeId, bee),
+  };
+  if (bee.reads !== undefined) {
+    record['reads'] = bee.reads;
+  }
+  if (bee.writes !== undefined) {
+    record['writes'] = bee.writes;
+  }
+  if (bee.fallback !== undefined) {
+    record['fallback'] = bee.fallback;
+  }
+  if (bee.filter !== undefined) {
+    record['filter'] = bee.filter;
+  }
+  return record;
+}
+
+function edgeRecords(live: LiveHive): Array<Record<string, unknown>> {
   const edges: Array<Record<string, unknown>> = [];
-  for (const [beelineId, line] of Object.entries(parsed.beelines)) {
-    const source = parsed.bees[line.fromBee];
+  for (const [beelineId, line] of Object.entries(live.beelines)) {
+    const source = live.bees[line.fromBee];
     if (source === undefined) {
       throw new LiveHiveCodecError(`beeline '${beelineId}' has an unknown source bee`);
     }
@@ -57,20 +94,7 @@ export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
     }
     edges.push(edge);
   }
-
-  return parseComposition({
-    schemaVersion: 1,
-    id: parsed.liveId,
-    nodes,
-    edges,
-    triggers: (parsed.schedules ?? []).map((schedule) => ({
-      id: schedule.scheduleId,
-      target: schedule.targetBee,
-      schedule: schedule.at !== undefined
-        ? { kind: 'at', at: schedule.at }
-        : { kind: 'every', everyMs: schedule.everyMs as number },
-    })),
-  });
+  return edges;
 }
 
 /**
@@ -141,6 +165,10 @@ function importNode(
     kind: node.kind as BeeKind,
     config,
     outgoing,
+    ...(node.reads.length === 0 ? {} : { reads: node.reads }),
+    ...(node.writes.length === 0 ? {} : { writes: node.writes }),
+    ...(node.fallback === undefined ? {} : { fallback: node.fallback }),
+    ...(node.filter === undefined ? {} : { filter: node.filter }),
     ...(sessionMode === undefined ? {} : { sessionMode }),
   };
 }

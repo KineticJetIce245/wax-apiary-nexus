@@ -19,7 +19,7 @@ function foragerNode(): ForagerNode {
     schemaVersion: 1,
     id: 'cancellation',
     nodes: {
-      only: { kind: 'forager', config: { connection: 'fake', prompt: 'run {{input}}' } },
+      only: { kind: 'forager', config: { connection: 'fake', prompt: 'run {{message}}' } },
     },
     edges: [],
   });

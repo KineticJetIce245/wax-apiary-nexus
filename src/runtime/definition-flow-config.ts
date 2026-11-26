@@ -16,6 +16,7 @@ import {
   pushUnknownFields,
 } from './definition-primitives.js';
 import { parseRule } from './definition-rules.js';
+import { assertCodeSyntax } from './code-rule.js';
 
 /** Parses the M19 spread config: clone (list/map) or cleave (path map). */
 export function parseSpreadConfig(
@@ -322,7 +323,9 @@ function parseGroupKey(
       issues.push(`${path}: expected { code: <non-empty string> }`);
       return null;
     }
-    return { code };
+    const before = issues.length;
+    assertCodeSyntax(code, `${path}.code`, issues);
+    return issues.length === before ? { code } : null;
   }
   issues.push(`${path}: expected a dot path or a code block`);
   return null;

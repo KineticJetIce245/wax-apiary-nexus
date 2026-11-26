@@ -65,12 +65,6 @@
       "nesting": 1,
       "parameters": 0
     },
-    "src/b/live-hive-codec.ts::function toCompositionDefinition": {
-      "lines": 51,
-      "cyclomatic": 9,
-      "nesting": 3,
-      "parameters": 1
-    },
     "src/b/live-hive-repository.ts::class LiveHiveRepository": {
       "bodyLines": 171,
       "publicMethods": 16,
@@ -87,12 +81,6 @@
       "cyclomatic": 12,
       "nesting": 2,
       "parameters": 5
-    },
-    "src/b/validation.ts::function parseBee": {
-      "lines": 31,
-      "cyclomatic": 12,
-      "nesting": 1,
-      "parameters": 3
     },
     "src/b/validation.ts::function parseHiveGraph": {
       "lines": 50,
@@ -319,7 +307,7 @@
       "publicMethods": 16,
       "constructorDependencies": 2
     },
-    "src/runtime/definition-nodes.ts::arrow <anonymous@190>": {
+    "src/runtime/definition-nodes.ts::arrow <anonymous@278>": {
       "lines": 55,
       "cyclomatic": 13,
       "nesting": 2,
@@ -331,18 +319,6 @@
       "nesting": 1,
       "parameters": 3
     },
-    "src/runtime/definition-nodes.ts::function parseNodes": {
-      "lines": 101,
-      "cyclomatic": 31,
-      "nesting": 8,
-      "parameters": 3
-    },
-    "src/runtime/definition-task-config.ts::function parseConditionConfig": {
-      "lines": 49,
-      "cyclomatic": 11,
-      "nesting": 2,
-      "parameters": 3
-    },
     "src/runtime/definition-task-config.ts::function parseUserConfig": {
       "lines": 53,
       "cyclomatic": 15,
@@ -350,10 +326,10 @@
       "parameters": 3
     },
     "src/runtime/definition-task-config.ts::function parseWorkerConfig": {
-      "lines": 83,
+      "lines": 76,
       "cyclomatic": 12,
       "nesting": 4,
-      "parameters": 4
+      "parameters": 3
     },
     "src/runtime/definition-triggers.ts::arrow <anonymous@77>": {
       "lines": 50,
@@ -929,12 +905,6 @@
       "cyclomatic": 1,
       "nesting": 1,
       "parameters": 1
-    },
-    "tests/runtime-worker.test.ts::arrow <anonymous@534>": {
-      "lines": 60,
-      "cyclomatic": 1,
-      "nesting": 0,
-      "parameters": 0
     },
     "tests/scheduler.test.ts::function harness": {
       "lines": 55,

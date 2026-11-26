@@ -52,3 +52,29 @@ export class ValueDropOverlapError extends Error {
     this.name = 'ValueDropOverlapError';
   }
 }
+
+export type BeeIoErrorCode = 'missing-read' | 'missing-write' | 'invalid-reply';
+
+/** A Bee's declared input/output contract was not satisfied. */
+export class BeeIoError extends Error {
+  readonly code: BeeIoErrorCode;
+
+  constructor(
+    code: BeeIoErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'BeeIoError';
+    this.code = code;
+  }
+}
+
+/** A code-block rule threw, timed out, or returned the wrong result type. */
+export class RuleExecutionError extends Error {
+  readonly code = 'rule-execution';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'RuleExecutionError';
+  }
+}

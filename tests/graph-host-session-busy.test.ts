@@ -52,7 +52,7 @@ function definition(id: string): ReturnType<typeof parseComposition> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: `${PROMPT_SECRET} {{input}}` },
+        config: { connection: 'fake', prompt: `${PROMPT_SECRET} {{message}}` },
       },
     },
     edges: [],
@@ -216,7 +216,7 @@ test('a busy shared session does not run the second trigger and keeps the first'
   const session = await fixture.registry.create(fixture.project);
   const load = (id: string): Promise<unknown> =>
     host.loadGraph({
-      definition: fastDefinition(id, { only: forager(`run ${id} {{input}}`) }),
+      definition: fastDefinition(id, { only: forager(`run ${id} {{message}}`) }),
       bindings: bindings(session.sessionId),
       project: fixture.project,
     });

@@ -58,10 +58,10 @@ export class ForagerExecutionError extends Error {
 /**
  * Bridges one Workspace conversation into the pure runtime as a NodeExecutor.
  *
- * The runtime stays unaware of harnesses: this class renders `{{input}}`,
- * submits the prompt, waits for the terminal execution state, and maps
- * `completed` to a text Value. Approval requests are delegated to the caller;
- * a request without a handler is rejected, never allowed.
+ * The runtime stays unaware of harnesses: this class renders `{{dot.path}}`
+ * placeholders, submits the prompt, waits for the terminal execution state, and
+ * maps `completed` to a text Value. Approval requests are delegated to the
+ * caller; a request without a handler is rejected, never allowed.
  */
 export class WorkspaceForagerExecutor implements NodeExecutor {
   private readonly workspace: Workspace;
@@ -286,7 +286,7 @@ const MEDIA_TYPES: Readonly<Record<string, string>> = {
   '.md': 'text/markdown',
 };
 
-/** Renders `{{input}}` and the adapter drafts; empty-only input gets a sentence. */
+/** Renders the dot-path template and adapter drafts; empty text gets a sentence. */
 function renderForagerInput(
   node: ForagerNode,
   input: Value,

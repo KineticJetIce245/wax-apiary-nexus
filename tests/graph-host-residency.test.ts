@@ -81,7 +81,7 @@ test('a user hover is not unloaded or swept until it reaches Rest', async (t) =>
   });
 
   const definition = fastDefinition('hover', {
-    idle: forager('never {{input}}'),
+    idle: forager('never {{message}}'),
     ask: { kind: 'user', config: { modality: 'text', prompt: 'say something' } },
   });
   const bindings = allFresh(definition);
@@ -280,7 +280,7 @@ test('allowHoverUnload still refuses a hover while a node has a pending Pheromon
     schemaVersion: 1,
     id: 'hover-pending',
     nodes: {
-      idle: forager('idle {{input}}'),
+      idle: forager('idle {{message}}'),
       ask: userNode(),
     },
     edges: [],

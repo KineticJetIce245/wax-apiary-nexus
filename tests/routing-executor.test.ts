@@ -15,6 +15,8 @@ function foragerNode(id: string): ForagerNode {
     kind: 'forager',
     config: { connection: 'codex', prompt: `run ${id}` },
     minIntervalMs: 1000,
+    reads: ['message'],
+    writes: ['message'],
   };
 }
 

@@ -20,7 +20,7 @@ function composition(id: string, nodeIds: readonly string[]): ReturnType<typeof 
   for (const nodeId of nodeIds) {
     nodes[nodeId] = {
       kind: 'forager',
-      config: { connection: 'codex', prompt: `run {{input}} on ${nodeId}` },
+      config: { connection: 'codex', prompt: `run {{message}} on ${nodeId}` },
     };
   }
   return parseComposition({ schemaVersion: 1, id, nodes, edges: [] });

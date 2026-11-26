@@ -101,7 +101,7 @@ test('an internal 500 is logged as errorClass only, never message or body', asyn
   const info = await server.start();
   const token = readFileSync(info.tokenPath, 'utf8').trim();
   const loaded = await bLoad(info.url, token, {
-    definition: definition('error-log', `run ${promptSecret} {{input}}`),
+    definition: definition('error-log', `run ${promptSecret} {{message}}`),
     bindings: { only: { kind: 'fresh' } },
     project: env.project,
   });

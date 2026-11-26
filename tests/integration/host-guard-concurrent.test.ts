@@ -42,7 +42,7 @@ function definition(id: string): Record<string, unknown> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'dsh', prompt: 'run {{input}}' },
+        config: { connection: 'dsh', prompt: 'run {{message}}' },
       },
     },
     edges: [],

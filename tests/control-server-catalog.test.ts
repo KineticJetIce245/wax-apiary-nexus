@@ -102,7 +102,7 @@ function definition(id = 'live'): Record<string, unknown> {
     schemaVersion: 1,
     id,
     nodes: {
-      only: { kind: 'forager', config: { connection: 'fake', prompt: 'go {{input}}' } },
+      only: { kind: 'forager', config: { connection: 'fake', prompt: 'go {{message}}' } },
     },
     edges: [],
   };

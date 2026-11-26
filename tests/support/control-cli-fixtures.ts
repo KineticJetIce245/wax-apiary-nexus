@@ -91,7 +91,7 @@ export function foragerComposition(id: string): Record<string, unknown> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: 'echo {{input}}' },
+        config: { connection: 'fake', prompt: 'echo {{message}}' },
       },
     },
     edges: [],
@@ -105,7 +105,7 @@ export function parkedComposition(id: string): Record<string, unknown> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: 'echo {{input}}' },
+        config: { connection: 'fake', prompt: 'echo {{message}}' },
       },
       ask: {
         kind: 'user',
@@ -123,7 +123,7 @@ export function userForagerComposition(id: string): Record<string, unknown> {
     nodes: {
       idle: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: 'idle {{input}}' },
+        config: { connection: 'fake', prompt: 'idle {{message}}' },
       },
       ask: {
         kind: 'user',

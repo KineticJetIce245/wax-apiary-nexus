@@ -1,3 +1,4 @@
+import { parseBeeIo } from './io-validation.js';
 import { parseSchedules } from './schedule-validation.js';
 import {
   BEE_KINDS,
@@ -15,6 +16,17 @@ import {
 
 const MAX_ID_LENGTH = 512;
 const MAX_LABEL_LENGTH = 256;
+const BEE_FIELDS = [
+  'kind',
+  'config',
+  'outgoing',
+  'roleLabel',
+  'sessionMode',
+  'reads',
+  'writes',
+  'fallback',
+  'filter',
+] as const;
 
 /** Structural validation for the two B documents; no semantic graph mapping. */
 export class BObjectValidationError extends Error {
@@ -185,7 +197,7 @@ function parseBee(input: unknown, path: string, issues: string[]): Bee | undefin
     issues.push(`${path}: expected an object`);
     return undefined;
   }
-  assertExactFields(input, ['kind', 'config', 'outgoing', 'roleLabel', 'sessionMode'], path, issues);
+  assertExactFields(input, BEE_FIELDS, path, issues);
   const kind = input['kind'];
   if (typeof kind !== 'string' || !BEE_KINDS.includes(kind as BeeKind)) {
     issues.push(`${path}.kind: expected one of ${BEE_KINDS.join(', ')}`);
@@ -193,23 +205,39 @@ function parseBee(input: unknown, path: string, issues: string[]): Bee | undefin
   const config = parseConfig(input['config'], `${path}.config`, issues);
   const outgoing = parseOutgoing(input['outgoing'], `${path}.outgoing`, issues);
   const roleLabel = optionalString(input['roleLabel'], `${path}.roleLabel`, issues, MAX_LABEL_LENGTH);
-  const rawMode = input['sessionMode'];
+  const sessionMode = parseSessionMode(input['sessionMode'], path, issues);
+  const io = parseBeeIo(input, path, issues);
   if (
-    rawMode !== undefined &&
-    (typeof rawMode !== 'string' || !SESSION_MODES.includes(rawMode as SessionMode))
+    typeof kind !== 'string' ||
+    config === undefined ||
+    outgoing === undefined ||
+    io === null
   ) {
-    issues.push(`${path}.sessionMode: expected one of ${SESSION_MODES.join(', ')}`);
-  }
-  if (typeof kind !== 'string' || config === undefined || outgoing === undefined) {
     return undefined;
   }
   return {
     kind: kind as BeeKind,
     config,
     outgoing,
+    ...io,
     ...(roleLabel === undefined ? {} : { roleLabel }),
-    ...(rawMode === undefined ? {} : { sessionMode: rawMode as SessionMode }),
+    ...(sessionMode === undefined ? {} : { sessionMode }),
   };
+}
+
+function parseSessionMode(
+  input: unknown,
+  path: string,
+  issues: string[],
+): SessionMode | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  if (typeof input !== 'string' || !SESSION_MODES.includes(input as SessionMode)) {
+    issues.push(`${path}.sessionMode: expected one of ${SESSION_MODES.join(', ')}`);
+    return undefined;
+  }
+  return input as SessionMode;
 }
 
 function parseBeeline(input: unknown, path: string, issues: string[]): Beeline | undefined {

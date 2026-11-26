@@ -127,7 +127,7 @@ test('load, status, trigger, status and unload work over real HTTP without leaki
   const responses: string[] = [];
   const bodies: unknown[] = [];
 
-  const definition = foragerDefinition('main', `run ${PROMPT_SECRET} {{input}}`);
+  const definition = foragerDefinition('main', `run ${PROMPT_SECRET} {{message}}`);
   const load = await bLoad(info.url, token, {
     definition,
     bindings: { only: { kind: 'fresh' } },
@@ -217,11 +217,11 @@ test('GET /lives/<id>/output returns sorted forager output and never logs values
     nodes: {
       zeta: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: `zeta ${PROMPT_SECRET} {{input}}` },
+        config: { connection: 'fake', prompt: `zeta ${PROMPT_SECRET} {{message}}` },
       },
       alpha: {
         kind: 'forager',
-        config: { connection: 'fake', prompt: `alpha ${PROMPT_SECRET} {{input}}` },
+        config: { connection: 'fake', prompt: `alpha ${PROMPT_SECRET} {{message}}` },
       },
     },
     edges: [],
@@ -304,7 +304,7 @@ test('unknown graphs return 404 and a duplicate load returns 409 with current st
   const unknownUnload = await bUnload(info.url, token, 'missing');
   assert.equal(unknownUnload.status, 404);
 
-  const definition = foragerDefinition('dup', 'dup {{input}}');
+  const definition = foragerDefinition('dup', 'dup {{message}}');
   const body = {
     definition,
     bindings: { only: { kind: 'fresh' } },
@@ -446,7 +446,7 @@ test('answer resolves an open user hover over real HTTP and rejects invalid targ
   responses.push(unknownNode.text);
   assert.equal(unknownNode.status, 400);
 
-  const foragerDefinitionBody = foragerDefinition('answer-forager', 'run {{input}}');
+  const foragerDefinitionBody = foragerDefinition('answer-forager', 'run {{message}}');
   const foragerLoad = await bLoad(info.url, token, {
     definition: foragerDefinitionBody,
     bindings: { only: { kind: 'fresh' } },

@@ -40,21 +40,29 @@ function terminalComposition(): ReturnType<typeof parseComposition> {
     schemaVersion: 1,
     id: 'terminal',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'reply to {{input}}' } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'reply to {{message}}' } },
     },
     edges: [],
   });
 }
 
-function conditionComposition(mode: Record<string, unknown>): ReturnType<typeof parseComposition> {
+function conditionComposition(when: Record<string, unknown>): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
     id: 'branch',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'ask {{input}}' } },
-      check: { kind: 'condition', config: mode },
-      yes: { kind: 'forager', config: { connection: 'codex', prompt: 'yes path' } },
-      no: { kind: 'forager', config: { connection: 'codex', prompt: 'no path' } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'ask {{message}}' } },
+      check: { kind: 'condition', config: { when } },
+      yes: {
+        kind: 'forager',
+        config: { connection: 'codex', prompt: 'yes path' },
+        fallback: { message: '' },
+      },
+      no: {
+        kind: 'forager',
+        config: { connection: 'codex', prompt: 'no path' },
+        fallback: { message: '' },
+      },
     },
     edges: [
       { id: 'e1', from: 'start', to: 'check' },
@@ -81,7 +89,7 @@ function counterComposition(): ReturnType<typeof parseComposition> {
     schemaVersion: 1,
     id: 'loop',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{message}}' } },
       count: { kind: 'counter', config: { max: 2, step: 1 } },
       again: { kind: 'forager', config: { connection: 'codex', prompt: 'again' } },
       done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
@@ -132,13 +140,16 @@ test('a terminal node emits no new pheromone', async () => {
   assert.deepEqual(queuedEntries(runtime.snapshot()), []);
 });
 
-test('condition text mode follows the true and false edges', async () => {
+test('a declarative condition rule follows the true and false edges', async () => {
   let clock = START;
-  const { executor, calls } = recorder();
-  const runtime = new PheromoneRuntime(conditionComposition({ mode: 'text', contains: 'yes' }), {
-    executeForager: executor,
-    now: () => clock,
-  });
+  const { executor, calls } = recorder((_node, input) => input);
+  const runtime = new PheromoneRuntime(
+    conditionComposition({ path: 'message', equals: 'yes please' }),
+    {
+      executeForager: executor,
+      now: () => clock,
+    },
+  );
 
   runtime.admit('start', { message: 'yes please' });
   await runtime.pump();
@@ -153,43 +164,53 @@ test('condition text mode follows the true and false edges', async () => {
   assert.equal(runtime.snapshot().rest, true);
 });
 
-test('condition boolean mode reads Value.value', async () => {
+test('a boolean rule compares an ordinary Value field', async () => {
   let clock = START;
-  const { executor, calls } = recorder((_node, input) => input);
-  const runtime = new PheromoneRuntime(conditionComposition({ mode: 'boolean' }), {
-    executeForager: executor,
-    now: () => clock,
-  });
+  const { executor, calls } = recorder(
+    () => ({ message: 'ok' }),
+  );
+  const runtime = new PheromoneRuntime(
+    conditionComposition({ path: 'boolean', equals: true }),
+    {
+      executeForager: executor,
+      now: () => clock,
+    },
+  );
 
-  runtime.admit('start', { boolean: true });
+  runtime.admit('check', { boolean: true });
   await runtime.pump();
   clock += 1000;
-  runtime.admit('start', { boolean: false });
+  runtime.admit('check', { boolean: false });
   await runtime.pump();
 
   assert.deepEqual(
     calls.map((call) => call.nodeId),
-    ['start', 'yes', 'start', 'no'],
+    ['yes', 'no'],
   );
 });
 
-test('condition choice mode compares the selected choice', async () => {
+test('a choice rule compares the selected choice', async () => {
   let clock = START;
-  const { executor, calls } = recorder((_node, input) => input);
-  const runtime = new PheromoneRuntime(conditionComposition({ mode: 'choice', choice: 'approve' }), {
-    executeForager: executor,
-    now: () => clock,
-  });
+  const { executor, calls } = recorder(
+    () => ({ message: 'ok' }),
+  );
+  const runtime = new PheromoneRuntime(
+    conditionComposition({ path: 'choice', equals: 'approve' }),
+    {
+      executeForager: executor,
+      now: () => clock,
+    },
+  );
 
-  runtime.admit('start', { choice: 'approve' });
+  runtime.admit('check', { choice: 'approve' });
   await runtime.pump();
   clock += 1000;
-  runtime.admit('start', { choice: 'reject' });
+  runtime.admit('check', { choice: 'reject' });
   await runtime.pump();
 
   assert.deepEqual(
     calls.map((call) => call.nodeId),
-    ['start', 'yes', 'start', 'no'],
+    ['yes', 'no'],
   );
 });
 
@@ -215,7 +236,7 @@ test('counter increments until max and then takes the done edge', async () => {
 
 test('trigger rejects unknown targets and accepts any loaded Bee', async () => {
   const { executor } = recorder();
-  const runtime = new PheromoneRuntime(conditionComposition({ mode: 'text', contains: 'x' }), {
+  const runtime = new PheromoneRuntime(conditionComposition({ path: 'message', exists: true }), {
     executeForager: executor,
     now: () => START,
   });
@@ -382,7 +403,7 @@ test('serializeValue and renderPrompt cover the documented template rule', () =>
   assert.equal(serializeValue({ message: 'hi', attachments: [] }), 'hi');
   assert.equal(serializeValue({ attachments: [] }), '');
 
-  assert.equal(renderPrompt('Review:\n{{input}}', { message: 'code' }), 'Review:\ncode');
+  assert.equal(renderPrompt('Review:\n{{message}}', { message: 'code' }), 'Review:\ncode');
   assert.equal(renderPrompt('no placeholder', { message: 'x' }), 'no placeholder');
 });
 
@@ -422,7 +443,7 @@ test('pump is idempotent when nothing is runnable', async () => {
 test('log entries are well formed for every event emitted', async () => {
   const log = createMemoryLog();
   const { executor } = recorder();
-  const runtime = new PheromoneRuntime(conditionComposition({ mode: 'text', equals: 'go' }), {
+  const runtime = new PheromoneRuntime(conditionComposition({ path: 'message', equals: 'go' }), {
     executeForager: executor,
     now: () => START,
     onLog: log.sink,

@@ -218,7 +218,7 @@ function buildDispatchDefinition(graphId: string): CompositionDefinition {
         kind: 'forager',
         // `connection` is metadata only: the binding chooses the session and
         // therefore the harness that actually runs this bee.
-        config: { connection: 'dispatch', prompt: '{{input}}' },
+        config: { connection: 'dispatch', prompt: '{{message}}' },
       },
     },
     edges: [],

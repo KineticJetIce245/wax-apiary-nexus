@@ -94,7 +94,7 @@ test('waxd stores live-catalog.json in its daemon directory', async (t) => {
         nodes: {
           only: {
             kind: 'forager',
-            config: { connection: 'fake', prompt: 'go {{input}}' },
+            config: { connection: 'fake', prompt: 'go {{message}}' },
           },
         },
         edges: [],

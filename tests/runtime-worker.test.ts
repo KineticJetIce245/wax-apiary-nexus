@@ -67,32 +67,13 @@ function workerChain(config: WorkerConfig): CompositionDefinition {
     schemaVersion: 1,
     id: 'worker-chain',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{input}}' } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start {{message}}' } },
       work: { kind: 'worker', config },
-      after: { kind: 'forager', config: { connection: 'codex', prompt: 'after {{input}}' } },
+      after: { kind: 'forager', config: { connection: 'codex', prompt: 'after {{message}}' } },
     },
     edges: [
       { id: 'e1', from: 'start', to: 'work' },
       { id: 'e2', from: 'work', to: 'after' },
-    ],
-  });
-}
-
-/** start -> check; check -> yes on exit 0, no otherwise. */
-function conditionWorkerComposition(config: Record<string, unknown>): CompositionDefinition {
-  return parseComposition({
-    schemaVersion: 1,
-    id: 'condition-worker',
-    nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'start' } },
-      check: { kind: 'condition', config: { mode: 'worker', ...config } },
-      yes: { kind: 'forager', config: { connection: 'codex', prompt: 'yes' } },
-      no: { kind: 'forager', config: { connection: 'codex', prompt: 'no' } },
-    },
-    edges: [
-      { id: 'e1', from: 'start', to: 'check' },
-      { id: 'e2', from: 'check', to: 'yes', when: 'true' },
-      { id: 'e3', from: 'check', to: 'no', when: 'false' },
     ],
   });
 }
@@ -179,6 +160,29 @@ test('worker argv runs and stdout becomes the Value', async () => {
   assert.equal(completed.stderrBytes, 0);
   assert.equal(completed.exitCode, 0);
   assert.equal('stdout' in completed, false, 'the log carries counts, not the body');
+});
+
+test('worker stdout is trimmed at the end and becomes the field-owned lastOutput', async () => {
+  const { executor, calls } = recorder();
+  const project = projectDir();
+  const runtime = new PheromoneRuntime(
+    workerChain(nodeConfig('process.stdout.write("worker output\\n\\n")')),
+    {
+      executeForager: executor,
+      projectDirectory: project,
+      now: () => START,
+    },
+  );
+
+  await runtime.admit('start', text('seed'));
+  await runtime.pump();
+
+  const after = calls.find((call) => call.nodeId === 'after');
+  assert.ok(after !== undefined);
+  assert.deepEqual(after.input, { message: 'worker output' });
+  assert.deepEqual(runtime.snapshot().nodes['work']?.lastOutput, {
+    message: 'worker output',
+  });
 });
 
 test('two worker activations stay queued and never overlap', async () => {
@@ -529,92 +533,6 @@ test('a worker without a registered project directory fails before spawning', as
     /is a worker but no project directory is registered/,
   );
   assert.equal(existsSync(marker), false);
-});
-
-test('condition worker branches true on exit 0 and false on non-zero without failing', async () => {
-  const project = projectDir();
-  const log = createMemoryLog();
-
-  const trueRecorder = recorder();
-  const trueRuntime = new PheromoneRuntime(
-    conditionWorkerComposition({
-      command: process.execPath,
-      args: ['-e', 'process.exit(0)'],
-    }),
-    {
-      executeForager: trueRecorder.executor,
-      projectDirectory: project,
-      now: () => START,
-      onLog: log.sink,
-    },
-  );
-  await trueRuntime.admit('start', { message: '' });
-  await trueRuntime.pump();
-  assert.deepEqual(
-    trueRecorder.calls.map((call) => call.nodeId),
-    ['start', 'yes'],
-  );
-
-  const falseRecorder = recorder();
-  const falseRuntime = new PheromoneRuntime(
-    conditionWorkerComposition({
-      command: process.execPath,
-      args: ['-e', 'process.exit(1)'],
-    }),
-    {
-      executeForager: falseRecorder.executor,
-      projectDirectory: project,
-      now: () => START,
-      onLog: log.sink,
-    },
-  );
-  await falseRuntime.admit('start', { message: '' });
-  await falseRuntime.pump();
-  assert.deepEqual(
-    falseRecorder.calls.map((call) => call.nodeId),
-    ['start', 'no'],
-  );
-
-  const completed = log.entries.filter(
-    (entry) => entry.event === 'node.completed' && entry.nodeId === 'check',
-  );
-  assert.deepEqual(
-    completed.map((entry) => [entry.outcome, entry.exitCode]),
-    [
-      ['true', 0],
-      ['false', 1],
-    ],
-  );
-  assert.equal(
-    log.entries.some((entry) => entry.event === 'node.failed'),
-    false,
-    'a non-zero Condition worker is a false branch, not a runtime error',
-  );
-});
-
-test('a Condition worker timeout is a runtime failure, not a false branch', async () => {
-  const project = projectDir();
-  const { executor, calls } = recorder();
-  const runtime = new PheromoneRuntime(
-    conditionWorkerComposition({
-      command: process.execPath,
-      args: ['-e', 'setInterval(() => {}, 1000)'],
-      timeoutMs: 200,
-    }),
-    {
-      executeForager: executor,
-      projectDirectory: project,
-      now: () => START,
-    },
-  );
-
-  await runtime.admit('start', { message: '' });
-  await assert.rejects(runtime.pump(), (error: unknown) => {
-    assert.ok(error instanceof WorkerExecutionError);
-    assert.equal(error.code, 'timeout');
-    return true;
-  });
-  assert.deepEqual(calls.map((call) => call.nodeId), ['start']);
 });
 
 test('a worker failure on a spread branch cancels siblings through spread semantics', async () => {

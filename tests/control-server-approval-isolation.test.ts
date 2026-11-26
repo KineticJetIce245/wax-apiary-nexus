@@ -45,7 +45,7 @@ async function setup(): Promise<IsolationContext> {
     const session = await env.registry.create(env.project, { harness: 'codex' });
     sessionIds.set(liveId, session.sessionId);
     const bindings = { only: { kind: 'session', sessionId: session.sessionId } };
-    const live = liveFrom(definition(liveId, `${liveId.toUpperCase()}:{{input}}`), bindings, liveId);
+    const live = liveFrom(definition(liveId, `${liveId.toUpperCase()}:{{message}}`), bindings, liveId);
     const response = await postJson(running.info.url, running.token, '/lives', { live });
     assert.equal(response.status, 200, response.text);
   }

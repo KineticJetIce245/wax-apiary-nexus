@@ -192,7 +192,7 @@ test('LiveHive validation enforces at/every, targets, ids and instants', () => {
     ...base,
     bees: {
       ...base.bees,
-      gate: { kind: 'condition', config: { mode: 'boolean' }, outgoing: [] },
+      gate: { kind: 'condition', config: { when: { path: 'boolean', equals: true } }, outgoing: [] },
     },
     beelines: base.beelines,
   };

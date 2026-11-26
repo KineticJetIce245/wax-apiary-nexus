@@ -35,9 +35,13 @@ function askComposition(modality: Record<string, unknown> = { modality: 'text' }
     schemaVersion: 1,
     id: 'ask',
     nodes: {
-      start: { kind: 'forager', config: { connection: 'codex', prompt: 'plan {{input}}' } },
+      start: { kind: 'forager', config: { connection: 'codex', prompt: 'plan {{message}}' } },
       ask: { kind: 'user', config: { prompt: 'Approve?', ...modality } },
-      done: { kind: 'forager', config: { connection: 'codex', prompt: 'finish' } },
+      done: {
+        kind: 'forager',
+        config: { connection: 'codex', prompt: 'finish' },
+        reads: [],
+      },
     },
     edges: [
       { id: 'e1', from: 'start', to: 'ask' },

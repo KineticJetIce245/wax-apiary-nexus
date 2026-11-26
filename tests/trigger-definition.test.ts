@@ -11,13 +11,13 @@ function composition(overrides: Record<string, unknown> = {}): Record<string, un
     schemaVersion: 1,
     id: 'scheduled',
     nodes: {
-      plan: { kind: 'forager', config: { connection: 'codex', prompt: 'plan {{input}}' } },
+      plan: { kind: 'forager', config: { connection: 'codex', prompt: 'plan {{message}}' } },
       work: {
         kind: 'worker',
         config: { command: 'node', args: ['-e', 'process.exit(0)'] },
       },
       ask: { kind: 'user', config: { modality: 'text', prompt: 'Ask?' } },
-      check: { kind: 'condition', config: { mode: 'text', contains: 'go' } },
+      check: { kind: 'condition', config: { when: { path: 'message', equals: 'go' } } },
       yes: { kind: 'forager', config: { connection: 'codex', prompt: 'yes' } },
       no: { kind: 'forager', config: { connection: 'codex', prompt: 'no' } },
     },

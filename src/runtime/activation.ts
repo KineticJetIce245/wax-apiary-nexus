@@ -1,6 +1,7 @@
 import type { EngineContext } from './engine-context.js';
+import { matchesRule } from './definition-rules.js';
 import { emitAlong } from './emit.js';
-import type { ExecutionContext } from './executor.js';
+import { isBeeResult, type ExecutionContext } from './executor.js';
 import { openUserHover, requestGuard } from './hover.js';
 import { runGather } from './gather.js';
 import {
@@ -9,6 +10,7 @@ import {
   logCompleted,
   logDropMissing,
   logFailed,
+  logFiltered,
 } from './runtime-log.js';
 import {
   releaseReservation,
@@ -18,10 +20,16 @@ import {
   type OutputReservation,
   type OutputTarget,
 } from './queue.js';
-import { evaluateCondition, workerLogFields } from './runtime-values.js';
+import { workerLogFields } from './runtime-values.js';
 import { runSpread } from './spread.js';
 import { assertValue } from './runtime-input.js';
-import { applyWriteBack } from './value-merge.js';
+import {
+  applyFilter,
+  applyWriteBack,
+  assertNoDropOverlap,
+  assertWrites,
+  resolveReads,
+} from './value-merge.js';
 import { cloneJson } from './value-paths.js';
 import {
   runWorker,
@@ -147,23 +155,12 @@ function conditionTargets(
   node: ConditionNode,
   pheromone: Pheromone,
 ): readonly OutputTarget[] {
-  if (node.config.mode === 'worker') {
-    const targets: OutputTarget[] = [];
-    for (const when of ['true', 'false'] as const) {
-      const edge = ctx.definition.edges.find(
-        (candidate) => candidate.from === node.id && candidate.when === when,
-      );
-      if (edge !== undefined) {
-        targets.push({ targetId: edge.to, count: 1 });
-      }
-    }
-    return targets;
-  }
   let branch: 'true' | 'false';
   try {
-    branch = evaluateCondition(node.config, pheromone.value);
+    const input = resolveReads(pheromone.value, node.reads, node.fallback, node.id);
+    branch = matchesRule(node.config.when, input, `condition '${node.id}'`) ? 'true' : 'false';
   } catch {
-    // Let activation report the real input error; no output will be emitted.
+    // Let activation report the real input/rule error; no output is reserved.
     return [];
   }
   const edge = ctx.definition.edges.find(
@@ -277,7 +274,11 @@ function finishActivation(
   emitAlong(ctx, node, pheromone, result.branch, reservation);
 }
 
-/** Merges a producing Bee's reply into the value and caches the last output. */
+/**
+ * Filters the raw reply, checks the declared writes, merges the remainder and
+ * applies the result's independent drop list. The last output is the filtered
+ * reply (not the merged value): it is the Bee's own output, memory-only.
+ */
 function applyReply(
   ctx: EngineContext,
   node: NodeDefinition,
@@ -286,11 +287,19 @@ function applyReply(
   result: NodeResult,
 ): void {
   const reply = result.value as Value;
-  const applied = applyWriteBack(pheromone.value, reply, result.drop, (path) => {
+  const filtered = applyFilter(reply, node.filter);
+  logFiltered(ctx.log, node, filtered.removed);
+  assertWrites(filtered.value, node.writes, node.id);
+  if (result.drop !== undefined) {
+    // The result asked to drop what it also carried: configuration error, even
+    // when a filter would have removed the path before the merge.
+    assertNoDropOverlap(reply, result.drop);
+  }
+  const applied = applyWriteBack(pheromone.value, filtered.value, result.drop, (path) => {
     logDropMissing(ctx.log, node, [path]);
   });
   pheromone.value = applied.value;
-  state.lastOutput = cloneJson(reply);
+  state.lastOutput = cloneJson(filtered.value);
 }
 
 async function runNode(
@@ -299,14 +308,19 @@ async function runNode(
   pheromone: Pheromone,
   state: NodeState,
 ): Promise<NodeResult> {
+  // Every task Bee resolves its declared reads; built-in defaults mean a worker
+  // or condition still reads nothing unless the instance overrides the list.
+  const input = resolveReads(pheromone.value, node.reads, node.fallback, node.id);
   if (node.kind === 'forager') {
-    return runForager(ctx, node, pheromone);
+    return runForager(ctx, node, input);
   }
   if (node.kind === 'worker') {
+    // A worker never receives the Value: its argv is static and its output is
+    // stdout. Only the declared read precondition applies.
     return runWorkerNode(ctx, node);
   }
   if (node.kind === 'condition') {
-    return runCondition(ctx, node, pheromone);
+    return runCondition(node, input);
   }
   if (node.kind === 'user') {
     throw new Error(`user node '${node.id}' waits for input instead of running`);
@@ -321,14 +335,16 @@ async function runNode(
 async function runForager(
   ctx: EngineContext,
   node: ForagerNode,
-  pheromone: Pheromone,
+  input: Value,
 ): Promise<NodeResult> {
   const context: ExecutionContext = {
     requestGuard: (request, decide) => requestGuard(ctx, node, request, decide),
   };
-  const output = await ctx.executor.execute(node, pheromone.value, context);
-  assertValue(output, `forager '${node.id}' reply`);
-  return { value: output, outcome: 'ok' };
+  const output = await ctx.executor.execute(node, input, context);
+  const reply = isBeeResult(output) ? output.value : output;
+  const drop = isBeeResult(output) ? output.drop : undefined;
+  assertValue(reply, `forager '${node.id}' reply`);
+  return { value: reply, outcome: 'ok', ...(drop === undefined ? {} : { drop }) };
 }
 
 async function runWorkerNode(ctx: EngineContext, node: WorkerNode): Promise<NodeResult> {
@@ -352,17 +368,8 @@ function requireProjectDirectory(ctx: EngineContext, node: NodeDefinition): stri
   return ctx.projectDirectory;
 }
 
-async function runCondition(
-  ctx: EngineContext,
-  node: ConditionNode,
-  pheromone: Pheromone,
-): Promise<NodeResult> {
-  if (node.config.mode === 'worker') {
-    const result = await runWorker(node.config, requireProjectDirectory(ctx, node));
-    const branch = result.exitCode === 0 ? 'true' : 'false';
-    return { outcome: branch, branch, log: workerLogFields(result) };
-  }
-  const branch = evaluateCondition(node.config, pheromone.value);
+function runCondition(node: ConditionNode, input: Value): NodeResult {
+  const branch = matchesRule(node.config.when, input, `condition '${node.id}'`) ? 'true' : 'false';
   return { outcome: branch, branch };
 }
 

@@ -115,7 +115,7 @@ test(
           nodes: {
             only: {
               kind: 'forager',
-              config: { connection: 'dsh', prompt: 'run {{input}}' },
+              config: { connection: 'dsh', prompt: 'run {{message}}' },
             },
           },
           edges: [],
@@ -254,7 +254,7 @@ test(
           nodes: {
             only: {
               kind: 'forager',
-              config: { connection: 'dsh', prompt: 'run {{input}}' },
+              config: { connection: 'dsh', prompt: 'run {{message}}' },
             },
           },
           edges: [],
@@ -376,7 +376,7 @@ test(
           nodes: {
             only: {
               kind: 'forager',
-              config: { connection: 'dsh', prompt: 'run {{input}}' },
+              config: { connection: 'dsh', prompt: 'run {{message}}' },
             },
           },
           edges: [],
@@ -502,7 +502,7 @@ test(
           nodes: {
             only: {
               kind: 'forager',
-              config: { connection: 'dsh', prompt: 'run {{input}}' },
+              config: { connection: 'dsh', prompt: 'run {{message}}' },
             },
           },
           edges: [],

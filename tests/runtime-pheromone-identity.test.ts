@@ -26,8 +26,16 @@ function chain(): ReturnType<typeof parseComposition> {
   return fastDefinition(
     'same-pheromone',
     {
-      first: { kind: 'forager', config: { connection: 'fake', prompt: 'first' } },
-      second: { kind: 'forager', config: { connection: 'fake', prompt: 'second' } },
+      first: {
+        kind: 'forager',
+        config: { connection: 'fake', prompt: 'first' },
+        writes: [],
+      },
+      second: {
+        kind: 'forager',
+        config: { connection: 'fake', prompt: 'second' },
+        writes: [],
+      },
     },
     [{ id: 'first-second', from: 'first', to: 'second' }],
     { queueMax: 8, queueTtlMs: 60_000 },
@@ -67,7 +75,11 @@ test('a user answer is bound to the same object the caller supplied', async () =
       'answer-ref',
       {
         ask: { kind: 'user', config: { modality: 'text', prompt: '?' } },
-        done: { kind: 'forager', config: { connection: 'fake', prompt: 'done' } },
+        done: {
+          kind: 'forager',
+          config: { connection: 'fake', prompt: 'done' },
+          writes: [],
+        },
       },
       [{ id: 'ask-done', from: 'ask', to: 'done' }],
     ),

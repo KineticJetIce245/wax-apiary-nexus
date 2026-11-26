@@ -140,7 +140,7 @@ function foragerDefinition(id: string): Record<string, unknown> {
     nodes: {
       only: {
         kind: 'forager',
-        config: { connection: 'codex', prompt: 'wake {{input}}' },
+        config: { connection: 'codex', prompt: 'wake {{message}}' },
       },
     },
     edges: [],

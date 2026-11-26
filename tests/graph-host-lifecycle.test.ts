@@ -180,8 +180,8 @@ test('unload retains fresh and borrowed sessions and disposes routing', async (t
     displayName: 'borrowed-session',
   });
   const definition = fastDefinition('mixed', {
-    fresh: forager('fresh {{input}}'),
-    reuse: forager('reuse {{input}}'),
+    fresh: forager('fresh {{message}}'),
+    reuse: forager('reuse {{message}}'),
   });
   const bindings: GraphBindings = {
     fresh: { kind: 'fresh' },
@@ -235,7 +235,7 @@ test('a failed close during load rollback is reported and the load is not regist
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('rollback-close', 'rollback {{input}}');
+  const definition = runnableForagerGraph('rollback-close', 'rollback {{message}}');
   const load = host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -279,7 +279,7 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
     await env.workspace.stop();
   });
 
-  const idle = runnableForagerGraph('idle', 'idle {{input}}');
+  const idle = runnableForagerGraph('idle', 'idle {{message}}');
   await host.loadGraph({
     definition: idle,
     bindings: allFresh(idle),
@@ -304,7 +304,7 @@ test('idle sweep follows TTL, and a trigger renews the deadline', async (t) => {
   assert.deepEqual(env.adapter.closedNativeIds, []);
   assert.equal(env.registry.list().length, 1);
 
-  const renew = runnableForagerGraph('renew', 'renew {{input}}');
+  const renew = runnableForagerGraph('renew', 'renew {{message}}');
   await host.loadGraph({
     definition: renew,
     bindings: allFresh(renew),
@@ -355,7 +355,7 @@ test('a busy graph is neither unloaded nor swept while its trigger is in flight'
     await host.dispose();
     await env.workspace.stop();
   });
-  const definition = runnableForagerGraph('busy', 'hold {{input}}');
+  const definition = runnableForagerGraph('busy', 'hold {{message}}');
   await host.loadGraph({
     definition,
     bindings: allFresh(definition),
@@ -465,8 +465,8 @@ test('dispose unloads every Rest graph, is idempotent and refuses later work', a
     await env.workspace.stop();
   });
 
-  const graphA = runnableForagerGraph('graph-a', 'A {{input}}');
-  const graphB = runnableForagerGraph('graph-b', 'B {{input}}');
+  const graphA = runnableForagerGraph('graph-a', 'A {{message}}');
+  const graphB = runnableForagerGraph('graph-b', 'B {{message}}');
   await host.loadGraph({ definition: graphA, bindings: allFresh(graphA), project: env.project });
   await host.loadGraph({ definition: graphB, bindings: allFresh(graphB), project: env.project });
 
@@ -518,7 +518,7 @@ test('fresh_once keeps its session and mapping across unload and reuses it on re
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('once', 'run {{input}}');
+  const definition = runnableForagerGraph('once', 'run {{message}}');
   const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'once' } };
   await host.loadGraph({ definition, bindings, project: env.project });
   const session = env.registry.list()[0];
@@ -570,7 +570,7 @@ test('fresh_always is retained on unload and a reload creates a new session', as
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('always', 'run {{input}}');
+  const definition = runnableForagerGraph('always', 'run {{message}}');
   const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'always' } };
   await host.loadGraph({ definition, bindings, project: env.project });
   const first = env.registry.list()[0];
@@ -615,7 +615,7 @@ test('an idle sweep retains a fresh_once session and the reload still reuses it'
     await env.workspace.stop();
   });
 
-  const definition = runnableForagerGraph('once-sweep', 'run {{input}}');
+  const definition = runnableForagerGraph('once-sweep', 'run {{message}}');
   const bindings: GraphBindings = { only: { kind: 'fresh', mode: 'once' } };
   await host.loadGraph({
     definition,

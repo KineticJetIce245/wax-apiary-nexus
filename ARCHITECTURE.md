@@ -465,3 +465,32 @@ SHA256 (`EF189A8C27DB6D63930AA3046A3040482E952EAFCB7487C644D508E8D461F027`).
 The overlay template is `../docs/temp/acp-opencode.patch.yml`. No key file was
 read and no key value was printed; this is test-environment setup, not a product
 contract.
+
+### D6. Same-Pheromone movement and the per-Bee last-output cache
+
+**Question (lead).** Does "a normal beeline moves the same Pheromone" mean the
+input envelope is reused at each Bee, and how is the per-Bee last output kept?
+The owner asked whether the Pheromone is discarded after each Bee, and whether
+the Bee's returned value reuses the same Pheromone.
+
+**Owner clarification.** The owner asked whether it is necessary to design the
+Pheromone as "used and discarded at each Bee". The answer is no: the current
+model keeps one envelope id along a normal beeline, and the per-Bee last output
+is a separate cache, not the Pheromone's value.
+
+**Owner answer.** Keep D2. A normal beeline moves the same `Pheromone` id; the
+Bee consumes its value and writes its returned value into the same envelope.
+The Bee additionally caches its own last completed output in
+`NodeState.lastOutput`: memory-only, overwritten by its next successful
+activation, released on `unload`, never written to `field.json`, and never a
+run history. The cache is written by output-producing Bees (forager, worker,
+user, merge); condition/counter/fork have no single result value and do not
+write it. The cached `Value` is stored as-is (text and file/attachment paths are
+the primary forms; no binary). "Used and discarded" happens only at a terminal
+Bee, a drop/failure, or a cardinality change (fork copies; merge consumes
+branches and emits one merged Pheromone).
+
+**Consequence.** No code change: the A1 same-Pheromone implementation and
+`tests/runtime-pheromone-identity.test.ts` remain valid. The last-output scope
+and the "same envelope, replaced value" semantics are documented in CONTRACT §6
+and ARCHITECTURE §3/§4.10.

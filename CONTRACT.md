@@ -107,7 +107,7 @@ Session = {
 - A receptor stores Pheromone objects directly and is FIFO. `pending` is a pacing slot for the head of a receptor; one Pheromone is active per Bee.
 - A Bee with no outgoing beeline is terminal; its Pheromone becomes a field output.
 - `field.json` is a snapshot, not an event log, and contains no run/trace record and no output cache.
-- The per-Bee last output is a memory-only `Value` (text, or file/attachment address) owned by the field. It is not written to `field.json`, is not a run history, and is released on `unload`.
+- The per-Bee last output is a memory-only `Value` owned by the field. It is written by output-producing Bees (forager, worker, user, merge) on a successful activation; condition/counter/fork have no single result value and do not write it. It is overwritten by the Bee's next successful activation, is not written to `field.json`, is not a run history, and is released on `unload`.
 - A loop is bounded by `counter`/`condition` and receptor overflow (`queueMax`); there is no per-trace hop or duration budget.
 - `maxPumps`/`maxWaitMs` are host driver yields, not execution budgets; `queueTtlMs` is a per-receptor waiting TTL from the enqueue instant, not a message lifetime.
 - `load` restores receptors/pending/hover/incomplete joins; restored active Pheromones are marked unknown/stuck and are not replayed.

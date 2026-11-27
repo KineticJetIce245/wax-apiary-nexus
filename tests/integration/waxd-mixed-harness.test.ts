@@ -168,7 +168,7 @@ function textOf(value: unknown): string {
     return '';
   }
   const record = value as Record<string, unknown>;
-  return typeof record['text'] === 'string' ? record['text'] : '';
+  return typeof record['message'] === 'string' ? record['message'] : '';
 }
 
 function mixedLive(): Record<string, unknown> {

@@ -84,7 +84,7 @@ async function fetchJson(
 function outputText(body: Record<string, any>): string {
   const entries = body['outputs'] as Record<string, unknown>[] | undefined;
   const value = entries?.[0]?.['value'] as Record<string, unknown> | undefined;
-  return typeof value?.['text'] === 'string' ? value['text'].trim() : '';
+  return typeof value?.['message'] === 'string' ? value['message'].trim() : '';
 }
 
 test(

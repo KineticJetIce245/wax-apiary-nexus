@@ -271,7 +271,7 @@ function assertAdapterSerialized(events: readonly HarnessEvent[]): void {
 
 function outputText(body: Record<string, any>): string {  const entries = body['outputs'] as Record<string, unknown>[] | undefined;
   const value = entries?.[0]?.['value'] as Record<string, unknown> | undefined;
-  const text = typeof value?.['text'] === 'string' ? value['text'].trim() : '';
+  const text = typeof value?.['message'] === 'string' ? value['message'].trim() : '';
   assert.ok(text.length > 0, 'run record has no forager output text');
   return text;
 }

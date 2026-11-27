@@ -585,7 +585,7 @@ test(
       assert.equal(outputs.length, 1);
       assert.equal(typeof outputs[0]?.['nodeId'], 'string');
       assert.ok(
-        typeof (outputs[0]?.['value'] as Record<string, unknown> | undefined)?.['text'] ===
+        typeof (outputs[0]?.['value'] as Record<string, unknown> | undefined)?.['message'] ===
           'string',
         'allowed trigger must leave a field output',
       );

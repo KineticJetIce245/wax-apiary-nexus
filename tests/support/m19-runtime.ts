@@ -20,22 +20,12 @@ export function choice(value: string): Value {
   return { choice: value };
 }
 
-export function booleanValue(value: boolean): Value {
-  return { boolean: value };
-}
-
 export function queueEntry(value: Value, enqueuedAt: string): QueueEntry {
   return { value, enqueuedAt };
 }
 
 export function pheromone(value: Value): Pheromone {
   return { value };
-}
-
-/** The universal text field, or an empty string when it is not a string. */
-export function messageOf(value: Value): string {
-  const message = value['message'];
-  return typeof message === 'string' ? message : '';
 }
 
 export function definitionOf(

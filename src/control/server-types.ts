@@ -52,7 +52,7 @@ export interface ControlServerOptions {
   readonly graphSweepIntervalMs?: number;
   /** Optional durable LiveHive identity index used by host reads. */
   readonly catalog?: LiveHiveCatalog;
-  /** Native guard decision timeout; defaults to one hour. */
+  /** Native guard decision timeout; defaults to 120s. */
   readonly guardTimeoutMs?: number;
   /** Root for `<livesRoot>/<liveId>/live.json`; defaults under stateRoot. */
   readonly livesRoot?: string;

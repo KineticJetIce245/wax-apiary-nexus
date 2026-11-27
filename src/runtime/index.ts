@@ -37,11 +37,7 @@ export {
   setPath,
   setReadPath,
 } from './value-paths.js';
-export {
-  GuardDecisionError,
-  PheromoneRuntime,
-  ReceptorFullError,
-} from './runtime.js';
+export { PheromoneRuntime, ReceptorFullError } from './runtime.js';
 export {
   DEFAULT_RECEPTOR_BLOCK_TIMEOUT_MS,
   ReceptorBlockTimeoutError,
@@ -62,6 +58,7 @@ export type {
   ExecutionContext,
   GuardDecision,
   GuardRequest,
+  GuardResolution,
   NodeExecutor,
 } from './executor.js';
 export type { RuntimeOptions, LateActivationOutcome } from './runtime.js';

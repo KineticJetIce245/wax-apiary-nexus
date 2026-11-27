@@ -99,7 +99,7 @@ test(
       env: { DSH_PERMISSION_MODE: 'read-only' },
     });
     await adapter.start();
-    const workspace = new Workspace(adapter, { approvalTimeoutMs: 90_000 });
+    const workspace = new Workspace(adapter);
     const project: Project = {
       id: 'project-native-guard-cli',
       directory: mkdtempSync(join(tmpdir(), 'wax-m14-guard-cli-project-')),

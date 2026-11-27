@@ -1,4 +1,5 @@
 import type { RuntimeLogEntry, RuntimeLogFieldsSink } from './log.js';
+import { isFieldResting } from './field.js';
 import { ReceptorFullError } from './receptor-overflow.js';
 import { isEntryExpired } from './runtime-expiry.js';
 import type {
@@ -23,18 +24,55 @@ export interface QueueContext {
   readonly wake?: (nodeId: NodeId) => void;
   /** Observation of the last field mutation; never awaited. */
   readonly onChange?: () => void;
+  /** Busy -> Rest observation; never awaited. */
+  readonly onRest?: () => void;
+  /** The field was released; a rest observation is then suppressed. */
+  readonly detached: boolean;
+  /** Derived field state: no active, pending, receptor, hover or gather. */
+  resting: boolean;
   /** Last field mutation instant; the host's idle clock reads it. */
   lastChangedAt: number;
 }
 
-/** Records one field mutation and notifies the host's idle clock. */
+/** Records one field mutation, recomputes Rest and notifies the idle clock. */
 export function markChanged(ctx: QueueContext): void {
   ctx.lastChangedAt = ctx.now();
+  refreshRest(ctx);
   try {
     ctx.onChange?.();
   } catch {
     // Observability must never turn a field mutation into a failure.
   }
+}
+
+/** Recomputes the derived Rest flag and reports a false -> true transition. */
+export function refreshRest(ctx: QueueContext): void {
+  const resting = isFieldResting(ctx.states.values());
+  if (resting && !ctx.resting) {
+    ctx.resting = true;
+    ctx.log({ event: 'runtime.rest' });
+    if (!ctx.detached) {
+      announceRest(ctx);
+    }
+    return;
+  }
+  if (!resting) {
+    ctx.resting = false;
+  }
+}
+
+function announceRest(ctx: QueueContext): void {
+  const onRest = ctx.onRest;
+  if (onRest === undefined) {
+    return;
+  }
+  queueMicrotask(() => {
+    try {
+      onRest();
+    } catch {
+      // A rest observer must never turn a drain into a failure.
+    }
+  });
 }
 
 /** The partial entry shape the runtime log accepts. */

@@ -4,21 +4,15 @@ import {
   createEntry,
   expireOverdueQueues,
   queueDepth,
+  refreshRest,
   stateOf,
   tryAppendEntry,
   type QueueContext,
 } from './queue.js';
-import { createNodeState, isFieldResting, snapshotField } from './field.js';
+import { createNodeState, snapshotField } from './field.js';
 import { applyPersistedField, exportField as exportPersistedField } from './restore.js';
-import { completeHover, settleGuard as settleGuardHover } from './hover.js';
-import {
-  completeRestored,
-  detachField,
-  refreshRest,
-  settleField,
-  wakeBee,
-  wakeRestored,
-} from './drain.js';
+import { completeHover } from './hover.js';
+import { completeRestored, detachField, settleField, wakeBee, wakeRestored } from './drain.js';
 import {
   ReceptorFullError,
   ReceptorOverflow,
@@ -26,7 +20,7 @@ import {
   type ReceptorOverflowPolicy,
 } from './receptor-overflow.js';
 import { StateLock } from './state-lock.js';
-import type { EngineContext, GuardWaiter, LateActivationOutcome } from './engine-context.js';
+import type { EngineContext, LateActivationOutcome } from './engine-context.js';
 import type {
   CompositionDefinition,
   NodeDefinition,
@@ -50,7 +44,7 @@ export interface RuntimeOptions {
   /** Injectable clock for tests; defaults to Date.now. */
   now?: () => number;
   onLog?: RuntimeLogSink;
-  /** How long a Guard waits before it is cancelled; contract default is 1h. */
+  /** How long a Guard waits before it is cancelled; contract default is 120s. */
   guardTimeoutMs?: number;
   /** Asks a human for a Guard decision. Without one, every Guard is rejected. */
   onGuard?: (request: GuardRequest) => Promise<GuardDecision>;
@@ -73,7 +67,7 @@ export interface RuntimeOptions {
   onLateResult?: (nodeId: NodeId, outcome: LateActivationOutcome) => void;
 }
 
-const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
+const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
 
 /** Default pacing timer: the handle is unref'd so a test process can exit. */
 function defaultSleep(ms: number): Promise<void> {
@@ -85,7 +79,7 @@ function defaultSleep(ms: number): Promise<void> {
 
 /** Re-exported so callers that imported it from the runtime keep working. */
 export { ReceptorFullError } from './receptor-overflow.js';
-export { GuardDecisionError } from './hover.js';
+
 
 /**
  * PheromoneField runtime.
@@ -127,6 +121,11 @@ export class PheromoneRuntime {
       now,
       log,
       lastChangedAt: now(),
+      resting: true,
+      get detached() {
+        return engineRef?.detached ?? false;
+      },
+      ...(options.onRest === undefined ? {} : { onRest: options.onRest }),
       ...(options.onChange === undefined ? {} : { onChange: options.onChange }),
       notifyOverflow: (nodeId) => overflow?.notify(nodeId),
       wake: (nodeId) => {
@@ -161,7 +160,6 @@ export class PheromoneRuntime {
     const admitted = structuredClone(value);
     if (this.engine.receptorOverflow !== undefined) {
       await this.engine.receptorOverflow.admit(node.id, admitted);
-      this.engine.resting = false;
       return;
     }
     this.engine.stateLock.runSync(() => {
@@ -171,7 +169,6 @@ export class PheromoneRuntime {
         createEntry(admitted, this.engine.iso()),
         'pheromone.enqueued',
       );
-      this.engine.resting = false;
     });
   };
 
@@ -201,7 +198,7 @@ export class PheromoneRuntime {
 
   /** Immutable view of the PheromoneField. */
   snapshot(): PheromoneFieldSnapshot {
-    return snapshotField(this.definition, this.engine.states, this.engine.resting);
+    return snapshotField(this.definition, this.engine.states, this.engine.queue.resting);
   }
 
   /**
@@ -230,7 +227,6 @@ export class PheromoneRuntime {
     }
     completeHover(this.engine, node, pheromone, value, 'answered');
     wakeBee(this.engine, nodeId);
-    refreshRest(this.engine);
   }
 
   /**
@@ -238,7 +234,7 @@ export class PheromoneRuntime {
    * deliberately not persisted.
    */
   exportField(): PersistedField {
-    return exportPersistedField(this.definition, this.engine.states, this.engine.resting);
+    return exportPersistedField(this.definition, this.engine.states, this.engine.queue.resting);
   }
 
   /**
@@ -263,27 +259,9 @@ export class PheromoneRuntime {
     stateLock.runSync(() => {
       expireOverdueQueues(runtime.engine.queue);
     });
-    refreshRest(runtime.engine);
+    refreshRest(runtime.engine.queue);
     wakeRestored(runtime.engine);
     return { runtime, report };
-  }
-
-  /**
-   * Marks nodes as needing a human after a forced edit or a guard that cannot
-   * be resumed. State is kept; nothing is replayed.
-   */
-  markNeedsAttention(nodeIds: readonly NodeId[]): void {
-    for (const id of nodeIds) {
-      const node = this.requireNode(id);
-      const state = stateOf(this.engine.queue, id);
-      state.state = { ...(state.state ?? {}), needsAttention: true };
-      this.log({ event: 'runtime.attention', nodeId: id, nodeKind: node.kind });
-    }
-  }
-
-  /** Settles the open Guard for `requestId`. */
-  settleGuard(nodeId: NodeId, requestId: string, decision: GuardDecision): void {
-    settleGuardHover(this.engine, nodeId, requestId, decision);
   }
 
   private requireNode(nodeId: NodeId): NodeDefinition {
@@ -371,14 +349,11 @@ function buildEngine(parts: EngineParts): EngineContext {
     executor: parts.options.executeForager,
     projectDirectory: parts.options.projectDirectory,
     guardTimeoutMs: parts.guardTimeoutMs,
-    guardWaiters: new Map<string, GuardWaiter>(),
     onGuard: parts.options.onGuard,
     onGuardExpired: parts.options.onGuardExpired,
-    onRest: parts.options.onRest,
     onLateResult: parts.options.onLateResult,
     reportedBlocks: new Set(),
     detached: false,
-    resting: isFieldResting(parts.states.values()),
   };
 }
 

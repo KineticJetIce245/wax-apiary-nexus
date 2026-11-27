@@ -5,12 +5,6 @@ import type { ReceptorOverflow } from './receptor-overflow.js';
 import type { StateLock } from './state-lock.js';
 import type { CompositionDefinition, NodeId, NodeState, Value } from './types.js';
 
-/** A Guard decision waiter keyed by hover token. */
-export interface GuardWaiter {
-  readonly requestId: string;
-  readonly resolve: (decision: GuardDecision) => void;
-}
-
 /** One per-Bee pacing timer; the token guards against a stale callback. */
 export interface PacingTimer {
   readonly dueAt: number;
@@ -62,11 +56,8 @@ export interface EngineContext {
   readonly executor: NodeExecutor;
   readonly projectDirectory: string | undefined;
   readonly guardTimeoutMs: number;
-  readonly guardWaiters: Map<string, GuardWaiter>;
   readonly onGuard: ((request: GuardRequest) => Promise<GuardDecision>) | undefined;
   readonly onGuardExpired: ((requestId: string) => void) | undefined;
-  /** Called once when the field transitions from busy to Rest (observation). */
-  readonly onRest: (() => void) | undefined;
   /** Called when a native activation completes after `detach()`. */
   readonly onLateResult:
     | ((nodeId: NodeId, outcome: LateActivationOutcome) => void)
@@ -75,5 +66,4 @@ export interface EngineContext {
   readonly reportedBlocks: Set<string>;
   /** The field was released; running activations hand their result to the host. */
   detached: boolean;
-  resting: boolean;
 }

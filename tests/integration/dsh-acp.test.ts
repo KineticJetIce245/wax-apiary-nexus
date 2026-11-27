@@ -40,7 +40,7 @@ async function openSession(options: { permissionMode?: string } = {}): Promise<S
       : { env: { DSH_PERMISSION_MODE: options.permissionMode } }),
   });
   await adapter.start();
-  const workspace = new Workspace(adapter, { approvalTimeoutMs: 30_000 });
+  const workspace = new Workspace(adapter);
   const conversation = await workspace.createConversation(project);
   return { adapter, workspace, project, conversationId: conversation.id };
 }

@@ -35,7 +35,7 @@ async function openSession(): Promise<Session> {
   const project: Project = { id: `project-${Date.now()}`, directory };
   const adapter = new CodexAppServerAdapter({ launch: connection.launch });
   await adapter.start();
-  const workspace = new Workspace(adapter, { approvalTimeoutMs: 60_000 });
+  const workspace = new Workspace(adapter);
   const conversation = await workspace.createConversation(project);
   return {
     adapter,

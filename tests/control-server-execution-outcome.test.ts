@@ -10,8 +10,22 @@ import {
   foragerDefinition,
   makeEnvWithAdapter,
   startServer,
+  type TestEnv,
 } from './support/control-server-fixtures.js';
 import { bLoad, bTrigger, getJson, waitForRest } from './support/control-server-http.js';
+
+async function waitForApprovalTimeout(env: TestEnv, executionId: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (env.workspace.getExecution(executionId)?.state !== 'cancelled') {
+    assert.ok(Date.now() < deadline, 'the guard deadline never cancelled the execution');
+    await delay(5);
+  }
+  const execution = env.workspace.getExecution(executionId);
+  assert.ok(execution !== undefined);
+  assert.equal(execution.state, 'cancelled');
+  assert.equal(execution.cancelReason, 'approval-timeout');
+  assert.equal(execution.error, undefined);
+}
 
 /**
  * A native terminal state is an execution detail of the field, not a
@@ -59,7 +73,7 @@ for (const terminal of TERMINALS) {
   });
 }
 
-test('the workspace approval timer cancels the execution, not the delivery', async (t) => {
+test('the runtime guard deadline cancels the execution, not the delivery', async (t) => {
   const liveId = 'outcome-approval-timeout';
   const logs: string[] = [];
   const adapter = new FakeAdapter({
@@ -67,9 +81,11 @@ test('the workspace approval timer cancels the execution, not the delivery', asy
     approvalCancelTerminal: 'cancelled',
     output: OUTPUT_SECRET,
   });
-  const env = makeEnvWithAdapter(adapter, undefined, { approvalTimeoutMs: 50 });
-  const running = await startServer(env, { logger: (line) => logs.push(line) });
-  const requested = new Promise<string>((resolve) => {
+  const env = makeEnvWithAdapter(adapter);
+  const running = await startServer(env, {
+    guardTimeoutMs: 50,
+    logger: (line) => logs.push(line),
+  });  const requested = new Promise<string>((resolve) => {
     const off = env.workspace.onEvent((event) => {
       if (event.type === 'execution/approval-requested') {
         off();
@@ -94,25 +110,16 @@ test('the workspace approval timer cancels the execution, not the delivery', asy
   assert.equal(inspection.status, 200, inspection.text);
   assertNoSecrets(inspection.text, running.token);
   assert.equal(inspection.text.includes(OUTPUT_SECRET), false);
-
   assert.ok(executionId !== undefined, 'expected a native approval request');
-  const deadline = Date.now() + 2_000;
-  while (env.workspace.getExecution(executionId)?.state !== 'cancelled') {
-    assert.ok(Date.now() < deadline, 'the approval timer never cancelled the execution');
-    await delay(5);
-  }
-  const execution = env.workspace.getExecution(executionId);
-  assert.ok(execution !== undefined);
-  assert.equal(execution.state, 'cancelled');
-  assert.equal(execution.cancelReason, 'approval-timeout');
-  assert.equal(execution.error, undefined);
-
+  await waitForApprovalTimeout(env, executionId);
+  const finished = await waitForRest(running.info.url, running.token, liveId, 2_000, false);
+  assert.equal(finished.body?.['status']?.['rest'], true);
+  assert.equal(finished.text.includes(OUTPUT_SECRET), false);
   const wakeLine = logs.find(
     (line) => line.includes('path=/lives/trigger') && line.includes('status=202'),
   );
   assert.ok(wakeLine !== undefined, `no 202 trigger log line: ${logs.join(' | ')}`);
   assert.equal(logs.some((line) => line.includes('status=500')), false);
-
   t.diagnostic('observed: rest=true cancelReason=approval-timeout');
 });
 
@@ -123,7 +130,7 @@ test('an explicit workspace cancel settles the field without a run error', async
     approvalCancelTerminal: 'cancelled',
     output: OUTPUT_SECRET,
   });
-  const env = makeEnvWithAdapter(adapter, undefined, { approvalTimeoutMs: 60_000 });
+  const env = makeEnvWithAdapter(adapter);
   const running = await startServer(env);
   t.after(async () => {
     await running.server.stop();

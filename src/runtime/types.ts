@@ -265,7 +265,7 @@ export type NodeKind = NodeDefinition['kind'];
  */
 export interface HoverSpec {
   token: string;
-  kind: 'user' | 'forager' | 'guard' | 'timer';
+  kind: 'user' | 'guard';
   compositionId: string;
   nodeId: NodeId;
   expiresAt?: string;

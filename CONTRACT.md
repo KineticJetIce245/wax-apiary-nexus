@@ -230,6 +230,10 @@ Session = {
   that session is handled by ACP/WAX; there is no unowned-approval handoff, GUI
   approval, or pass-through. ACP is automation-only: a DSH/Codex GUI may list or
   resume the persisted session but cannot receive or answer its live approvals.
+- A native approval is a runtime Guard hover. The runtime guard deadline (default
+  120s) is the only approval deadline; there is no second Workspace timer. An
+  expired approval is cancelled through the normal execution cancel path and is
+  recorded as `approval-timeout`.
 - A separate send-message ingress may submit a new message to an ACP session; it
   cannot decide or cancel approvals and does not share the approval channel.
 - `dispatch` creates an ephemeral one-bee graph, delivers the prompt through the

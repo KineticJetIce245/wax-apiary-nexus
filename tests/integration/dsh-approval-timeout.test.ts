@@ -28,9 +28,8 @@ const integrationOptions = {
   timeout: 240_000,
 };
 
-/** Short enough for a test; the runtime guard must expire later than this. */
-const APPROVAL_TIMEOUT_MS = 4_000;
-const GUARD_TIMEOUT_MS = 90_000;
+/** Short enough for a test; the runtime guard is the only approval deadline. */
+const GUARD_TIMEOUT_MS = 4_000;
 
 interface ObservedEvent {
   readonly atMs: number;
@@ -104,8 +103,8 @@ function assertApprovalTimeoutSequence(
   const requestedAt = observed[requestedIndex]?.atMs ?? 0;
   const decidedAt = observed[decidedIndex]?.atMs ?? 0;
   assert.ok(
-    decidedAt - requestedAt >= APPROVAL_TIMEOUT_MS - 50,
-    `approval was not decided by the workspace timeout: ${sequence}`,
+    decidedAt - requestedAt >= GUARD_TIMEOUT_MS - 50,
+    `approval was not decided by the runtime guard deadline: ${sequence}`,
   );
 }
 
@@ -119,13 +118,12 @@ test(
     const observed: ObservedEvent[] = [];
     const controlLogs: string[] = [];
     let executionId: string | undefined;
-
     const adapter = new DshAcpAdapter({
       dshRoot,
       env: { DSH_PERMISSION_MODE: 'read-only' },
     });
     await adapter.start();
-    const workspace = new Workspace(adapter, { approvalTimeoutMs: APPROVAL_TIMEOUT_MS });
+    const workspace = new Workspace(adapter);
     const project: Project = {
       id: `m13b-approval-timeout-${String(Date.now())}`,
       directory: mkdtempSync(join(tmpdir(), 'wax-m13b-approval-timeout-')),
@@ -158,17 +156,14 @@ test(
       await server.stop().catch(() => undefined);
       await workspace.stop().catch(() => undefined);
     });
-
     const info = await server.start();
     const token = readFileSync(info.tokenPath, 'utf8').trim();
-
     const loaded = await bLoad(info.url, token, {
       definition: liveDefinition(liveId),
       bindings: { only: { kind: 'fresh', harness: 'dsh' } },
       project,
     });
     assert.equal(loaded.status, 200);
-
     const marker = `M13B-TIMEOUT-${String(Date.now())}`;
     const fileName = 'm13b-approval-timeout.txt';
     const wakeStartedAt = Date.now();
@@ -181,24 +176,16 @@ test(
         `with the exact content ${marker}. Report done. Do not use any other directory.`,
     );
     const wakeElapsedMs = Date.now() - wakeStartedAt;
-    const sequence = observed
-      .map((event) => `${String(event.atMs)}ms ${event.type} (${event.detail})`)
-      .join(' -> ');
-
-    assert.equal(wake.status, 202, `${wake.text}\nruntime: ${sequence}`);
+    assert.equal(wake.status, 202, wake.text);
     assert.equal(wake.body?.['ok'], true);
     assert.equal(wake.text.includes(marker), false, 'wake response leaked the prompt marker');
     assert.equal(wake.text.includes(token), false, 'wake response leaked the token');
     assert.ok(wakeElapsedMs < 30_000, `wake admission hung for ${String(wakeElapsedMs)}ms`);
-    // The approval timeout is asynchronous; a guard hover is not a settled user
-    // hover, so wait for Rest specifically.
-    let finished;
-    try {
-      finished = await waitForRest(info.url, token, liveId, 180_000, false);
-    } catch (error) {
-      t.diagnostic(`Rest timeout; observed sequence=${sequence}`);
-      throw error;
-    }
+    // The guard deadline is asynchronous; wait for Rest specifically.
+    const finished = await waitForRest(info.url, token, liveId, 180_000, false);
+    const sequence = observed
+      .map((event) => `${String(event.atMs)}ms ${event.type} (${event.detail})`)
+      .join(' -> ');
     assert.equal(finished.status, 200, finished.text);
     assert.equal(
       finished.body?.['status']?.['rest'],
@@ -208,9 +195,7 @@ test(
     assert.equal(finished.text.includes(marker), false, 'run response leaked the prompt marker');
     assert.equal(finished.text.includes(token), false, 'run response leaked the token');
     assert.equal(existsSync(join(project.directory, fileName)), false);
-
-    // The Workspace's own approval timer is the initiator, so the execution
-    // record carries that provenance instead of looking like a bare cancel.
+    // The runtime guard deadline owns the provenance.
     assert.ok(
       executionId !== undefined,
       `expected a native approval request; sequence=${sequence}`,
@@ -235,7 +220,7 @@ test(
     }
 
     t.diagnostic(
-      `observed: approvalTimeoutMs=${String(APPROVAL_TIMEOUT_MS)} ` +
+      `observed: guardTimeoutMs=${String(GUARD_TIMEOUT_MS)} ` +
         `wakeStatus=${String(wake.status)} rest=${String(finished.body?.['status']?.['rest'])} ` +
         `wakeElapsedMs=${String(wakeElapsedMs)} executionState=${execution.state} ` +
         `cancelReason=${String(execution.cancelReason)} executionError=none; ` +

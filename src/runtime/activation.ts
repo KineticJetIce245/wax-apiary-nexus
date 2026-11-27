@@ -96,7 +96,6 @@ export function nextDrainStep(ctx: EngineContext, nodeId: string): DrainStep {
   }
   const pheromone = state.pending;
   delete state.pending;
-  markChanged(ctx.queue);
   return { kind: 'activation', activation: { node, pheromone } };
 }
 
@@ -156,14 +155,13 @@ function beginActivation(
   state: NodeState,
 ): number | null {
   state.lastActivatedAt = ctx.iso();
-  ctx.resting = false;
-  markChanged(ctx.queue);
   logActivated(ctx.log, node, state.receptor?.length ?? 0);
   if (node.kind === 'user') {
     openUserHover(ctx, node, pheromone);
     return null;
   }
   state.active = pheromone;
+  markChanged(ctx.queue);
   return ctx.now();
 }
 

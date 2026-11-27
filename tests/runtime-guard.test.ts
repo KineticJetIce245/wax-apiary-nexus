@@ -32,14 +32,14 @@ function guardExecutor(): { executor: NodeExecutor; decisions: GuardDecision[] }
         if (context === undefined) {
           throw new Error('missing context');
         }
-        const decision = await context.requestGuard({
+        const outcome = await context.requestGuard({
           requestId: 'r1',
           executionId: 'e1',
           summary: 'run a command',
           options: ['allow_once', 'reject_once'],
         });
-        decisions.push(decision);
-        return { message: `decision:${decision}` };
+        decisions.push(outcome.decision);
+        return { message: `decision:${outcome.decision}` };
       },
     },
   };
@@ -51,11 +51,14 @@ function wait(ms: number): Promise<void> {
 
 test('a guard request parks the node in a guard hover and waits for the decision', async () => {
   const { executor, decisions } = guardExecutor();
+  let decideGuard: (decision: GuardDecision) => void = () => undefined;
   const runtime = new PheromoneRuntime(guardComposition(), {
     executeForager: executor,
     now: () => START,
     guardTimeoutMs: 5_000,
-    onGuard: () => new Promise(() => undefined),
+    onGuard: () => new Promise<GuardDecision>((resolve) => {
+      decideGuard = resolve;
+    }),
   });
 
   runtime.admit('start', { message: 'x' });
@@ -68,7 +71,7 @@ test('a guard request parks the node in a guard hover and waits for the decision
   assert.equal(hover.meta?.['requestId'], 'r1');
   assert.equal(runtime.snapshot().rest, false);
 
-  runtime.settleGuard('start', 'r1', 'allow_once');
+  decideGuard('allow_once');
   await settling;
 
   assert.deepEqual(decisions, ['allow_once']);
@@ -89,7 +92,7 @@ test('without a handler the guard is rejected, never allowed', async () => {
   assert.deepEqual(decisions, ['reject_once']);
 });
 
-test('a guard that times out is cancelled and cannot be settled afterwards', async () => {
+test('a guard that times out is cancelled and leaves the field at Rest', async () => {
   const log = createMemoryLog();
   const { executor, decisions } = guardExecutor();
   const runtime = new PheromoneRuntime(guardComposition(), {
@@ -108,8 +111,6 @@ test('a guard that times out is cancelled and cannot be settled afterwards', asy
   assert.equal(runtime.snapshot().nodes['start']?.hover, undefined);
   // Closing the guard hover was the last live work: the field must report Rest.
   assert.equal(runtime.snapshot().rest, true);
-
-  assert.throws(() => runtime.settleGuard('start', 'r1', 'allow_once'), /no open guard/);
 });
 
 test('a guard timeout notifies the broker so a late decision is expired', async () => {
@@ -150,45 +151,4 @@ test('a throwing expiry hook still cancels the guard', async () => {
 
   assert.deepEqual(decisions, ['cancelled']);
   assert.equal(runtime.snapshot().nodes['start']?.hover, undefined);
-});
-
-test('a decision for another request is rejected and does not disturb the open one', async () => {
-  const { executor, decisions } = guardExecutor();
-  const runtime = new PheromoneRuntime(guardComposition(), {
-    executeForager: executor,
-    now: () => START,
-    guardTimeoutMs: 5_000,
-    onGuard: () => new Promise(() => undefined),
-  });
-
-  runtime.admit('start', { message: 'x' });
-  const settling = runtime.settle();
-  await wait(20);
-
-  assert.throws(() => runtime.settleGuard('start', 'other', 'allow_once'), /no open guard/);
-  assert.equal(runtime.snapshot().nodes['start']?.hover?.meta?.['requestId'], 'r1');
-
-  runtime.settleGuard('start', 'r1', 'reject_once');
-  await settling;
-  assert.deepEqual(decisions, ['reject_once']);
-});
-
-test('an early decision is rejected', () => {
-  const { executor } = guardExecutor();
-  const runtime = new PheromoneRuntime(guardComposition(), {
-    executeForager: executor,
-    now: () => START,
-  });
-
-  assert.throws(() => runtime.settleGuard('start', 'r1', 'allow_once'), /no open guard/);
-});
-
-test('a decision for an unknown node is rejected', () => {
-  const { executor } = guardExecutor();
-  const runtime = new PheromoneRuntime(guardComposition(), {
-    executeForager: executor,
-    now: () => START,
-  });
-
-  assert.throws(() => runtime.settleGuard('ghost', 'r1', 'allow_once'), /no open guard/);
 });

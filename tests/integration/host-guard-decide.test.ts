@@ -65,7 +65,7 @@ test(
       env: { DSH_PERMISSION_MODE: 'read-only' },
     });
     await adapter.start();
-    const workspace = new Workspace(adapter, { approvalTimeoutMs: 90_000 });
+    const workspace = new Workspace(adapter);
     const project: Project = {
       id: 'project-native-guard-reject',
       directory: mkdtempSync(join(tmpdir(), 'wax-m9d-guard-reject-project-')),
@@ -184,7 +184,7 @@ test(
       env: { DSH_PERMISSION_MODE: 'read-only' },
     });
     await adapter.start();
-    const workspace = new Workspace(adapter, { approvalTimeoutMs: 90_000 });
+    const workspace = new Workspace(adapter);
     const project: Project = {
       id: 'project-native-guard-cancel',
       directory: mkdtempSync(join(tmpdir(), 'wax-m9d-guard-cancel-project-')),
@@ -326,7 +326,7 @@ test(
       env: { DSH_PERMISSION_MODE: 'read-only' },
     });
     await adapter.start();
-    const workspace = new Workspace(adapter, { approvalTimeoutMs: 90_000 });
+    const workspace = new Workspace(adapter);
     const project: Project = {
       id: 'project-native-guard-expiry',
       directory: mkdtempSync(join(tmpdir(), 'wax-m9d-guard-expiry-project-')),
@@ -453,7 +453,7 @@ test(
       env: { DSH_PERMISSION_MODE: 'read-only' },
     });
     await adapter.start();
-    const workspace = new Workspace(adapter, { approvalTimeoutMs: 90_000 });
+    const workspace = new Workspace(adapter);
     const project: Project = {
       id: 'project-native-guard',
       directory: mkdtempSync(join(tmpdir(), 'wax-m9d-guard-project-')),

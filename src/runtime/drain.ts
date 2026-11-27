@@ -1,7 +1,7 @@
 import { activate, applyRestoredOutcome, nextDrainStep } from './activation.js';
 import type { EngineContext, LateActivationOutcome, PacingTimer } from './engine-context.js';
-import { isFieldResting, restReceptorIfIdle } from './field.js';
-import { expireOverdueQueues, stateOf } from './queue.js';
+import { restReceptorIfIdle } from './field.js';
+import { expireOverdueQueues, markChanged, stateOf } from './queue.js';
 
 /**
  * Per-Bee receptor drain. An enqueue wakes its Bee: if no drain is running one
@@ -113,7 +113,7 @@ export function completeRestored(
   outcome: LateActivationOutcome,
 ): void {
   ctx.stateLock.runSync(() => applyRestoredOutcome(ctx, nodeId, outcome));
-  refreshRest(ctx);
+  markChanged(ctx.queue);
   wakeBee(ctx, nodeId);
 }
 
@@ -122,36 +122,6 @@ export function detachField(ctx: EngineContext): void {
   ctx.detached = true;
   ctx.scheduledWakes.clear();
   ctx.timers.clear();
-}
-
-/** Recomputes Rest and reports a false -> true transition once. */
-export function refreshRest(ctx: EngineContext): void {
-  const resting = isFieldResting(ctx.states.values());
-  if (resting && !ctx.resting) {
-    ctx.resting = true;
-    ctx.log({ event: 'runtime.rest' });
-    if (!ctx.detached) {
-      announceRest(ctx);
-    }
-    return;
-  }
-  if (!resting) {
-    ctx.resting = false;
-  }
-}
-
-function announceRest(ctx: EngineContext): void {
-  const onRest = ctx.onRest;
-  if (onRest === undefined) {
-    return;
-  }
-  queueMicrotask(() => {
-    try {
-      onRest();
-    } catch {
-      // A rest observer must never turn a drain into a failure.
-    }
-  });
 }
 
 function flushScheduledWakes(ctx: EngineContext): void {
@@ -228,7 +198,7 @@ function finishDrain(ctx: EngineContext, nodeId: string): void {
     }
   });
   if (!ctx.detached) {
-    refreshRest(ctx);
+    markChanged(ctx.queue);
   }
 }
 

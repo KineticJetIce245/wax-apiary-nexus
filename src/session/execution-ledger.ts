@@ -86,18 +86,6 @@ export class ExecutionLedger {
   }
 
   /** Newest admitted execution, the legacy conversation-scoped cancel target. */
-  newestPendingId(conversationId: string): string | undefined {
-    const pending = this.pendingByConversation.get(conversationId);
-    if (pending === undefined) {
-      return undefined;
-    }
-    let newest: string | undefined;
-    for (const id of pending) {
-      newest = id;
-    }
-    return newest;
-  }
-
   isBusy(conversationId: string): boolean {
     if (this.activeByConversation.has(conversationId)) {
       return true;

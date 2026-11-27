@@ -296,6 +296,8 @@ Bee wants prompt -> WAX DshAcpAdapter admission -> native session
 - Pending is adapter admission state, not a Bee hover and not a Pheromone queue.
 - The adapter registers an execution context (WAX executionId, liveId, beeId, sessionId, nativeSessionId) before sending and keeps it until terminal. That executionId is adapter-local correlation, not a public run/wake identity.
 - The ACP session is the sole owner of its approval channel. Every approval produced by an ACP session is handled by the ACP client/WAX; there is no unowned-approval handoff and no pass-through to a GUI/native handler.
+- A native approval is parked as a runtime Guard hover. The runtime guard deadline (default 120s) is the only approval deadline; the adapter/Workspace owns no second timer. Expiry goes through the normal execution cancel path and is recorded as `approval-timeout`.
+- Rest is derived by the field mutation path from active/pending/receptor/hover/gather; it is not a second execution state maintained by drains or hovers.
 - ACP is automation-only. A DSH/Codex GUI may list or resume a persisted session, but it is a different live owner: it does not receive the ACP session's pending approvals and cannot answer them.
 - A separate **send-message ingress** may exist for submitting a new message to an ACP session. It only enqueues/sends a message; it is not an approval channel and cannot decide or cancel approvals.
 - Direct Web/TUI prompts bypass the adapter. Admission priority is best-effort: WAX does not start while the session is visibly busy; once a WAX turn is running, user steer/preemption needs the reserved steer path.

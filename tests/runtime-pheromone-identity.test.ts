@@ -175,6 +175,8 @@ function queueContext(definition: ReturnType<typeof parseComposition>): QueueCon
     now: () => START,
     log: () => undefined,
     lastChangedAt: START,
+    detached: false,
+    resting: true,
   };
 }
 

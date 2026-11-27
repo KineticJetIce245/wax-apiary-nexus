@@ -21,7 +21,10 @@ import type {
   WorkspaceEvent,
 } from './workspace.js';
 
-/** Interactive approval decision supplied by the caller (CLI in Stage 2A). */
+/**
+ * Interactive approval decision supplied by the caller. Production wiring
+ * leaves it unset; only direct-executor tests use the local handler.
+ */
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecisionKind>;
 
 export interface WorkspaceForagerOptions {
@@ -117,6 +120,12 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     }
     this.disposed = true;
     this.unsubscribe();
+    for (const [executionId, resolve] of this.waiters) {
+      const execution = this.workspace.getExecution(executionId);
+      if (execution !== undefined) {
+        resolve(execution);
+      }
+    }
     this.waiters.clear();
   }
 
@@ -195,10 +204,13 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
     if (
       execution === undefined ||
       execution.conversationId !== this.conversation.id ||
-      !this.ownsExecution(execution.id)
+      !this.isAdoptable(execution.id)
     ) {
       return;
     }
+    // A native approval may precede the end of submit(); adopt during that
+    // window. Ownership ends at the terminal event.
+    this.ownedExecutionIds.add(execution.id);
 
     if (event.type === 'execution/state') {
       if (execution.state === 'running') {
@@ -228,20 +240,17 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
    * at most one submission is in flight per executor and that execution is
    * adopted while the window is open.
    */
-  private ownsExecution(executionId: string): boolean {
+  /**
+   * Whether `executionId` may still belong to this executor. A native adapter
+   * may emit an approval before `submit()` resolves, so any execution is
+   * adoptable while that one submission is in flight. This is a pure query;
+   * `handleEvent` records the adoption.
+   */
+  private isAdoptable(executionId: string): boolean {
     if (this.terminals.has(executionId)) {
-      // Settled executions keep their terminal record for `waitForTerminal`,
-      // but they are no longer eligible for ownership.
       return false;
     }
-    if (this.ownedExecutionIds.has(executionId)) {
-      return true;
-    }
-    if (this.pendingSubmissions === 0) {
-      return false;
-    }
-    this.ownedExecutionIds.add(executionId);
-    return true;
+    return this.ownedExecutionIds.has(executionId) || this.pendingSubmissions > 0;
   }
 
   private async settleApproval(executionId: string, request: ApprovalRequest): Promise<void> {
@@ -257,22 +266,29 @@ export class WorkspaceForagerExecutor implements NodeExecutor {
       handler === undefined ? undefined : async (): Promise<GuardDecision> => handler(request);
 
     let decision: GuardDecision;
+    let expired = false;
     try {
-      // The runtime parks the approval as a Guard hover (persisted, bounded by
-      // its timeout) and only then returns the decision to the harness. When
-      // the bridge is driven without a runtime context (direct executor use),
-      // the local handler still owns the decision.
-      decision =
-        this.activeContext === undefined
-          ? handler === undefined
-            ? defaultDecision(request)
-            : await handler(request)
-          : await this.activeContext.requestGuard(guard, decide);
+      if (this.activeContext === undefined) {
+        // Direct executor use (tests) has no runtime field; the local handler
+        // owns the decision and there is no runtime deadline to attribute.
+        decision = handler === undefined ? defaultDecision(request) : await handler(request);
+      } else {
+        const outcome = await this.activeContext.requestGuard(guard, decide);
+        decision = outcome.decision;
+        expired = outcome.expired;
+      }
     } catch {
       decision = defaultDecision(request);
     }
 
     try {
+      if (expired) {
+        // The runtime deadline owns the cancellation. Use the Workspace's
+        // normal cancel path so the native response and execution state are
+        // written once, with approval-timeout provenance.
+        await this.workspace.cancelForApprovalTimeout(executionId);
+        return;
+      }
       await this.workspace.decideApproval(executionId, request.requestId, decision);
     } catch {
       // The execution may have settled or the request expired while the user

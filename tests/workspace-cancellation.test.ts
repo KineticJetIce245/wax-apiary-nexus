@@ -41,7 +41,6 @@ interface Bridge {
 }
 
 async function setup(options: {
-  readonly approvalTimeoutMs?: number;
   readonly onApproval?: ApprovalHandler;
 } = {}): Promise<Bridge> {
   const adapter = new FakeAdapter({
@@ -49,12 +48,7 @@ async function setup(options: {
     approvalCancelTerminal: 'cancelled',
   });
   await adapter.start();
-  const workspace = new Workspace(
-    adapter,
-    options.approvalTimeoutMs === undefined
-      ? {}
-      : { approvalTimeoutMs: options.approvalTimeoutMs },
-  );
+  const workspace = new Workspace(adapter);
   const project = createKernel().registerProject(mkdtempSync(join(tmpdir(), 'wax-cancel-')));
   const conversation = await workspace.createConversation(project);
   const executor = new WorkspaceForagerExecutor({
@@ -95,8 +89,8 @@ function rejectedWith(
   };
 }
 
-test('the approval timer is recorded as approval-timeout', async (t) => {
-  const bridge = await setup({ approvalTimeoutMs: 30, onApproval: pendingApproval });
+test('an approval-timeout cancellation is recorded as approval-timeout', async (t) => {
+  const bridge = await setup({ onApproval: pendingApproval });
   cleanup(t, bridge);
   const requested = approvalRequested(bridge.workspace);
 
@@ -105,6 +99,7 @@ test('the approval timer is recorded as approval-timeout', async (t) => {
     rejectedWith('approval-timeout'),
   );
   const executionId = await requested;
+  await bridge.workspace.cancelForApprovalTimeout(executionId);
   await rejection;
 
   const execution = bridge.workspace.getExecution(executionId);
@@ -115,7 +110,7 @@ test('the approval timer is recorded as approval-timeout', async (t) => {
 });
 
 test('an explicit cancel is recorded as explicit-cancel', async (t) => {
-  const bridge = await setup({ approvalTimeoutMs: 60_000, onApproval: pendingApproval });
+  const bridge = await setup({ onApproval: pendingApproval });
   cleanup(t, bridge);
   const requested = approvalRequested(bridge.workspace);
 
@@ -133,7 +128,7 @@ test('an explicit cancel is recorded as explicit-cancel', async (t) => {
 });
 
 test('a close settles the execution as close provenance', async (t) => {
-  const bridge = await setup({ approvalTimeoutMs: 60_000, onApproval: pendingApproval });
+  const bridge = await setup({ onApproval: pendingApproval });
   cleanup(t, bridge);
   const requested = approvalRequested(bridge.workspace);
 
@@ -151,7 +146,7 @@ test('a close settles the execution as close provenance', async (t) => {
 });
 
 test('replace records its own reason on the cancelled execution', async (t) => {
-  const bridge = await setup({ approvalTimeoutMs: 60_000, onApproval: pendingApproval });
+  const bridge = await setup({ onApproval: pendingApproval });
   cleanup(t, bridge);
   const requested = approvalRequested(bridge.workspace);
 

@@ -17,7 +17,7 @@ import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
 import { HttpError, RouteReply } from './server-types.js';
 
-/** B operation routes; deliberately separate from the legacy graph routes. */
+/** B operation routes; separate from the current control route table. */
 export async function dispatchLiveRoute(
   context: ControlServerContext,
   route: Route,

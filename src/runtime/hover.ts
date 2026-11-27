@@ -2,20 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 import type { EngineContext } from './engine-context.js';
 import { emitAlong } from './emit.js';
-import type { GuardDecision, GuardRequest } from './executor.js';
+import type { GuardDecision, GuardRequest, GuardResolution } from './executor.js';
 import { logHoverBlocked } from './runtime-log.js';
 import { markChanged, queueDepth, stateOf } from './queue.js';
 import { ReceptorFullError } from './receptor-overflow.js';
 import { cloneJson } from './value-paths.js';
 import type { HoverSpec, Pheromone, UserNode, Value } from './types.js';
-
-/** A Guard decision that does not belong to the current request. */
-export class GuardDecisionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'GuardDecisionError';
-  }
-}
 
 /** Opens a user hover; the parked Pheromone stays part of the field. */
 export function openUserHover(
@@ -92,14 +84,15 @@ function assertAnswerCapacity(
 
 /**
  * Opens a Guard hover for one native approval request and resolves with the
- * decision. A timeout cancels the request; nothing auto-allows.
+ * decision and its timeout provenance. A timeout cancels the request; nothing
+ * auto-allows.
  */
 export async function requestGuard(
   ctx: EngineContext,
   node: UserNode | import('./types.js').ForagerNode,
   request: GuardRequest,
   decide?: (request: GuardRequest) => Promise<GuardDecision>,
-): Promise<GuardDecision> {
+): Promise<GuardResolution> {
   const token = openGuardHover(ctx, node, request);
   const outcome = await waitForGuard(ctx, node, token, request, decide);
   ctx.log({
@@ -108,7 +101,7 @@ export async function requestGuard(
     nodeKind: node.kind,
     outcome: outcome.expired ? 'cancelled' : outcome.decision,
   });
-  return outcome.decision;
+  return outcome;
 }
 
 function openGuardHover(
@@ -121,7 +114,7 @@ function openGuardHover(
     throw new Error(`unknown node '${node.id}'`);
   }
   if (state.hover !== undefined) {
-    throw new GuardDecisionError(`node '${node.id}' already has an open hover`);
+    throw new Error(`node '${node.id}' already has an open hover`);
   }
   const token = `gd_${randomUUID()}`;
   state.hover = {
@@ -145,78 +138,48 @@ function openGuardHover(
   return token;
 }
 
-interface GuardOutcome {
-  readonly decision: GuardDecision;
-  readonly expired: boolean;
-}
-
 async function waitForGuard(
   ctx: EngineContext,
   node: UserNode | import('./types.js').ForagerNode,
   token: string,
   request: GuardRequest,
   decide?: (request: GuardRequest) => Promise<GuardDecision>,
-): Promise<GuardOutcome> {
+): Promise<GuardResolution> {
   const state = ctx.states.get(node.id);
   if (state === undefined) {
     throw new Error(`unknown node '${node.id}'`);
   }
-  let resolveWaiter: (decision: GuardDecision) => void = () => undefined;
-  const waiter = new Promise<GuardDecision>((resolve) => {
-    resolveWaiter = resolve;
+
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<GuardResolution>((resolve) => {
+    timer = setTimeout(() => {
+      try {
+        ctx.onGuardExpired?.(request.requestId);
+      } catch {
+        // Best effort; the runtime still cancels and never falls through.
+      }
+      resolve({ decision: 'cancelled', expired: true });
+    }, ctx.guardTimeoutMs);
+    timer.unref();
   });
-  ctx.guardWaiters.set(token, { requestId: request.requestId, resolve: resolveWaiter });
-  let expired = false;
-  const timer = setTimeout(() => {
-    try {
-      ctx.onGuardExpired?.(request.requestId);
-    } catch {
-      // Best effort; the runtime still cancels and never falls through.
-    }
-    expired = true;
-    resolveWaiter('cancelled');
-  }, ctx.guardTimeoutMs);
-  timer.unref();
 
   try {
     const handler = decide ?? ctx.onGuard;
-    const decisionPromise =
+    const decisionPromise: Promise<GuardResolution> =
       handler === undefined
-        ? Promise.resolve<GuardDecision>('reject_once')
-        : Promise.resolve().then(() => handler({ ...request, beeId: node.id })).catch(
-            () => 'reject_once' as GuardDecision,
-          );
-    const decision = await Promise.race([decisionPromise, waiter]);
-    return { decision, expired };
+        ? Promise.resolve({ decision: 'reject_once', expired: false })
+        : Promise.resolve()
+            .then(() => handler({ ...request, beeId: node.id }))
+            .then((decision) => ({ decision, expired: false }))
+            .catch(() => ({ decision: 'reject_once' as GuardDecision, expired: false }));
+    return await Promise.race([decisionPromise, timeout]);
   } finally {
-    clearTimeout(timer);
-    ctx.guardWaiters.delete(token);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
     if (state.hover?.token === token) {
       delete state.hover;
       markChanged(ctx.queue);
     }
   }
-}
-
-/**
- * Settles the open Guard for `requestId`. An early, late or mismatched
- * decision is rejected so it can never land on a different request.
- */
-export function settleGuard(
-  ctx: EngineContext,
-  nodeId: string,
-  requestId: string,
-  decision: GuardDecision,
-): void {
-  const state = ctx.states.get(nodeId);
-  const hover = state?.hover;
-  if (hover === undefined || hover.kind !== 'guard' || hover.meta?.['requestId'] !== requestId) {
-    throw new GuardDecisionError(`no open guard for request '${requestId}' on node '${nodeId}'`);
-  }
-  const waiter = ctx.guardWaiters.get(hover.token);
-  if (waiter === undefined || waiter.requestId !== requestId) {
-    throw new GuardDecisionError(`guard for request '${requestId}' is not waiting`);
-  }
-  ctx.guardWaiters.delete(hover.token);
-  waiter.resolve(decision);
 }

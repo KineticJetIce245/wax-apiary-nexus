@@ -135,8 +135,8 @@ test(
       await adapterA.stop().catch(() => undefined);
       throw error;
     }
-    const workspaceA = new Workspace(adapterA, { approvalTimeoutMs: 120_000 });
-    const workspaceB = new Workspace(adapterB, { approvalTimeoutMs: 120_000 });
+    const workspaceA = new Workspace(adapterA);
+    const workspaceB = new Workspace(adapterB);
     const projectA: Project = {
       id: 'project-concurrent-a',
       directory: mkdtempSync(join(tmpdir(), 'wax-m12a2-concurrent-a-')),

@@ -153,7 +153,7 @@ function approvalEvent(
   };
 }
 
-async function setup(options: { approvalTimeoutMs?: number; replaceTimeoutMs?: number } = {}) {
+async function setup(options: { replaceTimeoutMs?: number } = {}) {
   const adapter = new FakeAdapter();
   const workspace = new Workspace(adapter, options);
   const project = makeProject();
@@ -409,22 +409,6 @@ test('cancels an unanswered approval and the native execution', async (t) => {
   await workspace.cancel(execution.id);
   assert.deepEqual(adapter.approvals, [{ requestId: 'request-1', kind: 'cancelled' }]);
   assert.deepEqual(adapter.cancellations, [adapter.nativeId]);
-
-  adapter.emit({ type: 'execution/cancelled', executionId: execution.id });
-  assert.equal(workspace.getExecution(execution.id)?.state, 'cancelled');
-});
-
-test('times out an unanswered approval without allowing it', async (t) => {
-  const { adapter, workspace, conversation } = await setup({ approvalTimeoutMs: 20 });
-  t.after(() => workspace.stop());
-
-  const execution = await workspace.submit(conversation.id, 'slow');
-  adapter.emit(approvalEvent(execution.id));
-
-  await delay(80);
-  assert.deepEqual(adapter.approvals, [{ requestId: 'request-1', kind: 'cancelled' }]);
-  assert.deepEqual(adapter.cancellations, [adapter.nativeId]);
-  assert.equal(workspace.getExecution(execution.id)?.state, 'running');
 
   adapter.emit({ type: 'execution/cancelled', executionId: execution.id });
   assert.equal(workspace.getExecution(execution.id)?.state, 'cancelled');

@@ -1,6 +1,6 @@
 import type { GuardDecision, GuardRequest } from '../runtime/index.js';
 
-export const DEFAULT_GUARD_TIMEOUT_MS = 3_600_000;
+export const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
 
 export interface PendingGuardSummary {
   readonly requestId: string;
@@ -38,7 +38,7 @@ export class GuardExpiredError extends Error {
 
 export interface GuardBrokerOptions {
   /**
-   * Fallback deadline, default 1h and matching the runtime's guard timeout.
+   * Fallback deadline, default 120s and matching the runtime's guard timeout.
    * In the control server the runtime normally expires first and calls
    * `expire`; this timer only protects against a missing notification.
    */

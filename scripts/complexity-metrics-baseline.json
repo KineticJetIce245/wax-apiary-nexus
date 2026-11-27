@@ -368,12 +368,12 @@
       "parameters": 2
     },
     "src/session/workspace.ts::class Workspace": {
-      "bodyLines": 596,
+      "bodyLines": 545,
       "publicMethods": 13,
       "constructorDependencies": 2
     },
     "src/session/workspace.ts::method Workspace.handleAdapterEvent": {
-      "lines": 85,
+      "lines": 84,
       "cyclomatic": 20,
       "nesting": 2,
       "parameters": 1
@@ -464,12 +464,6 @@
     },
     "tests/control-server-error-log.test.ts::arrow <anonymous@77>": {
       "lines": 95,
-      "cyclomatic": 2,
-      "nesting": 1,
-      "parameters": 1
-    },
-    "tests/control-server-execution-outcome.test.ts::arrow <anonymous@62>": {
-      "lines": 56,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1
@@ -738,8 +732,8 @@
       "nesting": 1,
       "parameters": 1
     },
-    "tests/integration/dsh-approval-timeout.test.ts::arrow <anonymous@115>": {
-      "lines": 124,
+    "tests/integration/dsh-approval-timeout.test.ts::arrow <anonymous@114>": {
+      "lines": 116,
       "cyclomatic": 2,
       "nesting": 1,
       "parameters": 1

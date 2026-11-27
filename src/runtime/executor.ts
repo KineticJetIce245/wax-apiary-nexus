@@ -4,6 +4,12 @@ import { getPath } from './value-paths.js';
 
 export type GuardDecision = 'allow_once' | 'reject_once' | 'cancelled';
 
+/** The decision and whether the runtime's own deadline settled it. */
+export interface GuardResolution {
+  readonly decision: GuardDecision;
+  readonly expired: boolean;
+}
+
 /**
  * A native approval request that the runtime parks as a Guard hover.
  *
@@ -26,14 +32,15 @@ export interface GuardRequest {
 
 /**
  * Handed to the executor for the duration of one activation. `requestGuard`
- * opens a Guard hover and resolves with the decision; a decision for a request
- * that is not the current one is rejected, never replayed.
+ * opens a Guard hover and resolves with the decision and its timeout
+ * provenance; a decision for a request that is not the current one is
+ * rejected, never replayed.
  */
 export interface ExecutionContext {
   requestGuard(
     request: GuardRequest,
     decide?: (request: GuardRequest) => Promise<GuardDecision>,
-  ): Promise<GuardDecision>;
+  ): Promise<GuardResolution>;
 }
 
 /**

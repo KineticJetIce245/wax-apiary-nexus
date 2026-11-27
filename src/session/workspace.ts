@@ -103,22 +103,18 @@ export type WorkspaceEvent =
   | { readonly type: 'adapter/error'; readonly message: string };
 
 export interface WorkspaceOptions {
-  readonly approvalTimeoutMs?: number;
   /** How long replace() waits for a cancelled execution to settle. */
   readonly replaceTimeoutMs?: number;
 }
 
 interface PendingApproval {
   readonly request: ApprovalRequest;
-  timer?: NodeJS.Timeout;
 }
 
-const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
 const DEFAULT_REPLACE_TIMEOUT_MS = 10_000;
 
 export class Workspace {
   private readonly adapter: HarnessAdapter;
-  private readonly approvalTimeoutMs: number;
   private readonly replaceTimeoutMs: number;
   private readonly conversations = new Map<string, Conversation>();
   private readonly resumer: ConversationResumer;
@@ -131,10 +127,6 @@ export class Workspace {
 
   constructor(adapter: HarnessAdapter, options: WorkspaceOptions = {}) {
     this.adapter = adapter;
-    this.approvalTimeoutMs = options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
-    if (!Number.isFinite(this.approvalTimeoutMs) || this.approvalTimeoutMs <= 0) {
-      throw new Error(`approvalTimeoutMs must be a positive number: ${String(options.approvalTimeoutMs)}`);
-    }
     this.replaceTimeoutMs = options.replaceTimeoutMs ?? DEFAULT_REPLACE_TIMEOUT_MS;
     if (!Number.isFinite(this.replaceTimeoutMs) || this.replaceTimeoutMs <= 0) {
       throw new Error(`replaceTimeoutMs must be a positive number: ${String(options.replaceTimeoutMs)}`);
@@ -146,10 +138,6 @@ export class Workspace {
       new Set(),
       () => this.assertRunning(),
     );
-  }
-
-  get approvalTimeout(): number {
-    return this.approvalTimeoutMs;
   }
 
   onEvent(handler: (event: WorkspaceEvent) => void): () => void {
@@ -267,23 +255,17 @@ export class Workspace {
     this.emit({ type: 'execution/approval-decided', executionId, requestId, kind });
   }
 
-  async cancel(executionId: string, byConversation = false): Promise<void> {
-    const target = byConversation
-      ? this.executionForConversation(executionId) ?? executionId
-      : executionId;
-    await this.cancelExecution(target, 'explicit-cancel');
+  async cancel(executionId: string): Promise<void> {
+    await this.cancelExecution(executionId, 'explicit-cancel');
   }
 
   /**
-   * Legacy conversation-scoped cancel (dispatch timeout). A pending execution
-   * is preferred, newest first: it is the caller's own admitted prompt, while
-   * the active execution may belong to an older run on the shared session.
+   * Settles an approval that the runtime's guard deadline expired. It uses the
+   * same cancel path as an explicit cancel so the native response and the
+   * execution terminal state are not written by a second control point.
    */
-  private executionForConversation(conversationId: string): string | undefined {
-    return (
-      this.ledger.newestPendingId(conversationId) ??
-      this.ledger.activeId(conversationId)
-    );
+  async cancelForApprovalTimeout(executionId: string): Promise<void> {
+    await this.cancelExecution(executionId, 'approval-timeout');
   }
 
   /**
@@ -549,7 +531,6 @@ export class Workspace {
           return;
         }
         this.pendingApprovals.set(event.request.requestId, { request: event.request });
-        this.startApprovalTimer(event.executionId, event.request.requestId);
         this.emit(event);
         return;
       }
@@ -605,37 +586,6 @@ export class Workspace {
     }
   }
 
-  private startApprovalTimer(executionId: string, requestId: string): void {
-    const timer = setTimeout(() => {
-      const pending = this.pendingApprovals.get(requestId);
-      if (pending === undefined) {
-        return;
-      }
-      this.markCancelled(executionId, 'approval-timeout');
-      this.pendingApprovals.delete(requestId);
-      this.emit({ type: 'execution/approval-decided', executionId, requestId, kind: 'cancelled' });
-      void this.adapter
-        .respondToApproval({ requestId, kind: 'cancelled' })
-        .then(() => {
-          const execution = this.ledger.get(executionId);
-          const conversation =
-            execution === undefined ? undefined : this.conversations.get(execution.conversationId);
-          if (conversation !== undefined) {
-            return this.adapter.cancel(conversation.nativeId);
-          }
-          return undefined;
-        })
-        .catch((error: unknown) => {
-          this.emit({ type: 'adapter/error', message: `Approval timeout handling failed: ${messageOf(error)}` });
-        });
-    }, this.approvalTimeoutMs);
-    timer.unref();
-    const pending = this.pendingApprovals.get(requestId);
-    if (pending !== undefined) {
-      pending.timer = timer;
-    }
-  }
-
   private pendingApprovalFor(executionId: string): PendingApproval | undefined {
     for (const pending of this.pendingApprovals.values()) {
       if (pending.request.executionId === executionId) {
@@ -646,10 +596,6 @@ export class Workspace {
   }
 
   private clearPending(requestId: string): void {
-    const pending = this.pendingApprovals.get(requestId);
-    if (pending?.timer !== undefined) {
-      clearTimeout(pending.timer);
-    }
     this.pendingApprovals.delete(requestId);
   }
 

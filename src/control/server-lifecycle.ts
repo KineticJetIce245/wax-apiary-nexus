@@ -216,7 +216,6 @@ export class ControlServerLifecycle {
 
     stopSessionSweep(context);
     stopGraphSweep(context);
-    guardBroker?.cancelAll();
     context.state = 'stopping';
     context.server = undefined;
     context.liveHiveHost = undefined;
@@ -233,8 +232,10 @@ export class ControlServerLifecycle {
 
     await closeServer(server).catch(() => undefined);
     if (liveHiveHost !== undefined) {
+      // Dispose must see a pending Guard; cancel the broker afterwards.
       await liveHiveHost.dispose().catch(() => undefined);
     }
+    guardBroker?.cancelAll();
 
     // Remove discovery material while the lock still excludes a new server.
     safeRemoveFile(context.tokenPath);

@@ -18,8 +18,8 @@ import type {
   StopReason,
 } from '../harness.js';
 import { AcpRpcClient, AcpRpcError } from './client.js';
+import { killProcessTree } from './process-tree.js';
 import { SessionPromptQueue } from './prompt-queue.js';
-
 export { canonicalCwd, sessionTitleSidecarName } from './sidecar.js';
 
 const DEFAULT_INITIALIZE_TIMEOUT_MS = 30_000;
@@ -200,7 +200,7 @@ export class DshAcpAdapter implements HarnessAdapter {
     } catch (error) {
       this.started = false;
       this.client.close();
-      child.kill();
+      killProcessTree(child);
       this.client = undefined;
       this.child = undefined;
       throw error;
@@ -213,14 +213,14 @@ export class DshAcpAdapter implements HarnessAdapter {
     this.prompts.abortAll('cancelled', 'DSH ACP adapter stopped');
     const child = this.child;
     if (child !== undefined) {
-      const exited = new Promise<void>((resolve) => {
-        child.once('exit', () => resolve());
-      });
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
       try {
         child.stdin.end();
       } catch {
         // The child may already be gone.
       }
+      // Kill the whole tree; orphaned DSH tool children block the next start.
+      killProcessTree(child);
       await Promise.race([exited, delay(STOP_TIMEOUT_MS)]);
       if (child.exitCode === null && child.signalCode === null) {
         child.kill();

@@ -192,7 +192,13 @@ test(
     assert.ok(wakeElapsedMs < 30_000, `wake admission hung for ${String(wakeElapsedMs)}ms`);
     // The approval timeout is asynchronous; a guard hover is not a settled user
     // hover, so wait for Rest specifically.
-    const finished = await waitForRest(info.url, token, liveId, 180_000, false);
+    let finished;
+    try {
+      finished = await waitForRest(info.url, token, liveId, 180_000, false);
+    } catch (error) {
+      t.diagnostic(`Rest timeout; observed sequence=${sequence}`);
+      throw error;
+    }
     assert.equal(finished.status, 200, finished.text);
     assert.equal(
       finished.body?.['status']?.['rest'],

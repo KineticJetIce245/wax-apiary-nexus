@@ -87,6 +87,7 @@ export type ControlErrorCode =
   | 'session-busy'
   | 'bee-receptor-full'
   | 'bee-receptor-block-timeout'
+  | 'honey-incompatible'
   | 'guard-expired'
   | 'approval-timeout'
   | 'execution-cancelled'

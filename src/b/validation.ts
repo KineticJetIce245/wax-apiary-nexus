@@ -1,3 +1,8 @@
+import {
+  parseGatherConfig,
+  parseSpreadConfig,
+} from '../runtime/definition-flow-config.js';
+import { validateGraphFlow } from './flow-validation.js';
 import { parseBeeIo } from './io-validation.js';
 import { parseSchedules } from './schedule-validation.js';
 import {
@@ -134,43 +139,12 @@ export function parseHiveGraph(
     }
   }
 
-  validateGraphReferences(bees, beelines, path, issues);
+  validateGraphFlow(bees, beelines, path, issues);
 
   if (issues.length > 0 && inheritedIssues === undefined) {
     throw new BObjectValidationError(issues);
   }
   return { bees, beelines };
-}
-
-function validateGraphReferences(
-  bees: Readonly<Record<string, Bee>>,
-  beelines: Readonly<Record<string, Beeline>>,
-  path: string,
-  issues: string[],
-): void {
-  for (const [makeId, make] of Object.entries(bees)) {
-    for (const beelineId of make.outgoing) {
-      const line = beelines[beelineId];
-      if (line === undefined) {
-        issues.push(`${path}.bees.${makeId}.outgoing: unknown beeline '${beelineId}'`);
-      } else if (line.fromBee !== makeId) {
-        issues.push(`${path}.bees.${makeId}.outgoing: beeline '${beelineId}' starts elsewhere`);
-      }
-    }
-    for (const [beelineId, line] of Object.entries(beelines)) {
-      if (line.fromBee === makeId && !make.outgoing.includes(beelineId)) {
-        issues.push(`${path}.bees.${makeId}.outgoing: missing beeline '${beelineId}'`);
-      }
-    }
-  }
-  for (const [beelineId, line] of Object.entries(beelines)) {
-    if (!Object.hasOwn(bees, line.fromBee)) {
-      issues.push(`${path}.beelines.${beelineId}.fromBee: unknown bee '${line.fromBee}'`);
-    }
-    if (!Object.hasOwn(bees, line.toBee)) {
-      issues.push(`${path}.beelines.${beelineId}.toBee: unknown bee '${line.toBee}'`);
-    }
-  }
 }
 
 export function parseSessionParams(input: unknown, path: string): SessionParams {
@@ -198,31 +172,59 @@ function parseBee(input: unknown, path: string, issues: string[]): Bee | undefin
     return undefined;
   }
   assertExactFields(input, BEE_FIELDS, path, issues);
-  const kind = input['kind'];
-  if (typeof kind !== 'string' || !BEE_KINDS.includes(kind as BeeKind)) {
-    issues.push(`${path}.kind: expected one of ${BEE_KINDS.join(', ')}`);
-  }
+  const kind = parseBeeKind(input['kind'], path, issues);
   const config = parseConfig(input['config'], `${path}.config`, issues);
   const outgoing = parseOutgoing(input['outgoing'], `${path}.outgoing`, issues);
   const roleLabel = optionalString(input['roleLabel'], `${path}.roleLabel`, issues, MAX_LABEL_LENGTH);
   const sessionMode = parseSessionMode(input['sessionMode'], path, issues);
   const io = parseBeeIo(input, path, issues);
-  if (
-    typeof kind !== 'string' ||
-    config === undefined ||
-    outgoing === undefined ||
-    io === null
-  ) {
+  const controlConfig = validateControlConfig(kind, config, `${path}.config`, issues);
+  const parts = completeBeeParts(kind, config, outgoing, io, controlConfig);
+  if (parts === undefined) {
     return undefined;
   }
   return {
-    kind: kind as BeeKind,
-    config,
-    outgoing,
-    ...io,
+    kind: parts.kind,
+    config: parts.config,
+    outgoing: parts.outgoing,
+    ...parts.io,
     ...(roleLabel === undefined ? {} : { roleLabel }),
     ...(sessionMode === undefined ? {} : { sessionMode }),
   };
+}
+
+function parseBeeKind(input: unknown, path: string, issues: string[]): BeeKind | undefined {
+  if (typeof input !== 'string' || !BEE_KINDS.includes(input as BeeKind)) {
+    issues.push(`${path}.kind: expected one of ${BEE_KINDS.join(', ')}`);
+    return undefined;
+  }
+  return input as BeeKind;
+}
+
+interface CompleteBeeParts {
+  readonly kind: BeeKind;
+  readonly config: Readonly<Record<string, unknown>>;
+  readonly outgoing: readonly string[];
+  readonly io: NonNullable<ReturnType<typeof parseBeeIo>>;
+}
+
+function completeBeeParts(
+  kind: BeeKind | undefined,
+  config: Readonly<Record<string, unknown>> | undefined,
+  outgoing: readonly string[] | undefined,
+  io: ReturnType<typeof parseBeeIo>,
+  controlConfig: boolean,
+): CompleteBeeParts | undefined {
+  if (
+    kind === undefined ||
+    config === undefined ||
+    outgoing === undefined ||
+    io === null ||
+    !controlConfig
+  ) {
+    return undefined;
+  }
+  return { kind, config, outgoing, io };
 }
 
 function parseSessionMode(
@@ -245,17 +247,20 @@ function parseBeeline(input: unknown, path: string, issues: string[]): Beeline |
     issues.push(`${path}: expected an object`);
     return undefined;
   }
-  assertExactFields(input, ['fromBee', 'toBee', 'branch'], path, issues);
+  assertExactFields(input, ['fromBee', 'toBee', 'when'], path, issues);
   const fromBee = requireString(input['fromBee'], `${path}.fromBee`, issues);
   const toBee = requireString(input['toBee'], `${path}.toBee`, issues);
-  const branch = optionalString(input['branch'], `${path}.branch`, issues, MAX_LABEL_LENGTH);
+  const when = input['when'];
+  if (when !== undefined && when !== 'true' && when !== 'false') {
+    issues.push(`${path}.when: expected 'true' or 'false'`);
+  }
   if (fromBee === undefined || toBee === undefined) {
     return undefined;
   }
   return {
     fromBee,
     toBee,
-    ...(branch === undefined ? {} : { branch }),
+    ...(when === 'true' || when === 'false' ? { when } : {}),
   };
 }
 
@@ -320,6 +325,25 @@ function parseConfig(
   // Config is forwarded to parseComposition by the codec, which owns the
   // kind-specific schema. Keep a shallow copy so callers cannot mutate it later.
   return { ...input };
+}
+
+/**
+ * Spread and gather are the only kinds whose config is part of the B contract.
+ * Validate them here with the same parser the runtime uses, so an old
+ * `branches`/`required`/`combine` document fails before it reaches the codec.
+ */
+function validateControlConfig(
+  kind: unknown,
+  config: Readonly<Record<string, unknown>> | undefined,
+  path: string,
+  issues: string[],
+): boolean {
+  if (config === undefined || (kind !== 'spread' && kind !== 'gather')) {
+    return true;
+  }
+  return kind === 'spread'
+    ? parseSpreadConfig({ ...config }, path, issues) !== null
+    : parseGatherConfig({ ...config }, path, issues) !== null;
 }
 
 function parseOutgoing(

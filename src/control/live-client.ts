@@ -1,5 +1,6 @@
 import type { HiveTemplate, LiveHive, SessionParams } from '../b/types.js';
 import type { Project } from '../project/kernel.js';
+import type { Value } from '../runtime/index.js';
 import { ControlClientError, ControlClient } from './client.js';
 
 export interface LiveOperationResult {
@@ -67,14 +68,14 @@ export class LiveHiveClient extends ControlClient {
    * it (202); execution continues on the daemon. Read `inspect`/`output` for
    * the field's state.
    */
-  async trigger(liveId: string, beeId: string, input: string): Promise<void> {
+  async trigger(liveId: string, beeId: string, input: string | Value): Promise<void> {
     await this.request('POST', '/lives/trigger', { liveId, beeId, input });
   }
 
   async answerLive(
     liveId: string,
     beeId: string,
-    input: string,
+    input: string | Value,
     token?: string,
   ): Promise<void> {
     await this.request('POST', '/lives/answer', {
@@ -117,7 +118,7 @@ export class LiveHiveClient extends ControlClient {
   }
 
   async dispatch(
-    input: string,
+    input: string | Value,
     options: {
       readonly sessionParams?: SessionParams;
       readonly sessionId?: string;

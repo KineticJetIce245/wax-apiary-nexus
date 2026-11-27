@@ -71,3 +71,10 @@ for (const scenario of SCENARIOS) {
     assert.equal(http.message.includes('native-detail'), false);
   });
 }
+
+test('an internal TypeError stays 500 internal instead of becoming a 400', () => {
+  const http = toHttpError(new TypeError('boom'));
+  assert.equal(http.status, 500);
+  assert.equal(http.code, 'internal');
+  assert.equal(http.message.includes('boom'), false);
+});

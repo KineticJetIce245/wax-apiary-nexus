@@ -531,20 +531,22 @@ side-effecting work; fail closed when state is uncertain.
 - **Aligned and implemented:** free JSON `Value`; `Pheromone` = `{ value }`;
   queue entries `{ value, enqueuedAt }`; Bee `reads`/`writes`/`fallback`/
   `filter` and `minIntervalMs`; condition `{ when }` rules; spread
-  `clone`/`cleave` by BeeId; per-Bee self-driven drain (`wake`/`settle`,
+  `clone`/`cleave` by BeeId; gather `assemble`/`batch` per-type queues, packages,
+  tombstones and persistence; per-Bee self-driven drain (`wake`/`settle`,
   per-Bee pacing, failure isolation); idle snapshot/unload; restored active
   with late-result continuation; lazy-load on trigger/answer/native result;
   field-owned per-Bee last output (memory only); adapter session FIFO; ACP
   approval ownership; dispatch as an ephemeral graph that is released at silent
-  end and never returns output.
+  end and never returns output; the M19 B `live.json` shape (spread/gather
+  config, `when` condition edges, no branch/edge fabrication); HTTP/CLI
+  string-or-JSON-object input; old Honey 409 `honey-incompatible`; CONTRACT and
+  README sync.
 - **Removed in the delivery-only closeout:** the execution tracker, per-request ids, run routes and
   records, per-trace limits, the old wake route, the mailbox name and its error
   codes, the dispatch timeout, and the synchronous answer wait. There are no
   aliases.
-- **Target, not implemented:** gather `assemble`/`batch` per-type queues,
-  packages and tombstones (currently a typed not-implemented placeholder);
-  B-layer `live.json`, HTTP/CLI input JSON and CONTRACT/README sync; real
-  Codex+DSH spread/gather evidence; independent conformance review.
+- **Target, not implemented:** real Codex+DSH spread/gather evidence (M19g) and
+  independent conformance review (M19h).
 
 ## 7. Public names and API
 
@@ -580,15 +582,14 @@ The legacy graph control surface and its client commands were removed in an earl
 
 ## 8. Current implementation gap
 
-The delivery-only closeout is implemented; §6.1 records the aligned and removed
-surface. The M19 object model is delivered in slices (M19a–M19d): free JSON
-`Value`, `{ value }` `Pheromone`, queue entries with `enqueuedAt`, Bee
-`reads`/`writes`/`fallback`/`filter`, spread `clone`/`cleave`, per-Bee drain and
-the resumable unload lifecycle. Remaining:
+The delivery-only closeout and the M19 object model are implemented; §6.1
+records the aligned and removed surface. M19a–M19f cover free JSON `Value`,
+`{ value }` `Pheromone`, queue entries with `enqueuedAt`, Bee
+`reads`/`writes`/`fallback`/`filter`, spread `clone`/`cleave`, gather
+`assemble`/`batch`, per-Bee drain, the resumable unload lifecycle, the B
+`live.json` schema, HTTP/CLI input JSON, old Honey 409 and the document sync.
+Remaining:
 
-- M19e: gather `assemble`/`batch` per-type queues, packages and tombstones
-  (§4.13); gather is currently a typed not-implemented placeholder;
-- M19f: B-layer `live.json`, HTTP/CLI input JSON, CONTRACT/README sync;
 - M19g: real Codex+DSH spread/gather evidence;
 - M19h: independent conformance review.
 
@@ -617,8 +618,7 @@ The temporary design applies to:
 - an input that matches no assemble type, matches multiple types, or arrives for
   a closed group;
 - a code-block rule that throws, times out or returns the wrong type;
-- a target path with no implementation yet (freeze, gather per-type queue
-  overflow); gather is still a typed not-implemented placeholder.
+- a target path with no final implementation yet (freeze/backpressure).
 
 It does not change the final Value, Pheromone, spread, gather, read/write or
 persistence rules in §3/§4.12/§4.13/§5.
@@ -671,8 +671,8 @@ When one of the cases above occurs:
 
 - Existing code (not final): `trigger`/`answer` receptor full -> 429; internal
   moves drop + log; a failed activation is dropped and the same Bee continues
-  with its next entry; gather is a typed not-implemented placeholder. M19e
-  implements gather.
+  with its next entry; gather assemble/batch, its queue overflow and dropped
+  inputs use the error + drop policy of §9.2.
 - The temporary placeholder for new target paths is error + drop as in §9.2.
 - The final design is not defined; do not infer it from either behavior.
 
@@ -686,6 +686,25 @@ contract.
 
 ### 9.7 Replacement
 
-The freeze/recovery design replaces §9.2 when it lands. M19e implements gather
-and then retires the gather placeholder described here. At that point this
-section becomes historical, and §4.14 receives the final policy.
+The freeze/recovery design replaces §9.2 when it lands. The gather placeholder has
+been retired; this section still covers the remaining error/drop policy and the
+late-result restart limitation. When the final policy lands, §4.14 receives it
+and this section becomes historical.
+
+### 9.8 Still-temporary implementation choices
+
+These choices are implemented but not part of the final design:
+
+- An assemble entry with `reads: []` is `{}`. §4.13 defines the shape only for
+  one and for multiple read paths; the empty-read entry is temporary.
+- A scheduled delivery uses `{ message: "" }` because the B `Schedule` has no
+  input field. It is the current placeholder, not a schedule-input design.
+- Assemble/batch queue overflow, a zero/multiple-match input, a missing read
+  path and a closed group are error + drop (§9.2) until §4.14 defines the final
+  error/backpressure policy.
+- Keyed-group tombstones are retained for at most 64 closed groups or one hour
+  (ARCH §4.13). The bound is a temporary memory guard, not a final retention
+  rule.
+- A restored active whose native result belongs to a previous daemon process
+  cannot be completed by the new process; it stays active until a later
+  delivery or an operator decision (§9.4). This is a temporary recovery limit.

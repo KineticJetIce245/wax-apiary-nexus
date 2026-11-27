@@ -6,6 +6,7 @@ import {
 } from '../b/validation.js';
 import type { HiveTemplate, LiveHive, SessionParams } from '../b/types.js';
 import type { Project } from '../project/kernel.js';
+import { assertValue, type Value } from '../runtime/index.js';
 import { HttpError } from './server-types.js';
 import { assertExactFields, requirePayload } from './validation.js';
 
@@ -34,7 +35,7 @@ export interface InstantiateLiveBody {
 export interface TriggerLiveBody {
   readonly liveId: string;
   readonly beeId: string;
-  readonly input: string;
+  readonly input: string | Value;
 }
 
 export interface AnswerLiveBody extends TriggerLiveBody {
@@ -56,7 +57,7 @@ export interface TemplateBody {
 }
 
 export interface DispatchBody {
-  readonly input: string;
+  readonly input: string | Value;
   readonly sessionParams?: SessionParams;
   readonly sessionId?: string;
   readonly project?: Project;
@@ -127,7 +128,7 @@ export function parseTriggerLiveBody(payload: Record<string, unknown> | undefine
   return {
     liveId: requireString(body['liveId'], 'liveId', MAX_ID_LENGTH),
     beeId: requireString(body['beeId'], 'beeId', MAX_ID_LENGTH),
-    input: requireString(body['input'], 'input', MAX_PATH_LENGTH, true),
+    input: parseInput(body['input'], true),
   };
 }
 
@@ -142,7 +143,7 @@ export function parseAnswerLiveBody(
   return {
     liveId: requireString(body['liveId'], 'liveId', MAX_ID_LENGTH),
     beeId: requireString(body['beeId'], 'beeId', MAX_ID_LENGTH),
-    input: requireString(body['input'], 'input', MAX_PATH_LENGTH, true),
+    input: parseInput(body['input'], true),
     ...(token === undefined ? {} : { token }),
   };
 }
@@ -182,7 +183,7 @@ export function parseDispatchBody(payload: Record<string, unknown> | undefined):
     ['input', 'sessionParams', 'sessionId', 'project'],
     'dispatch request',
   );
-  const input = requireString(body['input'], 'input', MAX_PATH_LENGTH);
+  const input = parseInput(body['input'], false);
   const sessionParams = body['sessionParams'] === undefined
     ? undefined
     : parseParams(body['sessionParams']);
@@ -198,6 +199,26 @@ export function parseDispatchBody(payload: Record<string, unknown> | undefined):
     ...(sessionId === undefined ? {} : { sessionId }),
     ...(project === undefined ? {} : { project }),
   };
+}
+
+/**
+ * Control input is a string packaged as `{ message }`, or a JSON object used as
+ * the Value as-is. The object is not stringified: nested fields stay fields.
+ */
+function parseInput(value: unknown, allowEmptyString: boolean): string | Value {
+  if (typeof value === 'string') {
+    return requireString(value, 'input', MAX_PATH_LENGTH, allowEmptyString);
+  }
+  try {
+    assertValue(value, 'input');
+  } catch (error) {
+    throw new HttpError(
+      400,
+      'bad-request',
+      error instanceof Error ? error.message : 'input must be a string or JSON object',
+    );
+  }
+  return value;
 }
 
 function parseLive(value: unknown): LiveHive {

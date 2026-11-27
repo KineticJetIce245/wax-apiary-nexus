@@ -368,3 +368,129 @@ test('wax trigger rejects a response that is not an acceptance', async () => {
   assert.deepEqual(out.lines, []);
   assert.match(err.lines.join('\n'), /did not have 'ok: true'/);
 });
+
+/** A daemon dir whose token/server files satisfy discovery; fetch stays fake. */
+function inputJsonDaemon(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'wax-cli-input-json-'));
+  writeFileSync(join(dir, 'token'), 'input-json-token-0123456789', 'utf8');
+  writeFileSync(
+    join(dir, 'server.json'),
+    JSON.stringify({
+      url: 'http://127.0.0.1:45999',
+      host: '127.0.0.1',
+      port: 45999,
+      pid: 1,
+      startedAt: '2026-11-26T00:00:00.000Z',
+      tokenPath: join(dir, 'token'),
+    }),
+    'utf8',
+  );
+  return dir;
+}
+
+function recordingFetch(bodies: Record<string, unknown>[]): typeof fetch {
+  return (async (_input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+}
+
+function inputDeps(bodies: Record<string, unknown>[]) {
+  return {
+    stdout: writer().write,
+    stderr: writer().write,
+    fetchImpl: recordingFetch(bodies),
+  };
+}
+
+test('wax trigger/answer send --input-json and --input-file as objects', async () => {
+  const dir = inputJsonDaemon();
+  const file = join(dir, 'input.json');
+  writeFileSync(
+    file,
+    JSON.stringify({ message: 'from-file', meta: { score: 2 } }),
+    'utf8',
+  );
+  const bodies: Record<string, unknown>[] = [];
+  const deps = inputDeps(bodies);
+
+  assert.equal(
+    await runTriggerCli(
+      [
+        'trigger',
+        'demo',
+        'only',
+        '--input-json',
+        '{"message":"hi","n":1}',
+        '--daemon-dir',
+        dir,
+        '--json',
+      ],
+      deps,
+    ),
+    0,
+  );
+  assert.deepEqual(bodies[0]?.['input'], { message: 'hi', n: 1 });
+
+  assert.equal(
+    await runAnswerCli(
+      ['answer', 'demo', 'only', '--input-file', file, '--daemon-dir', dir],
+      deps,
+    ),
+    0,
+  );
+  assert.deepEqual(bodies[1]?.['input'], {
+    message: 'from-file',
+    meta: { score: 2 },
+  });
+});
+
+test('wax dispatch accepts structured input and rejects mixed/bad input', async () => {
+  const dir = inputJsonDaemon();
+  const bodies: Record<string, unknown>[] = [];
+  const deps = inputDeps(bodies);
+
+  const beforeConflict = bodies.length;
+  assert.equal(
+    await runDispatchCli(
+      ['dispatch', 'text', '--input-json', '{"message":"x"}', '--daemon-dir', dir],
+      deps,
+    ),
+    2,
+  );
+  assert.equal(bodies.length, beforeConflict);
+
+  assert.equal(
+    await runDispatchCli(
+      [
+        'dispatch',
+        '--input-json',
+        '{"message":"summarize"}',
+        '--daemon-dir',
+        dir,
+        '--json',
+      ],
+      deps,
+    ),
+    0,
+  );
+  assert.deepEqual(bodies.at(-1)?.['input'], { message: 'summarize' });
+
+  assert.equal(
+    await runTriggerCli(
+      ['trigger', 'demo', 'only', '--input-json', '[1,2]', '--daemon-dir', dir],
+      deps,
+    ),
+    2,
+  );
+  assert.equal(
+    await runTriggerCli(
+      ['trigger', 'demo', 'only', '--input-json', '{bad', '--daemon-dir', dir],
+      deps,
+    ),
+    2,
+  );
+});

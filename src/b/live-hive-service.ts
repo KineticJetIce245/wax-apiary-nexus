@@ -2,6 +2,7 @@ import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
 import type { LiveHiveHost, LiveHiveStatus } from '../daemon/graph-host.js';
 import type { Project } from '../project/kernel.js';
 import type { Value } from '../runtime/index.js';
+import { assertValue } from '../runtime/index.js';
 import type { SessionRegistry } from '../session/session-registry.js';
 import type { HoneyStore } from '../storage/honey.js';
 import { DispatchService } from './dispatch-service.js';
@@ -155,7 +156,7 @@ export class LiveHiveService {
    * with `live.json` and a Honey snapshot is loaded first. A session shared with
    * other LiveHives is serialized by the harness adapter, not by this method.
    */
-  async trigger(liveId: string, beeId: string, input: string): Promise<void> {
+  async trigger(liveId: string, beeId: string, input: string | Value): Promise<void> {
     this.repository.requireLiveId(liveId);
     await ensureLoaded(
       this.options.liveHiveHost,
@@ -164,13 +165,13 @@ export class LiveHiveService {
       liveId,
       (id) => this.load(id),
     );
-    await this.options.liveHiveHost.trigger(liveId, beeId, messageValue(input));
+    await this.options.liveHiveHost.trigger(liveId, beeId, packageInput(input));
   }
 
   async answer(
     liveId: string,
     beeId: string,
-    input: string,
+    input: string | Value,
     token?: string,
   ): Promise<void> {
     this.repository.requireLiveId(liveId);
@@ -181,7 +182,7 @@ export class LiveHiveService {
       liveId,
       (id) => this.load(id),
     );
-    await this.options.liveHiveHost.answer(liveId, beeId, messageValue(input), token);
+    await this.options.liveHiveHost.answer(liveId, beeId, packageInput(input), token);
   }
 
   /** Flush Honey/scheduler and write live.json without releasing the graph. */
@@ -418,9 +419,21 @@ function gatherDefaults(
   return gatherd;
 }
 
-function messageValue(input: string): Value {
-  if (typeof input !== 'string') {
-    throw new LiveHiveServiceError('invalid', 'input must be a string');
+/**
+ * Control input is a string packaged as `{ message }`, or a JSON object used
+ * as the Value as-is. The runtime validates and clones the object on admission.
+ */
+function packageInput(input: string | Value): Value {
+  if (typeof input === 'string') {
+    return { message: input };
   }
-  return { message: input };
+  try {
+    assertValue(input, 'input');
+  } catch (error) {
+    throw new LiveHiveServiceError(
+      'invalid',
+      error instanceof Error ? error.message : 'input must be a JSON object',
+    );
+  }
+  return input;
 }

@@ -25,11 +25,29 @@ export function simpleLiveHive(): LiveHive {
     },
     beelines: {
       l1: { fromBee: 'draft', toBee: 'review' },
-      l2: { fromBee: 'review', toBee: 'done', branch: 'continue' },
+      l2: { fromBee: 'review', toBee: 'done' },
     },
     bindings: {
       draft: 's1',
       review: 's2',
+    },
+  };
+}
+
+function spreadGatherConfig(): Readonly<Record<string, unknown>> {
+  return {
+    strategy: 'assemble',
+    types: {
+      left: {
+        match: { path: 'side', equals: 'left' },
+        count: 1,
+        reads: ['message'],
+      },
+      right: {
+        match: { path: 'side', equals: 'right' },
+        count: 1,
+        reads: ['message'],
+      },
     },
   };
 }
@@ -46,13 +64,8 @@ export function spreadLiveHive(): LiveHive {
       },
       spread: {
         kind: 'spread',
-        config: {
-          branches: [
-            { id: 'a', to: 'left' },
-            { id: 'b', to: 'right' },
-          ],
-        },
-        outgoing: ['fa', 'fb'],
+        config: { strategy: 'clone', targets: ['left', 'right'] },
+        outgoing: [],
       },
       left: {
         kind: 'forager',
@@ -66,14 +79,12 @@ export function spreadLiveHive(): LiveHive {
       },
       gather: {
         kind: 'gather',
-        config: { required: ['a', 'b'], combine: 'text' },
+        config: spreadGatherConfig(),
         outgoing: [],
       },
     },
     beelines: {
       'to-spread': { fromBee: 'start', toBee: 'spread' },
-      fa: { fromBee: 'spread', toBee: 'left', branch: 'a' },
-      fb: { fromBee: 'spread', toBee: 'right', branch: 'b' },
       lm: { fromBee: 'left', toBee: 'gather' },
       rm: { fromBee: 'right', toBee: 'gather' },
     },
@@ -104,8 +115,8 @@ export function conditionLiveHive(): LiveHive {
     },
     beelines: {
       'to-condition': { fromBee: 'start', toBee: 'condition' },
-      yes: { fromBee: 'condition', toBee: 'done', branch: 'true' },
-      no: { fromBee: 'condition', toBee: 'done', branch: 'false' },
+      yes: { fromBee: 'condition', toBee: 'done', when: 'true' },
+      no: { fromBee: 'condition', toBee: 'done', when: 'false' },
     },
     bindings: { start: 's1' },
   };

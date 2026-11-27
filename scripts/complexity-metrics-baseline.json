@@ -88,12 +88,6 @@
       "nesting": 2,
       "parameters": 3
     },
-    "src/b/validation.ts::function validateGraphReferences": {
-      "lines": 30,
-      "cyclomatic": 11,
-      "nesting": 4,
-      "parameters": 4
-    },
     "src/cli/cli-shared.ts::function selectHarness": {
       "lines": 27,
       "cyclomatic": 13,
@@ -111,12 +105,6 @@
       "cyclomatic": 13,
       "nesting": 4,
       "parameters": 2
-    },
-    "src/cli/dispatch-cli.ts::function dispatchCommand": {
-      "lines": 33,
-      "cyclomatic": 11,
-      "nesting": 1,
-      "parameters": 1
     },
     "src/cli/guard-cli.ts::function runGuardCli": {
       "lines": 47,
@@ -159,12 +147,6 @@
       "cyclomatic": 10,
       "nesting": 2,
       "parameters": 3
-    },
-    "src/control/http-errors.ts::function toHttpError": {
-      "lines": 59,
-      "cyclomatic": 20,
-      "nesting": 2,
-      "parameters": 1
     },
     "src/control/http-server.ts::arrow <anonymous@110>": {
       "lines": 61,
@@ -918,7 +900,7 @@
       "nesting": 0,
       "parameters": 3
     },
-    "tests/support/control-server-http.ts::arrow <anonymous@281>": {
+    "tests/support/control-server-http.ts::arrow <anonymous@279>": {
       "lines": 32,
       "cyclomatic": 10,
       "nesting": 5,

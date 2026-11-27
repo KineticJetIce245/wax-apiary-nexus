@@ -1,8 +1,10 @@
-import type { ControlCliDependencies } from './control-cli.js';
+import type { Value } from '../runtime/index.js';
+import type { ControlCliDependencies, ParsedCliTokens } from './control-cli.js';
 import { parseCliTokens } from './control-cli.js';
 import { CliUsageError } from './cli-shared.js';
 import {
   createClient,
+  readInputValue,
   reportCliError,
   writeJson,
 } from './live-cli-shared.js';
@@ -10,13 +12,27 @@ import {
 type Writer = (line: string) => void;
 
 const TRIGGER_USAGE =
-  'usage: wax trigger <liveId> <beeId> [--input <text>] [--daemon-dir <dir>] [--json]';
-const ANSWER_USAGE =
-  'usage: wax answer <liveId> <beeId> [--input <text>] [--token <token>] ' +
+  'usage: wax trigger <liveId> <beeId> ' +
+  '[--input <text> | --input-json <json> | --input-file <path>] ' +
   '[--daemon-dir <dir>] [--json]';
+const ANSWER_USAGE =
+  'usage: wax answer <liveId> <beeId> ' +
+  '[--input <text> | --input-json <json> | --input-file <path>] ' +
+  '[--token <token>] [--daemon-dir <dir>] [--json]';
 
-const TRIGGER_FLAGS = new Set(['--input', '--daemon-dir']);
-const ANSWER_FLAGS = new Set(['--input', '--token', '--daemon-dir']);
+const TRIGGER_FLAGS = new Set([
+  '--input',
+  '--input-json',
+  '--input-file',
+  '--daemon-dir',
+]);
+const ANSWER_FLAGS = new Set([
+  '--input',
+  '--input-json',
+  '--input-file',
+  '--token',
+  '--daemon-dir',
+]);
 
 export async function runTriggerCli(
   argv: readonly string[],
@@ -45,14 +61,8 @@ async function runDelivery(
     const parsed = parseCliTokens(argv.slice(1), flags, {
       allowEmpty: new Set(['--input']),
     });
-    if (parsed.positionals.length !== 2) {
-      throw new CliUsageError(usage);
-    }
-    const [liveId, beeId] = parsed.positionals;
-    if (liveId === undefined || beeId === undefined) {
-      throw new CliUsageError(usage);
-    }
-    const input = parsed.flags.get('--input') ?? '';
+    const { liveId, beeId } = deliveryTarget(parsed, usage);
+    const input = deliveryInput(parsed);
     const client = createClient(parsed, deps);
     if (kind === 'trigger') {
       await client.trigger(liveId, beeId, input);
@@ -68,6 +78,33 @@ async function runDelivery(
   } catch (error) {
     return reportCliError(error, err);
   }
+}
+
+function deliveryTarget(
+  parsed: ParsedCliTokens,
+  usage: string,
+): { readonly liveId: string; readonly beeId: string } {
+  if (parsed.positionals.length !== 2) {
+    throw new CliUsageError(usage);
+  }
+  const [liveId, beeId] = parsed.positionals;
+  if (liveId === undefined || beeId === undefined) {
+    throw new CliUsageError(usage);
+  }
+  return { liveId, beeId };
+}
+
+function deliveryInput(parsed: ParsedCliTokens): string | Value {
+  const structured = readInputValue(parsed);
+  if (structured !== undefined) {
+    if (parsed.flags.has('--input')) {
+      throw new CliUsageError(
+        '--input cannot be combined with --input-json or --input-file',
+      );
+    }
+    return structured;
+  }
+  return parsed.flags.get('--input') ?? '';
 }
 
 function printAccepted(out: Writer): void {

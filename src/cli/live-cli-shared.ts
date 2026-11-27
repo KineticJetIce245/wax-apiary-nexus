@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
 import type { HiveTemplate } from '../b/types.js';
+import type { Value } from '../runtime/index.js';
 import {
   ControlClientError,
   discoverDaemon,
@@ -106,6 +107,42 @@ export function positiveInteger(raw: string): number {
     throw new CliUsageError('--timeout-ms must be a positive integer');
   }
   return Number(raw);
+}
+
+/**
+ * `--input-json` or `--input-file` for a JSON-object delivery input. Returns
+ * `undefined` when neither flag is present; the caller then uses its string
+ * source. The two structured flags are mutually exclusive, and a caller that
+ * sets one must not also set a string source.
+ */
+export function readInputValue(parsed: ParsedCliTokens): Value | undefined {
+  const json = parsed.flags.get('--input-json');
+  const file = parsed.flags.get('--input-file');
+  if (json !== undefined && file !== undefined) {
+    throw new CliUsageError('--input-json and --input-file cannot be used together');
+  }
+  if (json !== undefined) {
+    return inputObject(parseJsonText(json, '--input-json'), '--input-json');
+  }
+  if (file !== undefined) {
+    return inputObject(readJsonFile(file), `--input-file '${file}'`);
+  }
+  return undefined;
+}
+
+function parseJsonText(text: string, label: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new CliUsageError(`${label} must be valid JSON`);
+  }
+}
+
+function inputObject(value: unknown, label: string): Value {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new CliUsageError(`${label} must contain a JSON object`);
+  }
+  return value as Value;
 }
 
 export function writeJson(out: Writer, value: unknown): void {

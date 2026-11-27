@@ -47,8 +47,11 @@ export interface Bee {
 export interface Beeline {
   readonly fromBee: string;
   readonly toBee: string;
-  /** Spread branch label or condition outcome; optional for ordinary edges. */
-  readonly branch?: string;
+  /**
+   * Condition outcome only (`true` or `false`). A normal edge has no outcome
+   * label, and a spread's targets live in its config rather than in beelines.
+   */
+  readonly when?: 'true' | 'false';
 }
 
 /**

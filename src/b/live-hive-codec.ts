@@ -3,7 +3,9 @@ import {
   parseComposition,
   type CompositionDefinition,
   type EdgeDefinition,
+  type GatherConfig,
   type NodeDefinition,
+  type SpreadConfig,
 } from '../runtime/index.js';
 import { parseLiveHive } from './validation.js';
 import type { Bee, BeeKind, Beeline, LiveHive, SessionMode } from './types.js';
@@ -18,15 +20,15 @@ export class LiveHiveCodecError extends Error {
 
 /**
  * Map a LiveHive to the runtime's CompositionDefinition. Beelines become
- * normal edges, except spread beelines: the runtime represents spread targets in
- * `config.branches`, and a spread node may not also have outgoing edges.
+ * normal edges; a condition beeline carries its `true`/`false` outcome as the
+ * edge `when`. A spread has no edges: its BeeId targets live in `config.targets`.
  */
 export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
   const parsed = parseLiveHive(live);
   const nodes: Record<string, Record<string, unknown>> = {};
 
   for (const [beeId, bee] of Object.entries(parsed.bees)) {
-    nodes[beeId] = nodeRecord(parsed, beeId, bee);
+    nodes[beeId] = nodeRecord(bee);
   }
 
   return parseComposition({
@@ -44,14 +46,10 @@ export function toCompositionDefinition(live: LiveHive): CompositionDefinition {
   });
 }
 
-function nodeRecord(
-  live: LiveHive,
-  beeId: string,
-  bee: Bee,
-): Record<string, unknown> {
+function nodeRecord(bee: Bee): Record<string, unknown> {
   const record: Record<string, unknown> = {
     kind: bee.kind,
-    config: spreadConfig(live, beeId, bee),
+    config: bee.config,
   };
   if (bee.reads !== undefined) {
     record['reads'] = bee.reads;
@@ -76,8 +74,9 @@ function edgeRecords(live: LiveHive): Array<Record<string, unknown>> {
       throw new LiveHiveCodecError(`beeline '${beelineId}' has an unknown source bee`);
     }
     if (source.kind === 'spread') {
-      // Spread branches live in the node config; a normal edge is invalid.
-      continue;
+      throw new LiveHiveCodecError(
+        `spread bee '${line.fromBee}' targets config.targets, not beeline '${beelineId}'`,
+      );
     }
     const edge: Record<string, unknown> = {
       id: beelineId,
@@ -85,12 +84,16 @@ function edgeRecords(live: LiveHive): Array<Record<string, unknown>> {
       to: line.toBee,
     };
     if (source.kind === 'condition') {
-      if (line.branch !== 'true' && line.branch !== 'false') {
+      if (line.when !== 'true' && line.when !== 'false') {
         throw new LiveHiveCodecError(
-          `condition beeline '${beelineId}' must have branch 'true' or 'false'`,
+          `condition beeline '${beelineId}' must have when 'true' or 'false'`,
         );
       }
-      edge['when'] = line.branch;
+      edge['when'] = line.when;
+    } else if (line.when !== undefined) {
+      throw new LiveHiveCodecError(
+        `beeline '${beelineId}' carries a condition outcome from a non-condition bee`,
+      );
     }
     edges.push(edge);
   }
@@ -98,13 +101,10 @@ function edgeRecords(live: LiveHive): Array<Record<string, unknown>> {
 }
 
 /**
- * Only forager bindings become LiveHiveHost bindings. A binding on a control bee
- * is not a runtime binding and is deliberately ignored here.
- */
-/**
- * One-way importer from the legacy composition shape. It preserves node/edge
- * ids and explicit session bindings; fresh binding harness/mode is copied where
- * the B object has a field. It is a migration helper, not a second truth.
+ * Reverse importer for the composition shape. Node/edge ids are preserved and
+ * an explicit session binding becomes `bindings`. Spread targets stay in the
+ * spread config; no beeline is fabricated for them. A counter node has no B
+ * kind and is rejected.
  */
 export function fromCompositionDefinition(
   definition: CompositionDefinition,
@@ -119,6 +119,7 @@ export function fromCompositionDefinition(
     if (node.kind === 'counter') {
       throw new LiveHiveCodecError(`counter node '${nodeId}' has no B bee kind`);
     }
+    assertNoSpreadEdges(nodeId, node, definition.edges);
     bees[nodeId] = importNode(
       nodeId,
       node,
@@ -149,6 +150,16 @@ export function fromCompositionDefinition(
   });
 }
 
+function assertNoSpreadEdges(
+  nodeId: string,
+  node: Exclude<NodeDefinition, { kind: 'counter' }>,
+  edges: readonly EdgeDefinition[],
+): void {
+  if (node.kind === 'spread' && edges.some((edge) => edge.from === nodeId)) {
+    throw new LiveHiveCodecError(`spread node '${nodeId}' must not have outgoing edges`);
+  }
+}
+
 function importNode(
   nodeId: string,
   node: Exclude<NodeDefinition, { kind: 'counter' }>,
@@ -157,9 +168,10 @@ function importNode(
   beelines: Record<string, Beeline>,
   sessionBindings: Record<string, string>,
 ): Bee {
-  const config: Record<string, unknown> = { ...node.config };
-  // Spread targets live in config.targets and have no normal beelines.
-  const outgoing = node.kind === 'spread' ? [] : importEdges(nodeId, edges, beelines);
+  const config = importConfig(node);
+  const outgoing = node.kind === 'spread'
+    ? []
+    : importEdges(nodeId, node.kind, edges, beelines);
   const sessionMode = importBinding(nodeId, binding, config, sessionBindings);
   return {
     kind: node.kind as BeeKind,
@@ -173,8 +185,53 @@ function importNode(
   };
 }
 
+function importConfig(
+  node: Exclude<NodeDefinition, { kind: 'counter' }>,
+): Record<string, unknown> {
+  if (node.kind === 'spread') {
+    return importSpreadConfig(node.config);
+  }
+  if (node.kind === 'gather') {
+    return importGatherConfig(node.config);
+  }
+  return structuredClone(node.config) as unknown as Record<string, unknown>;
+}
+
+function importSpreadConfig(config: SpreadConfig): Record<string, unknown> {
+  const spread: Record<string, unknown> = {
+    strategy: config.strategy,
+    targets: structuredClone(config.targets),
+  };
+  return spread;
+}
+
+/** Batch types carry no `count`; the runtime normalizes it to one internally. */
+function importGatherConfig(config: GatherConfig): Record<string, unknown> {
+  const types: Record<string, unknown> = {};
+  for (const [name, type] of Object.entries(config.types)) {
+    types[name] = {
+      match: structuredClone(type.match),
+      ...(config.strategy === 'assemble' ? { count: type.count } : {}),
+      reads: [...type.reads],
+    };
+  }
+  const gather: Record<string, unknown> = {
+    strategy: config.strategy,
+    types,
+    typeQueueMax: config.typeQueueMax,
+  };
+  if (config.strategy === 'assemble' && config.groupBy !== undefined) {
+    gather['groupBy'] = structuredClone(config.groupBy);
+  }
+  if (config.strategy === 'batch') {
+    gather['batch'] = structuredClone(config.batch);
+  }
+  return gather;
+}
+
 function importEdges(
   nodeId: string,
+  kind: BeeKind,
   edges: readonly EdgeDefinition[],
   beelines: Record<string, Beeline>,
 ): string[] {
@@ -186,11 +243,21 @@ function importEdges(
     if (Object.hasOwn(beelines, edge.id)) {
       throw new LiveHiveCodecError(`duplicate beeline id '${edge.id}'`);
     }
-    beelines[edge.id] = {
-      fromBee: nodeId,
-      toBee: edge.to,
-      ...(edge.when === undefined ? {} : { branch: edge.when }),
-    };
+    if (kind === 'condition') {
+      if (edge.when !== 'true' && edge.when !== 'false') {
+        throw new LiveHiveCodecError(
+          `condition edge '${edge.id}' must have when 'true' or 'false'`,
+        );
+      }
+      beelines[edge.id] = { fromBee: nodeId, toBee: edge.to, when: edge.when };
+    } else {
+      if (edge.when !== undefined) {
+        throw new LiveHiveCodecError(
+          `edge '${edge.id}' carries an outcome from a non-condition bee`,
+        );
+      }
+      beelines[edge.id] = { fromBee: nodeId, toBee: edge.to };
+    }
     outgoing.push(edge.id);
   }
   return outgoing;
@@ -224,32 +291,4 @@ export function toGraphBindings(live: LiveHive): GraphBindings {
     }
   }
   return bindings;
-}
-
-function spreadConfig(
-  live: LiveHive,
-  beeId: string,
-  bee: Bee,
-): Readonly<Record<string, unknown>> {
-  if (bee.kind !== 'spread') {
-    return bee.config;
-  }
-  if (Array.isArray(bee.config['targets']) || isRecord(bee.config['targets'])) {
-    return bee.config;
-  }
-  const targets = bee.outgoing.map((beelineId) => {
-    const line = live.beelines[beelineId];
-    if (line === undefined) {
-      throw new LiveHiveCodecError(`bee '${beeId}' has an unknown outgoing beeline`);
-    }
-    return line.toBee;
-  });
-  if (targets.length === 0) {
-    throw new LiveHiveCodecError(`spread bee '${beeId}' needs at least one target BeeId`);
-  }
-  return { ...bee.config, strategy: 'clone', targets };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -12,6 +12,7 @@ import {
 import type { LiveHiveService } from '../b/live-hive-service.js';
 import { toPublicStatus } from '../b/public-status.js';
 import { LiveHiveHostLoadError } from '../daemon/graph-host.js';
+import { HoneyIncompatibleError } from '../runtime/index.js';
 import type { ControlServerContext } from './server-context.js';
 import type { Route } from './server-types.js';
 import { HttpError, RouteReply } from './server-types.js';
@@ -194,6 +195,11 @@ async function loadWithConflict<T>(
     return await load();
   } catch (error) {
     if (error instanceof LiveHiveHostLoadError) {
+      // A stale Honey snapshot is an incompatibility, not "already loaded".
+      // Rethrow it so toHttpError can answer 409 honey-incompatible.
+      if (hasCause(error, HoneyIncompatibleError)) {
+        throw error;
+      }
       const status = currentStatus(service, liveId);
       throw new HttpError(409, 'conflict', 'live hive is already loaded', {
         ...(status === undefined
@@ -203,6 +209,20 @@ async function loadWithConflict<T>(
     }
     throw error;
   }
+}
+
+function hasCause(error: unknown, type: typeof HoneyIncompatibleError): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current instanceof type) {
+      return true;
+    }
+    if (!(current instanceof Error)) {
+      return false;
+    }
+    current = current.cause;
+  }
+  return false;
 }
 
 async function dispatchLiveUtility(

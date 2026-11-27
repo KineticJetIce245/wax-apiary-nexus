@@ -1,5 +1,6 @@
 import type { SessionParams } from '../b/types.js';
 import type { DispatchOptions } from '../b/dispatch-service.js';
+import type { Value } from '../runtime/index.js';
 import { CliUsageError } from './cli-shared.js';
 import {
   parseCliTokens,
@@ -11,20 +12,24 @@ import {
   harnessOf,
   optionalFlag,
   projectOf,
+  readInputValue,
   reportCliError,
   writeJson,
 } from './live-cli-shared.js';
 
 const DISPATCH_USAGE =
-  'usage: wax dispatch [<input>|--input <text>] [--session <sessionId>] ' +
-  '[--harness <codex|dsh>] [--model <model>] [--reasoning <reasoning>] ' +
-  '[--project <dir>] [--daemon-dir <dir>] [--json]';
+  'usage: wax dispatch ' +
+  '[<input>|--input <text>|--input-json <json>|--input-file <path>] ' +
+  '[--session <sessionId>] [--harness <codex|dsh>] [--model <model>] ' +
+  '[--reasoning <reasoning>] [--project <dir>] [--daemon-dir <dir>] [--json]';
 
 const DISPATCH_FLAGS = new Set([
   '--daemon-dir',
   '--harness',
   '--project',
   '--input',
+  '--input-json',
+  '--input-file',
   '--session',
   '--model',
   '--reasoning',
@@ -53,16 +58,31 @@ export async function runDispatchCli(
 }
 
 function dispatchCommand(parsed: ParsedCliTokens): {
-  readonly input: string;
+  readonly input: string | Value;
   readonly options: DispatchOptions;
 } {
   if (parsed.positionals.length > 1) {
     throw new CliUsageError(DISPATCH_USAGE);
   }
+  const structured = readInputValue(parsed);
+  if (structured !== undefined) {
+    // A structured input is the whole Value; mixing it with a string source
+    // would make which one wins unclear.
+    if (parsed.flags.has('--input') || parsed.positionals.length > 0) {
+      throw new CliUsageError(
+        '--input-json/--input-file cannot be combined with a positional or --input',
+      );
+    }
+    return { input: structured, options: dispatchOptions(parsed) };
+  }
   const input = parsed.flags.get('--input') ?? parsed.positionals[0];
   if (input === undefined || input.trim() === '') {
     throw new CliUsageError(DISPATCH_USAGE);
   }
+  return { input, options: dispatchOptions(parsed) };
+}
+
+function dispatchOptions(parsed: ParsedCliTokens): DispatchOptions {
   const harness = harnessOf(parsed);
   const sessionParams: SessionParams = {
     ...(harness === undefined ? {} : { harness }),
@@ -75,13 +95,10 @@ function dispatchCommand(parsed: ParsedCliTokens): {
   }
   const useFreshSession = sessionId === undefined;
   return {
-    input,
-    options: {
-      ...(useFreshSession || Object.keys(sessionParams).length > 0
-        ? { sessionParams }
-        : {}),
-      ...(sessionId === undefined ? {} : { sessionId }),
-      project: projectOf(parsed),
-    },
+    ...(useFreshSession || Object.keys(sessionParams).length > 0
+      ? { sessionParams }
+      : {}),
+    ...(sessionId === undefined ? {} : { sessionId }),
+    project: projectOf(parsed),
   };
 }

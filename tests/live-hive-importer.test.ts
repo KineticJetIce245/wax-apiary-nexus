@@ -8,44 +8,64 @@ import {
 import type { GraphBindings } from '../src/graph/binding.js';
 import { parseComposition } from '../src/runtime/index.js';
 
+function graphNodes(withCounter: boolean): Record<string, unknown> {
+  return {
+    start: {
+      kind: 'forager',
+      config: { connection: 'codex', prompt: 'start' },
+    },
+    spread: {
+      kind: 'spread',
+      config: { strategy: 'clone', targets: ['left', 'right'] },
+    },
+    left: { kind: 'forager', config: { connection: 'codex', prompt: 'left' } },
+    right: { kind: 'forager', config: { connection: 'dsh', prompt: 'right' } },
+    gather: {
+      kind: 'gather',
+      config: {
+        strategy: 'assemble',
+        types: {
+          left: {
+            match: { path: 'role', equals: 'left' },
+            count: 1,
+            reads: ['message'],
+          },
+          right: {
+            match: { path: 'role', equals: 'right' },
+            count: 1,
+            reads: ['message'],
+          },
+        },
+      },
+    },
+    done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
+    ...(withCounter
+      ? { count: { kind: 'counter', config: { max: 1, step: 1 } } }
+      : {}),
+  };
+}
+
+function graphEdges(withCounter: boolean): Array<Record<string, unknown>> {
+  return [
+    { id: 'start-spread', from: 'start', to: 'spread' },
+    { id: 'left-gather', from: 'left', to: 'gather' },
+    { id: 'right-gather', from: 'right', to: 'gather' },
+    { id: 'gather-done', from: 'gather', to: 'done' },
+    ...(withCounter
+      ? [
+          { id: 'count-continue', from: 'count', to: 'done', when: 'continue' },
+          { id: 'count-done', from: 'count', to: 'done', when: 'done' },
+        ]
+      : []),
+  ];
+}
+
 function composition(withCounter = false): ReturnType<typeof parseComposition> {
   return parseComposition({
     schemaVersion: 1,
-    id: 'legacy-graph',
-    nodes: {
-      start: {
-        kind: 'forager',
-        config: { connection: 'codex', prompt: 'start' },
-      },
-      spread: {
-        kind: 'spread',
-        config: {
-          branches: [
-            { id: 'a', to: 'left' },
-            { id: 'b', to: 'right' },
-          ],
-        },
-      },
-      left: { kind: 'forager', config: { connection: 'codex', prompt: 'left' } },
-      right: { kind: 'forager', config: { connection: 'dsh', prompt: 'right' } },
-      gather: { kind: 'gather', config: { required: ['a', 'b'], combine: 'text' } },
-      done: { kind: 'forager', config: { connection: 'codex', prompt: 'done' } },
-      ...(withCounter
-        ? { count: { kind: 'counter', config: { max: 1, step: 1 } } }
-        : {}),
-    },
-    edges: [
-      { id: 'start-spread', from: 'start', to: 'spread' },
-      { id: 'left-gather', from: 'left', to: 'gather' },
-      { id: 'right-gather', from: 'right', to: 'gather' },
-      { id: 'gather-done', from: 'gather', to: 'done' },
-      ...(withCounter
-        ? [
-            { id: 'count-continue', from: 'count', to: 'done', when: 'continue' as const },
-            { id: 'count-done', from: 'count', to: 'done', when: 'done' as const },
-          ]
-        : []),
-    ],
+    id: 'm19-graph',
+    nodes: graphNodes(withCounter),
+    edges: graphEdges(withCounter),
     triggers: [
       { id: 't', target: 'start', schedule: { kind: 'at', at: '2026-01-01T00:00:00Z' } },
     ],
@@ -71,6 +91,10 @@ test('fromCompositionDefinition preserves node/edge ids and session bindings', (
     'done',
   ]);
   assert.deepEqual(live.bees['start']?.outgoing, ['start-spread']);
+  assert.deepEqual(live.bees['spread']?.outgoing, []);
+  assert.deepEqual(live.bees['left']?.outgoing, ['left-gather']);
+  assert.deepEqual(live.bees['right']?.outgoing, ['right-gather']);
+  assert.deepEqual(live.bees['gather']?.outgoing, ['gather-done']);
   assert.equal(live.beelines['start-spread']?.fromBee, 'start');
   assert.equal(live.beelines['start-spread']?.toBee, 'spread');
   assert.deepEqual(live.bindings, { start: 'session-one' });
@@ -84,25 +108,42 @@ test('fromCompositionDefinition preserves node/edge ids and session bindings', (
   assert.equal(live.bees['right']?.config['connection'], 'dsh');
 });
 
-test('spread branches become labelled beelines without fabricating edges', () => {
+test('importer keeps spread targets in config and fabricates no beelines', () => {
   const live = fromCompositionDefinition(composition());
-  assert.deepEqual(live.bees['spread']?.outgoing, [
-    'spread:spread:a',
-    'spread:spread:b',
+  assert.deepEqual(live.bees['spread']?.config, {
+    strategy: 'clone',
+    targets: ['left', 'right'],
+  });
+  assert.deepEqual(live.bees['gather']?.config, {
+    strategy: 'assemble',
+    types: {
+      left: {
+        match: { path: 'role', equals: 'left' },
+        count: 1,
+        reads: ['message'],
+      },
+      right: {
+        match: { path: 'role', equals: 'right' },
+        count: 1,
+        reads: ['message'],
+      },
+    },
+    typeQueueMax: 256,
+  });
+  assert.deepEqual(Object.keys(live.beelines).sort(), [
+    'gather-done',
+    'left-gather',
+    'right-gather',
+    'start-spread',
   ]);
-  assert.deepEqual(live.beelines['spread:spread:a'], {
-    fromBee: 'spread',
-    toBee: 'left',
-    branch: 'a',
-  });
-  assert.deepEqual(live.beelines['spread:spread:b'], {
-    fromBee: 'spread',
-    toBee: 'right',
-    branch: 'b',
-  });
-  assert.equal(live.beelines['start-spread']?.branch, undefined);
-  assert.equal(live.beelines['left-gather']?.toBee, 'gather');
-  assert.equal(live.beelines['gather-done']?.toBee, 'done');
+  assert.equal(
+    Object.values(live.beelines).some((line) => line.fromBee === 'spread'),
+    false,
+  );
+  assert.equal(
+    Object.values(live.beelines).some((line) => line.when !== undefined),
+    false,
+  );
 });
 
 test('importer copies composition triggers into schedules', () => {

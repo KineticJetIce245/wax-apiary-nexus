@@ -238,17 +238,15 @@ export async function bList(url: string, token: string): Promise<HttpResult> {
   return getJson(url, token, '/lives');
 }
 
-function inputOf(value: unknown): string {
+/** Control input is a string or a JSON object used as the Value as-is. */
+function inputOf(value: unknown): string | Value {
   if (typeof value === 'string') {
     return value;
   }
-  if (typeof value === 'object' && value !== null) {
-    const record = value as Value & Record<string, unknown>;
-    if (record.kind === 'text' && typeof record.text === 'string') {
-      return record.text;
-    }
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Value;
   }
-  throw new Error('B wake/answer fixture only supports text input');
+  throw new Error('B trigger/answer fixture input must be a string or JSON object');
 }
 
 export type AutoGuardDecision = 'allow_once' | 'reject_once' | 'cancelled';

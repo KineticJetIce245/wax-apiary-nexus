@@ -4,6 +4,7 @@ import type { LiveHiveHost } from '../daemon/graph-host.js';
 import type { ForagerBinding, GraphBindings } from '../graph/binding.js';
 import type { Project } from '../project/kernel.js';
 import {
+  assertValue,
   parseComposition,
   type CompositionDefinition,
   type Value,
@@ -97,13 +98,11 @@ export class DispatchService {
     this.defaultProject = options.defaultProject;
   }
 
-  async dispatch(input: string, options: DispatchOptions): Promise<void> {
-    if (typeof input !== 'string' || input.trim() === '') {
-      throw new TypeError('dispatch input must be a non-empty string');
-    }
+  async dispatch(input: string | Value, options: DispatchOptions): Promise<void> {
     if (typeof options !== 'object' || options === null) {
       throw new TypeError('DispatchOptions are required');
     }
+    const value = dispatchValue(input);
     const params =
       options.sessionParams === undefined
         ? undefined
@@ -111,10 +110,10 @@ export class DispatchService {
     if (params === undefined && options.sessionId === undefined) {
       throw new TypeError('dispatch requires sessionParams or sessionId');
     }
-    await this.runEphemeral(input, this.resolveTarget(params, options));
+    await this.runEphemeral(value, this.resolveTarget(params, options));
   }
 
-  private async runEphemeral(input: string, target: DispatchTarget): Promise<void> {
+  private async runEphemeral(input: Value, target: DispatchTarget): Promise<void> {
     const graphId = `dispatch-${randomUUID()}`;
     const definition = buildDispatchDefinition(graphId);
     let pendingRelease = false;
@@ -130,7 +129,7 @@ export class DispatchService {
       if (!this.liveHiveHost.bindingsOf(graphId).has(BEE_ID)) {
         throw new DispatchError('dispatch graph has no session binding');
       }
-      await this.liveHiveHost.trigger(graphId, BEE_ID, messageValue(input));
+      await this.liveHiveHost.trigger(graphId, BEE_ID, input);
       // Accepted: the host driver owns the ephemeral graph and releases it
       // after its field reaches Rest.
       pendingRelease = false;
@@ -240,6 +239,23 @@ function normalizeDispatchError(error: unknown): unknown {
   return error;
 }
 
-function messageValue(input: string): Value {
-  return { message: input };
+/**
+ * A dispatch prompt is a non-empty string packaged as `{ message }`, or a JSON
+ * object used as the Value as-is (for example to fill a custom prompt).
+ */
+function dispatchValue(input: string | Value): Value {
+  if (typeof input === 'string') {
+    if (input.trim() === '') {
+      throw new TypeError('dispatch input must be a non-empty string');
+    }
+    return { message: input };
+  }
+  try {
+    assertValue(input, 'dispatch input');
+  } catch (error) {
+    throw new TypeError(
+      error instanceof Error ? error.message : 'dispatch input must be a JSON object',
+    );
+  }
+  return input;
 }

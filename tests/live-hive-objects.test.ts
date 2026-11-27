@@ -23,7 +23,7 @@ function tempDir(): string {
   return mkdtempSync(join(tmpdir(), 'wax-b-objects-'));
 }
 
-test('live.json round-trips beeId/beelineId keys, bindings, outgoing and branch', () => {
+test('live.json round-trips beeId/beelineId keys, bindings and outgoing', () => {
   const directory = tempDir();
   const path = join(directory, 'live.json');
   const live = simpleLiveHive();
@@ -39,7 +39,7 @@ test('live.json round-trips beeId/beelineId keys, bindings, outgoing and branch'
   assert.deepEqual(loaded.bees['draft']?.outgoing, ['l1']);
   assert.equal(loaded.bees['draft']?.roleLabel, 'planner');
   assert.equal(loaded.bees['draft']?.sessionMode, 'fresh_once');
-  assert.equal(loaded.beelines['l2']?.branch, 'continue');
+  assert.equal(loaded.beelines['l2']?.when, undefined);
   assert.deepEqual(store.list(), [live]);
 
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;

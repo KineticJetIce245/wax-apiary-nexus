@@ -9,7 +9,7 @@ export class FieldRestoreError extends Error {
 /**
  * A persisted Honey file written by an incompatible schema or data shape.
  * Loading fails closed: there is no migration and the old state is kept.
- * The HTTP mapping is deliberately not decided in this slice (M19e).
+ * The control surface maps it to 409 `honey-incompatible`.
  */
 export class HoneyIncompatibleError extends FieldRestoreError {
   readonly code = 'honey-incompatible';

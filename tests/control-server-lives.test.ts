@@ -285,14 +285,11 @@ test('B answer binds a user hover', async (t) => {
 });
 
 /**
- * `seed` moves into a spread that fills `done`'s receptor to the configured
- * capacity, while `ask` can only answer into the same `done`.
+ * `ask` answers into `done`. The test fills `done`'s receptor directly with
+ * queued triggers while it is hovering, so the answer capacity check sees a
+ * full receptor without needing a 1024-target spread.
  */
 function answerOverflowLive(liveId: string): LiveHive {
-  const branches = Array.from({ length: DEFAULT_QUEUE_MAX }, (_, index) => ({
-    id: `b${String(index)}`,
-    to: 'done',
-  }));
   return {
     schemaVersion: 1,
     liveId,
@@ -302,12 +299,6 @@ function answerOverflowLive(liveId: string): LiveHive {
         config: { modality: 'text', prompt: 'ask' },
         outgoing: ['ask-done'],
       },
-      seed: {
-        kind: 'user',
-        config: { modality: 'text', prompt: 'seed' },
-        outgoing: ['seed-fill'],
-      },
-      fill: { kind: 'spread', config: { branches }, outgoing: [] },
       done: {
         kind: 'user',
         config: { modality: 'text', prompt: 'done' },
@@ -316,7 +307,6 @@ function answerOverflowLive(liveId: string): LiveHive {
     },
     beelines: {
       'ask-done': { fromBee: 'ask', toBee: 'done' },
-      'seed-fill': { fromBee: 'seed', toBee: 'fill' },
     },
     bindings: {},
   };
@@ -337,18 +327,20 @@ async function triggerAndHover(
   await waitForBee(url, token, liveId, beeId, (bee) => bee.hovered);
 }
 
-/** Answer the seed: the spread fills `done`'s receptor to capacity. */
+/** Queue `DEFAULT_QUEUE_MAX` triggers behind `done`'s active hover. */
 async function fillDoneReceptor(
   url: string,
   token: string,
   liveId: string,
 ): Promise<void> {
-  const answered = await postJson(url, token, '/lives/answer', {
-    liveId,
-    beeId: 'seed',
-    input: 'fill',
-  });
-  assert.equal(answered.status, 202, answered.text);
+  for (let index = 0; index < DEFAULT_QUEUE_MAX; index += 1) {
+    const queued = await postJson(url, token, '/lives/trigger', {
+      liveId,
+      beeId: 'done',
+      input: 'fill',
+    });
+    assert.equal(queued.status, 202, queued.text);
+  }
   await waitForBee(
     url,
     token,
@@ -392,7 +384,7 @@ test('B answer refuses a full downstream receptor without consuming the hover', 
     (await postJson(url, token, '/lives', { live: answerOverflowLive(liveId) })).status,
     200,
   );
-  for (const beeId of ['ask', 'done', 'seed']) {
+  for (const beeId of ['ask', 'done']) {
     await triggerAndHover(url, token, liveId, beeId);
   }
   await fillDoneReceptor(url, token, liveId);

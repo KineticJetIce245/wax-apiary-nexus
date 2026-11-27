@@ -10,7 +10,12 @@ import {
   LiveHiveHostNotFoundError,
 } from '../daemon/graph-host.js';
 import { ProjectDirectoryError } from '../project/project-directory.js';
-import { CompositionValidationError, ReceptorBlockTimeoutError, ReceptorFullError } from '../runtime/index.js';
+import {
+  CompositionValidationError,
+  HoneyIncompatibleError,
+  ReceptorBlockTimeoutError,
+  ReceptorFullError,
+} from '../runtime/index.js';
 import { ForagerExecutionError } from '../session/forager.js';
 import { BindingValidationError } from '../session/instantiate-foragers.js';
 import { ConversationBusyError, SessionBusyError } from '../session/session-errors.js';
@@ -21,18 +26,73 @@ export function toHttpError(error: unknown): HttpError {
   if (error instanceof HttpError) {
     return error;
   }
-  const mapped = mapSessionAndDispatchError(error);
+  const mapped = mapKnownError(error);
   if (mapped !== undefined) {
     return mapped;
   }
-  const service = mapLiveHiveServiceError(error);
-  if (service !== undefined) {
-    return service;
+  if (error instanceof LiveHiveHostDisposedError || error instanceof LiveHiveHostLoadError) {
+    return new HttpError(500, 'internal', 'internal error');
   }
-  const receptor = mapReceptorError(error);
-  if (receptor !== undefined) {
-    return receptor;
+  return new HttpError(500, 'internal', 'internal error');
+}
+
+function mapKnownError(error: unknown): HttpError | undefined {
+  return (
+    mapSessionAndDispatchError(error) ??
+    mapLiveHiveServiceError(error) ??
+    mapReceptorError(error) ??
+    mapHostAnswerError(error) ??
+    mapForagerExecutionError(error) ??
+    mapDefinitionError(error) ??
+    mapHoneyError(error)
+  );
+}
+
+function mapHoneyError(error: unknown): HttpError | undefined {
+  if (!isHoneyIncompatible(error)) {
+    return undefined;
   }
+  // A stale M18/schema-1 field is a client-visible incompatibility, not an
+  // internal fault. The body stays generic; a path may appear only in logs.
+  return new HttpError(
+    409,
+    'honey-incompatible',
+    'honey snapshot is incompatible with this live hive',
+  );
+}
+
+function mapHostAnswerError(error: unknown): HttpError | undefined {
+  if (!(error instanceof LiveHiveHostAnswerError)) {
+    return undefined;
+  }
+  switch (error.reason) {
+    case 'unknown-node':
+    case 'not-user-node':
+      return new HttpError(400, 'bad-request', 'unknown or unanswerable node');
+    case 'no-hover':
+    case 'token-mismatch':
+      return new HttpError(409, 'conflict', 'hover is not open');
+  }
+}
+
+function mapForagerExecutionError(error: unknown): HttpError | undefined {
+  if (!(error instanceof ForagerExecutionError)) {
+    return undefined;
+  }
+  // A cancelled execution is a client-visible outcome, not an internal
+  // fault. Only the Workspace's native approval timer is reported as
+  // `approval-timeout`; an explicit cancel, close, replace or an
+  // unattributed native cancel stays `execution-cancelled`. `failed` and
+  // `unknown` stay internal 500 because neither proves a clean stop.
+  if (error.state !== 'cancelled') {
+    return new HttpError(500, 'internal', 'internal error');
+  }
+  return error.cancelReason === 'approval-timeout'
+    ? new HttpError(409, 'approval-timeout', 'approval request timed out')
+    : new HttpError(409, 'execution-cancelled', 'execution was cancelled');
+}
+
+function mapDefinitionError(error: unknown): HttpError | undefined {
   if (error instanceof CompositionValidationError) {
     return new HttpError(400, 'bad-request', 'invalid composition definition');
   }
@@ -45,36 +105,22 @@ export function toHttpError(error: unknown): HttpError {
   if (error instanceof LiveHiveHostNotFoundError) {
     return new HttpError(404, 'not-found', 'graph is not loaded');
   }
-  if (error instanceof LiveHiveHostAnswerError) {
-    switch (error.reason) {
-      case 'unknown-node':
-      case 'not-user-node':
-        return new HttpError(400, 'bad-request', 'unknown or unanswerable node');
-      case 'no-hover':
-      case 'token-mismatch':
-        return new HttpError(409, 'conflict', 'hover is not open');
+  return undefined;
+}
+
+/** Walk the `cause` chain because the host wraps Honey load failures. */
+function isHoneyIncompatible(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current instanceof HoneyIncompatibleError) {
+      return true;
     }
-  }
-  if (error instanceof ForagerExecutionError) {
-    // A cancelled execution is a client-visible outcome, not an internal
-    // fault. Only the Workspace's native approval timer is reported as
-    // `approval-timeout`; an explicit cancel, close, replace or an
-    // unattributed native cancel stays `execution-cancelled`. `failed` and
-    // `unknown` stay internal 500 because neither proves a clean stop.
-    if (error.state !== 'cancelled') {
-      return new HttpError(500, 'internal', 'internal error');
+    if (!(current instanceof Error)) {
+      return false;
     }
-    return error.cancelReason === 'approval-timeout'
-      ? new HttpError(409, 'approval-timeout', 'approval request timed out')
-      : new HttpError(409, 'execution-cancelled', 'execution was cancelled');
+    current = current.cause;
   }
-  if (error instanceof TypeError) {
-    return new HttpError(400, 'bad-request', 'invalid request value');
-  }
-  if (error instanceof LiveHiveHostDisposedError || error instanceof LiveHiveHostLoadError) {
-    return new HttpError(500, 'internal', 'internal error');
-  }
-  return new HttpError(500, 'internal', 'internal error');
+  return false;
 }
 
 function mapLiveHiveServiceError(error: unknown): HttpError | undefined {
